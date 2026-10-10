@@ -5,6 +5,7 @@
  */
 
 #include <AK/LexicalPath.h>
+#include <AK/Vector.h>
 #include <LibCore/EventLoop.h>
 #include <LibGfx/SystemTheme.h>
 #include <LibMain/Main.h>
@@ -12,6 +13,8 @@
 #include <LibWebView/Utilities.h>
 #include <WebbyView.h>
 #include <webby_ffi.h>
+
+#include <stdlib.h>
 
 struct WebbyView {
     NonnullOwnPtr<Webby::View> view;
@@ -40,10 +43,22 @@ int webby_init(char const* prefix)
     // Helper processes are found relative to the "binary" directory: <prefix>/bin -> <prefix>/libexec.
     auto binary_directory = LexicalPath::join(StringView { prefix, strlen(prefix) }, "bin"sv).string();
 
-    static char program_name[] = "webby";
-    static char* argv[] = { program_name, nullptr };
-    static StringView strings[] = { "webby"sv };
-    Main::Arguments arguments { 1, argv, { strings, 1 } };
+    // Extra Ladybird command-line flags come from $WEBBY_LADYBIRD_ARGS, e.g. "--disable-sandbox" on kernels without
+    // Landlock. They are kept alive for the whole process, as Ladybird's argument parser expects.
+    static Vector<ByteString> arg_storage;
+    static Vector<char*> argv;
+    static Vector<StringView> strings;
+    arg_storage.append("webby"sv);
+    if (auto const* extra = getenv("WEBBY_LADYBIRD_ARGS")) {
+        for (auto arg : StringView { extra, strlen(extra) }.split_view(' '))
+            arg_storage.append(arg);
+    }
+    for (auto& arg : arg_storage) {
+        argv.append(const_cast<char*>(arg.characters()));
+        strings.append(arg.view());
+    }
+    argv.append(nullptr);
+    Main::Arguments arguments { static_cast<int>(strings.size()), argv.data(), strings.span() };
 
     auto application = Webby::Application::create(arguments, binary_directory);
     if (application.is_error()) {
