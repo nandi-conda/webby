@@ -14,14 +14,19 @@ CC="${CC:-clang-20}"
 CXX="${CXX:-clang++-20}"
 LINKER="${LINKER:-lld-20}"
 
+# Only the pinned commit is fetched (no history), which keeps the download small.
 if [ ! -d "$LADYBIRD_DIR/.git" ]; then
-    git clone https://github.com/LadybirdBrowser/ladybird.git "$LADYBIRD_DIR"
+    git init -q "$LADYBIRD_DIR"
+    git -C "$LADYBIRD_DIR" remote add origin https://github.com/LadybirdBrowser/ladybird.git
 fi
 
 cd "$LADYBIRD_DIR"
-if [ "$(git rev-parse HEAD)" != "$LADYBIRD_COMMIT" ]; then
-    git fetch origin "$LADYBIRD_COMMIT" || git fetch origin
-    git checkout -q "$LADYBIRD_COMMIT"
+if [ "$(git rev-parse -q --verify HEAD || true)" != "$LADYBIRD_COMMIT" ]; then
+    for attempt in 1 2 3 4; do
+        git fetch -q --depth 1 origin "$LADYBIRD_COMMIT" && break
+        sleep $((attempt * 5))
+    done
+    git checkout -q -f FETCH_HEAD
 fi
 
 # Teach Ladybird's UI/ about the Flutter frontend, and point UI/Flutter at our native shim.
