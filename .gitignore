@@ -1,0 +1,7 @@
+third_party/
+app/linux/
+app/.metadata
+app/pubspec.lock
+app/.dart_tool/
+app/build/
+app/.gitignore
