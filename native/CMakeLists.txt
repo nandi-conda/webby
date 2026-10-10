@@ -5,8 +5,9 @@ add_library(ladybird SHARED
     WebbyView.cpp
     webby_ffi.cpp
 )
-set_target_properties(ladybird PROPERTIES OUTPUT_NAME "webby")
 target_include_directories(ladybird PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ladybird PRIVATE LibImageDecoderClient LibJS LibRequests LibWeb LibFileSystem LibThreading)
 
 create_ladybird_bundle(ladybird)
+# After the bundle helper, which names the target "Ladybird".
+set_target_properties(ladybird PROPERTIES OUTPUT_NAME "webby")
