@@ -9,7 +9,9 @@ platforms = [{ name = "linux-64-glibc243", platform = "linux-64", glibc = "2.43"
 
 [dependencies]
 # libwebby.so (LibWeb/LibJS) and the helper processes; activation sets WEBBY_LADYBIRD_PREFIX unless it's already set.
-webby-ladybird = ">=2026.10.11"
+webby-ladybird = ">=2026.10.11.2"
+# The password vault's key goes in the desktop keyring through libsecret (loaded at runtime).
+libsecret = "*"
 # Flutter's Linux desktop build: compiler, build tools, GTK 3 and the .pc files its pkg-config lookup pulls in.
 clang = ">=19"
 clangxx = ">=19"
