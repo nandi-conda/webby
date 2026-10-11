@@ -16,6 +16,7 @@ import 'bindings.dart';
 import 'clipboard.dart';
 import 'color_scheme.dart';
 import 'context_menu.dart';
+import 'file_picker.dart';
 import 'frame_bench.dart';
 import 'keys.dart';
 import 'page_compat.dart';
@@ -104,6 +105,7 @@ class WebbyController extends ChangeNotifier {
   final _pageMessages = StreamController<String>.broadcast();
   late final PasswordNative _passwordNative = PasswordNative.of(_bindings);
   late final ClipboardBridge _clipboard = ClipboardBridge.of(_bindings);
+  late final PageFilePicker? _filePicker = PageFilePicker.of(_bindings);
   // Set while a paste waits for the system clipboard; key events that come meanwhile queue up behind it.
   Future<void>? _pendingPaste;
   String _messagePrefix = _randomPrefix();
@@ -378,6 +380,7 @@ class WebbyController extends ChangeNotifier {
         _webauthnPromptJson = prompt;
         webauthnPrompt = prompt.isEmpty ? null : jsonDecode(prompt) as Map<String, Object?>;
       }
+      _filePicker?.check(_view, () => _view);
       closeRequested = (_closeRequested?.call(_view) ?? 0) != 0;
       _takeNewViews();
       if (_disposed) return;

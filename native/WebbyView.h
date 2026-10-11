@@ -11,6 +11,8 @@
 #include <AK/Optional.h>
 #include <AK/Vector.h>
 #include <Authenticator.h>
+#include <LibWebCommon/HTML/FileFilter.h>
+#include <LibWebCommon/HTML/SelectedFile.h>
 #include <LibWebView/Application.h>
 #include <LibWebView/HeadlessWebView.h>
 #include <LibWebView/Menu.h>
@@ -76,6 +78,12 @@ public:
     ByteString const& webauthn_prompt() const { return m_webauthn_prompt; }
     void respond_to_webauthn(bool accepted, int account_index);
 
+    // An <input type=file> waiting for the user to pick files, as JSON for the UI (empty when there is none). See
+    // webby_view_file_picker_request() in webby_ffi.h.
+    ByteString const& file_picker_request() const { return m_file_picker_request; }
+    // Hands the page the files at `paths` (none cancels the picker).
+    void respond_to_file_picker(Vector<ByteString> const& paths);
+
     // prompt() calls whose text starts with this prefix are messages from the browser's own page scripts: they're
     // answered at once and queued here instead of being shown. See webby_view_set_message_prefix() in webby_ffi.h.
     void set_message_prefix(ByteString prefix) { m_message_prefix = move(prefix); }
@@ -119,6 +127,9 @@ private:
     };
     Optional<PendingWebAuthn> m_pending_webauthn;
     ByteString m_webauthn_prompt;
+
+    ByteString m_file_picker_request;
+    u64 m_file_picker_id { 0 };
 
     Vector<NonnullOwnPtr<View>> m_new_views;
     bool m_close_requested { false };

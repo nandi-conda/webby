@@ -6,6 +6,9 @@
 
 #include <AK/JsonArray.h>
 #include <AK/JsonValue.h>
+#include <AK/LexicalPath.h>
+#include <LibCore/System.h>
+#include <LibIPC/File.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/SharedImageBuffer.h>
 #include <LibWebView/Menu.h>
@@ -123,6 +126,34 @@ View::View(Core::AnonymousBuffer theme, Web::DevicePixelSize size)
         handle_webauthn_request(page, request_id, request);
     };
 
+    on_request_file_picker = [this](Web::HTML::FileFilter const& accepted_file_types, Web::HTML::AllowMultipleFiles allow_multiple_files) {
+        JsonArray accept;
+        for (auto const& filter : accepted_file_types.filters) {
+            filter.visit(
+                [&](Web::HTML::FileFilter::FileType type) {
+                    switch (type) {
+                    case Web::HTML::FileFilter::FileType::Audio:
+                        accept.must_append("audio/*"sv);
+                        break;
+                    case Web::HTML::FileFilter::FileType::Image:
+                        accept.must_append("image/*"sv);
+                        break;
+                    case Web::HTML::FileFilter::FileType::Video:
+                        accept.must_append("video/*"sv);
+                        break;
+                    }
+                },
+                [&](Web::HTML::FileFilter::MimeType const& mime_type) { accept.must_append(mime_type.value.to_utf8()); },
+                [&](Web::HTML::FileFilter::Extension const& extension) { accept.must_append(extension.value.to_utf8()); });
+        }
+        JsonObject request;
+        request.set("id"sv, ++m_file_picker_id);
+        request.set("multiple"sv, allow_multiple_files == Web::HTML::AllowMultipleFiles::Yes);
+        request.set("accept"sv, move(accept));
+        m_file_picker_request = request.serialized().to_byte_string();
+        state_changed();
+    };
+
     on_input_method_state_change = [this] {
         state_changed();
     };
@@ -169,6 +200,27 @@ ByteString const& View::take_message()
     return m_current_message;
 }
 
+void View::respond_to_file_picker(Vector<ByteString> const& paths)
+{
+    if (m_file_picker_request.is_empty())
+        return;
+    m_file_picker_request = {};
+    state_changed();
+
+    Vector<Web::HTML::SelectedFile> files;
+    for (auto const& path : paths) {
+        // Hand WebContent an open descriptor rather than the bytes, so big files aren't copied through this process.
+        auto fd = Core::System::open(path, O_RDONLY | O_CLOEXEC);
+        if (fd.is_error()) {
+            warnln("Webby: can't open picked file {}: {}", path, fd.error());
+            continue;
+        }
+        auto name = Utf16String::from_utf8_with_replacement_character(LexicalPath::basename(path));
+        files.empend(move(name), IPC::File::adopt_fd(fd.value()));
+    }
+    file_picker_closed(move(files));
+}
+
 ByteString const& View::input_method_state_json()
 {
     auto const& state = input_method_state();
@@ -184,6 +236,7 @@ ByteString const& View::input_method_state_json()
 
 View::~View()
 {
+    respond_to_file_picker({});
     respond_to_webauthn(false, -1);
 }
 

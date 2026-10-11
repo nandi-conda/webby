@@ -21,6 +21,8 @@ dependencies:
     path: webby_texture
   qr_flutter: ^4.1.0
   mobile_scanner: ^7.0.1
+  # 12+ needs Flutter 3.38; the app builds with 3.35.
+  file_picker: ^11.0.3
 
 dev_dependencies:
   flutter_test:

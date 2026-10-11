@@ -100,6 +100,18 @@ WEBBY_API int webby_view_cursor(WebbyView*);
 WEBBY_API char const* webby_view_webauthn_prompt(WebbyView*);
 WEBBY_API void webby_view_webauthn_respond(WebbyView*, int accepted, int account_index);
 
+/* File inputs. When a page opens a file picker (<input type=file>, showPicker()),
+ * the view holds it until the UI answers. webby_view_file_picker_request() is ""
+ * when nothing is waiting, else JSON (it changes together with state_serial()):
+ *   { "id": n, "multiple": bool, "accept": [ "text/plain", ".pdf", ... ] }
+ * "accept" holds MIME types (a whole type is the type, a slash and a star, as in
+ * the accept attribute) and extensions; it is empty when any file will do. Answer with
+ * webby_view_file_picker_respond(): a JSON array of file paths to hand the page,
+ * "[]" or NULL to cancel. The files are opened during the call, so they can be
+ * deleted right after it. */
+WEBBY_API char const* webby_view_file_picker_request(WebbyView*);
+WEBBY_API void webby_view_file_picker_respond(WebbyView*, char const* paths_json);
+
 /* Messages from the browser's own page scripts. A page script calls
  * prompt(prefix + text); the view answers it at once (as if cancelled) and
  * queues `text` instead of showing a dialog. webby_view_next_message() returns

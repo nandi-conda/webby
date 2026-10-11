@@ -210,6 +210,23 @@ void webby_view_webauthn_respond(WebbyView* handle, int accepted, int account_in
     handle->view->respond_to_webauthn(accepted != 0, account_index);
 }
 
+char const* webby_view_file_picker_request(WebbyView* handle) { return handle->view->file_picker_request().characters(); }
+
+void webby_view_file_picker_respond(WebbyView* handle, char const* paths_json)
+{
+    Vector<ByteString> paths;
+    if (paths_json) {
+        auto parsed = JsonValue::from_string(StringView { paths_json, strlen(paths_json) });
+        if (!parsed.is_error() && parsed.value().is_array()) {
+            parsed.value().as_array().for_each([&](JsonValue const& value) {
+                if (value.is_string())
+                    paths.append(value.as_string().to_byte_string());
+            });
+        }
+    }
+    handle->view->respond_to_file_picker(paths);
+}
+
 void webby_view_set_message_prefix(WebbyView* handle, char const* prefix)
 {
     handle->view->set_message_prefix(ByteString { prefix, strlen(prefix) });
