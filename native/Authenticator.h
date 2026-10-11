@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/ByteString.h>
+#include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/NonnullOwnPtr.h>
 #include <AK/Optional.h>
@@ -41,6 +42,8 @@ public:
     // Saves a new passkey. One for the same relying party and user replaces the old one.
     virtual ErrorOr<void> create(Passkey) = 0;
     virtual ErrorOr<void> remove(StringView credential_id) = 0;
+    // Every passkey, for the UI's list.
+    virtual Vector<Passkey> all() const = 0;
 };
 
 // The store in use: a FileCredentialStore unless set_credential_store() swapped in another.
@@ -57,6 +60,7 @@ public:
     virtual Optional<Passkey> get(StringView credential_id) const override;
     virtual ErrorOr<void> create(Passkey) override;
     virtual ErrorOr<void> remove(StringView credential_id) override;
+    virtual Vector<Passkey> all() const override { return m_passkeys; }
 
     ByteString const& path() const { return m_path; }
 
@@ -66,6 +70,34 @@ private:
     ByteString m_path;
     Vector<Passkey> m_passkeys;
 };
+
+// Passkeys kept in memory on behalf of the password manager's encrypted vault: the UI hands them over at startup and
+// saves the list again whenever serial() changes (see webby_passkeys_* in webby_ffi.h).
+class VaultCredentialStore final : public CredentialStore {
+public:
+    explicit VaultCredentialStore(Vector<Passkey>);
+
+    virtual Vector<Passkey> list(StringView rp_id, Vector<String> const& allowed_credential_ids = {}) const override;
+    virtual Optional<Passkey> get(StringView credential_id) const override;
+    virtual ErrorOr<void> create(Passkey) override;
+    virtual ErrorOr<void> remove(StringView credential_id) override;
+    virtual Vector<Passkey> all() const override { return m_passkeys; }
+
+    // Changes whenever the passkeys do. Starts at 1 so the first look always saves.
+    u64 serial() const { return m_serial; }
+
+private:
+    Vector<Passkey> m_passkeys;
+    u64 m_serial { 1 };
+};
+
+// Passkeys as JSON, the form both passkeys.json and the vault use: objects with credentialId, rpId, userId, userName,
+// userDisplayName, privateKey and createdAt. Entries without an id, relying party or key are skipped.
+JsonArray passkeys_to_json(Vector<Passkey> const&);
+Vector<Passkey> passkeys_from_json(JsonArray const&);
+
+// Where FileCredentialStore keeps passkeys.
+ByteString passkeys_file_path();
 
 // The authenticator half of a ceremony. `request` is the JSON object LibWeb sent (see LibWeb/WebAuthn/WebAuthn.h); the
 // return value is the JSON reply.

@@ -74,6 +74,32 @@ WEBBY_API int webby_view_cursor(WebbyView*);
 WEBBY_API char const* webby_view_webauthn_prompt(WebbyView*);
 WEBBY_API void webby_view_webauthn_respond(WebbyView*, int accepted, int account_index);
 
+/* Messages from the browser's own page scripts. A page script calls
+ * prompt(prefix + text); the view answers it at once (as if cancelled) and
+ * queues `text` instead of showing a dialog. webby_view_next_message() returns
+ * and removes the oldest queued text, "" when there is none (valid until the
+ * next call). An empty prefix (the default) turns this off. */
+WEBBY_API void webby_view_set_message_prefix(WebbyView*, char const* prefix);
+WEBBY_API char const* webby_view_next_message(WebbyView*);
+
+/* Passkey storage for the password manager's vault. By default passkeys live in
+ * the file named above. webby_passkeys_use_vault() switches to an in-memory
+ * store seeded with `json` (an array as webby_passkeys_export() returns) plus
+ * any passkeys of the current store that aren't in it; returns 0, or -1 if
+ * `json` isn't an array. From then on the UI saves webby_passkeys_export()
+ * whenever webby_passkeys_serial() changes (it is 0 while passkeys are in the
+ * file). webby_passkeys_export() returns every passkey as a JSON array of
+ * { "credentialId", "rpId", "userId", "userName", "userDisplayName",
+ *   "privateKey", "createdAt" }, valid until the next call.
+ * webby_passkeys_delete_file() removes the file once the vault has saved its
+ * passkeys (0 on success or if there is none; only works after
+ * webby_passkeys_use_vault()). */
+WEBBY_API int webby_passkeys_use_vault(char const* json);
+WEBBY_API uint64_t webby_passkeys_serial(void);
+WEBBY_API char const* webby_passkeys_export(void);
+WEBBY_API int webby_passkeys_remove(char const* credential_id);
+WEBBY_API int webby_passkeys_delete_file(void);
+
 /* Input. Positions are in device pixels relative to the view's top-left.
  * button / buttons use Ladybird's bit values: 1 primary, 2 secondary,
  * 4 middle, 8 back, 16 forward. modifiers: 1 alt, 2 ctrl, 4 shift, 8 super. */

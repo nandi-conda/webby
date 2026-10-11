@@ -305,7 +305,7 @@ String get_assertion(JsonObject const& request, Passkey const& passkey)
     return reply.serialized();
 }
 
-static ByteString passkeys_path()
+ByteString passkeys_file_path()
 {
     if (auto const* path = getenv("WEBBY_PASSKEYS_FILE"); path && *path)
         return path;
@@ -347,7 +347,7 @@ void set_credential_store(NonnullOwnPtr<CredentialStore> store)
 }
 
 FileCredentialStore::FileCredentialStore()
-    : m_path(passkeys_path())
+    : m_path(passkeys_file_path())
 {
     auto* file = fopen(m_path.characters(), "r");
     if (!file)
@@ -367,28 +367,13 @@ FileCredentialStore::FileCredentialStore()
     auto passkeys = json.value().as_object().get_array("passkeys"sv);
     if (!passkeys.has_value())
         return;
-    passkeys->for_each([&](JsonValue const& value) {
-        if (!value.is_object())
-            return;
-        auto const& object = value.as_object();
-        Passkey passkey;
-        passkey.credential_id = string_member(object, "credentialId"sv);
-        passkey.rp_id = string_member(object, "rpId"sv);
-        passkey.user_id = string_member(object, "userId"sv);
-        passkey.user_name = string_member(object, "userName"sv);
-        passkey.user_display_name = string_member(object, "userDisplayName"sv);
-        passkey.private_key = string_member(object, "privateKey"sv);
-        passkey.created_at = object.get_integer<i64>("createdAt"sv).value_or(0);
-        if (passkey.credential_id.is_empty() || passkey.rp_id.is_empty() || passkey.private_key.is_empty())
-            return;
-        m_passkeys.append(move(passkey));
-    });
+    m_passkeys = passkeys_from_json(*passkeys);
 }
 
-Vector<Passkey> FileCredentialStore::list(StringView rp_id, Vector<String> const& allowed_credential_ids) const
+static Vector<Passkey> passkeys_matching(Vector<Passkey> const& passkeys, StringView rp_id, Vector<String> const& allowed_credential_ids)
 {
     Vector<Passkey> result;
-    for (auto const& passkey : m_passkeys) {
+    for (auto const& passkey : passkeys) {
         if (passkey.rp_id != rp_id)
             continue;
         if (!allowed_credential_ids.is_empty() && !allowed_credential_ids.contains_slow(passkey.credential_id))
@@ -398,21 +383,36 @@ Vector<Passkey> FileCredentialStore::list(StringView rp_id, Vector<String> const
     return result;
 }
 
-Optional<Passkey> FileCredentialStore::get(StringView credential_id) const
+static Optional<Passkey> passkey_with_id(Vector<Passkey> const& passkeys, StringView credential_id)
 {
-    for (auto const& passkey : m_passkeys) {
+    for (auto const& passkey : passkeys) {
         if (passkey.credential_id == credential_id)
             return passkey;
     }
     return {};
 }
 
-ErrorOr<void> FileCredentialStore::create(Passkey passkey)
+static void add_passkey(Vector<Passkey>& passkeys, Passkey passkey)
 {
-    m_passkeys.remove_all_matching([&](Passkey const& existing) {
+    passkeys.remove_all_matching([&](Passkey const& existing) {
         return existing.rp_id == passkey.rp_id && existing.user_id == passkey.user_id;
     });
-    m_passkeys.append(move(passkey));
+    passkeys.append(move(passkey));
+}
+
+Vector<Passkey> FileCredentialStore::list(StringView rp_id, Vector<String> const& allowed_credential_ids) const
+{
+    return passkeys_matching(m_passkeys, rp_id, allowed_credential_ids);
+}
+
+Optional<Passkey> FileCredentialStore::get(StringView credential_id) const
+{
+    return passkey_with_id(m_passkeys, credential_id);
+}
+
+ErrorOr<void> FileCredentialStore::create(Passkey passkey)
+{
+    add_passkey(m_passkeys, move(passkey));
     return save();
 }
 
@@ -425,21 +425,9 @@ ErrorOr<void> FileCredentialStore::remove(StringView credential_id)
 
 ErrorOr<void> FileCredentialStore::save() const
 {
-    JsonArray passkeys;
-    for (auto const& passkey : m_passkeys) {
-        JsonObject object;
-        object.set("credentialId"sv, passkey.credential_id);
-        object.set("rpId"sv, passkey.rp_id);
-        object.set("userId"sv, passkey.user_id);
-        object.set("userName"sv, passkey.user_name);
-        object.set("userDisplayName"sv, passkey.user_display_name);
-        object.set("privateKey"sv, passkey.private_key);
-        object.set("createdAt"sv, passkey.created_at);
-        passkeys.must_append(move(object));
-    }
     JsonObject root;
     root.set("version"sv, 1);
-    root.set("passkeys"sv, move(passkeys));
+    root.set("passkeys"sv, passkeys_to_json(m_passkeys));
     auto contents = root.serialized();
 
     make_directories(LexicalPath::dirname(m_path));
@@ -462,6 +450,74 @@ ErrorOr<void> FileCredentialStore::save() const
     if (rename(temporary_path.characters(), m_path.characters()) < 0)
         return Error::from_errno(errno);
     return {};
+}
+
+VaultCredentialStore::VaultCredentialStore(Vector<Passkey> passkeys)
+    : m_passkeys(move(passkeys))
+{
+}
+
+Vector<Passkey> VaultCredentialStore::list(StringView rp_id, Vector<String> const& allowed_credential_ids) const
+{
+    return passkeys_matching(m_passkeys, rp_id, allowed_credential_ids);
+}
+
+Optional<Passkey> VaultCredentialStore::get(StringView credential_id) const
+{
+    return passkey_with_id(m_passkeys, credential_id);
+}
+
+ErrorOr<void> VaultCredentialStore::create(Passkey passkey)
+{
+    add_passkey(m_passkeys, move(passkey));
+    ++m_serial;
+    return {};
+}
+
+ErrorOr<void> VaultCredentialStore::remove(StringView credential_id)
+{
+    if (m_passkeys.remove_all_matching([&](Passkey const& passkey) { return passkey.credential_id == credential_id; }))
+        ++m_serial;
+    return {};
+}
+
+JsonArray passkeys_to_json(Vector<Passkey> const& passkeys)
+{
+    JsonArray array;
+    for (auto const& passkey : passkeys) {
+        JsonObject object;
+        object.set("credentialId"sv, passkey.credential_id);
+        object.set("rpId"sv, passkey.rp_id);
+        object.set("userId"sv, passkey.user_id);
+        object.set("userName"sv, passkey.user_name);
+        object.set("userDisplayName"sv, passkey.user_display_name);
+        object.set("privateKey"sv, passkey.private_key);
+        object.set("createdAt"sv, passkey.created_at);
+        array.must_append(move(object));
+    }
+    return array;
+}
+
+Vector<Passkey> passkeys_from_json(JsonArray const& array)
+{
+    Vector<Passkey> passkeys;
+    array.for_each([&](JsonValue const& value) {
+        if (!value.is_object())
+            return;
+        auto const& object = value.as_object();
+        Passkey passkey;
+        passkey.credential_id = string_member(object, "credentialId"sv);
+        passkey.rp_id = string_member(object, "rpId"sv);
+        passkey.user_id = string_member(object, "userId"sv);
+        passkey.user_name = string_member(object, "userName"sv);
+        passkey.user_display_name = string_member(object, "userDisplayName"sv);
+        passkey.private_key = string_member(object, "privateKey"sv);
+        passkey.created_at = object.get_integer<i64>("createdAt"sv).value_or(0);
+        if (passkey.credential_id.is_empty() || passkey.rp_id.is_empty() || passkey.private_key.is_empty())
+            return;
+        passkeys.append(move(passkey));
+    });
+    return passkeys;
 }
 
 }

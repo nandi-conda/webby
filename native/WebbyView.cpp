@@ -94,6 +94,28 @@ View::View(Core::AnonymousBuffer theme, Web::DevicePixelSize size)
     on_request_webauthn = [this](WebView::WebContentPage& page, u64 request_id, String const& request) {
         handle_webauthn_request(page, request_id, request);
     };
+
+    // Messages from the browser's page scripts arrive as prompt() calls; everything else keeps HeadlessWebView's
+    // handling.
+    on_request_prompt = [this, headless_prompt = move(on_request_prompt)](Utf16String const& message, Utf16String const& default_) {
+        auto text = message.to_utf8();
+        if (!m_message_prefix.is_empty() && text.bytes_as_string_view().starts_with(m_message_prefix)) {
+            // Don't let a page grow the queue without bound while the UI isn't reading it.
+            if (m_messages.size() >= 64)
+                m_messages.take_first();
+            m_messages.append(text.bytes_as_string_view().substring_view(m_message_prefix.length()));
+            prompt_closed({});
+            return;
+        }
+        if (headless_prompt)
+            headless_prompt(message, default_);
+    };
+}
+
+ByteString const& View::take_message()
+{
+    m_current_message = m_messages.is_empty() ? ByteString {} : m_messages.take_first();
+    return m_current_message;
 }
 
 View::~View()

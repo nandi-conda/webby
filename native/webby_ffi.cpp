@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/JsonValue.h>
 #include <AK/LexicalPath.h>
 #include <AK/Vector.h>
 #include <LibCore/EventLoop.h>
@@ -14,7 +15,9 @@
 #include <WebbyView.h>
 #include <webby_ffi.h>
 
+#include <errno.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 struct WebbyView {
     NonnullOwnPtr<Webby::View> view;
@@ -159,6 +162,57 @@ char const* webby_view_webauthn_prompt(WebbyView* handle) { return handle->view-
 void webby_view_webauthn_respond(WebbyView* handle, int accepted, int account_index)
 {
     handle->view->respond_to_webauthn(accepted != 0, account_index);
+}
+
+void webby_view_set_message_prefix(WebbyView* handle, char const* prefix)
+{
+    handle->view->set_message_prefix(ByteString { prefix, strlen(prefix) });
+}
+
+char const* webby_view_next_message(WebbyView* handle) { return handle->view->take_message().characters(); }
+
+static Webby::VaultCredentialStore* s_vault_store;
+
+int webby_passkeys_use_vault(char const* json)
+{
+    auto parsed = JsonValue::from_string(StringView { json, strlen(json) });
+    if (parsed.is_error() || !parsed.value().is_array())
+        return -1;
+    auto passkeys = Webby::passkeys_from_json(parsed.value().as_array());
+    // Bring over passkeys the vault doesn't have yet, such as ones still in the old file.
+    for (auto& passkey : Webby::credential_store().all()) {
+        if (!passkeys.find_if([&](auto const& existing) { return existing.credential_id == passkey.credential_id; }).is_end())
+            continue;
+        passkeys.append(move(passkey));
+    }
+    auto store = make<Webby::VaultCredentialStore>(move(passkeys));
+    s_vault_store = store.ptr();
+    Webby::set_credential_store(move(store));
+    return 0;
+}
+
+uint64_t webby_passkeys_serial(void) { return s_vault_store ? s_vault_store->serial() : 0; }
+
+char const* webby_passkeys_export(void)
+{
+    static ByteString exported;
+    exported = Webby::passkeys_to_json(Webby::credential_store().all()).serialized().to_byte_string();
+    return exported.characters();
+}
+
+int webby_passkeys_remove(char const* credential_id)
+{
+    return Webby::credential_store().remove(StringView { credential_id, strlen(credential_id) }).is_error() ? -1 : 0;
+}
+
+int webby_passkeys_delete_file(void)
+{
+    if (!s_vault_store)
+        return -1;
+    auto path = Webby::passkeys_file_path();
+    if (unlink(path.characters()) < 0 && errno != ENOENT)
+        return -1;
+    return 0;
 }
 
 void webby_view_mouse_event(WebbyView* handle, int type, int x, int y, int button, int buttons, int modifiers, int click_count)
