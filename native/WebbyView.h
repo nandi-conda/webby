@@ -30,6 +30,17 @@ public:
 private:
     virtual void create_platform_options(WebView::BrowserOptions&, WebView::RequestServerOptions&, WebView::WebContentOptions&) override;
     virtual bool should_coordinate_browser_process() const override { return false; }
+
+public:
+    // Ladybird's clipboard, which pages copy into and paste from. The system clipboard lives on the Flutter side, so
+    // the UI copies out what pages copy (clipboard_serial() changes) and hands in the system clipboard's text before a
+    // paste. See webby_clipboard_*() in webby_ffi.h.
+    virtual void insert_clipboard_item(Web::Clipboard::SystemClipboardItem) override;
+    void set_clipboard_from_system(String);
+    u64 clipboard_serial() const { return m_clipboard_serial; }
+
+private:
+    u64 m_clipboard_serial { 0 };
 };
 
 // A view with no native window: WebContent paints into shared CPU bitmaps, and each presented frame is copied into

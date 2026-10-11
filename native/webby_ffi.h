@@ -98,6 +98,17 @@ WEBBY_API void webby_view_webauthn_respond(WebbyView*, int accepted, int account
 WEBBY_API void webby_view_set_message_prefix(WebbyView*, char const* prefix);
 WEBBY_API char const* webby_view_next_message(WebbyView*);
 
+/* Clipboard. Ladybird keeps its own clipboard: Ctrl+C / Ctrl+X in a page and
+ * navigator.clipboard.write*() put text there, Ctrl+V and
+ * navigator.clipboard.read*() take it from there. webby_clipboard_serial()
+ * changes whenever a page copies; the UI then puts webby_clipboard_text()
+ * (UTF-8, valid until the next call) on the system clipboard. Before a paste the
+ * UI hands the system clipboard's text to webby_clipboard_set_text(), which
+ * doesn't change the serial. */
+WEBBY_API uint64_t webby_clipboard_serial(void);
+WEBBY_API char const* webby_clipboard_text(void);
+WEBBY_API void webby_clipboard_set_text(char const* text);
+
 /* Passkey storage for the password manager's vault. By default passkeys live in
  * the file named above. webby_passkeys_use_vault() switches to an in-memory
  * store seeded with `json` (an array as webby_passkeys_export() returns) plus

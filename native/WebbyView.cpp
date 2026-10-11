@@ -20,6 +20,21 @@ void Application::create_platform_options(WebView::BrowserOptions&, WebView::Req
     web_content_options.force_cpu_painting = WebView::ForceCPUPainting::Yes;
 }
 
+void Application::insert_clipboard_item(Web::Clipboard::SystemClipboardItem item)
+{
+    WebView::Application::insert_clipboard_item(move(item));
+    ++m_clipboard_serial;
+}
+
+void Application::set_clipboard_from_system(String text)
+{
+    // While the system clipboard still holds what a page copied, keep the page's copy: it may carry more than plain
+    // text (text/html).
+    if (clipboard_text().to_utf8() == text)
+        return;
+    WebView::Application::set_clipboard_text(move(text));
+}
+
 static int cursor_to_int(Gfx::Cursor const& cursor)
 {
     return cursor.visit(

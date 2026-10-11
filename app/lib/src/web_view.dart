@@ -13,6 +13,7 @@ import 'package:flutter/services.dart';
 import 'package:webby_texture/webby_texture.dart';
 
 import 'bindings.dart';
+import 'clipboard.dart';
 import 'color_scheme.dart';
 import 'context_menu.dart';
 import 'frame_bench.dart';
@@ -74,6 +75,9 @@ class WebbyController extends ChangeNotifier {
   Stream<String> get pageMessages => _pageMessages.stream;
   final _pageMessages = StreamController<String>.broadcast();
   late final PasswordNative _passwordNative = PasswordNative.of(_bindings);
+  late final ClipboardBridge _clipboard = ClipboardBridge.of(_bindings);
+  // Set while a paste waits for the system clipboard; key events that come meanwhile queue up behind it.
+  Future<void>? _pendingPaste;
   String _messagePrefix = _randomPrefix();
   String get messagePrefix => _messagePrefix;
   set messagePrefix(String prefix) {
@@ -227,7 +231,12 @@ class WebbyController extends ChangeNotifier {
   void goForward() => _ifAttached(_bindings.goForward);
   void reload() => _ifAttached(_bindings.reload);
   void stop() => _ifAttached(_bindings.stop);
-  void setFocus(bool focused) => _ifAttached((v) => _bindings.setFocus(v, focused ? 1 : 0));
+  void setFocus(bool focused) {
+    _ifAttached((v) => _bindings.setFocus(v, focused ? 1 : 0));
+    // Let navigator.clipboard.read*() see what was copied in other apps.
+    if (focused) _clipboard.pullSystemClipboard();
+  }
+
   void runJavaScript(String source) => _ifAttached((v) => _withString(source, (s) => _bindings.runJavaScript(v, s)));
 
   /// Answers [webauthnPrompt]: `accepted: false` cancels it; for a sign-in, [accountIndex] picks one of its accounts.
@@ -241,8 +250,26 @@ class WebbyController extends ChangeNotifier {
   void wheelEvent(Offset position, Offset delta, {bool precise = false, int modifiers = 0}) => _ifAttached(
       (v) => _bindings.wheelEvent(v, position.dx.round(), position.dy.round(), delta.dx, delta.dy, precise ? 1 : 0, modifiers));
 
-  void keyEvent(bool down, int keyCode, int modifiers, int codePoint, bool repeat) =>
-      _ifAttached((v) => _bindings.keyEvent(v, down ? 1 : 0, keyCode, modifiers, codePoint, repeat ? 1 : 0));
+  void keyEvent(bool down, int keyCode, int modifiers, int codePoint, bool repeat) {
+    void send() => _ifAttached((v) => _bindings.keyEvent(v, down ? 1 : 0, keyCode, modifiers, codePoint, repeat ? 1 : 0));
+    // Ladybird pastes from its own clipboard on Ctrl+V, so give it the system clipboard's text first.
+    final isPaste = down && keyCode == 0x56 && modifiers & (modAlt | modCtrl | modShift | modSuper) == modCtrl;
+    if (isPaste && _clipboard.isSupported) {
+      _afterPendingPaste(() => _clipboard.pullSystemClipboard().then((_) => send()));
+    } else if (_pendingPaste != null) {
+      _afterPendingPaste(send);
+    } else {
+      send();
+    }
+  }
+
+  void _afterPendingPaste(FutureOr<void> Function() step) {
+    late final Future<void> next;
+    next = (_pendingPaste ?? Future<void>.value()).then((_) => step()).whenComplete(() {
+      if (identical(_pendingPaste, next)) _pendingPaste = null;
+    });
+    _pendingPaste = next;
+  }
 
   void _ifAttached(void Function(ViewPtr) action) {
     if (_view != nullptr) action(_view);
@@ -266,6 +293,7 @@ class WebbyController extends ChangeNotifier {
     if (now - _lastPumpMicros >= 3000) {
       _lastPumpMicros = now;
       _bindings.pump();
+      _clipboard.pushPageCopies();
     }
     if (_view == nullptr) return;
 

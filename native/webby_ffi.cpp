@@ -189,6 +189,24 @@ void webby_view_set_message_prefix(WebbyView* handle, char const* prefix)
 
 char const* webby_view_next_message(WebbyView* handle) { return handle->view->take_message().characters(); }
 
+uint64_t webby_clipboard_serial(void) { return s_application ? s_application->clipboard_serial() : 0; }
+
+char const* webby_clipboard_text(void)
+{
+    static ByteString text;
+    text = s_application ? s_application->clipboard_text().to_utf8().to_byte_string() : ByteString {};
+    return text.characters();
+}
+
+void webby_clipboard_set_text(char const* text)
+{
+    if (!s_application)
+        return;
+    auto string = String::from_utf8(StringView { text, strlen(text) });
+    if (!string.is_error())
+        s_application->set_clipboard_from_system(string.release_value());
+}
+
 static Webby::VaultCredentialStore* s_vault_store;
 
 void webby_set_offline(int offline)
