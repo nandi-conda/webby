@@ -2,15 +2,18 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' hide Size;
 import 'dart:io';
+import 'dart:math' show Random;
 import 'dart:ui' as ui;
 
 import 'package:ffi/ffi.dart';
+import 'package:flatkit/flatkit.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:webby_texture/webby_texture.dart';
 
 import 'bindings.dart';
+import 'context_menu.dart';
 import 'frame_bench.dart';
 import 'keys.dart';
 import 'passwords/native.dart';
@@ -66,16 +69,22 @@ class WebbyController extends ChangeNotifier {
   Map<String, Object?>? webauthnPrompt;
   String _webauthnPromptJson = '';
 
-  /// Messages from the browser's own page scripts (see `webby_view_set_message_prefix` in webby_ffi.h); none arrive
-  /// until [messagePrefix] is set.
+  /// Messages from the browser's own page scripts (see `webby_view_set_message_prefix` in webby_ffi.h). Every page
+  /// script shares one prefix (random per view unless set, so pages can't guess it) and tells its messages apart by
+  /// their JSON "type".
   Stream<String> get pageMessages => _pageMessages.stream;
   final _pageMessages = StreamController<String>.broadcast();
   late final PasswordNative _passwordNative = PasswordNative.of(_bindings);
-  String _messagePrefix = '';
+  String _messagePrefix = _randomPrefix();
   String get messagePrefix => _messagePrefix;
   set messagePrefix(String prefix) {
     _messagePrefix = prefix;
     _applyMessagePrefix();
+  }
+
+  static String _randomPrefix() {
+    final random = Random.secure();
+    return '\u0001webby:${base64UrlEncode(List<int>.generate(12, (_) => random.nextInt(256)))}:';
   }
 
   void _applyMessagePrefix() {
@@ -271,7 +280,7 @@ const _cursors = <int, MouseCursor>{
 
 /// Shows a [WebbyController]'s page and forwards pointer and keyboard input to it.
 class WebbyView extends StatefulWidget {
-  const WebbyView({super.key, required this.controller, this.focusNode, this.isBrowserShortcut});
+  const WebbyView({super.key, required this.controller, this.focusNode, this.isBrowserShortcut, this.onOpenInNewTab});
 
   final WebbyController controller;
   final FocusNode? focusNode;
@@ -279,12 +288,16 @@ class WebbyView extends StatefulWidget {
   /// Keys the browser keeps for itself (Ctrl+D...): they aren't sent to the page and bubble up to the app's shortcuts.
   final bool Function(KeyEvent event)? isBrowserShortcut;
 
+  /// Opens a URL in a new tab, for the context menu's "Open link in new tab". Without it those rows open in this view.
+  final void Function(String url)? onOpenInNewTab;
+
   @override
   State<WebbyView> createState() => _WebbyViewState();
 }
 
 class _WebbyViewState extends State<WebbyView> {
   late final FocusNode _focusNode = widget.focusNode ?? FocusNode(debugLabel: 'WebbyView');
+  late ContextMenuAgent _contextMenu;
   Size? _lastSize;
   double? _lastRatio;
   int _clickCount = 0;
@@ -292,10 +305,36 @@ class _WebbyViewState extends State<WebbyView> {
   Duration _lastDownTime = Duration.zero;
   Offset _lastDownPosition = Offset.zero;
 
+  // A right-click waiting for the page's report: where it was (global) and a timer that shows a plain menu if the
+  // page never reports it (Shift+right-click skips the page, and some pages can't run the script).
+  Offset? _menuPosition;
+  Timer? _menuFallback;
+  // The flatkit menu hangs off a zero-size anchor placed where the user right-clicked.
+  List<KitMenuEntry> _menuItems = const [];
+  Offset _menuAnchor = Offset.zero;
+  VoidCallback? _toggleMenu;
+  bool _menuOpen = false;
+
   double get _ratio => MediaQuery.devicePixelRatioOf(context);
   Offset _toDevice(Offset local) => local * _ratio;
 
   int get _modifiers => modifiersFromKeyboard(HardwareKeyboard.instance);
+
+  @override
+  void initState() {
+    super.initState();
+    _contextMenu = ContextMenuAgent(widget.controller, onRequest: _onContextMenuRequest);
+  }
+
+  @override
+  void didUpdateWidget(WebbyView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      _contextMenu.dispose();
+      _contextMenu = ContextMenuAgent(widget.controller, onRequest: _onContextMenuRequest);
+      _cancelContextMenu();
+    }
+  }
 
   void _syncViewport(Size size) {
     final ratio = _ratio;
@@ -320,8 +359,55 @@ class _WebbyViewState extends State<WebbyView> {
     final buttons = _ladybirdButtons(event.buttons);
     final pressed = buttons & ~_lastButtons;
     _lastButtons = buttons;
+    if (pressed & 2 != 0) _expectContextMenu(event.position);
     widget.controller.mouseEvent(0, _toDevice(event.localPosition),
         button: pressed == 0 ? buttons : pressed, buttons: buttons, modifiers: _modifiers, clickCount: _clickCount);
+  }
+
+  // Ladybird fires the page's contextmenu event on the right button's press; the page script reports it right after.
+  void _expectContextMenu(Offset position) {
+    _menuFallback?.cancel();
+    _menuPosition = position;
+    _menuFallback = Timer(const Duration(milliseconds: 400), () => _showContextMenu(null));
+  }
+
+  void _cancelContextMenu() {
+    _menuFallback?.cancel();
+    _menuFallback = null;
+    _menuPosition = null;
+  }
+
+  void _onContextMenuRequest(ContextMenuTarget target) {
+    // Only right-clicks the user made here open a menu; a report without one is ignored.
+    if (_menuPosition == null) return;
+    if (target.prevented) {
+      _cancelContextMenu();
+      return;
+    }
+    _showContextMenu(target);
+  }
+
+  Future<void> _showContextMenu(ContextMenuTarget? target) async {
+    final position = _menuPosition;
+    _cancelContextMenu();
+    if (position == null || !mounted) return;
+    final items = await contextMenuItems(context,
+        controller: widget.controller,
+        target: target,
+        onOpenInNewTab: widget.onOpenInNewTab,
+        afterAction: () => _focusNode.requestFocus());
+    if (!mounted) return;
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null) return;
+    // A menu that is still open from the last right-click closes first, then opens again at the new spot.
+    if (_menuOpen) _toggleMenu?.call();
+    setState(() {
+      _menuItems = items;
+      _menuAnchor = box.globalToLocal(position);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && !_menuOpen) _toggleMenu?.call();
+    });
   }
 
   void _onPointerUp(PointerUpEvent event) {
@@ -364,6 +450,8 @@ class _WebbyViewState extends State<WebbyView> {
 
   @override
   void dispose() {
+    _cancelContextMenu();
+    _contextMenu.dispose();
     if (widget.focusNode == null) _focusNode.dispose();
     super.dispose();
   }
@@ -415,7 +503,22 @@ class _WebbyViewState extends State<WebbyView> {
               onPointerPanZoomUpdate: _onPanZoomUpdate,
               child: ColoredBox(
                 color: Colors.white,
-                child: SizedBox.expand(child: _page()),
+                child: Stack(children: [
+                  Positioned.fill(child: _page()),
+                  Positioned(
+                    left: _menuAnchor.dx,
+                    top: _menuAnchor.dy,
+                    child: KitMenu(
+                      minWidth: 200,
+                      items: () => _menuItems,
+                      builder: (context, toggle, open) {
+                        _toggleMenu = toggle;
+                        _menuOpen = open;
+                        return const SizedBox.shrink();
+                      },
+                    ),
+                  ),
+                ]),
               ),
             ),
           ),
