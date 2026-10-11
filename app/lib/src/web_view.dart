@@ -782,7 +782,17 @@ class _WebbyViewState extends State<WebbyView> with TextInputClient {
     final input = _input;
     if (input == null || !input.attached) {
       _inputValue = value;
-      _input = TextInput.attach(this, const TextInputConfiguration(inputAction: TextInputAction.go, autocorrect: false))
+      // No suggestions: keyboards like Gboard otherwise add their own spaces (after a period, after a picked word) and
+      // smart punctuation that the page never asked for. On Android this also makes it a plain "visible password" field.
+      _input = TextInput.attach(
+          this,
+          const TextInputConfiguration(
+            inputAction: TextInputAction.go,
+            autocorrect: false,
+            enableSuggestions: false,
+            smartDashesType: SmartDashesType.disabled,
+            smartQuotesType: SmartQuotesType.disabled,
+          ))
         ..setEditingState(value)
         ..show();
       return;
