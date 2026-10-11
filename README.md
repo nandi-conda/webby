@@ -133,3 +133,15 @@ the bookmarks menu next to the key button) has a folder tree, search, edit/move/
 and import/export of the `bookmarks.html` format other browsers use. They are stored per profile in
 `${XDG_DATA_HOME:-~/.local/share}/webby/profiles/<profile>/bookmarks.json` (or `WEBBY_BOOKMARKS_FILE`); the code is in
 `app/lib/src/bookmarks/`, tests in `app/test/` (`flutter test`).
+
+Web apps (PWAs): when a page links a web app manifest (`<link rel="manifest">`), an install button shows in the
+address bar. Installing saves the app under `${XDG_DATA_HOME:-~/.local/share}/webby/apps/<app>/` (its icon converted
+to PNG, or kept as SVG) and writes a `webby-app-<app>.desktop` launcher to `${XDG_DATA_HOME}/applications/`, so it
+shows in the desktop's app menu. The launcher runs `webby --app=<start_url>`: a window with just the page, no
+toolbar; pages outside the manifest's `scope` get a thin strip with their host and an "Open in Webby" button. On an
+installed app's page the button opens the app or uninstalls it. Code: `app/lib/src/pwa/`.
+Offline use doesn't work yet: Ladybird (at `LADYBIRD_COMMIT`) accepts `navigator.serviceWorker.register()` but never
+starts the worker (`ServiceWorker/Job.cpp`: "FIXME: Actually create service worker"), so there are no install,
+activate or fetch events, and `caches` (CacheStorage) is in memory only. Installed apps need the network like any
+page, and everything they keep in localStorage/IndexedDB is shared with the browser profile. All app windows share
+webby's window class, so docks group them under webby's icon.

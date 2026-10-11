@@ -13,17 +13,24 @@ import 'src/passkey_dialog.dart';
 import 'src/passwords/password_bar.dart';
 import 'src/passwords/password_manager.dart';
 import 'src/passwords/vault_page.dart';
+import 'src/pwa/app_window.dart';
+import 'src/pwa/install_dialog.dart';
+import 'src/pwa/pwa_agent.dart';
 import 'src/tab_strip.dart';
 import 'src/web_view.dart';
 
 void main(List<String> args) {
-  runApp(WebbyApp(initialUrl: args.isNotEmpty ? args.first : 'https://ladybird.org'));
+  // `--app=<url>` opens an installed web app in its own window (what the app launchers run).
+  final app = args.where((a) => a.startsWith('--app=')).map((a) => a.substring(6)).firstOrNull;
+  final urls = args.where((a) => !a.startsWith('--')).toList();
+  runApp(WebbyApp(initialUrl: app ?? (urls.isNotEmpty ? urls.first : 'https://ladybird.org'), appMode: app != null));
 }
 
 class WebbyApp extends StatelessWidget {
-  const WebbyApp({super.key, required this.initialUrl});
+  const WebbyApp({super.key, required this.initialUrl, this.appMode = false});
 
   final String initialUrl;
+  final bool appMode;
 
   @override
   Widget build(BuildContext context) {
@@ -34,7 +41,7 @@ class WebbyApp extends StatelessWidget {
         debugShowCheckedModeBanner: false,
         theme: KitTheme.material(colors),
         builder: (context, child) => Material(color: colors.background, child: child),
-        home: BrowserPage(initialUrl: initialUrl),
+        home: appMode ? AppWindowPage(startUrl: initialUrl) : BrowserPage(initialUrl: initialUrl),
       ),
     );
   }
@@ -53,15 +60,18 @@ class BrowserPage extends StatefulWidget {
 class _BrowserTab {
   _BrowserTab(String url) : controller = WebbyController(initialUrl: url) {
     passwords = PasswordAgent(controller);
+    pwa = PwaAgent(controller);
   }
 
   final WebbyController controller;
   late final PasswordAgent passwords;
+  late final PwaAgent pwa;
   final focus = FocusNode(debugLabel: 'page');
   Map<String, Object?>? shownPasskeyPrompt;
 
   void dispose() {
     passwords.dispose();
+    pwa.dispose();
     controller.dispose();
     focus.dispose();
   }
@@ -355,6 +365,7 @@ class _BrowserPageState extends State<BrowserPage> {
                       url: controller.url,
                       onSubmitted: _go,
                       trailing: [
+                        InstallAppButton(agent: tab.pwa),
                         KitIconButton(
                           bookmarked ? Icons.star : Icons.star_border,
                           tooltip: bookmarked ? 'Edit bookmark (Ctrl+D)' : 'Bookmark this page (Ctrl+D)',
