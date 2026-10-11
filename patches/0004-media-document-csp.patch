@@ -28,7 +28,7 @@ index ce6a7d9be2..45acee62a9 100644
 +    //        drop the CSP list here (the CSP sandbox flags were already applied when the document was created).
 +    {
 +        auto policy_container = document->policy_container()->clone(document->heap());
-+        policy_container->csp_list = ContentSecurityPolicy::PolicyList::create(document->heap(), GC::RootVector<GC::Ref<ContentSecurityPolicy::Policy>> { document->heap() });
++        policy_container->csp_list = ContentSecurityPolicy::PolicyList::create(document->heap(), GC::RootVector<GC::Ref<ContentSecurityPolicy::Policy>> {});
 +        document->set_policy_container(policy_container);
 +    }
 +
