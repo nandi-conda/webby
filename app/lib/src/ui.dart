@@ -48,6 +48,8 @@ class KitPage extends StatelessWidget {
         autofocus: true,
         child: Material(
           color: c.background,
+          // Clear the phone's status and navigation bars.
+          child: SafeArea(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -69,6 +71,7 @@ class KitPage extends StatelessWidget {
               ),
               Expanded(child: body),
             ],
+          ),
           ),
         ),
       ),
