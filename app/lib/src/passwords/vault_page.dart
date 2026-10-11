@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -211,7 +213,8 @@ class _VaultPageState extends State<VaultPage> {
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    if (vault.keyStore == VaultKeyStore.file)
+                    // Android has no keyring for the vault's key yet; the app's private storage keeps other apps out.
+                    if (vault.keyStore == VaultKeyStore.file && !Platform.isAndroid)
                       KitBanner(
                         message: 'No keyring was found, so the vault\'s key is in a file next to it '
                             '(${vault.path.replaceFirst(RegExp(r'vault\.json$'), 'vault.key')}). Anyone who can '

@@ -69,6 +69,11 @@ class WebbyController extends ChangeNotifier {
   Map<String, Object?>? webauthnPrompt;
   String _webauthnPromptJson = '';
 
+  /// The page's focused text field (see `webby_view_ime_state` in webby_ffi.h), or null when nothing editable has
+  /// focus or the runtime can't tell.
+  PageTextField? textField;
+  String _textFieldJson = '';
+
   /// Messages from the browser's own page scripts (see `webby_view_set_message_prefix` in webby_ffi.h). Every page
   /// script shares one prefix (random per view unless set, so pages can't guess it) and tells its messages apart by
   /// their JSON "type".
@@ -143,6 +148,14 @@ class WebbyController extends ChangeNotifier {
   void keyEvent(bool down, int keyCode, int modifiers, int codePoint, bool repeat) =>
       _ifAttached((v) => _bindings.keyEvent(v, down ? 1 : 0, keyCode, modifiers, codePoint, repeat ? 1 : 0));
 
+  /// Types [text] from an on-screen keyboard, first replacing [replaceLength] UTF-16 units that start [replaceStart]
+  /// units from the caret (negative: before it).
+  void commitText(String text, {int replaceStart = 0, int replaceLength = 0}) {
+    final commit = _bindings.imeCommit;
+    if (commit == null) return;
+    _ifAttached((v) => _withString(text, (s) => commit(v, s, replaceStart, replaceLength)));
+  }
+
   void _ifAttached(void Function(ViewPtr) action) {
     if (_view != nullptr) action(_view);
   }
@@ -182,6 +195,17 @@ class WebbyController extends ChangeNotifier {
       if (prompt != _webauthnPromptJson) {
         _webauthnPromptJson = prompt;
         webauthnPrompt = prompt.isEmpty ? null : jsonDecode(prompt) as Map<String, Object?>;
+      }
+      final imeState = _bindings.imeState;
+      if (imeState != null) {
+        final json = imeState(_view).toDartString();
+        if (json != _textFieldJson) {
+          _textFieldJson = json;
+          final state = jsonDecode(json) as Map<String, Object?>;
+          textField = state['enabled'] == true
+              ? PageTextField(before: state['before'] as String? ?? '', after: state['after'] as String? ?? '')
+              : null;
+        }
       }
       notifyListeners();
     }
@@ -252,6 +276,13 @@ class WebbyController extends ChangeNotifier {
   }
 }
 
+/// The text around the caret in the page's focused text field.
+class PageTextField {
+  const PageTextField({required this.before, required this.after});
+  final String before;
+  final String after;
+}
+
 /// Mouse button bits as Ladybird defines them (Web::UIEvents::MouseButton).
 int _ladybirdButtons(int flutterButtons) {
   var result = 0;
@@ -303,7 +334,7 @@ class WebbyView extends StatefulWidget {
   State<WebbyView> createState() => _WebbyViewState();
 }
 
-class _WebbyViewState extends State<WebbyView> {
+class _WebbyViewState extends State<WebbyView> with TextInputClient {
   late final FocusNode _focusNode = widget.focusNode ?? FocusNode(debugLabel: 'WebbyView');
   late ContextMenuAgent _contextMenu;
   Size? _lastSize;
@@ -323,6 +354,21 @@ class _WebbyViewState extends State<WebbyView> {
   VoidCallback? _toggleMenu;
   bool _menuOpen = false;
 
+  // Touch: a tap clicks, a drag scrolls the page (and flings it on release).
+  int? _touchPointer;
+  Offset _touchStart = Offset.zero;
+  Offset _touchLast = Offset.zero;
+  bool _touchScrolling = false;
+  VelocityTracker? _touchVelocity;
+  Timer? _fling;
+
+  // On-screen keyboard: connected while a text field in the page has focus.
+  static final bool _softKeyboard = Platform.isAndroid || Platform.isIOS;
+  TextInputConnection? _input;
+  TextEditingValue _inputValue = TextEditingValue.empty;
+  DateTime _lastInputEdit = DateTime.fromMillisecondsSinceEpoch(0);
+
+
   double get _ratio => MediaQuery.devicePixelRatioOf(context);
   Offset _toDevice(Offset local) => local * _ratio;
 
@@ -332,6 +378,10 @@ class _WebbyViewState extends State<WebbyView> {
   void initState() {
     super.initState();
     _contextMenu = ContextMenuAgent(widget.controller, onRequest: _onContextMenuRequest);
+    if (_softKeyboard) {
+      widget.controller.addListener(_syncTextInput);
+      _focusNode.addListener(_syncTextInput);
+    }
   }
 
   @override
@@ -359,6 +409,10 @@ class _WebbyViewState extends State<WebbyView> {
 
   void _onPointerDown(PointerDownEvent event) {
     _focusNode.requestFocus();
+    if (event.kind == PointerDeviceKind.touch) {
+      _touchDown(event);
+      return;
+    }
     final isRepeat = event.timeStamp - _lastDownTime < const Duration(milliseconds: 500) &&
         (event.localPosition - _lastDownPosition).distance < 5;
     _clickCount = isRepeat ? _clickCount + 1 : 1;
@@ -419,6 +473,10 @@ class _WebbyViewState extends State<WebbyView> {
   }
 
   void _onPointerUp(PointerUpEvent event) {
+    if (event.kind == PointerDeviceKind.touch) {
+      _touchUp(event);
+      return;
+    }
     // Flutter reports the buttons still held; the released one is what was down before.
     final released = _lastButtons & ~_ladybirdButtons(event.buttons);
     _lastButtons = _ladybirdButtons(event.buttons);
@@ -430,10 +488,160 @@ class _WebbyViewState extends State<WebbyView> {
   }
 
   void _onPointerMove(PointerEvent event) {
+    if (event.kind == PointerDeviceKind.touch) {
+      if (event is PointerMoveEvent) _touchMove(event);
+      return;
+    }
     _lastButtons = _ladybirdButtons(event.buttons);
     widget.controller.mouseEvent(2, _toDevice(event.localPosition),
         buttons: _lastButtons, modifiers: _modifiers);
   }
+
+  void _touchDown(PointerDownEvent event) {
+    // One finger at a time; pinch zoom isn't supported.
+    if (_touchPointer != null) return;
+    _stopFling();
+    _touchPointer = event.pointer;
+    _touchStart = _touchLast = event.localPosition;
+    _touchScrolling = false;
+    _touchVelocity = VelocityTracker.withKind(PointerDeviceKind.touch)..addPosition(event.timeStamp, event.localPosition);
+  }
+
+  void _touchMove(PointerMoveEvent event) {
+    if (event.pointer != _touchPointer) return;
+    _touchVelocity?.addPosition(event.timeStamp, event.localPosition);
+    if (!_touchScrolling && (event.localPosition - _touchStart).distance < kTouchSlop) return;
+    _touchScrolling = true;
+    _scrollBy(event.localPosition, _touchLast - event.localPosition);
+    _touchLast = event.localPosition;
+  }
+
+  void _touchUp(PointerUpEvent event) {
+    if (event.pointer != _touchPointer) return;
+    _touchPointer = null;
+    if (_touchScrolling) {
+      _startFling(event.localPosition, _touchVelocity?.getVelocity().pixelsPerSecond ?? Offset.zero);
+      return;
+    }
+    // A tap: click where the finger went down.
+    final position = _toDevice(_touchStart);
+    final controller = widget.controller;
+    controller.mouseEvent(2, position);
+    controller.mouseEvent(0, position, button: 1, buttons: 1, clickCount: 1);
+    controller.mouseEvent(1, position, button: 1, clickCount: 1);
+    // Tapping a field that already has focus brings back a keyboard the user dismissed.
+    _input?.show();
+  }
+
+  void _onPointerCancel(PointerCancelEvent event) {
+    if (event.pointer == _touchPointer) _touchPointer = null;
+  }
+
+  /// Scrolls by [delta] logical pixels, as a trackpad would.
+  void _scrollBy(Offset position, Offset delta) =>
+      widget.controller.wheelEvent(_toDevice(position), _toDevice(delta), precise: true);
+
+  void _startFling(Offset position, Offset velocity) {
+    if (velocity.distance < 200) return;
+    // The page moves with the finger, so it scrolls against the finger's direction.
+    var speed = -velocity;
+    _fling = Timer.periodic(const Duration(milliseconds: 16), (timer) {
+      speed *= 0.95;
+      if (speed.distance < 60) {
+        _stopFling();
+        return;
+      }
+      _scrollBy(position, speed * 0.016);
+    });
+  }
+
+  void _stopFling() {
+    _fling?.cancel();
+    _fling = null;
+  }
+
+  /// Opens the on-screen keyboard while the page has a text field focused, and closes it otherwise.
+  void _syncTextInput() {
+    final field = _focusNode.hasFocus ? widget.controller.textField : null;
+    if (field == null) {
+      _input?.close();
+      _input = null;
+      return;
+    }
+    final value = TextEditingValue(
+        text: field.before + field.after, selection: TextSelection.collapsed(offset: field.before.length));
+    final input = _input;
+    if (input == null || !input.attached) {
+      _inputValue = value;
+      _input = TextInput.attach(this, const TextInputConfiguration(inputAction: TextInputAction.go, autocorrect: false))
+        ..setEditingState(value)
+        ..show();
+      return;
+    }
+    // The page changed the field by itself (a script, or another field took focus). While the user types, the page
+    // lags behind the keyboard, so only catch up once typing pauses.
+    if (value.text != _inputValue.text && DateTime.now().difference(_lastInputEdit) > const Duration(milliseconds: 500)) {
+      _inputValue = value;
+      input.setEditingState(value);
+    }
+  }
+
+  void _pressKey(int keyCode, int codePoint) {
+    widget.controller.keyEvent(true, keyCode, 0, codePoint, false);
+    widget.controller.keyEvent(false, keyCode, 0, 0, false);
+  }
+
+  @override
+  TextEditingValue? get currentTextEditingValue => _inputValue;
+
+  @override
+  AutofillScope? get currentAutofillScope => null;
+
+  @override
+  void updateEditingValue(TextEditingValue value) {
+    final old = _inputValue;
+    _inputValue = value;
+    if (value.text == old.text) return;
+    _lastInputEdit = DateTime.now();
+
+    // The keyboard sends whole values; find the span that changed (longest common prefix and suffix).
+    final before = old.text, after = value.text;
+    final shorter = before.length < after.length ? before.length : after.length;
+    var start = 0;
+    while (start < shorter && before.codeUnitAt(start) == after.codeUnitAt(start)) {
+      start++;
+    }
+    var oldEnd = before.length, newEnd = after.length;
+    while (oldEnd > start && newEnd > start && before.codeUnitAt(oldEnd - 1) == after.codeUnitAt(newEnd - 1)) {
+      oldEnd--;
+      newEnd--;
+    }
+    final caret = old.selection.isValid ? old.selection.extentOffset : before.length;
+    final inserted = after.substring(start, newEnd);
+    if (inserted.isEmpty && oldEnd == caret) {
+      // Deleting just before the caret: Backspace works in every kind of field.
+      for (var i = before.substring(start, oldEnd).characters.length; i > 0; i--) {
+        _pressKey(0x08, 0);
+      }
+      return;
+    }
+    widget.controller.commitText(inserted, replaceStart: start - caret, replaceLength: oldEnd - start);
+  }
+
+  @override
+  void performAction(TextInputAction action) => _pressKey(0x0D, 0x0A);
+
+  @override
+  void performPrivateCommand(String action, Map<String, dynamic> data) {}
+
+  @override
+  void updateFloatingCursor(RawFloatingCursorPoint point) {}
+
+  @override
+  void showAutocorrectionPromptRect(int start, int end) {}
+
+  @override
+  void connectionClosed() => _input = null;
 
   void _onPointerSignal(PointerSignalEvent event) {
     if (event is PointerScrollEvent) {
@@ -460,6 +668,12 @@ class _WebbyViewState extends State<WebbyView> {
   void dispose() {
     _cancelContextMenu();
     _contextMenu.dispose();
+    _stopFling();
+    if (_softKeyboard) {
+      widget.controller.removeListener(_syncTextInput);
+      _focusNode.removeListener(_syncTextInput);
+    }
+    _input?.close();
     if (widget.focusNode == null) _focusNode.dispose();
     super.dispose();
   }
@@ -507,6 +721,7 @@ class _WebbyViewState extends State<WebbyView> {
               onPointerUp: _onPointerUp,
               onPointerMove: _onPointerMove,
               onPointerHover: _onPointerMove,
+              onPointerCancel: _onPointerCancel,
               onPointerSignal: _onPointerSignal,
               onPointerPanZoomUpdate: _onPanZoomUpdate,
               child: ColoredBox(

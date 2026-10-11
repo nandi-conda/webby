@@ -5,11 +5,21 @@ import 'dart:io';
 
 import 'package:ffi/ffi.dart';
 
+import 'android.dart';
+
 typedef ViewPtr = Pointer<Void>;
 
 class WebbyBindings {
   WebbyBindings._(this.prefix, DynamicLibrary lib)
-      : init = lib.lookupFunction<Int32 Function(Pointer<Utf8>), int Function(Pointer<Utf8>)>('webby_init'),
+      : library = lib,
+        imeState = lib.providesSymbol('webby_view_ime_state')
+            ? lib.lookupFunction<Pointer<Utf8> Function(ViewPtr), Pointer<Utf8> Function(ViewPtr)>('webby_view_ime_state')
+            : null,
+        imeCommit = lib.providesSymbol('webby_view_ime_commit')
+            ? lib.lookupFunction<Void Function(ViewPtr, Pointer<Utf8>, Int32, Int32),
+                void Function(ViewPtr, Pointer<Utf8>, int, int)>('webby_view_ime_commit')
+            : null,
+        init = lib.lookupFunction<Int32 Function(Pointer<Utf8>), int Function(Pointer<Utf8>)>('webby_init'),
         pump = lib.lookupFunction<Int32 Function(), int Function()>('webby_pump'),
         viewCreate = lib.lookupFunction<ViewPtr Function(Int32, Int32, Double), ViewPtr Function(int, int, double)>(
             'webby_view_create'),
@@ -53,6 +63,13 @@ class WebbyBindings {
   /// The Ladybird prefix (contains bin/, lib/, libexec/, share/Lagom).
   final String prefix;
 
+  /// libwebby.so itself, for bindings that are looked up separately.
+  final DynamicLibrary library;
+
+  /// On-screen keyboard support (see webby_view_ime_state in webby_ffi.h); null with a runtime that predates it.
+  final Pointer<Utf8> Function(ViewPtr)? imeState;
+  final void Function(ViewPtr, Pointer<Utf8>, int, int)? imeCommit;
+
   final int Function(Pointer<Utf8>) init;
   final int Function() pump;
   final ViewPtr Function(int, int, double) viewCreate;
@@ -87,9 +104,16 @@ class WebbyBindings {
 
   /// Finds the Ladybird prefix, loads libwebby.so and starts Ladybird.
   ///
-  /// Search order: $WEBBY_LADYBIRD_PREFIX, then `<executable dir>/lib/ladybird` (a bundled runtime).
+  /// Search order: $WEBBY_LADYBIRD_PREFIX, then `<executable dir>/lib/ladybird` (a bundled runtime). On Android the
+  /// prefix is the one [AndroidHost.prepare] set up, and libwebby.so comes with the app's native libraries.
   static WebbyBindings open() {
     if (_instance != null) return _instance!;
+
+    if (Platform.isAndroid) {
+      final prefix = AndroidHost.ladybirdPrefix;
+      if (prefix == null) throw StateError('Could not set up Ladybird: ${AndroidHost.prepareError}');
+      return _instance = _start(prefix, DynamicLibrary.open('libwebby.so'));
+    }
 
     final candidates = <String>[
       if (Platform.environment['WEBBY_LADYBIRD_PREFIX'] case final env? when env.isNotEmpty) env,
@@ -103,16 +127,20 @@ class WebbyBindings {
         tried.add(libraryPath);
         continue;
       }
-      final bindings = WebbyBindings._(prefix, DynamicLibrary.open(libraryPath));
-      final prefixUtf8 = prefix.toNativeUtf8();
-      final result = bindings.init(prefixUtf8);
-      malloc.free(prefixUtf8);
-      if (result != 0) {
-        throw StateError('webby_init failed ($result) for Ladybird prefix $prefix');
-      }
-      return _instance = bindings;
+      return _instance = _start(prefix, DynamicLibrary.open(libraryPath));
     }
     throw StateError('libwebby.so not found. Set WEBBY_LADYBIRD_PREFIX to the Ladybird build prefix.\n'
         'Tried:\n  ${tried.join('\n  ')}');
+  }
+
+  static WebbyBindings _start(String prefix, DynamicLibrary library) {
+    final bindings = WebbyBindings._(prefix, library);
+    final prefixUtf8 = prefix.toNativeUtf8();
+    final result = bindings.init(prefixUtf8);
+    malloc.free(prefixUtf8);
+    if (result != 0) {
+      throw StateError('webby_init failed ($result) for Ladybird prefix $prefix');
+    }
+    return bindings;
   }
 }

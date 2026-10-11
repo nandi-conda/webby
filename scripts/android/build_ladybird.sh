@@ -27,11 +27,9 @@ export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
 export RUSTUP_HOME="$TOOLS/rustup" CARGO_HOME="$TOOLS/cargo"
 export PATH="$CARGO_HOME/bin:$PATH"
 
-# Host compilers: vcpkg builds a few host tools (ICU's data packager...) for the build machine itself.
-export CC="${CC:-clang}" CXX="${CXX:-clang++}"
-
-# Same checkout, patches and vcpkg tool as the Linux build.
-WEBBY_PREPARE_ONLY=1 "$ROOT/scripts/build_ladybird.sh"
+# Same checkout, patches and vcpkg tool as the Linux build. CC/CXX only go to that step: exported, they'd override
+# the NDK compilers in vcpkg's autotools ports.
+CC="${HOST_CC:-clang}" CXX="${HOST_CXX:-clang++}" WEBBY_PREPARE_ONLY=1 "$ROOT/scripts/build_ladybird.sh"
 export VCPKG_ROOT="$LADYBIRD_DIR/Build/vcpkg-release"
 
 BUILD_DIR="$LADYBIRD_DIR/Build/android-$ANDROID_ABI"

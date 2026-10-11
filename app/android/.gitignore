@@ -1,0 +1,20 @@
+gradle-wrapper.jar
+/.gradle
+/captures/
+/gradlew
+/gradlew.bat
+/local.properties
+GeneratedPluginRegistrant.java
+.cxx/
+*.iml
+
+# Remember to never publicly share your keystore.
+# See https://flutter.dev/to/reference-keystore
+key.properties
+**/*.keystore
+**/*.jks
+
+# Filled in by scripts/android/build_apk.sh: the Ladybird build and the launcher icon rendered from icons/.
+/app/src/main/jniLibs/
+/app/src/main/assets/
+/app/src/main/res/mipmap-*/
