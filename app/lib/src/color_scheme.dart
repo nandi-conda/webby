@@ -38,7 +38,7 @@ class PageColorScheme {
   static void Function(ViewPtr, int)? _lookup(WebbyBindings bindings) {
     if (_looked) return _set;
     _looked = true;
-    final lib = DynamicLibrary.open('${bindings.prefix}/lib/libwebby.so');
+    final lib = bindings.library;
     if (!lib.providesSymbol('webby_view_set_color_scheme')) return null;
     return _set = lib.lookupFunction<Void Function(ViewPtr, Int32), void Function(ViewPtr, int)>(
       'webby_view_set_color_scheme',

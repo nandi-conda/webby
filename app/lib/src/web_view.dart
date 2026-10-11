@@ -41,7 +41,8 @@ class WebbyController extends ChangeNotifier {
 
   void _start(bool? useTexture) {
     _bindings = WebbyBindings.open();
-    _useTexture = useTexture ?? Platform.environment['WEBBY_TEXTURE'] != '0';
+    // The texture plugin is Linux-only; Android shows frames as images.
+    _useTexture = useTexture ?? (!Platform.isAndroid && Platform.environment['WEBBY_TEXTURE'] != '0');
     if (_useTexture) _createTexture();
     // Pump Ladybird's event loop from the Dart thread; all FFI calls stay on this thread.
     _pumpTimer = Timer.periodic(const Duration(milliseconds: 4), (_) => _pump());
@@ -227,7 +228,7 @@ class WebbyController extends ChangeNotifier {
     if (!_visibleLooked) {
       _visibleLooked = true;
       // Runtimes older than webby_view_set_visible keep hidden pages rendering; frames are still not copied out.
-      final lib = DynamicLibrary.open('${_bindings.prefix}/lib/libwebby.so');
+      final lib = _bindings.library;
       if (lib.providesSymbol('webby_view_set_visible')) {
         _setVisible = lib.lookupFunction<Void Function(ViewPtr, Int32), void Function(ViewPtr, int)>(
           'webby_view_set_visible',

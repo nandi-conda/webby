@@ -25,7 +25,7 @@ class ClipboardBridge {
 
   /// The bridge for the libwebby.so that [bindings] loaded.
   static ClipboardBridge of(WebbyBindings bindings) =>
-      _instance ??= ClipboardBridge._(DynamicLibrary.open('${bindings.prefix}/lib/libwebby.so'));
+      _instance ??= ClipboardBridge._(bindings.library);
 
   final int Function()? _serial;
   final Pointer<Utf8> Function()? _text;

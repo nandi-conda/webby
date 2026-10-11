@@ -21,7 +21,7 @@ class OfflineMonitor extends ChangeNotifier {
   /// Starts the monitor once; null when the runtime is too old to have `webby_set_offline`.
   static OfflineMonitor? start(WebbyBindings bindings, {Map<String, String>? environment}) {
     if (_instance != null) return _instance;
-    final lib = DynamicLibrary.open('${bindings.prefix}/lib/libwebby.so');
+    final lib = bindings.library;
     if (!lib.providesSymbol('webby_set_offline')) return null;
     final setOffline = lib.lookupFunction<Void Function(Int32), void Function(int)>('webby_set_offline');
     return _instance = OfflineMonitor._(setOffline, environment ?? Platform.environment).._run();
