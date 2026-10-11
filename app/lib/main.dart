@@ -435,6 +435,9 @@ class _BrowserPageState extends State<BrowserPage> {
       bindings: {for (final entry in _shortcuts.entries) entry.key: () => _runShortcut(entry.value)},
       child: Material(
         color: c.background,
+        // Make room for the on-screen keyboard so it doesn't cover the page (SafeArea only covers system bars).
+        child: Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
         child: SafeArea(
           child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -574,6 +577,7 @@ class _BrowserPageState extends State<BrowserPage> {
               ),
             ),
           ],
+        ),
         ),
         ),
       ),

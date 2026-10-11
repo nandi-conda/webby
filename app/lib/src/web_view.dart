@@ -562,6 +562,8 @@ class _WebbyViewState extends State<WebbyView> with TextInputClient {
   TextInputConnection? _input;
   TextEditingValue _inputValue = TextEditingValue.empty;
   DateTime _lastInputEdit = DateTime.fromMillisecondsSinceEpoch(0);
+  // Brings the focused field back into view once the keyboard has finished shrinking the page.
+  Timer? _revealField;
 
 
   double get _ratio => MediaQuery.devicePixelRatioOf(context);
@@ -592,6 +594,7 @@ class _WebbyViewState extends State<WebbyView> with TextInputClient {
   void _syncViewport(Size size) {
     final ratio = _ratio;
     if (size == _lastSize && ratio == _lastRatio) return;
+    final shrank = _lastSize != null && size.height < _lastSize!.height;
     _lastSize = size;
     _lastRatio = ratio;
     final width = (size.width * ratio).round();
@@ -600,6 +603,17 @@ class _WebbyViewState extends State<WebbyView> with TextInputClient {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) widget.controller.setViewport(width, height, ratio);
     });
+    // The keyboard opening shrinks the page, which can leave the field being typed in below the new bottom edge.
+    // Ladybird doesn't scroll it back into view by itself.
+    if (_softKeyboard && shrank && widget.controller.textField != null) {
+      _revealField?.cancel();
+      _revealField = Timer(const Duration(milliseconds: 150), () {
+        if (mounted && widget.controller.textField != null) {
+          widget.controller.runJavaScript(
+              "document.activeElement && document.activeElement.scrollIntoView({block: 'nearest', inline: 'nearest'})");
+        }
+      });
+    }
   }
 
   void _onPointerDown(PointerDownEvent event) {
@@ -864,6 +878,7 @@ class _WebbyViewState extends State<WebbyView> with TextInputClient {
     _cancelContextMenu();
     _contextMenu.dispose();
     _stopFling();
+    _revealField?.cancel();
     if (_softKeyboard) {
       widget.controller.removeListener(_syncTextInput);
       _focusNode.removeListener(_syncTextInput);
