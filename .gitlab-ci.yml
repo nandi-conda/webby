@@ -2,8 +2,9 @@
 # Needs a runner with internet access (Flutter fetches pub packages) and the masked CI variable PREFIX_API_KEY,
 # a prefix.dev API key with upload rights to the channel.
 #
-# - webby (the app) is rebuilt on every push to main; its version is the commit date and its build number the
-#   pipeline number, so every publish is new.
+# - webby (the app) is rebuilt on every push to main; its version is the commit date plus the pipeline number
+#   (e.g. 2026.10.11.10), so every publish is a newer version and `pixi global update webby` picks it up.
+#   (Bumping only the build number isn't enough: pixi global update reports the same version as unchanged.)
 # - webby-ladybird only repackages the prebuilt Ladybird tarball named in its recipe, so it's republished when
 #   conda/webby-ladybird/ changes (bump the recipe's version/sha256 or build number after uploading a new prebuilt).
 #   Rebuilding Ladybird itself (LADYBIRD_COMMIT, native/, scripts/build_ladybird.sh) still happens on the Fly build machine.
@@ -45,7 +46,7 @@ webby:
       optional: true
   resource_group: publish-webby
   script:
-    - export WEBBY_VERSION="$(echo "$CI_COMMIT_TIMESTAMP" | cut -c1-10 | tr - .)"
+    - export WEBBY_VERSION="$(echo "$CI_COMMIT_TIMESTAMP" | cut -c1-10 | tr - .).$CI_PIPELINE_IID"
     - export WEBBY_BUILD_NUMBER="$CI_PIPELINE_IID"
     - echo "publishing webby $WEBBY_VERSION build $WEBBY_BUILD_NUMBER"
     - scripts/publish_conda.sh webby
