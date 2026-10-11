@@ -123,3 +123,11 @@ plaintext `${XDG_DATA_HOME:-~/.local/share}/webby/passkeys.json` (or `WEBBY_PASS
 and deleted; on a runtime without vault support passkeys stay in that file. Every ceremony is confirmed in a Flutter
 dialog. The keys are not hardware-backed, the dialog click is the only user verification even though the
 authenticator reports UV, and conditional (autofill) mediation is not supported yet.
+
+Bookmarks: the star in the address bar or Ctrl+D bookmarks the page (onto the bookmarks bar, with a dialog to rename
+it or pick a folder); on a bookmarked page it edits or removes the bookmark. The bar under the toolbar opens links and
+folder menus, right-click edits or deletes, and Ctrl+Shift+B shows or hides it. The bookmark manager (Ctrl+Shift+O, or
+the bookmarks menu next to the key button) has a folder tree, search, edit/move/delete, drag to reorder, new folders,
+and import/export of the `bookmarks.html` format other browsers use. They are stored per profile in
+`${XDG_DATA_HOME:-~/.local/share}/webby/profiles/<profile>/bookmarks.json` (or `WEBBY_BOOKMARKS_FILE`); the code is in
+`app/lib/src/bookmarks/`, tests in `app/test/` (`flutter test`).

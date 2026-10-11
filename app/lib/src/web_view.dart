@@ -271,10 +271,13 @@ const _cursors = <int, MouseCursor>{
 
 /// Shows a [WebbyController]'s page and forwards pointer and keyboard input to it.
 class WebbyView extends StatefulWidget {
-  const WebbyView({super.key, required this.controller, this.focusNode});
+  const WebbyView({super.key, required this.controller, this.focusNode, this.isBrowserShortcut});
 
   final WebbyController controller;
   final FocusNode? focusNode;
+
+  /// Keys the browser keeps for itself (Ctrl+D...): they aren't sent to the page and bubble up to the app's shortcuts.
+  final bool Function(KeyEvent event)? isBrowserShortcut;
 
   @override
   State<WebbyView> createState() => _WebbyViewState();
@@ -351,6 +354,7 @@ class _WebbyViewState extends State<WebbyView> {
   }
 
   KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
+    if (widget.isBrowserShortcut?.call(event) ?? false) return KeyEventResult.ignored;
     final mapped = ladybirdKeyFor(event);
     if (mapped == null) return KeyEventResult.ignored;
     widget.controller.keyEvent(
