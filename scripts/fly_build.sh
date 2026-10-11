@@ -16,7 +16,7 @@ export RUSTUP_HOME=/build/rustup CARGO_HOME=/build/cargo
 export PATH="/build/cargo/bin:$PATH"
 
 cd /build
-if [ -d webby/.git ]; then git -C webby pull -q --ff-only; else git clone -q https://gitlab.latha.org/nandi/webby.git; fi
+if [ -d webby/.git ]; then git -C webby pull -q --ff-only; else git clone -q https://github.com/nandi-conda/webby.git; fi
 export LADYBIRD_DIR=/build/ladybird CC=clang CXX=clang++ LINKER=lld
 export CCACHE_DIR=/build/ccache CCACHE_MAXSIZE=30G
 if webby/scripts/build_ladybird.sh; then

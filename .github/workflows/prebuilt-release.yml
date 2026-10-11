@@ -1,0 +1,43 @@
+# Publishes a prebuilt Ladybird runtime tarball (webby-prebuilt-linux-x64.tar.zst, made by scripts/build_ladybird.sh
+# on the build machine) as the GitHub Release `webby-prebuilt-<version>`, which conda/webby-ladybird downloads.
+# Give it any URL the tarball can be fetched from (e.g. a temporary upload) and its sha256; the asset is verified first.
+# Alternatively upload from the build machine directly:
+#   gh release create webby-prebuilt-<version> webby-prebuilt-linux-x64.tar.zst{,.sha256} -R nandi-conda/webby
+name: prebuilt-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Prebuilt version (e.g. 2026.10.11.2), matches conda/webby-ladybird's version
+        required: true
+      url:
+        description: URL to fetch webby-prebuilt-linux-x64.tar.zst from
+        required: true
+      sha256:
+        description: Expected sha256 of the tarball
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch and verify
+        env:
+          URL: ${{ inputs.url }}
+          SHA256: ${{ inputs.sha256 }}
+        run: |
+          curl -fsSL --retry 5 -o webby-prebuilt-linux-x64.tar.zst "$URL"
+          echo "$SHA256  webby-prebuilt-linux-x64.tar.zst" | tee webby-prebuilt-linux-x64.tar.zst.sha256 | sha256sum -c -
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh release create "webby-prebuilt-$VERSION" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "webby-prebuilt $VERSION" \
+            --notes "Prebuilt Ladybird runtime (libwebby.so, helper processes, share/Lagom) for linux-x64; packaged as webby-ladybird $VERSION." \
+            webby-prebuilt-linux-x64.tar.zst webby-prebuilt-linux-x64.tar.zst.sha256

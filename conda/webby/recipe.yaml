@@ -2,7 +2,7 @@
 # The Ladybird engine comes from the webby-ladybird package; the launcher points the app at it.
 # Install: pixi global install -c https://prefix.dev/nandi-testing -c conda-forge webby
 # Build + upload: scripts/publish_conda.sh webby (needs PREFIX_API_KEY; downloads the Flutter SDK while building).
-# CI sets WEBBY_VERSION (commit date + pipeline number) and WEBBY_BUILD_NUMBER (pipeline number); see .gitlab-ci.yml.
+# CI sets WEBBY_VERSION (commit date + run number) and WEBBY_BUILD_NUMBER (run number); see .github/workflows/publish.yml.
 context:
   version: ${{ env.get("WEBBY_VERSION", default="2026.10.11") }}
   flutter_version: "3.35.5"
@@ -88,6 +88,6 @@ tests:
         - share/icons/hicolor/512x512/apps/dev.webby.webby.png
 
 about:
-  homepage: https://gitlab.latha.org/nandi/webby
+  homepage: https://github.com/nandi-conda/webby
   summary: A web browser with a Flutter UI on Ladybird's LibWeb and LibJS
   license: BSD-2-Clause

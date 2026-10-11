@@ -17,7 +17,7 @@ source $HOME/.cargo/env
   && /opt/flutter/bin/flutter precache --linux ) > /build/logs/flutter.log 2>&1 &
 echo SETUP_DONE
 mkdir -p /work && cd /work
-git clone -q https://gitlab.latha.org/nandi/webby.git
+git clone -q https://github.com/nandi-conda/webby.git
 git clone -q https://github.com/LadybirdBrowser/ladybird.git
 export LADYBIRD_DIR=/work/ladybird CC=clang-20 CXX=clang++-20
 export VCPKG_BINARY_SOURCES="clear;files,/build/vcpkg-binary-cache,readwrite"

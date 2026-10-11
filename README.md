@@ -68,6 +68,8 @@ webby https://example.com
 | `scripts/build_ladybird.sh` | Clones Ladybird, applies the patches, links `native/` in, builds `libwebby.so` and the helper processes |
 | `scripts/run_app.sh` | Runs the app against a Ladybird build |
 | `scripts/fly_build.sh`, `scripts/modal_build.sh` | The source build on a remote build machine |
+| `.github/workflows/publish.yml` | CI: on every push to `main`, publishes `webby` (and `webby-ladybird` when its recipe changes) to prefix.dev |
+| `.github/workflows/prebuilt-release.yml` | Publishes a prebuilt Ladybird tarball as the `webby-prebuilt-<version>` GitHub Release that `webby-ladybird` packages |
 
 ## Building Ladybird from source (advanced)
 
