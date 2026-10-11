@@ -1,5 +1,7 @@
+import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart';
 
+import 'ui.dart';
 import 'web_view.dart';
 
 /// Asks the user to approve a page's passkey request (see `webby_view_webauthn_prompt` in webby_ffi.h) and sends the
@@ -16,79 +18,72 @@ Future<void> showPasskeyDialog(BuildContext context, WebbyController controller,
   final rpId = prompt['rpId'] as String? ?? '';
   final isCreate = prompt['type'] == 'create';
 
-  await showDialog<void>(
-    context: context,
-    builder: (dialogContext) {
-      final theme = Theme.of(dialogContext);
-      if (isCreate) {
-        final userName = prompt['userName'] as String? ?? '';
-        final displayName = prompt['userDisplayName'] as String? ?? '';
-        final account = displayName.isNotEmpty && displayName != userName ? '$displayName ($userName)' : userName;
-        if (prompt['alreadyRegistered'] == true) {
-          return AlertDialog(
-            icon: const Icon(Icons.key),
-            title: const Text('Passkey already saved'),
-            content: Text('This browser already has a passkey for your account on $rpId.'),
-            actions: [
-              TextButton(onPressed: () => answer(dialogContext, accepted: false), child: const Text('Cancel')),
-              FilledButton(onPressed: () => answer(dialogContext, accepted: true), child: const Text('OK')),
-            ],
-          );
-        }
-        return AlertDialog(
-          icon: const Icon(Icons.key),
-          title: const Text('Create a passkey?'),
-          content: Text.rich(TextSpan(children: [
-            const TextSpan(text: 'Save a passkey for '),
-            TextSpan(text: account.isEmpty ? 'your account' : account, style: const TextStyle(fontWeight: FontWeight.bold)),
-            const TextSpan(text: ' on '),
-            TextSpan(text: rpId, style: const TextStyle(fontWeight: FontWeight.bold)),
-            const TextSpan(text: '. It stays in this browser and signs you in without a password.'),
-          ])),
+  await showWebbyDialog<void>(context, (dialogContext) {
+    final bold = KitText.heading(dialogContext);
+    if (isCreate) {
+      final userName = prompt['userName'] as String? ?? '';
+      final displayName = prompt['userDisplayName'] as String? ?? '';
+      final account = displayName.isNotEmpty && displayName != userName ? '$displayName ($userName)' : userName;
+      if (prompt['alreadyRegistered'] == true) {
+        return KitDialog(
+          title: 'Passkey already saved',
+          content: Text('This browser already has a passkey for your account on $rpId.'),
           actions: [
-            TextButton(onPressed: () => answer(dialogContext, accepted: false), child: const Text('Cancel')),
-            FilledButton(onPressed: () => answer(dialogContext, accepted: true), child: const Text('Create')),
+            KitButton('Cancel', onPressed: () => answer(dialogContext, accepted: false)),
+            KitButton.primary('OK', autofocus: true, onPressed: () => answer(dialogContext, accepted: true)),
           ],
         );
       }
-
-      final accounts = (prompt['accounts'] as List<Object?>? ?? const []).cast<Map<String, Object?>>();
-      if (accounts.isEmpty) {
-        return AlertDialog(
-          icon: const Icon(Icons.key_off),
-          title: const Text('No passkeys'),
-          content: Text('This browser has no passkeys for $rpId.'),
-          actions: [
-            FilledButton(onPressed: () => answer(dialogContext, accepted: false), child: const Text('OK')),
-          ],
-        );
-      }
-      return AlertDialog(
-        icon: const Icon(Icons.key),
-        title: Text('Sign in to $rpId'),
-        content: SizedBox(
-          width: 360,
-          child: ListView(
-            shrinkWrap: true,
-            children: [
-              for (final (index, account) in accounts.indexed)
-                ListTile(
-                  leading: const Icon(Icons.account_circle),
-                  title: Text((account['userDisplayName'] as String?)?.isNotEmpty == true
-                      ? account['userDisplayName'] as String
-                      : account['userName'] as String? ?? ''),
-                  subtitle: Text(account['userName'] as String? ?? '', style: theme.textTheme.bodySmall),
-                  onTap: () => answer(dialogContext, accepted: true, accountIndex: index),
-                ),
-            ],
-          ),
-        ),
+      return KitDialog(
+        title: 'Create a passkey?',
+        content: Text.rich(TextSpan(children: [
+          const TextSpan(text: 'Save a passkey for '),
+          TextSpan(text: account.isEmpty ? 'your account' : account, style: bold),
+          const TextSpan(text: ' on '),
+          TextSpan(text: rpId, style: bold),
+          const TextSpan(text: '. It stays in this browser and signs you in without a password.'),
+        ])),
         actions: [
-          TextButton(onPressed: () => answer(dialogContext, accepted: false), child: const Text('Cancel')),
+          KitButton('Cancel', onPressed: () => answer(dialogContext, accepted: false)),
+          KitButton.primary('Create', autofocus: true, onPressed: () => answer(dialogContext, accepted: true)),
         ],
       );
-    },
-  );
+    }
+
+    final accounts = (prompt['accounts'] as List<Object?>? ?? const []).cast<Map<String, Object?>>();
+    if (accounts.isEmpty) {
+      return KitDialog(
+        title: 'No passkeys',
+        content: Text('This browser has no passkeys for $rpId.'),
+        actions: [
+          KitButton.primary('OK', autofocus: true, onPressed: () => answer(dialogContext, accepted: false)),
+        ],
+      );
+    }
+    return KitDialog(
+      title: 'Sign in to $rpId',
+      width: 360,
+      content: KitPanel(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final (index, account) in accounts.indexed)
+              KitTile(
+                icon: Icons.account_circle,
+                title: (account['userDisplayName'] as String?)?.isNotEmpty == true
+                    ? account['userDisplayName'] as String
+                    : account['userName'] as String? ?? '',
+                subtitle: Text(account['userName'] as String? ?? ''),
+                onTap: () => answer(dialogContext, accepted: true, accountIndex: index),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        KitButton('Cancel', onPressed: () => answer(dialogContext, accepted: false)),
+      ],
+    );
+  });
 
   // Dismissed with Escape or a click outside.
   if (!answered) controller.respondToWebAuthn(accepted: false);

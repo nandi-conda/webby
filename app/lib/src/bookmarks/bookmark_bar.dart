@@ -1,3 +1,4 @@
+import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart';
 
 import 'bookmark_dialog.dart';
@@ -17,28 +18,30 @@ class BookmarkBar extends StatelessWidget {
       listenable: bookmarks,
       builder: (context, _) {
         if (!bookmarks.showBar) return const SizedBox.shrink();
+        final c = KitTheme.of(context);
         final items = bookmarks.bar.children!;
-        return Material(
-          color: Theme.of(context).colorScheme.surfaceContainerLow,
-          child: SizedBox(
-            height: 32,
-            child: items.isEmpty
-                ? Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        'Bookmark pages with the star in the address bar or Ctrl+D; they show up here.',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ),
-                  )
-                : ListView(
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    children: [for (final node in items) _BarItem(node: node, store: bookmarks, onOpen: onOpen)],
-                  ),
+        return Container(
+          height: 30,
+          decoration: BoxDecoration(
+            color: c.surface,
+            border: Border(bottom: BorderSide(color: c.border)),
           ),
+          child: items.isEmpty
+              ? Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Bookmark pages with the star in the address bar or Ctrl+D; they show up here.',
+                      style: KitText.dim(context, small: true),
+                    ),
+                  ),
+                )
+              : ListView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  children: [for (final node in items) _BarItem(node: node, store: bookmarks, onOpen: onOpen)],
+                ),
         );
       },
     );
@@ -52,71 +55,69 @@ class _BarItem extends StatelessWidget {
   final BookmarkStore store;
   final void Function(String url) onOpen;
 
-  Future<void> _contextMenu(BuildContext context, Offset position) async {
-    final choice = await showMenu<String>(
-      context: context,
-      position: RelativeRect.fromLTRB(position.dx, position.dy, position.dx, position.dy),
-      items: const [
-        PopupMenuItem(value: 'edit', child: Text('Edit…')),
-        PopupMenuItem(value: 'delete', child: Text('Delete')),
-      ],
-    );
-    if (!context.mounted) return;
-    if (choice == 'edit') await editBookmark(context, node, store: store);
-    if (choice == 'delete') store.remove(node);
+  /// Links in [folder] and its subfolders, each subfolder's links labelled with its path.
+  List<KitMenuEntry> _folderEntries(Bookmark folder, [String path = '']) {
+    final entries = <KitMenuEntry>[];
+    for (final child in folder.children!) {
+      if (child.isFolder) {
+        final sub = _folderEntries(child, '$path${child.label} / ');
+        if (sub.isNotEmpty) {
+          if (entries.isNotEmpty) entries.add(const KitMenuDivider());
+          entries.addAll(sub);
+        }
+      } else {
+        entries.add(KitMenuItem('$path${child.label}', onSelected: () => onOpen(child.url!)));
+      }
+    }
+    return entries;
   }
 
   @override
   Widget build(BuildContext context) {
-    final label = Text(node.label, overflow: TextOverflow.ellipsis);
-    final Widget button;
-    if (node.isFolder) {
-      button = MenuAnchor(
-        menuChildren: _menuEntries(node),
-        builder: (context, menu, _) => TextButton.icon(
-          icon: const Icon(Icons.folder_outlined, size: 16),
-          label: label,
-          onPressed: () => menu.isOpen ? menu.close() : menu.open(),
-        ),
-      );
-    } else {
-      button = Tooltip(
-        message: '${node.label}\n${node.url}',
-        waitDuration: const Duration(milliseconds: 600),
-        child: TextButton.icon(
-          icon: const Icon(Icons.public, size: 16),
-          label: label,
-          onPressed: () => onOpen(node.url!),
-        ),
-      );
-    }
-    return GestureDetector(
-      onSecondaryTapDown: (details) => _contextMenu(context, details.globalPosition),
-      child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 200), child: button),
-    );
-  }
-
-  List<Widget> _menuEntries(Bookmark folder) {
-    if (folder.children!.isEmpty) {
-      return const [MenuItemButton(onPressed: null, child: Text('(empty)'))];
-    }
-    return [
-      for (final child in folder.children!)
-        if (child.isFolder)
-          SubmenuButton(
-            leadingIcon: const Icon(Icons.folder_outlined, size: 16),
-            menuChildren: _menuEntries(child),
-            child: Text(child.label),
-          )
-        else
-          MenuItemButton(
-            leadingIcon: const Icon(Icons.public, size: 16),
-            onPressed: () => onOpen(child.url!),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 360),
-              child: Text(child.label, overflow: TextOverflow.ellipsis),
+    final c = KitTheme.of(context);
+    // Right-click menu around the button; folders also open their own menu on a left click.
+    return KitMenu(
+      items: () => [
+        KitMenuItem('Edit…', onSelected: () => editBookmark(context, node, store: store)),
+        KitMenuItem('Delete', danger: true, onSelected: () => store.remove(node)),
+      ],
+      builder: (context, toggleContext, _) {
+        Widget chip(VoidCallback onPressed, {bool open = false}) => GestureDetector(
+          onSecondaryTap: toggleContext,
+          child: Pressable(
+            onPressed: onPressed,
+            builder: (context, s) => Container(
+              constraints: const BoxConstraints(maxWidth: 200),
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              decoration: BoxDecoration(
+                color: s.pressed || open ? c.pressed : (s.hovered ? c.hover : const Color(0x00000000)),
+                borderRadius: BorderRadius.circular(kitRadius),
+                border: s.focused ? Border.all(color: c.focus, width: 2) : null,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(node.isFolder ? Icons.folder_outlined : Icons.public, size: 14, color: c.textDim),
+                  const SizedBox(width: 6),
+                  Flexible(child: Text(node.label, maxLines: 1, overflow: TextOverflow.ellipsis)),
+                ],
+              ),
             ),
           ),
-    ];
+        );
+
+        if (!node.isFolder) {
+          return KitTooltip(message: '${node.label}\n${node.url}', child: chip(() => onOpen(node.url!)));
+        }
+        return KitMenu(
+          minWidth: 200,
+          items: () {
+            final entries = _folderEntries(node);
+            return entries.isEmpty ? [const KitMenuItem('(empty)', onSelected: null)] : entries;
+          },
+          builder: (context, toggle, open) => chip(toggle, open: open),
+        );
+      },
+    );
   }
 }

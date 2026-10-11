@@ -1,7 +1,9 @@
 import 'dart:io';
 
+import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart';
 
+import '../ui.dart';
 import 'bookmark_dialog.dart';
 import 'bookmark_html.dart';
 import 'bookmark_store.dart';
@@ -34,14 +36,14 @@ class _BookmarksPageState extends State<BookmarksPage> {
   Future<bool> _confirmDelete(Bookmark node) async {
     if (!node.isFolder || node.children!.isEmpty) return true;
     final count = node.descendants.where((n) => !n.isFolder).length;
-    return await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: Text('Delete "${node.label}"?'),
+    return await showWebbyDialog<bool>(
+          context,
+          (context) => KitDialog(
+            title: 'Delete "${node.label}"?',
             content: Text('The folder and the $count bookmark${count == 1 ? '' : 's'} in it will be deleted.'),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-              FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
+              KitButton('Cancel', onPressed: () => Navigator.pop(context, false)),
+              KitButton.danger('Delete', onPressed: () => Navigator.pop(context, true)),
             ],
           ),
         ) ??
@@ -56,22 +58,21 @@ class _BookmarksPageState extends State<BookmarksPage> {
 
   Future<String?> _askPath(String title, String action) async {
     final path = TextEditingController(text: '${Platform.environment['HOME'] ?? '.'}/bookmarks.html');
-    final result = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: SizedBox(
-          width: 420,
-          child: TextField(
+    final result = await showWebbyDialog<String>(
+      context,
+      (context) => KitDialog(
+        title: title,
+        content: LabeledField(
+          label: 'File (bookmarks.html)',
+          child: KitTextField(
             controller: path,
             autofocus: true,
-            decoration: const InputDecoration(labelText: 'File (bookmarks.html)'),
             onSubmitted: (value) => Navigator.pop(context, value),
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, path.text), child: Text(action)),
+          KitButton('Cancel', onPressed: () => Navigator.pop(context)),
+          KitButton.primary(action, onPressed: () => Navigator.pop(context, path.text)),
         ],
       ),
     );
@@ -81,7 +82,7 @@ class _BookmarksPageState extends State<BookmarksPage> {
     return trimmed.startsWith('~/') ? '${Platform.environment['HOME']}${trimmed.substring(1)}' : trimmed;
   }
 
-  void _say(String message) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  void _say(String message) => showKitToast(context, message, duration: const Duration(seconds: 4));
 
   Future<void> _import() async {
     final path = await _askPath('Import bookmarks', 'Import');
@@ -108,36 +109,42 @@ class _BookmarksPageState extends State<BookmarksPage> {
 
   Widget _folderTree() {
     return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 6),
       children: [
         for (final (folder, depth) in _store.folders)
-          ListTile(
-            dense: true,
+          KitListRow(
             selected: identical(folder, _folder) && _query.isEmpty,
-            contentPadding: EdgeInsets.only(left: 12.0 + 16 * depth, right: 8),
-            leading: Icon(
-              identical(folder, _store.bar)
-                  ? Icons.bookmarks_outlined
-                  : (identical(folder, _folder) ? Icons.folder_open : Icons.folder_outlined),
-              size: 20,
-            ),
-            title: Text(folder.label, overflow: TextOverflow.ellipsis),
+            padding: EdgeInsets.only(left: 12.0 + 16 * depth, right: 8),
             onTap: () => setState(() {
               _folder = folder;
               _search.clear();
             }),
+            child: Row(
+              children: [
+                Icon(
+                  identical(folder, _store.bar)
+                      ? Icons.bookmarks_outlined
+                      : (identical(folder, _folder) ? Icons.folder_open : Icons.folder_outlined),
+                  size: 16,
+                ),
+                const SizedBox(width: 8),
+                Expanded(child: Text(folder.label, maxLines: 1, overflow: TextOverflow.ellipsis)),
+              ],
+            ),
           ),
       ],
     );
   }
 
   Widget _tile(Bookmark node, {Key? key, int? index}) {
-    return ListTile(
+    final c = KitTheme.of(context);
+    return KitTile(
       key: key,
-      leading: Icon(node.isFolder ? Icons.folder_outlined : Icons.public),
-      title: Text(node.label, overflow: TextOverflow.ellipsis),
-      subtitle: node.isFolder
-          ? Text('${node.children!.length} item${node.children!.length == 1 ? '' : 's'}')
-          : Text(node.url!, overflow: TextOverflow.ellipsis),
+      icon: node.isFolder ? Icons.folder_outlined : Icons.public,
+      title: node.label,
+      subtitle: Text(
+        node.isFolder ? '${node.children!.length} item${node.children!.length == 1 ? '' : 's'}' : node.url!,
+      ),
       onTap: () {
         if (node.isFolder) {
           setState(() {
@@ -148,22 +155,25 @@ class _BookmarksPageState extends State<BookmarksPage> {
           Navigator.pop(context, node.url);
         }
       },
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          IconButton(
-            tooltip: 'Edit',
-            icon: const Icon(Icons.edit_outlined),
-            onPressed: () => editBookmark(context, node, store: _store),
-          ),
-          IconButton(tooltip: 'Delete', icon: const Icon(Icons.delete_outline), onPressed: () => _delete(node)),
-          if (index != null)
-            ReorderableDragStartListener(
-              index: index,
-              child: const Padding(padding: EdgeInsets.all(8), child: Icon(Icons.drag_handle)),
+      trailing: [
+        KitIconButton.compact(
+          Icons.edit_outlined,
+          tooltip: 'Edit',
+          onPressed: () => editBookmark(context, node, store: _store),
+        ),
+        KitIconButton.compact(Icons.delete_outline, tooltip: 'Delete', onPressed: () => _delete(node)),
+        if (index != null)
+          ReorderableDragStartListener(
+            index: index,
+            child: MouseRegion(
+              cursor: SystemMouseCursors.grab,
+              child: Padding(
+                padding: const EdgeInsets.all(5),
+                child: Icon(Icons.drag_handle, size: 14, color: c.textDim),
+              ),
             ),
-        ],
-      ),
+          ),
+      ],
     );
   }
 
@@ -173,7 +183,7 @@ class _BookmarksPageState extends State<BookmarksPage> {
       final matches = _store.all
           .where((n) => n.title.toLowerCase().contains(query) || (n.url?.toLowerCase().contains(query) ?? false))
           .toList();
-      if (matches.isEmpty) return const Center(child: Text('No bookmarks match.'));
+      if (matches.isEmpty) return Center(child: Text('No bookmarks match.', style: KitText.dim(context)));
       return ListView(children: [for (final node in matches) _tile(node)]);
     }
     final children = _folder.children!;
@@ -183,11 +193,14 @@ class _BookmarksPageState extends State<BookmarksPage> {
           identical(_folder, _store.bar)
               ? 'No bookmarks yet. Bookmark a page with the star in the address bar or Ctrl+D.'
               : 'This folder is empty.',
+          style: KitText.dim(context),
         ),
       );
     }
     return ReorderableListView(
       buildDefaultDragHandles: false,
+      // No lift shadow: the row moves as it is.
+      proxyDecorator: (child, index, animation) => child,
       onReorder: (oldIndex, newIndex) => _store.reorder(_folder, oldIndex, newIndex),
       children: [for (final (index, node) in children.indexed) _tile(node, key: ValueKey(node.id), index: index)],
     );
@@ -200,57 +213,49 @@ class _BookmarksPageState extends State<BookmarksPage> {
       builder: (context, _) {
         // The open folder may have been deleted from another screen.
         if (_store.find(_folder.id) == null) _folder = _store.bar;
-        return Scaffold(
-          appBar: AppBar(
-            title: const Text('Bookmarks'),
-            actions: [
-              SizedBox(
-                width: 280,
-                child: TextField(
-                  controller: _search,
-                  onChanged: (_) => setState(() {}),
-                  decoration: InputDecoration(
-                    isDense: true,
-                    filled: true,
-                    hintText: 'Search bookmarks',
-                    prefixIcon: const Icon(Icons.search, size: 18),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none),
-                  ),
+        final c = KitTheme.of(context);
+        return KitPage(
+          title: 'Bookmarks',
+          actions: [
+            SizedBox(
+              width: 260,
+              child: KitTextField(
+                controller: _search,
+                hint: 'Search bookmarks',
+                prefixIcon: Icons.search,
+                onChanged: (_) => setState(() {}),
+              ),
+            ),
+            KitButton(
+              'New folder',
+              icon: Icons.create_new_folder_outlined,
+              onPressed: () => newBookmarkFolder(context, _folder, store: _store),
+            ),
+            KitMenu(
+              minWidth: 220,
+              items: () => [
+                KitMenuItem('Import bookmarks.html…', onSelected: _import),
+                KitMenuItem('Export bookmarks.html…', onSelected: _export),
+                const KitMenuDivider(),
+                KitMenuItem(
+                  'Show bookmarks bar',
+                  checked: _store.showBar,
+                  onSelected: () => _store.showBar = !_store.showBar,
                 ),
-              ),
-              const SizedBox(width: 8),
-              IconButton(
-                tooltip: 'New folder',
-                icon: const Icon(Icons.create_new_folder_outlined),
-                onPressed: () => newBookmarkFolder(context, _folder, store: _store),
-              ),
-              PopupMenuButton<String>(
-                tooltip: 'More',
-                onSelected: (choice) {
-                  if (choice == 'import') _import();
-                  if (choice == 'export') _export();
-                  if (choice == 'bar') _store.showBar = !_store.showBar;
-                },
-                itemBuilder: (context) => [
-                  const PopupMenuItem(value: 'import', child: Text('Import bookmarks.html…')),
-                  const PopupMenuItem(value: 'export', child: Text('Export bookmarks.html…')),
-                  CheckedPopupMenuItem(value: 'bar', checked: _store.showBar, child: const Text('Show bookmarks bar')),
-                ],
-              ),
-              const SizedBox(width: 8),
-            ],
-          ),
+              ],
+              builder: (context, toggle, open) => KitIconButton(Icons.more_vert, tooltip: 'More', onPressed: toggle),
+            ),
+          ],
           body: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (_store.loadError != null)
-                MaterialBanner(content: Text(_store.loadError!), actions: [const SizedBox.shrink()]),
+              if (_store.loadError != null) KitBanner(message: _store.loadError!, danger: true),
               Expanded(
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    SizedBox(width: 240, child: _folderTree()),
-                    const VerticalDivider(width: 1),
+                    Container(width: 240, color: c.surface, child: _folderTree()),
+                    const KitVerticalDivider(),
                     Expanded(child: _contents()),
                   ],
                 ),

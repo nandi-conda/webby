@@ -1,5 +1,7 @@
+import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart';
 
+import '../ui.dart';
 import 'bookmark_store.dart';
 
 /// Bookmarks the page (or opens its existing bookmark) and shows the editor, as the star button and Ctrl+D do.
@@ -19,9 +21,9 @@ Future<void> bookmarkPage(
 /// Edits [node]'s name, address and folder, or removes it.
 Future<void> editBookmark(BuildContext context, Bookmark node, {BookmarkStore? store, bool justAdded = false}) async {
   final bookmarks = store ?? BookmarkStore.instance;
-  final result = await showDialog<_Edit>(
-    context: context,
-    builder: (context) => _BookmarkDialog(store: bookmarks, node: node, justAdded: justAdded),
+  final result = await showWebbyDialog<_Edit>(
+    context,
+    (context) => _BookmarkDialog(store: bookmarks, node: node, justAdded: justAdded),
   );
   if (result == null) return;
   if (result.remove) {
@@ -35,19 +37,21 @@ Future<void> editBookmark(BuildContext context, Bookmark node, {BookmarkStore? s
 Future<Bookmark?> newBookmarkFolder(BuildContext context, Bookmark parent, {BookmarkStore? store}) async {
   final bookmarks = store ?? BookmarkStore.instance;
   final name = TextEditingController(text: 'New folder');
-  final title = await showDialog<String>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: const Text('New folder'),
-      content: TextField(
-        controller: name,
-        autofocus: true,
-        decoration: const InputDecoration(labelText: 'Name'),
-        onSubmitted: (value) => Navigator.pop(context, value),
+  final title = await showWebbyDialog<String>(
+    context,
+    (context) => KitDialog(
+      title: 'New folder',
+      content: LabeledField(
+        label: 'Name',
+        child: KitTextField(
+          controller: name,
+          autofocus: true,
+          onSubmitted: (value) => Navigator.pop(context, value),
+        ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-        FilledButton(onPressed: () => Navigator.pop(context, name.text), child: const Text('Create')),
+        KitButton('Cancel', onPressed: () => Navigator.pop(context)),
+        KitButton.primary('Create', onPressed: () => Navigator.pop(context, name.text)),
       ],
     ),
   );
@@ -92,57 +96,56 @@ class _BookmarkDialogState extends State<_BookmarkDialog> {
     _Edit(title: _title.text.trim(), url: widget.node.isFolder ? null : _url.text.trim(), parent: _parent),
   );
 
+  /// "Bookmarks bar / Docs / Dart" for a folder nested that deep.
+  String _path(Bookmark folder) {
+    final names = <String>[];
+    for (Bookmark? node = folder; node != null; node = widget.store.parentOf(node)) {
+      names.insert(0, node.title);
+    }
+    return names.join(' / ');
+  }
+
   @override
   Widget build(BuildContext context) {
     final node = widget.node;
     // A folder can't go inside itself.
     final folders = widget.store.folders.where((f) => !node.isFolder || !node.descendants.contains(f.$1)).toList();
     final heading = node.isFolder ? 'Edit folder' : (widget.justAdded ? 'Bookmark added' : 'Edit bookmark');
-    return AlertDialog(
-      title: Text(heading),
-      content: SizedBox(
-        width: 420,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: _title,
-              autofocus: true,
-              decoration: const InputDecoration(labelText: 'Name'),
-              onSubmitted: (_) => _done(),
+    final parent = _parent;
+    return KitDialog(
+      title: heading,
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          LabeledField(
+            label: 'Name',
+            child: KitTextField(controller: _title, autofocus: true, onSubmitted: (_) => _done()),
+          ),
+          if (!node.isFolder)
+            LabeledField(
+              label: 'URL',
+              child: KitTextField(controller: _url, onSubmitted: (_) => _done()),
             ),
-            if (!node.isFolder)
-              TextField(
-                controller: _url,
-                decoration: const InputDecoration(labelText: 'URL'),
-                onSubmitted: (_) => _done(),
+          if (!widget.store.isRoot(node) && parent != null)
+            LabeledField(
+              label: 'Folder',
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: KitSelect<Bookmark>(
+                  value: parent,
+                  options: [for (final (folder, _) in folders) (folder, _path(folder))],
+                  onChanged: (folder) => setState(() => _parent = folder),
+                ),
               ),
-            if (!widget.store.isRoot(node)) ...[
-              const SizedBox(height: 12),
-              DropdownButtonFormField<Bookmark>(
-                initialValue: _parent,
-                decoration: const InputDecoration(labelText: 'Folder'),
-                items: [
-                  for (final (folder, depth) in folders)
-                    DropdownMenuItem(
-                      value: folder,
-                      child: Padding(
-                        padding: EdgeInsets.only(left: 16.0 * depth),
-                        child: Text(folder.title, overflow: TextOverflow.ellipsis),
-                      ),
-                    ),
-                ],
-                onChanged: (folder) => setState(() => _parent = folder),
-              ),
-            ],
-          ],
-        ),
+            ),
+        ],
       ),
       actions: [
         if (!widget.store.isRoot(node))
-          TextButton(onPressed: () => Navigator.pop(context, const _Edit(remove: true)), child: const Text('Remove')),
-        if (!widget.justAdded) TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-        FilledButton(onPressed: _done, child: const Text('Done')),
+          KitButton.danger('Remove', onPressed: () => Navigator.pop(context, const _Edit(remove: true))),
+        if (!widget.justAdded) KitButton('Cancel', onPressed: () => Navigator.pop(context)),
+        KitButton.primary('Done', onPressed: _done),
       ],
     );
   }

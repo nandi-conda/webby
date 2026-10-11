@@ -1,3 +1,4 @@
+import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart';
 
 import 'password_manager.dart';
@@ -15,9 +16,9 @@ class PasswordBar extends StatelessWidget {
       builder: (context, _) {
         final offer = agent.offer;
         if (offer == null) return const SizedBox.shrink();
-        final theme = Theme.of(context);
+        final c = KitTheme.of(context);
         final host = Uri.parse(offer.origin).host;
-        final bold = theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.bold);
+        final bold = KitText.heading(context);
 
         final (Widget message, List<Widget> actions) = switch (offer) {
           SaveOffer() => (
@@ -30,27 +31,9 @@ class PasswordBar extends StatelessWidget {
               ])),
               [
                 if (offer.existing == null)
-                  TextButton(onPressed: () => agent.neverSave(offer), child: const Text('Never for this site')),
-                TextButton(onPressed: agent.dismiss, child: const Text('Not now')),
-                FilledButton(
-                  onPressed: () => agent.save(offer),
-                  child: Text(offer.existing != null ? 'Update' : 'Save'),
-                ),
-              ],
-            ),
-          GenerateOffer() => (
-              Text.rich(TextSpan(children: [
-                const TextSpan(text: 'Use a strong password  '),
-                TextSpan(text: offer.password, style: bold?.copyWith(fontFamily: 'monospace')),
-              ])),
-              [
-                IconButton(
-                  tooltip: 'Another one',
-                  icon: const Icon(Icons.refresh),
-                  onPressed: () => agent.regenerate(offer),
-                ),
-                TextButton(onPressed: agent.dismiss, child: const Text('No thanks')),
-                FilledButton(onPressed: () => agent.useGenerated(offer), child: const Text('Use password')),
+                  KitButton.ghost('Never for this site', onPressed: () => agent.neverSave(offer)),
+                KitButton('Not now', onPressed: agent.dismiss),
+                KitButton.primary(offer.existing != null ? 'Update' : 'Save', onPressed: () => agent.save(offer)),
               ],
             ),
           FillOffer() => (
@@ -60,28 +43,29 @@ class PasswordBar extends StatelessWidget {
               ])),
               [
                 for (final account in offer.accounts.take(4))
-                  ActionChip(
-                    avatar: const Icon(Icons.account_circle, size: 18),
-                    label: Text(account.username.isEmpty ? '(no username)' : account.username),
+                  KitButton(
+                    account.username.isEmpty ? '(no username)' : account.username,
+                    icon: Icons.account_circle,
                     onPressed: () => agent.fill(account),
                   ),
-                IconButton(tooltip: 'Close', icon: const Icon(Icons.close), onPressed: agent.dismiss),
+                KitIconButton(Icons.close, tooltip: 'Close', onPressed: agent.dismiss),
               ],
             ),
         };
 
-        return Material(
-          color: theme.colorScheme.secondaryContainer,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            child: Row(
-              children: [
-                Icon(Icons.key, color: theme.colorScheme.onSecondaryContainer),
-                const SizedBox(width: 12),
-                Expanded(child: message),
-                Wrap(spacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: actions),
-              ],
-            ),
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: c.surface,
+            border: Border(bottom: BorderSide(color: c.border), left: BorderSide(color: c.accent, width: 3)),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.key, size: 18, color: c.accent),
+              const SizedBox(width: 12),
+              Expanded(child: message),
+              Wrap(spacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: actions),
+            ],
           ),
         );
       },
