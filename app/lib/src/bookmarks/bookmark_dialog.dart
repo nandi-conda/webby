@@ -125,7 +125,7 @@ class _BookmarkDialogState extends State<_BookmarkDialog> {
           if (!node.isFolder)
             LabeledField(
               label: 'URL',
-              child: KitTextField(controller: _url, onSubmitted: (_) => _done()),
+              child: KitTextField(controller: _url, keyboardType: TextInputType.url, autocorrect: false, enableSuggestions: false, onSubmitted: (_) => _done()),
             ),
           if (!widget.store.isRoot(node) && parent != null)
             LabeledField(

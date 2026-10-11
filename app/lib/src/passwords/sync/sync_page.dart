@@ -346,14 +346,14 @@ class _SetupDialogState extends State<_SetupDialog> {
           if (_storage == _Storage.custom)
             LabeledField(
               label: 'Server address (runs sync-server from the webby repo)',
-              child: KitTextField(controller: _server, hint: 'https://sync.example.com'),
+              child: KitTextField(controller: _server, keyboardType: TextInputType.url, autocorrect: false, enableSuggestions: false, hint: 'https://sync.example.com'),
             ),
           if (_storage == _Storage.webdav) ...[
             LabeledField(
               label: 'Folder address',
-              child: KitTextField(controller: _server, hint: 'https://cloud.example.com/remote.php/dav/files/me/webby'),
+              child: KitTextField(controller: _server, keyboardType: TextInputType.url, autocorrect: false, enableSuggestions: false, hint: 'https://cloud.example.com/remote.php/dav/files/me/webby'),
             ),
-            LabeledField(label: 'Username', child: KitTextField(controller: _username)),
+            LabeledField(label: 'Username', child: KitTextField(controller: _username, autocorrect: false, enableSuggestions: false)),
             LabeledField(
               label: 'Password (an app password is best)',
               child: KitTextField(controller: _password, obscureText: true, onSubmitted: (_) => _submit()),
