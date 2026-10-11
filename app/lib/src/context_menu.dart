@@ -15,7 +15,7 @@ import 'web_view.dart';
 /// the word under the pointer), sends what was clicked through prompt() with [prefix], like the password script:
 ///   {"type": "contextmenu", "prevented", "link", "linkText", "image", "selection", "editable", "password"}
 /// `prevented` is set when the page cancelled the event to show a menu of its own.
-/// It also defines `window.__webbyContextMenu.act(action, text)` to cut, paste or select all in what was clicked.
+/// It also defines `window.__webbyContextMenu.act(action, text)` to cut, paste, select all or inspect what was clicked.
 String contextMenuPageScript(String prefix) => '''
 (() => {
   if (window.__webbyContextMenu) return;
@@ -51,6 +51,7 @@ String contextMenuPageScript(String prefix) => '''
   const hrefOf = (link) => typeof link.href === 'string' ? link.href : new URL(link.href.baseVal, document.baseURI).href;
 
   let target = null;
+  let inspected = null;
   window.addEventListener('contextmenu', (event) => {
     const node = event.target instanceof Element ? event.target : event.target && event.target.parentElement;
     // Report after the page's own handlers (to see whether one cancelled the event) and after Ladybird has selected
@@ -61,6 +62,7 @@ String contextMenuPageScript(String prefix) => '''
       const editable = node && editableOf(node);
       const password = editable instanceof HTMLInputElement && editable.type === 'password';
       target = editable || null;
+      inspected = node;
       let selection = '';
       if (password) {
         selection = '';
@@ -130,7 +132,15 @@ String contextMenuPageScript(String prefix) => '''
         const el = target && target.isConnected ? target : null;
         if (action === 'cut' && el) replaceSelection(el, '', 'deleteByCut');
         else if (action === 'paste' && el && typeof text === 'string') replaceSelection(el, text, 'insertFromPaste');
-        else if (action === 'selectAll') {
+        else if (action === 'inspect') {
+          const eruda = window.eruda;
+          if (!eruda) return;
+          if (!eruda._isInit) eruda.init();
+          eruda.show();
+          eruda.show('elements');
+          const node = inspected && inspected.isConnected ? inspected : document.body;
+          try { eruda.get('elements').select(node); } catch (e) {}
+        } else if (action === 'selectAll') {
           if (el && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) { el.focus(); el.select(); }
           else if (el) { el.focus(); document.getSelection().selectAllChildren(el); }
           else document.getSelection().selectAllChildren(document.body || document.documentElement);
@@ -141,9 +151,43 @@ String contextMenuPageScript(String prefix) => '''
 })();
 ''';
 
-/// JavaScript that runs one of the script's actions ('cut', 'paste' with [text], 'selectAll') on what was clicked.
+/// JavaScript that runs one of the script's actions ('cut', 'paste' with [text], 'selectAll', 'inspect') on what was
+/// clicked.
 String contextMenuActionScript(String action, [String? text]) =>
     'window.__webbyContextMenu && window.__webbyContextMenu.act(${jsonEncode(action)}, ${jsonEncode(text)});';
+
+String? _eruda;
+
+/// JavaScript that opens the eruda dev tools (bundled in assets/eruda) in the page, on the Elements panel with the
+/// right-clicked element selected. eruda is loaded into the page the first time.
+Future<String> inspectScript() async {
+  final eruda = _eruda ??= await rootBundle.loadString('assets/eruda/eruda.js');
+  return inspectScriptWith(eruda);
+}
+
+/// [inspectScript] with eruda's source given.
+String inspectScriptWith(String erudaSource) => '''
+(() => {
+  if (!window.eruda) {
+    // eruda is a UMD bundle: hide any AMD/CommonJS loader the page has so it lands on window.eruda. It throws on pages
+    // without storage (opaque origins); there is nothing to inspect with then.
+    try {
+      (function (define, module, exports) {
+$erudaSource
+      }).call(window);
+    } catch (e) {
+      return;
+    }
+  }
+  if (window.__webbyContextMenu) {
+    window.__webbyContextMenu.act('inspect');
+  } else if (window.eruda) {
+    if (!window.eruda._isInit) window.eruda.init();
+    window.eruda.show();
+    window.eruda.show('elements');
+  }
+})();
+''';
 
 /// What the user right-clicked, as [contextMenuPageScript] reports it.
 class ContextMenuTarget {
@@ -259,6 +303,7 @@ List<ContextMenuEntry> contextMenuEntries(
       const ContextMenuEntry('copyPageAddress', 'Copy page address'),
     ]);
   }
+  groups.add([const ContextMenuEntry('inspect', 'Inspect')]);
   return [
     for (final (index, group) in groups.indexed) ...[
       if (index > 0) const ContextMenuEntry.divider(),
@@ -381,6 +426,8 @@ Future<void> runContextMenuAction(
       if (text != null && text.isNotEmpty) controller.runJavaScript(contextMenuActionScript('paste', text));
     case 'selectAll':
       controller.runJavaScript(contextMenuActionScript('selectAll'));
+    case 'inspect':
+      controller.runJavaScript(await inspectScript());
     case 'search':
       openInNewTab(t.selection.trim());
     case 'back':

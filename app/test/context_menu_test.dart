@@ -45,28 +45,28 @@ void main() {
   group('contextMenuEntries', () {
     test('page menu without a report', () {
       final list = entries(null);
-      expect(ids(list), ['back', 'forward', 'reload', null, 'selectAll', 'copyPageAddress']);
+      expect(ids(list), ['back', 'forward', 'reload', null, 'selectAll', 'copyPageAddress', null, 'inspect']);
       expect(list.firstWhere((e) => e.id == 'forward').enabled, isFalse);
     });
 
     test('link menu offers a new tab only when there are tabs', () {
       const link = ContextMenuTarget(link: 'https://example.com', linkText: 'Example');
-      expect(ids(entries(link)), ['openLinkInNewTab', 'openLink', 'copyLink', 'copyLinkText']);
-      expect(ids(entries(link, newTab: false)), ['openLink', 'copyLink', 'copyLinkText']);
+      expect(ids(entries(link)), ['openLinkInNewTab', 'openLink', 'copyLink', 'copyLinkText', null, 'inspect']);
+      expect(ids(entries(link, newTab: false)), ['openLink', 'copyLink', 'copyLinkText', null, 'inspect']);
     });
 
     test('linked image shows both groups', () {
       const target = ContextMenuTarget(link: 'https://example.com', image: 'https://example.com/i.png');
       expect(ids(entries(target)),
-          ['openLinkInNewTab', 'openLink', 'copyLink', null, 'openImageInNewTab', 'saveImage', 'copyImageAddress']);
+          ['openLinkInNewTab', 'openLink', 'copyLink', null, 'openImageInNewTab', 'saveImage', 'copyImageAddress', null, 'inspect']);
     });
 
     test('text field', () {
       final list = entries(const ContextMenuTarget(editable: true, selection: 'abc'));
-      expect(ids(list), ['cut', 'copy', 'paste', 'selectAll']);
-      expect(list.every((e) => e.enabled), isTrue);
+      expect(ids(list), ['cut', 'copy', 'paste', 'selectAll', null, 'inspect']);
+      expect(list.where((e) => e.id != null).every((e) => e.enabled), isTrue);
       final empty = entries(const ContextMenuTarget(editable: true), clipboard: false);
-      expect([for (final e in empty) e.enabled], [false, false, false, true]);
+      expect([for (final e in empty) e.enabled], [false, false, false, true, false, true]);
     });
 
     test('password field never offers cut or copy', () {
@@ -89,6 +89,13 @@ void main() {
     expect(script, contains(r'/\[native code\]/'));
     expect(contextMenuActionScript('paste', 'a"b'),
         'window.__webbyContextMenu && window.__webbyContextMenu.act("paste", "a\\"b");');
+  });
+
+  test('inspect script loads eruda once, hiding AMD loaders, then inspects the clicked element', () {
+    final script = inspectScriptWith('/* eruda */');
+    expect(script, contains('if (!window.eruda)'));
+    expect(script, contains('(function (define, module, exports) {\n/* eruda */\n'));
+    expect(script, contains("window.__webbyContextMenu.act('inspect')"));
   });
 
   group('saving images', () {
