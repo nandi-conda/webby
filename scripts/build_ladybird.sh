@@ -46,6 +46,9 @@ if [ ! -f Build/release/build.ninja ]; then
         -DLADYBIRD_UI_FLUTTER=ON -DBUILD_TESTING=OFF \
         -DENABLE_LTO_FOR_RELEASE=OFF -DLAGOM_USE_LINKER="$LINKER"
 fi
+# Without this Ladybird builds with -march=native, and the result crashes with SIGILL on CPUs other than the build
+# host's. x86-64-v3 is what Ladybird's own CI targets.
+cmake -S . -B Build/release -DENABLE_CI_BASELINE_CPU=ON
 
 # `ladybird` is libwebby.so here; it depends on WebContent, RequestServer, ImageDecoder and the resource files.
 cmake --build Build/release --target ladybird
