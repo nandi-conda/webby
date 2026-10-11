@@ -28,9 +28,11 @@ pixi run start                          # or: pixi run start -a https://example.
 
 With [just](https://just.systems) installed too, a bare `just` does the same (`just open https://example.com` opens a URL).
 
-The first run downloads Flutter 3.35.5 and the prebuilt Ladybird runtime below (sha256-checked) into `third_party/`,
-installs the Linux build toolchain (clang, lld, CMake, ninja, GTK 3…) from conda-forge into `.pixi/`, and then runs
-`scripts/run_app.sh`. Later runs skip the downloads. Set `WEBBY_LADYBIRD_PREFIX` to use your own Ladybird build
+The first run downloads Flutter 3.35.5 into `third_party/`, installs the Linux build toolchain (clang, lld, CMake,
+ninja, GTK 3…) from conda-forge and the prebuilt Ladybird runtime below as the `webby-ladybird` package from
+[prefix.dev/nandi-testing](https://prefix.dev/channels/nandi-testing) into `.pixi/`, and then runs
+`scripts/run_app.sh`. Later runs skip the downloads. The package needs glibc 2.43+; its recipe is
+`conda/webby-ladybird` and `scripts/publish_conda.sh` rebuilds and uploads it. Set `WEBBY_LADYBIRD_PREFIX` to use your own Ladybird build
 instead of the prebuilt. Flutter isn't packaged on conda-forge, so it comes from Google's release tarball.
 
 ## Layout
