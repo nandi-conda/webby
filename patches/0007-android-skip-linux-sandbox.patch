@@ -29,6 +29,20 @@ index e153f655..0511c61a 100644
      VideoDecoderRegistration { FFmpeg::system_ffmpeg_video_decoder_capabilities, FFmpeg::create_system_ffmpeg_video_decoder },
  #endif
  };
+diff --git a/Libraries/LibWebView/CrashReport.cpp b/Libraries/LibWebView/CrashReport.cpp
+index e46c8e7e..219b13e9 100644
+--- a/Libraries/LibWebView/CrashReport.cpp
++++ b/Libraries/LibWebView/CrashReport.cpp
+@@ -244,7 +244,8 @@ ErrorOr<void> CrashReport::record_build_description(StringView) { return {}; }
+ 
+ #endif
+ 
+-#if !defined(AK_OS_MACOS) && !defined(AK_OS_LINUX)
++// CrashReportPOSIX.cpp is only built for macOS and desktop Linux.
++#if !defined(AK_OS_MACOS) && (!defined(AK_OS_LINUX) || defined(AK_OS_ANDROID))
+ ByteString CrashReport::symbolicate_frame(ReportFrame const&)
+ {
+     return {};
 diff --git a/Services/Compositor/main.cpp b/Services/Compositor/main.cpp
 index c82d368f..ac7b61b8 100644
 --- a/Services/Compositor/main.cpp
