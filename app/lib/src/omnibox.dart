@@ -113,6 +113,12 @@ class _OmniboxState extends State<Omnibox> {
                       focusNode: widget.focusNode,
                       onSubmitted: widget.onSubmitted,
                       textInputAction: TextInputAction.go,
+                      // An address, not prose: no suggestions, so keyboards don't add a space after each period.
+                      keyboardType: TextInputType.url,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      smartDashesType: SmartDashesType.disabled,
+                      smartQuotesType: SmartQuotesType.disabled,
                       // While the formatted address is shown on top, the field's own text is hidden.
                       style: parts == null ? style : style.copyWith(color: const Color(0x00000000)),
                       cursorColor: c.accent,
