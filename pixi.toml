@@ -4,11 +4,8 @@
 [workspace]
 name = "webby"
 channels = ["https://prefix.dev/nandi-testing", "conda-forge"]
-platforms = ["linux-64"]
-
-# The prebuilt Ladybird runtime was built on Ubuntu 26.04.
-[system-requirements]
-libc = "2.43"
+# The prebuilt Ladybird runtime was built on Ubuntu 26.04, so it needs glibc 2.43.
+platforms = [{ name = "linux-64-glibc243", platform = "linux-64", glibc = "2.43" }]
 
 [dependencies]
 # libwebby.so (LibWeb/LibJS) and the helper processes; activation sets WEBBY_LADYBIRD_PREFIX unless it's already set.
@@ -25,8 +22,6 @@ gtk3 = "*"
 glib = "*"
 epoxy = "*"
 fontconfig = "*"
-# Guarantees Ladybird has serif, sans and monospace fonts even where the system has none set up for fontconfig.
-font-ttf-dejavu = "*"
 expat = "*"
 zlib = "*"
 # Used by the Flutter tool and scripts/pixi_fetch.sh.
