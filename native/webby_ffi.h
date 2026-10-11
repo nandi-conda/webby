@@ -42,6 +42,16 @@ WEBBY_API void webby_view_resize(WebbyView*, int width, int height, double devic
 WEBBY_API void webby_view_set_focus(WebbyView*, int focused);
 WEBBY_API void webby_view_run_javascript(WebbyView*, char const* source);
 
+/* What `prefers-color-scheme` reports to pages, and the colour of the blank
+ * canvas before a page paints: 0 auto (Ladybird's theme), 1 light, 2 dark.
+ * Takes effect at once on the loaded page. */
+enum {
+    WEBBY_COLOR_SCHEME_AUTO = 0,
+    WEBBY_COLOR_SCHEME_LIGHT = 1,
+    WEBBY_COLOR_SCHEME_DARK = 2,
+};
+WEBBY_API void webby_view_set_color_scheme(WebbyView*, int scheme);
+
 /* Frame access. frame_serial() increments every time a new frame is copied.
  * The pointer stays valid until the next webby_pump() call. */
 WEBBY_API uint64_t webby_view_frame_serial(WebbyView*);

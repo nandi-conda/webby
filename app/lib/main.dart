@@ -7,6 +7,7 @@ import 'src/bookmarks/bookmark_bar.dart';
 import 'src/bookmarks/bookmark_dialog.dart';
 import 'src/bookmarks/bookmark_store.dart';
 import 'src/bookmarks/bookmarks_page.dart';
+import 'src/color_scheme.dart';
 import 'src/frame_bench.dart';
 import 'src/omnibox.dart';
 import 'src/passkey_dialog.dart';
@@ -37,13 +38,17 @@ class WebbyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     // flatkit colours: the KDE colour scheme on Plasma, otherwise light or dark with the desktop.
     return KitSystemTheme(
-      builder: (context, colors) => MaterialApp(
-        title: 'Webby',
-        debugShowCheckedModeBanner: false,
-        theme: KitTheme.material(colors),
-        builder: (context, child) => Material(color: colors.background, child: child),
-        home: appMode ? AppWindowPage(startUrl: initialUrl) : BrowserPage(initialUrl: initialUrl),
-      ),
+      builder: (context, colors) {
+        // Pages follow the same light or dark choice as the UI (prefers-color-scheme).
+        PageColorScheme.brightness.value = colors.brightness;
+        return MaterialApp(
+          title: 'Webby',
+          debugShowCheckedModeBanner: false,
+          theme: KitTheme.material(colors),
+          builder: (context, child) => Material(color: colors.background, child: child),
+          home: appMode ? AppWindowPage(startUrl: initialUrl) : BrowserPage(initialUrl: initialUrl),
+        );
+      },
     );
   }
 }

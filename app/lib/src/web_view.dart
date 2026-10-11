@@ -13,6 +13,7 @@ import 'package:flutter/services.dart';
 import 'package:webby_texture/webby_texture.dart';
 
 import 'bindings.dart';
+import 'color_scheme.dart';
 import 'context_menu.dart';
 import 'frame_bench.dart';
 import 'keys.dart';
@@ -43,6 +44,7 @@ class WebbyController extends ChangeNotifier {
   late final WebbyBindings _bindings;
   late final Timer _pumpTimer;
   ViewPtr _view = nullptr;
+  VoidCallback? _colorScheme;
   String? _pendingUrl;
   bool _disposed = false;
 
@@ -105,6 +107,7 @@ class WebbyController extends ChangeNotifier {
     if (_view == nullptr) {
       _view = _bindings.viewCreate(width, height, devicePixelRatio);
       _applyMessagePrefix();
+      _colorScheme = PageColorScheme.follow(_bindings, () => _view);
       if (_pendingUrl != null) {
         load(_pendingUrl!);
         _pendingUrl = null;
@@ -240,6 +243,7 @@ class WebbyController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _pumpTimer.cancel();
+    PageColorScheme.unfollow(_colorScheme);
     _texture?.dispose();
     _texture = null;
     if (_view != nullptr) {

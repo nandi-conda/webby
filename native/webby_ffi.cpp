@@ -10,6 +10,7 @@
 #include <LibCore/EventLoop.h>
 #include <LibGfx/SystemTheme.h>
 #include <LibMain/Main.h>
+#include <LibWebCommon/CSS/PreferredColorScheme.h>
 #include <LibWebCommon/Page/InputEvent.h>
 #include <LibRequests/RequestControlClient.h>
 #include <LibWebView/Application.h>
@@ -115,6 +116,16 @@ void webby_view_go_back(WebbyView* handle)
 void webby_view_go_forward(WebbyView* handle)
 {
     handle->view->traverse_the_history_by_delta(1);
+}
+
+void webby_view_set_color_scheme(WebbyView* handle, int scheme)
+{
+    auto preferred = Web::CSS::PreferredColorScheme::Auto;
+    if (scheme == WEBBY_COLOR_SCHEME_LIGHT)
+        preferred = Web::CSS::PreferredColorScheme::Light;
+    else if (scheme == WEBBY_COLOR_SCHEME_DARK)
+        preferred = Web::CSS::PreferredColorScheme::Dark;
+    handle->view->set_preferred_color_scheme(preferred);
 }
 
 void webby_view_reload(WebbyView* handle)
