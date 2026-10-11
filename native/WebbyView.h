@@ -59,6 +59,12 @@ public:
     ByteString const& webauthn_prompt() const { return m_webauthn_prompt; }
     void respond_to_webauthn(bool accepted, int account_index);
 
+    // prompt() calls whose text starts with this prefix are messages from the browser's own page scripts: they're
+    // answered at once and queued here instead of being shown. See webby_view_set_message_prefix() in webby_ffi.h.
+    void set_message_prefix(ByteString prefix) { m_message_prefix = move(prefix); }
+    // The oldest queued message, removed from the queue (empty when there is none). Valid until the next call.
+    ByteString const& take_message();
+
 private:
     View(Core::AnonymousBuffer theme, Web::DevicePixelSize size);
 
@@ -88,6 +94,10 @@ private:
     };
     Optional<PendingWebAuthn> m_pending_webauthn;
     ByteString m_webauthn_prompt;
+
+    ByteString m_message_prefix;
+    Vector<ByteString> m_messages;
+    ByteString m_current_message;
 };
 
 }
