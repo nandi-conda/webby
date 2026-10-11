@@ -199,6 +199,32 @@ void main() {
       expect(newTabs, ['https://flutter.dev/', 'https://dart.dev/']);
     });
 
+    testWidgets('bar grows with a large system font so labels are not clipped', (tester) async {
+      final store = BookmarkStore(file);
+      store.add(title: 'Ladybird', url: 'https://ladybird.org/');
+      Widget app() => MaterialApp(
+        home: MediaQuery(
+          data: const MediaQueryData(size: Size(400, 800), textScaler: TextScaler.linear(1.5)),
+          child: Scaffold(
+            body: Column(children: [BookmarkBar(store: store, onOpen: (_) {}), const Expanded(child: SizedBox())]),
+          ),
+        ),
+      );
+      await tester.pumpWidget(app());
+      final bar = tester.getRect(find.byType(BookmarkBar));
+      expect(bar.height, greaterThan(30));
+      final label = tester.getRect(find.text('Ladybird'));
+      expect(label.top, greaterThanOrEqualTo(bar.top));
+      expect(label.bottom, lessThanOrEqualTo(bar.bottom));
+
+      // The empty-state hint wraps on a phone-width screen; the bar grows to fit it.
+      store.remove(store.bar.children!.single);
+      await tester.pump();
+      final empty = tester.getRect(find.byType(BookmarkBar));
+      final hint = tester.getRect(find.textContaining('Ctrl+D'));
+      expect(hint.bottom, lessThanOrEqualTo(empty.bottom));
+    });
+
     testWidgets('manager browses folders, deletes and opens', (tester) async {
       tester.view.physicalSize = const Size(1200, 800);
       tester.view.devicePixelRatio = 1;

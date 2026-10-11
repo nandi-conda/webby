@@ -24,15 +24,20 @@ class BookmarkBar extends StatelessWidget {
         if (!bookmarks.showBar) return const SizedBox.shrink();
         final c = KitTheme.of(context);
         final items = bookmarks.bar.children!;
+        // 30 px at normal text size; grows with the system font scale (Android phones often run above 1.0) so labels
+        // aren't clipped top and bottom.
+        final height = MediaQuery.textScalerOf(context).scale(20) + 10;
         return Container(
-          height: 30,
+          // The empty-state hint may wrap on a narrow screen, so it gets a minimum height instead of a fixed one.
+          height: items.isEmpty ? null : height,
+          constraints: BoxConstraints(minHeight: height),
           decoration: BoxDecoration(
             color: c.surface,
             border: Border(bottom: BorderSide(color: c.border)),
           ),
           child: items.isEmpty
               ? Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   child: Align(
                     alignment: Alignment.centerLeft,
                     child: Text(
