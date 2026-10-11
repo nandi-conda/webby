@@ -18,6 +18,7 @@ import 'color_scheme.dart';
 import 'context_menu.dart';
 import 'frame_bench.dart';
 import 'keys.dart';
+import 'page_compat.dart';
 import 'passwords/native.dart';
 
 /// Drives one Ladybird view: pumps the event loop, hands presented frames to Flutter and exposes page state.
@@ -68,6 +69,7 @@ class WebbyController extends ChangeNotifier {
 
   int _frameSerial = 0;
   int _stateSerial = -1;
+  int _lastCompatMicros = 0;
   WebbyTexture? _texture;
   bool _texturePending = false;
   bool _decoding = false;
@@ -328,6 +330,11 @@ class WebbyController extends ChangeNotifier {
   static final _pumpClock = Stopwatch()..start();
   static int _lastPumpMicros = -1000000;
 
+  void _runPageCompat() {
+    _lastCompatMicros = _pumpClock.elapsedMicroseconds;
+    runJavaScript(pageCompatScript);
+  }
+
   void _pump() {
     final now = _pumpClock.elapsedMicroseconds;
     if (now - _lastPumpMicros >= 3000) {
@@ -340,10 +347,12 @@ class WebbyController extends ChangeNotifier {
     final stateSerial = _bindings.stateSerial(_view);
     if (stateSerial != _stateSerial) {
       _stateSerial = stateSerial;
+      final previous = (url, title, isLoading);
       url = _bindings.url(_view).toDartString();
       title = _bindings.title(_view).toDartString();
       hoveredLink = _bindings.hoveredLink(_view).toDartString();
       isLoading = _bindings.isLoading(_view) != 0;
+      if ((url, title, isLoading) != previous) _runPageCompat();
       canGoBack = _bindings.canGoBack(_view) != 0;
       canGoForward = _bindings.canGoForward(_view) != 0;
       cursor = _bindings.cursor(_view);
@@ -357,6 +366,10 @@ class WebbyController extends ChangeNotifier {
       if (_disposed) return;
       notifyListeners();
     }
+
+    // A loading page gets the compat script again every so often: the runs above can land in the document being
+    // replaced, and a reload keeps the URL and title, so nothing else would reach the new one before it loads.
+    if (isLoading && now - _lastCompatMicros >= 100000) _runPageCompat();
 
     final nextMessage = _passwordNative.nextMessage;
     if (nextMessage != null && _messagePrefix.isNotEmpty) {
