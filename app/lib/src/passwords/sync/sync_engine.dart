@@ -12,10 +12,11 @@ class SyncOutcome {
 }
 
 /// Merges [local] with the server's copy and makes the server hold the result. Retries when another device writes
-/// in between. Throws [SyncStoreError], `SyncDecryptError` or `BadSyncCode` for the user to see.
-Future<SyncOutcome> syncOnce(SyncSettings settings, SyncDoc local, {BlobStore? store, int? now}) async {
+/// in between. With [bookmarks], works on the bookmarks blob instead of the passwords one. Throws [SyncStoreError], `SyncDecryptError` or `BadSyncCode` for the user to see.
+Future<SyncOutcome> syncOnce(SyncSettings settings, SyncDoc local,
+    {BlobStore? store, int? now, bool bookmarks = false}) async {
   final keys = await settings.key.derive();
-  final blobs = store ?? settings.store(keys);
+  final blobs = store ?? settings.store(keys, bookmarks: bookmarks);
   for (var attempt = 0; attempt < 5; attempt++) {
     final remote = await blobs.read();
     final remoteDoc = remote == null ? SyncDoc() : await keys.open(remote.bytes);

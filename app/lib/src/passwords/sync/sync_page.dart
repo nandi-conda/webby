@@ -23,7 +23,7 @@ class SyncPage extends StatelessWidget {
     final manager = this.manager ?? PasswordManager.instance;
     final sync = manager.sync;
     return KitPage(
-      title: 'Sync passwords and passkeys',
+      title: 'Sync passwords, passkeys and bookmarks',
       body: sync == null
           ? Center(child: Text(manager.error ?? 'Opening the vault…', style: KitText.dim(context)))
           : ListenableBuilder(
@@ -52,7 +52,7 @@ class _SyncOff extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
-        Text('Keep your passwords and passkeys on all your devices', style: KitText.heading(context)),
+        Text('Keep your passwords, passkeys and bookmarks on all your devices', style: KitText.heading(context)),
         const SizedBox(height: 8),
         Text(
           'Webby encrypts them on this device with a sync code that only your devices know, then stores the encrypted '
@@ -144,7 +144,7 @@ class _SyncOn extends StatelessWidget {
                       (context) => KitDialog(
                         title: 'Erase the synced copy?',
                         content: const Text('The encrypted copy on the server is deleted and your other devices stop '
-                            'syncing. Passwords already on each device stay there.'),
+                            'syncing. Passwords and bookmarks already on each device stay there.'),
                         actions: [
                           KitButton('Cancel', onPressed: () => Navigator.pop(context, false)),
                           KitButton.danger('Erase', onPressed: () => Navigator.pop(context, true)),

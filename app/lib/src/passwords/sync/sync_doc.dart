@@ -6,7 +6,10 @@ import 'dart:convert';
 /// How long a deletion is remembered, so devices that were offline still learn about it.
 const tombstoneLifetime = Duration(days: 180);
 
-/// Everything that syncs: passwords by id, passkeys by credentialId and never-save sites by origin.
+/// Everything that syncs: passwords by id, passkeys by credentialId, never-save sites by origin and bookmarks by id.
+///
+/// Bookmarks travel in their own blob (see [SyncKeys.bookmarksBlobId]), so webby versions that predate bookmark
+/// sync never see them and can't drop them; in that blob only [bookmarks] is used.
 ///
 /// Each record is a JSON map with an `updatedAt` (seconds since the epoch). A deleted item stays as a tombstone
 /// `{updatedAt, deleted: true}` (passwords also keep `id`) until [tombstoneLifetime] has passed.
@@ -15,9 +18,11 @@ class SyncDoc {
     Map<String, Map<String, Object?>>? passwords,
     Map<String, Map<String, Object?>>? passkeys,
     Map<String, Map<String, Object?>>? neverSave,
+    Map<String, Map<String, Object?>>? bookmarks,
   })  : passwords = passwords ?? {},
         passkeys = passkeys ?? {},
-        neverSave = neverSave ?? {};
+        neverSave = neverSave ?? {},
+        bookmarks = bookmarks ?? {};
 
   factory SyncDoc.fromJson(Map<String, Object?> json) {
     Map<String, Map<String, Object?>> section(String name) {
@@ -29,18 +34,28 @@ class SyncDoc {
       };
     }
 
-    return SyncDoc(passwords: section('passwords'), passkeys: section('passkeys'), neverSave: section('neverSave'));
+    return SyncDoc(
+        passwords: section('passwords'),
+        passkeys: section('passkeys'),
+        neverSave: section('neverSave'),
+        bookmarks: section('bookmarks'));
   }
 
   final Map<String, Map<String, Object?>> passwords;
   final Map<String, Map<String, Object?>> passkeys;
   final Map<String, Map<String, Object?>> neverSave;
 
+  /// Bookmarks and folders by id: `{parent, pos, title, url}` for a link, `{parent, pos, title, folder: true}` for a
+  /// folder, plus `addedAt` and `updatedAt`. `parent` is a folder's id or one of the roots `bar` and `other`; `pos`
+  /// orders a folder's children. A folder merged into a same-named one is a tombstone with `mergedInto`.
+  final Map<String, Map<String, Object?>> bookmarks;
+
   Map<String, Object?> toJson() => {
         'version': 1,
         'passwords': _sorted(passwords),
         'passkeys': _sorted(passkeys),
         'neverSave': _sorted(neverSave),
+        if (bookmarks.isNotEmpty) 'bookmarks': _sorted(bookmarks),
       };
 
   /// A stable encoding: equal documents encode to equal strings.
@@ -123,5 +138,72 @@ SyncDoc mergeDocs(SyncDoc a, SyncDoc b, {required int now}) {
     passwords: passwords,
     passkeys: _mergeSection(a.passkeys, b.passkeys, expireBefore),
     neverSave: _mergeSection(a.neverSave, b.neverSave, expireBefore),
+    bookmarks: _repairBookmarks(_mergeSection(a.bookmarks, b.bookmarks, expireBefore)),
   );
+}
+
+/// The two bookmark roots every device has; they never appear as records.
+const bookmarkRoots = {'bar', 'other'};
+
+/// Makes merged bookmarks a tree again, the same way on every device: a bookmark whose folder was deleted elsewhere
+/// moves to Other bookmarks, a loop of folders (each moved into the other on different devices) is cut, and two
+/// devices' copies of the same folder or link collapse into one (the first sync of two devices that both imported
+/// the same bookmarks shouldn't double them).
+Map<String, Map<String, Object?>> _repairBookmarks(Map<String, Map<String, Object?>> records) {
+  bool isFolder(Map<String, Object?> record) => record['folder'] == true;
+  final ids = records.keys.toList()..sort();
+
+  // Where a bookmark really lives: past folders merged into others, and Other bookmarks when its folder is gone.
+  String resolve(Object? parent) {
+    final seen = <String>{};
+    while (parent is String && !bookmarkRoots.contains(parent) && seen.add(parent)) {
+      final record = records[parent];
+      if (record == null) return 'other';
+      if (!isDeleted(record)) return isFolder(record) ? parent : 'other';
+      parent = record['mergedInto'];
+    }
+    return parent is String && bookmarkRoots.contains(parent) ? parent : 'other';
+  }
+
+  void setParent(String id, String parent) => records[id] = {...records[id]!, 'parent': parent};
+
+  for (var changed = true; changed;) {
+    changed = false;
+    for (final id in ids) {
+      final record = records[id]!;
+      if (isDeleted(record)) continue;
+      final parent = resolve(record['parent']);
+      if (parent != record['parent']) setParent(id, parent);
+    }
+    for (final id in ids) {
+      if (isDeleted(records[id]!)) continue;
+      final seen = <String>{};
+      for (var at = id; !bookmarkRoots.contains(at);) {
+        if (!seen.add(at)) {
+          setParent(at, 'other');
+          break;
+        }
+        at = records[at]!['parent'] as String;
+      }
+    }
+    for (final (folders, key) in [(true, 'title'), (false, 'url')]) {
+      final groups = <String, List<String>>{};
+      for (final id in ids) {
+        final record = records[id]!;
+        if (isDeleted(record) || isFolder(record) != folders) continue;
+        groups.putIfAbsent(jsonEncode([record['parent'], record[key]]), () => []).add(id);
+      }
+      for (final group in groups.values.where((group) => group.length > 1)) {
+        final keep = group.map((id) => records[id]!).reduce(newer);
+        final keepId = group.firstWhere((id) => identical(records[id], keep));
+        for (final id in group.where((id) => id != keepId)) {
+          records[id] = {'updatedAt': updatedAtOf(records[id]!), 'deleted': true, if (folders) 'mergedInto': keepId};
+        }
+        // Children of the folders just merged away need re-homing; go round again.
+        if (folders) changed = true;
+      }
+      if (changed) break;
+    }
+  }
+  return records;
 }

@@ -3,16 +3,25 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import '../passwords/sync/sync_doc.dart';
+
 /// A bookmarked page, or a folder of them (a folder has no [url]).
 class Bookmark {
-  Bookmark._({required this.id, required this.title, this.url, required this.addedAt})
-    : children = url == null ? <Bookmark>[] : null;
+  Bookmark._({required this.id, required this.title, this.url, required this.addedAt, int? updatedAt, this.pos = 0})
+    : children = url == null ? <Bookmark>[] : null,
+      updatedAt = updatedAt ?? addedAt;
 
-  factory Bookmark.link({required String id, required String title, required String url, int? addedAt}) =>
-      Bookmark._(id: id, title: title, url: url, addedAt: addedAt ?? _now());
+  factory Bookmark.link({
+    required String id,
+    required String title,
+    required String url,
+    int? addedAt,
+    int? updatedAt,
+    double pos = 0,
+  }) => Bookmark._(id: id, title: title, url: url, addedAt: addedAt ?? _now(), updatedAt: updatedAt, pos: pos);
 
-  factory Bookmark.folder({required String id, required String title, int? addedAt}) =>
-      Bookmark._(id: id, title: title, addedAt: addedAt ?? _now());
+  factory Bookmark.folder({required String id, required String title, int? addedAt, int? updatedAt, double pos = 0}) =>
+      Bookmark._(id: id, title: title, addedAt: addedAt ?? _now(), updatedAt: updatedAt, pos: pos);
 
   static Bookmark? fromJson(Object? json) {
     if (json is! Map<String, Object?>) return null;
@@ -20,12 +29,20 @@ class Bookmark {
     if (id is! String || id.isEmpty) return null;
     final title = json['title'] as String? ?? '';
     final addedAt = json['addedAt'] as int? ?? 0;
+    final updatedAt = json['updatedAt'] as int? ?? addedAt;
+    final pos = (json['pos'] as num?)?.toDouble() ?? 0;
     final url = json['url'];
-    if (url is String) return Bookmark.link(id: id, title: title, url: url, addedAt: addedAt);
-    final folder = Bookmark.folder(id: id, title: title, addedAt: addedAt);
+    if (url is String) {
+      return Bookmark.link(id: id, title: title, url: url, addedAt: addedAt, updatedAt: updatedAt, pos: pos);
+    }
+    final folder = Bookmark.folder(id: id, title: title, addedAt: addedAt, updatedAt: updatedAt, pos: pos);
+    var index = 0;
     for (final child in (json['children'] as List<Object?>? ?? const [])) {
       final node = Bookmark.fromJson(child);
-      if (node != null) folder.children!.add(node);
+      if (node == null) continue;
+      // Files from before sync have no positions; number the children in their saved order.
+      if (child is Map && child['pos'] == null) node.pos = ++index * 1.0;
+      folder.children!.add(node);
     }
     return folder;
   }
@@ -39,6 +56,12 @@ class Bookmark {
 
   /// Seconds since the epoch.
   final int addedAt;
+
+  /// When this bookmark was last added, renamed or moved (seconds since the epoch); the newest edit wins in sync.
+  int updatedAt;
+
+  /// Orders the bookmark among its folder's children (smaller first). Kept in step with [children]' order.
+  double pos;
 
   bool get isFolder => children != null;
 
@@ -58,11 +81,17 @@ class Bookmark {
     'title': title,
     if (url != null) 'url': url,
     'addedAt': addedAt,
+    'updatedAt': updatedAt,
+    'pos': pos,
     if (children != null) 'children': [for (final child in children!) child.toJson()],
   };
 }
 
-int _now() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
+/// Seconds since the epoch; tests replace it to order edits.
+@visibleForTesting
+int Function() bookmarkClock = () => DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+int _now() => bookmarkClock();
 
 /// One profile's bookmarks: a "Bookmarks bar" folder shown under the toolbar and an "Other bookmarks" folder.
 ///
@@ -97,6 +126,9 @@ class BookmarkStore extends ChangeNotifier {
   bool _showBar = true;
   int _idCounter = 0;
 
+  /// Bookmarks deleted here or on another device, as sync tombstones by id (see [SyncDoc.bookmarks]).
+  final Map<String, Map<String, Object?>> _deleted = {};
+
   /// Why the file couldn't be read (it was set aside and an empty set started), or null.
   String? loadError;
 
@@ -121,6 +153,10 @@ class BookmarkStore extends ChangeNotifier {
         final saved = Bookmark.fromJson(roots[key]);
         if (saved != null && saved.isFolder) root.children!.addAll(saved.children!);
       }
+      final deleted = json['deleted'] as Map<String, Object?>? ?? const {};
+      for (final entry in deleted.entries) {
+        if (entry.value is Map<String, Object?>) _deleted[entry.key] = Map.of(entry.value as Map<String, Object?>);
+      }
     } catch (error) {
       // Keep the unreadable file for the user rather than overwriting it on the next save.
       final aside = '${file.path}.corrupt-${DateTime.now().millisecondsSinceEpoch}';
@@ -140,6 +176,7 @@ class BookmarkStore extends ChangeNotifier {
       'version': 1,
       'showBar': _showBar,
       'roots': {'bar': bar.toJson(), 'other': other.toJson()},
+      if (_deleted.isNotEmpty) 'deleted': _deleted,
     });
     final temp = File('${file.path}.tmp');
     temp.writeAsStringSync(contents, flush: true);
@@ -197,16 +234,38 @@ class BookmarkStore extends ChangeNotifier {
 
   bool isRoot(Bookmark node) => identical(node, bar) || identical(node, other);
 
+  /// Puts [node] into [folder] at [index], giving it a position between its new neighbours and marking it edited.
+  void _place(Bookmark folder, Bookmark node, [int? index]) {
+    final children = folder.children!;
+    final at = (index ?? children.length).clamp(0, children.length);
+    final before = at > 0 ? children[at - 1].pos : null;
+    final after = at < children.length ? children[at].pos : null;
+    var pos = before == null ? (after == null ? 1.0 : after - 1) : (after == null ? before + 1 : (before + after) / 2);
+    if (before != null && after != null && !(pos > before && pos < after)) {
+      // Out of room between the two (or they were equal): renumber the folder.
+      for (var i = 0; i < children.length; i++) {
+        children[i]
+          ..pos = (i < at ? i + 1 : i + 2) * 1.0
+          ..updatedAt = _now();
+      }
+      pos = at + 1.0;
+    }
+    node
+      ..pos = pos
+      ..updatedAt = _now();
+    children.insert(at, node);
+  }
+
   Bookmark add({required String title, required String url, Bookmark? parent}) {
     final node = Bookmark.link(id: _newId(), title: title, url: url);
-    (parent ?? bar).children!.add(node);
+    _place(parent ?? bar, node);
     _changed();
     return node;
   }
 
   Bookmark addFolder(String title, {Bookmark? parent}) {
     final node = Bookmark.folder(id: _newId(), title: title);
-    (parent ?? other).children!.add(node);
+    _place(parent ?? other, node);
     _changed();
     return node;
   }
@@ -215,12 +274,13 @@ class BookmarkStore extends ChangeNotifier {
   void update(Bookmark node, {String? title, String? url, Bookmark? parent}) {
     if (title != null) node.title = title;
     if (url != null && !node.isFolder) node.url = url;
+    node.updatedAt = _now();
     if (parent != null && parent.isFolder && !isRoot(node)) {
       final current = parentOf(node);
       final intoItself = node.isFolder && node.descendants.any((d) => identical(d, parent));
       if (current != null && !identical(current, parent) && !intoItself) {
         current.children!.remove(node);
-        parent.children!.add(node);
+        _place(parent, node);
       }
     }
     _changed();
@@ -232,13 +292,16 @@ class BookmarkStore extends ChangeNotifier {
     if (oldIndex < 0 || oldIndex >= children.length) return;
     final node = children.removeAt(oldIndex);
     if (newIndex > oldIndex) newIndex--;
-    children.insert(newIndex.clamp(0, children.length), node);
+    _place(folder, node, newIndex);
     _changed();
   }
 
   void remove(Bookmark node) {
     if (isRoot(node)) return;
     parentOf(node)?.children!.remove(node);
+    for (final gone in node.descendants) {
+      _deleted[gone.id] = {'updatedAt': _now(), 'deleted': true};
+    }
     _changed();
   }
 
@@ -252,21 +315,107 @@ class BookmarkStore extends ChangeNotifier {
         return Bookmark.link(id: _newId(), title: node.title, url: node.url!, addedAt: node.addedAt);
       }
       final folder = Bookmark.folder(id: _newId(), title: node.title, addedAt: node.addedAt);
-      folder.children!.addAll(node.children!.map(copy));
+      for (final child in node.children!) {
+        _place(folder, copy(child));
+      }
       return folder;
     }
 
     final onBar = bar.children!.where((n) => n.url != null).map((n) => n.url).toSet();
     for (final node in toBar) {
       if (node.url != null && onBar.contains(node.url)) continue;
-      bar.children!.add(copy(node));
+      _place(bar, copy(node));
     }
     if (toOther.isNotEmpty) {
       final folder = Bookmark.folder(id: _newId(), title: 'Imported');
-      folder.children!.addAll(toOther.map(copy));
-      other.children!.add(folder);
+      for (final node in toOther) {
+        _place(folder, copy(node));
+      }
+      _place(other, folder);
     }
     _changed();
     return count;
+  }
+
+  /// The bookmarks in their synced form: a record per bookmark and folder, plus tombstones (see [SyncDoc.bookmarks]).
+  SyncDoc toSyncDoc() {
+    final records = <String, Map<String, Object?>>{
+      for (final entry in _deleted.entries) entry.key: Map.of(entry.value),
+    };
+    void walk(Bookmark folder) {
+      for (final node in folder.children!) {
+        records[node.id] = {
+          'parent': folder.id,
+          'pos': node.pos,
+          'title': node.title,
+          if (node.isFolder) 'folder': true else 'url': node.url,
+          'addedAt': node.addedAt,
+          'updatedAt': node.updatedAt,
+        };
+        if (node.isFolder) walk(node);
+      }
+    }
+
+    for (final root in roots) {
+      walk(root);
+    }
+    return SyncDoc(bookmarks: records);
+  }
+
+  /// Replaces the bookmarks with a merged [SyncDoc], keeping the [Bookmark] objects of ones that are still there.
+  /// Returns whether anything changed.
+  bool applySyncDoc(SyncDoc doc) {
+    if (toSyncDoc() == SyncDoc(bookmarks: doc.bookmarks)) return false;
+    final existing = {for (final node in all) node.id: node};
+    final nodes = <String, Bookmark>{};
+    final parents = <String, String>{};
+    _deleted.clear();
+    for (final MapEntry(key: id, value: record) in doc.bookmarks.entries) {
+      if (isDeleted(record)) {
+        _deleted[id] = Map.of(record);
+        continue;
+      }
+      final title = record['title'] as String? ?? '';
+      final url = record['url'] as String?;
+      final folder = record['folder'] == true || url == null;
+      final addedAt = record['addedAt'] as int? ?? 0;
+      final pos = (record['pos'] as num?)?.toDouble() ?? 0;
+      var node = existing[id];
+      if (node == null || node.isFolder != folder) {
+        node = folder
+            ? Bookmark.folder(id: id, title: title, addedAt: addedAt)
+            : Bookmark.link(id: id, title: title, url: url, addedAt: addedAt);
+      }
+      node
+        ..title = title
+        ..url = folder ? null : url
+        ..pos = pos
+        ..updatedAt = updatedAtOf(record);
+      node.children?.clear();
+      nodes[id] = node;
+      parents[id] = record['parent'] as String? ?? 'other';
+    }
+    bar.children!.clear();
+    other.children!.clear();
+    for (final MapEntry(key: id, value: node) in nodes.entries) {
+      final parent = switch (parents[id]!) {
+        'bar' => bar,
+        'other' => other,
+        final folderId => nodes[folderId]?.isFolder == true ? nodes[folderId]! : other,
+      };
+      parent.children!.add(node);
+    }
+    // mergeDocs keeps the records a tree; if they somehow loop, hang the loop on Other bookmarks rather than lose it.
+    for (final id in nodes.keys.toList()..sort()) {
+      final reachable = {for (final root in roots) ...root.descendants.map((node) => node.id)};
+      if (reachable.contains(id)) continue;
+      nodes[parents[id]]?.children!.remove(nodes[id]);
+      other.children!.add(nodes[id]!);
+    }
+    for (final folder in [bar, other, ...nodes.values.where((node) => node.isFolder)]) {
+      folder.children!.sort((a, b) => a.pos != b.pos ? a.pos.compareTo(b.pos) : a.id.compareTo(b.id));
+    }
+    _changed();
+    return true;
   }
 }

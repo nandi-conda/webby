@@ -211,7 +211,7 @@ class _VaultPageState extends State<VaultPage> {
               KitButton(
                 _manager.sync?.enabled == true ? 'Synced' : 'Sync',
                 icon: Icons.sync,
-                tooltip: 'Sync passwords and passkeys with your other devices',
+                tooltip: 'Sync passwords, passkeys and bookmarks with your other devices',
                 onPressed: () => Navigator.of(context)
                     .push(MaterialPageRoute<void>(builder: (_) => SyncPage(manager: widget.manager))),
               ),

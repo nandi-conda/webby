@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:webby/src/bookmarks/bookmark_store.dart';
 import 'package:webby/src/passwords/sync/sync_doc.dart';
 import 'package:webby/src/passwords/sync/sync_engine.dart';
 import 'package:webby/src/passwords/sync/sync_store.dart';
@@ -20,12 +21,18 @@ void main() {
     await vault.setPasskeys([
       {'credentialId': 'pk1', 'rpId': 'a.example', 'userName': 'v', 'privateKey': 'x', 'createdAt': 100},
     ]);
+    final bookmarksDir = Directory.systemTemp.createTempSync('webby-vault-sync');
+    final bookmarks = BookmarkStore(File('${bookmarksDir.path}/bookmarks.json'));
+    bookmarks.add(title: 'Ladybird', url: 'https://ladybird.org/');
     var removedPasskeys = <String>{};
-    final sync = VaultSync(vault, onPasskeysChanged: (removed) => removedPasskeys = removed);
+    final sync = VaultSync(vault, onPasskeysChanged: (removed) => removedPasskeys = removed, bookmarks: bookmarks);
     final settings = SyncSettings(code: SyncKey.generate().code, server: server!);
     await sync.enable(settings);
     expect(sync.error, isNull);
     expect(vault.syncSettings!.lastSync, isNotNull);
+    final serverBookmarks = await syncOnce(settings, SyncDoc(), bookmarks: true);
+    expect(serverBookmarks.doc.bookmarks.values.single['url'], 'https://ladybird.org/');
+    expect((await syncOnce(settings, SyncDoc())).doc.bookmarks, isEmpty);
 
     // The "phone": syncs its own doc, deletes the desktop's b.example password and pk1, adds one of its own.
     final now = DateTime.now().millisecondsSinceEpoch ~/ 1000 + 5;
@@ -48,6 +55,15 @@ void main() {
     expect(removedPasskeys, {'pk1'});
     expect(vault.isNeverSave('https://never.example'), isTrue);
 
+    // A bookmark from the phone arrives.
+    final phoneBookmarks = SyncDoc.fromJson(serverBookmarks.doc.toJson());
+    phoneBookmarks.bookmarks['ph1'] = {
+      'parent': 'other', 'pos': 1.0, 'title': 'Phone', 'url': 'https://phone.example/', 'addedAt': now, 'updatedAt': now
+    };
+    await syncOnce(settings, phoneBookmarks, bookmarks: true);
+    await sync.syncNow();
+    expect(bookmarks.other.children!.single.title, 'Phone');
+
     // Local delete propagates.
     vault.setNeverSave('https://never.example', false);
     await sync.syncNow();
@@ -63,6 +79,8 @@ void main() {
     await sync.disable(erase: true);
     expect(vault.syncSettings, isNull);
     expect(await settings.store(await settings.key.derive()).read(), isNull);
+    expect(await settings.store(await settings.key.derive(), bookmarks: true).read(), isNull);
     sync.dispose();
+    bookmarksDir.deleteSync(recursive: true);
   }, skip: server == null || Platform.environment['WEBBY_VAULT_FILE'] == null ? 'needs a sync server' : false);
 }

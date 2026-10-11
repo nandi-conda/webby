@@ -134,15 +134,17 @@ class SyncSettings {
         if (lastError != null) 'lastError': lastError,
       };
 
-  BlobStore store(SyncKeys keys) {
+  /// The passwords blob, or with [bookmarks] the bookmarks one.
+  BlobStore store(SyncKeys keys, {bool bookmarks = false}) {
     final base = server.endsWith('/') ? server.substring(0, server.length - 1) : server;
+    final blobId = bookmarks ? keys.bookmarksBlobId : keys.blobId;
     if (backend == SyncBackend.webdav) {
       final login = base64Encode(utf8.encode('$username:$password'));
-      return HttpBlobStore(Uri.parse('$base/webby-sync-${keys.blobId.substring(0, 32)}.json'),
+      return HttpBlobStore(Uri.parse('$base/webby-sync-${blobId.substring(0, 32)}.json'),
           {HttpHeaders.authorizationHeader: 'Basic $login'});
     }
     return HttpBlobStore(
-        Uri.parse('$base/v1/blobs/${keys.blobId}'), {HttpHeaders.authorizationHeader: 'Bearer ${keys.authToken}'});
+        Uri.parse('$base/v1/blobs/$blobId'), {HttpHeaders.authorizationHeader: 'Bearer ${keys.authToken}'});
   }
 }
 
