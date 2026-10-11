@@ -29,10 +29,18 @@ if [ "$(git rev-parse -q --verify HEAD || true)" != "$LADYBIRD_COMMIT" ]; then
     git checkout -q -f FETCH_HEAD
 fi
 
-# Teach Ladybird's UI/ about the Flutter frontend, and point UI/Flutter at our native shim.
-if ! grep -q LADYBIRD_UI_FLUTTER UI/CMakeLists.txt; then
-    git apply "$ROOT/patches/0001-ui-flutter-option.patch"
+# Our Ladybird patches: 0001 teaches UI/ about the Flutter frontend, 0002 adds Web Authentication (passkeys). When the
+# patch set changes, the tree goes back to the pinned commit first so every patch applies to pristine sources.
+PATCHES_STAMP="$(cat "$ROOT"/patches/*.patch | sha256sum | cut -d' ' -f1)"
+if [ "$(cat .git/webby-patches 2>/dev/null || true)" != "$PATCHES_STAMP" ]; then
+    git reset -q --hard HEAD
+    git clean -q -fd -- AK Libraries Meta Services UI
+    for patch in "$ROOT"/patches/*.patch; do
+        git apply "$patch"
+    done
+    echo "$PATCHES_STAMP" > .git/webby-patches
 fi
+# Point UI/Flutter at our native shim.
 ln -sfn "$ROOT/native" UI/Flutter
 
 export CC CXX

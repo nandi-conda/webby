@@ -1,12 +1,15 @@
 # Webby: a C ABI around LibWebView so a Flutter (dart:ffi) UI can drive Ladybird.
 # This directory is copied into the Ladybird tree as UI/Flutter by scripts/build_ladybird.sh.
 
+find_package(OpenSSL REQUIRED)
+
 add_library(ladybird SHARED
+    Authenticator.cpp
     WebbyView.cpp
     webby_ffi.cpp
 )
 target_include_directories(ladybird PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(ladybird PRIVATE LibImageDecoderClient LibJS LibRequests LibWeb LibFileSystem LibThreading)
+target_link_libraries(ladybird PRIVATE LibImageDecoderClient LibJS LibRequests LibWeb LibFileSystem LibThreading OpenSSL::Crypto)
 
 create_ladybird_bundle(ladybird)
 # After the bundle helper, which names the target "Ladybird".

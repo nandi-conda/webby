@@ -60,6 +60,20 @@ WEBBY_API int webby_view_can_go_back(WebbyView*);
 WEBBY_API int webby_view_can_go_forward(WebbyView*);
 WEBBY_API int webby_view_cursor(WebbyView*);
 
+/* Passkeys (Web Authentication). When a page calls navigator.credentials.create()
+ * or .get() with `publicKey`, the view holds the request until the UI answers.
+ * webby_view_webauthn_prompt() is "" when nothing is waiting, else a JSON object
+ * (it changes together with state_serial()):
+ *   { "type": "create", "rpId", "rpName", "origin", "userName", "userDisplayName",
+ *     "alreadyRegistered": bool }
+ *   { "type": "get", "rpId", "origin",
+ *     "accounts": [ { "userName", "userDisplayName", "createdAt" } ] }
+ * Answer with webby_view_webauthn_respond(): accepted = 0 cancels; for "get",
+ * account_index picks one of "accounts". Passkeys are stored in
+ * $WEBBY_PASSKEYS_FILE or ${XDG_DATA_HOME:-~/.local/share}/webby/passkeys.json. */
+WEBBY_API char const* webby_view_webauthn_prompt(WebbyView*);
+WEBBY_API void webby_view_webauthn_respond(WebbyView*, int accepted, int account_index);
+
 /* Input. Positions are in device pixels relative to the view's top-left.
  * button / buttons use Ladybird's bit values: 1 primary, 2 secondary,
  * 4 middle, 8 back, 16 forward. modifiers: 1 alt, 2 ctrl, 4 shift, 8 super. */

@@ -154,6 +154,13 @@ int webby_view_can_go_back(WebbyView* handle) { return handle->view->can_go_back
 int webby_view_can_go_forward(WebbyView* handle) { return handle->view->can_go_forward() ? 1 : 0; }
 int webby_view_cursor(WebbyView* handle) { return handle->view->cursor(); }
 
+char const* webby_view_webauthn_prompt(WebbyView* handle) { return handle->view->webauthn_prompt().characters(); }
+
+void webby_view_webauthn_respond(WebbyView* handle, int accepted, int account_index)
+{
+    handle->view->respond_to_webauthn(accepted != 0, account_index);
+}
+
 void webby_view_mouse_event(WebbyView* handle, int type, int x, int y, int button, int buttons, int modifiers, int click_count)
 {
     Web::MouseEvent::Type event_type;

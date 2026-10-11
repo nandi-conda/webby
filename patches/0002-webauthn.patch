@@ -1,0 +1,1476 @@
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+index 302b118d..493425aa 100644
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -991,6 +991,11 @@ set(SOURCES
+     WebAssembly/Table.cpp
+     WebAssembly/WebAssembly.cpp
+     WebAssembly/WebAssemblyModule.cpp
++    WebAuthn/AuthenticatorAssertionResponse.cpp
++    WebAuthn/AuthenticatorAttestationResponse.cpp
++    WebAuthn/AuthenticatorResponse.cpp
++    WebAuthn/PublicKeyCredential.cpp
++    WebAuthn/WebAuthn.cpp
+     WebAudio/AnalyserNode.cpp
+     WebAudio/AudioParamMap.cpp
+     WebAudio/AudioWorklet.cpp
+diff --git a/Libraries/LibWeb/CredentialManagement/CredentialsContainer.cpp b/Libraries/LibWeb/CredentialManagement/CredentialsContainer.cpp
+index 8487abcf..a101bcd1 100644
+--- a/Libraries/LibWeb/CredentialManagement/CredentialsContainer.cpp
++++ b/Libraries/LibWeb/CredentialManagement/CredentialsContainer.cpp
+@@ -7,6 +7,7 @@
+ #include <LibGC/Heap.h>
+ #include <LibJS/Runtime/Error.h>
+ #include <LibWeb/CredentialManagement/CredentialsContainer.h>
++#include <LibWeb/WebAuthn/WebAuthn.h>
+ #include <LibWeb/WebIDL/Promise.h>
+ 
+ namespace Web::CredentialManagement {
+@@ -29,8 +30,14 @@ static void reject_not_implemented_promise(GC::Ref<WebIDL::Promise> promise, Str
+ }
+ 
+ // https://www.w3.org/TR/credential-management-1/#dom-credentialscontainer-get
+-void CredentialsContainer::get(CredentialRequestOptions const&, GC::Ref<WebIDL::Promise> promise)
++void CredentialsContainer::get(CredentialRequestOptions const& options, GC::Ref<WebIDL::Promise> promise)
+ {
++    // https://w3c.github.io/webauthn/#sctn-getAssertion
++    if (options.public_key.has_value()) {
++        WebAuthn::get_assertion(WebIDL::promise_realm(promise), *options.public_key, options.mediation, options.signal, promise);
++        return;
++    }
++
+     dbgln("FIXME: Unimplemented CredentialsContainer::get()");
+     reject_not_implemented_promise(promise, "get"sv);
+ }
+@@ -43,8 +50,14 @@ void CredentialsContainer::store(Credential const&, GC::Ref<WebIDL::Promise> pro
+ }
+ 
+ // https://www.w3.org/TR/credential-management-1/#dom-credentialscontainer-create
+-void CredentialsContainer::create(CredentialCreationOptions const&, GC::Ref<WebIDL::Promise> promise)
++void CredentialsContainer::create(CredentialCreationOptions const& options, GC::Ref<WebIDL::Promise> promise)
+ {
++    // https://w3c.github.io/webauthn/#sctn-createCredential
++    if (options.public_key.has_value()) {
++        WebAuthn::create_credential(WebIDL::promise_realm(promise), *options.public_key, options.signal, promise);
++        return;
++    }
++
+     dbgln("FIXME: Unimplemented CredentialsContainer::create()");
+     reject_not_implemented_promise(promise, "create"sv);
+ }
+diff --git a/Libraries/LibWeb/Forward.h b/Libraries/LibWeb/Forward.h
+index 5ae4b256..d4306982 100644
+--- a/Libraries/LibWeb/Forward.h
++++ b/Libraries/LibWeb/Forward.h
+@@ -1240,6 +1240,15 @@ class WebAssemblyCache;
+ 
+ }
+ 
++namespace Web::WebAuthn {
++
++class AuthenticatorAssertionResponse;
++class AuthenticatorAttestationResponse;
++class AuthenticatorResponse;
++class PublicKeyCredential;
++
++}
++
+ namespace Web::WebAudio {
+ 
+ class AudioBuffer;
+diff --git a/Libraries/LibWeb/Page/Page.cpp b/Libraries/LibWeb/Page/Page.cpp
+index 81f7319d..00053ac7 100644
+--- a/Libraries/LibWeb/Page/Page.cpp
++++ b/Libraries/LibWeb/Page/Page.cpp
+@@ -131,6 +131,7 @@ void Page::visit_edges(JS::Cell::Visitor& visitor)
+     visitor.visit(m_window_rect_observer);
+     visitor.visit(m_on_pending_dialog_closed);
+     visitor.visit(m_pending_clipboard_requests);
++    visitor.visit(m_pending_webauthn_requests);
+     visitor.visit(m_emulated_position_data);
+     visitor.visit(m_emulated_position_data_observers);
+     visitor.visit(m_offscreen_canvases_pending_placeholder_commit);
+@@ -1260,6 +1261,20 @@ void Page::retrieved_clipboard_entries(u64 request_id, Vector<Clipboard::SystemC
+         (*request)->function()(move(items));
+ }
+ 
++void Page::request_webauthn(String request, WebAuthnCallback callback)
++{
++    auto request_id = m_next_webauthn_request_id++;
++    m_pending_webauthn_requests.set(request_id, callback);
++
++    client().page_did_request_webauthn(request_id, request);
++}
++
++void Page::webauthn_response(u64 request_id, String response)
++{
++    if (auto callback = m_pending_webauthn_requests.take(request_id); callback.has_value())
++        (*callback)->function()(move(response));
++}
++
+ // https://w3c.github.io/geolocation/#dfn-emulated-position-data
+ void Page::set_emulated_position_data(Geolocation::EmulatedPositionData data)
+ {
+diff --git a/Libraries/LibWeb/Page/Page.h b/Libraries/LibWeb/Page/Page.h
+index 3e28856e..dab28e3f 100644
+--- a/Libraries/LibWeb/Page/Page.h
++++ b/Libraries/LibWeb/Page/Page.h
+@@ -298,6 +298,11 @@ public:
+     void request_clipboard_entries(ClipboardRequest);
+     void retrieved_clipboard_entries(u64 request_id, Vector<Clipboard::SystemClipboardItem>);
+ 
++    // Web Authentication requests go to the browser process's authenticator as JSON; see WebAuthn/WebAuthn.h.
++    using WebAuthnCallback = GC::Ref<GC::Function<void(String)>>;
++    void request_webauthn(String request, WebAuthnCallback);
++    void webauthn_response(u64 request_id, String response);
++
+     using GeolocationPositionResult = Variant<Geolocation::CoordinatesData, Geolocation::GeolocationPositionError::ErrorCode>;
+     using GeolocationPositionCallback = GC::Ref<GC::Function<void(GeolocationPositionResult)>>;
+     enum class GeolocationRequestType : u8 {
+@@ -499,6 +504,9 @@ private:
+     HashMap<u64, ClipboardRequest> m_pending_clipboard_requests;
+     u64 m_next_clipboard_request_id { 0 };
+ 
++    HashMap<u64, WebAuthnCallback> m_pending_webauthn_requests;
++    u64 m_next_webauthn_request_id { 0 };
++
+     struct PendingGeolocationRequest {
+         GeolocationPositionCallback callback;
+         GeolocationRequestType type;
+@@ -797,6 +805,7 @@ public:
+ 
+     virtual void page_did_insert_clipboard_item(Clipboard::SystemClipboardItem const&, [[maybe_unused]] StringView presentation_style) { }
+     virtual void page_did_request_clipboard_entries([[maybe_unused]] u64 request_id) { }
++    virtual void page_did_request_webauthn([[maybe_unused]] u64 request_id, [[maybe_unused]] String const& request) { }
+     virtual void page_did_request_primary_paste() { }
+     virtual void page_did_complete_paste_action() { }
+     virtual void page_did_update_primary_selection(Utf16String const&) { }
+diff --git a/Libraries/LibWeb/WebAuthn/AuthenticatorAssertionResponse.cpp b/Libraries/LibWeb/WebAuthn/AuthenticatorAssertionResponse.cpp
+new file mode 100644
+index 00000000..61e2fcda
+--- /dev/null
++++ b/Libraries/LibWeb/WebAuthn/AuthenticatorAssertionResponse.cpp
+@@ -0,0 +1,59 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <LibGC/Heap.h>
++#include <LibJS/Runtime/ArrayBuffer.h>
++#include <LibJS/Runtime/Realm.h>
++#include <LibWeb/WebAuthn/AuthenticatorAssertionResponse.h>
++
++namespace Web::WebAuthn {
++
++GC_DEFINE_ALLOCATOR(AuthenticatorAssertionResponse);
++
++GC::Ref<AuthenticatorAssertionResponse> AuthenticatorAssertionResponse::create(AssertionResponseData data)
++{
++    return GC::Heap::the().allocate<AuthenticatorAssertionResponse>(move(data));
++}
++
++AuthenticatorAssertionResponse::AuthenticatorAssertionResponse(AssertionResponseData data)
++    : AuthenticatorResponse(move(data.client_data_json))
++    , m_authenticator_data(move(data.authenticator_data))
++    , m_signature(move(data.signature))
++    , m_user_handle(move(data.user_handle))
++{
++}
++
++AuthenticatorAssertionResponse::~AuthenticatorAssertionResponse() = default;
++
++void AuthenticatorAssertionResponse::visit_edges(Visitor& visitor)
++{
++    Base::visit_edges(visitor);
++    visitor.visit(m_authenticator_data_object);
++    visitor.visit(m_signature_object);
++    visitor.visit(m_user_handle_object);
++}
++
++// https://w3c.github.io/webauthn/#dom-authenticatorassertionresponse-authenticatordata
++GC::Ref<JS::ArrayBuffer> AuthenticatorAssertionResponse::authenticator_data(JS::Realm& realm)
++{
++    return array_buffer_for(realm, m_authenticator_data_object, m_authenticator_data);
++}
++
++// https://w3c.github.io/webauthn/#dom-authenticatorassertionresponse-signature
++GC::Ref<JS::ArrayBuffer> AuthenticatorAssertionResponse::signature(JS::Realm& realm)
++{
++    return array_buffer_for(realm, m_signature_object, m_signature);
++}
++
++// https://w3c.github.io/webauthn/#dom-authenticatorassertionresponse-userhandle
++GC::Ptr<JS::ArrayBuffer> AuthenticatorAssertionResponse::user_handle(JS::Realm& realm)
++{
++    if (!m_user_handle.has_value())
++        return nullptr;
++    return array_buffer_for(realm, m_user_handle_object, *m_user_handle);
++}
++
++}
+diff --git a/Libraries/LibWeb/WebAuthn/AuthenticatorAssertionResponse.h b/Libraries/LibWeb/WebAuthn/AuthenticatorAssertionResponse.h
+new file mode 100644
+index 00000000..5712a880
+--- /dev/null
++++ b/Libraries/LibWeb/WebAuthn/AuthenticatorAssertionResponse.h
+@@ -0,0 +1,52 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/Optional.h>
++#include <LibWeb/WebAuthn/AuthenticatorResponse.h>
++
++namespace Web::WebAuthn {
++
++struct AssertionResponseData {
++    ByteBuffer client_data_json;
++    ByteBuffer authenticator_data;
++    ByteBuffer signature;
++    Optional<ByteBuffer> user_handle;
++};
++
++// https://w3c.github.io/webauthn/#authenticatorassertionresponse
++class AuthenticatorAssertionResponse final : public AuthenticatorResponse {
++    WEB_WRAPPABLE(AuthenticatorAssertionResponse, AuthenticatorResponse);
++    GC_DECLARE_ALLOCATOR(AuthenticatorAssertionResponse);
++
++public:
++    [[nodiscard]] static GC::Ref<AuthenticatorAssertionResponse> create(AssertionResponseData);
++    virtual ~AuthenticatorAssertionResponse() override;
++
++    GC::Ref<JS::ArrayBuffer> authenticator_data(JS::Realm&);
++    GC::Ref<JS::ArrayBuffer> signature(JS::Realm&);
++    GC::Ptr<JS::ArrayBuffer> user_handle(JS::Realm&);
++
++    ByteBuffer const& authenticator_data_bytes() const { return m_authenticator_data; }
++    ByteBuffer const& signature_bytes() const { return m_signature; }
++    Optional<ByteBuffer> const& user_handle_bytes() const { return m_user_handle; }
++
++private:
++    explicit AuthenticatorAssertionResponse(AssertionResponseData);
++
++    virtual void visit_edges(Visitor&) override;
++
++    ByteBuffer m_authenticator_data;
++    ByteBuffer m_signature;
++    Optional<ByteBuffer> m_user_handle;
++
++    GC::Ptr<JS::ArrayBuffer> m_authenticator_data_object;
++    GC::Ptr<JS::ArrayBuffer> m_signature_object;
++    GC::Ptr<JS::ArrayBuffer> m_user_handle_object;
++};
++
++}
+diff --git a/Libraries/LibWeb/WebAuthn/AuthenticatorAssertionResponse.idl b/Libraries/LibWeb/WebAuthn/AuthenticatorAssertionResponse.idl
+new file mode 100644
+index 00000000..82b9299a
+--- /dev/null
++++ b/Libraries/LibWeb/WebAuthn/AuthenticatorAssertionResponse.idl
+@@ -0,0 +1,7 @@
++// https://w3c.github.io/webauthn/#authenticatorassertionresponse
++[SecureContext, Exposed=Window]
++interface AuthenticatorAssertionResponse : AuthenticatorResponse {
++    [SameObject, NeedsCallerRealm] readonly attribute ArrayBuffer authenticatorData;
++    [SameObject, NeedsCallerRealm] readonly attribute ArrayBuffer signature;
++    [SameObject, NeedsCallerRealm] readonly attribute ArrayBuffer? userHandle;
++};
+diff --git a/Libraries/LibWeb/WebAuthn/AuthenticatorAttestationResponse.cpp b/Libraries/LibWeb/WebAuthn/AuthenticatorAttestationResponse.cpp
+new file mode 100644
+index 00000000..d62198dc
+--- /dev/null
++++ b/Libraries/LibWeb/WebAuthn/AuthenticatorAttestationResponse.cpp
+@@ -0,0 +1,59 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <LibGC/Heap.h>
++#include <LibJS/Runtime/ArrayBuffer.h>
++#include <LibJS/Runtime/Realm.h>
++#include <LibWeb/WebAuthn/AuthenticatorAttestationResponse.h>
++
++namespace Web::WebAuthn {
++
++GC_DEFINE_ALLOCATOR(AuthenticatorAttestationResponse);
++
++GC::Ref<AuthenticatorAttestationResponse> AuthenticatorAttestationResponse::create(AttestationResponseData data)
++{
++    return GC::Heap::the().allocate<AuthenticatorAttestationResponse>(move(data));
++}
++
++AuthenticatorAttestationResponse::AuthenticatorAttestationResponse(AttestationResponseData data)
++    : AuthenticatorResponse(move(data.client_data_json))
++    , m_attestation_object(move(data.attestation_object))
++    , m_authenticator_data(move(data.authenticator_data))
++    , m_public_key(move(data.public_key))
++    , m_public_key_algorithm(data.public_key_algorithm)
++    , m_transports(move(data.transports))
++{
++}
++
++AuthenticatorAttestationResponse::~AuthenticatorAttestationResponse() = default;
++
++void AuthenticatorAttestationResponse::visit_edges(Visitor& visitor)
++{
++    Base::visit_edges(visitor);
++    visitor.visit(m_attestation_object_object);
++}
++
++// https://w3c.github.io/webauthn/#dom-authenticatorattestationresponse-attestationobject
++GC::Ref<JS::ArrayBuffer> AuthenticatorAttestationResponse::attestation_object(JS::Realm& realm)
++{
++    return array_buffer_for(realm, m_attestation_object_object, m_attestation_object);
++}
++
++// https://w3c.github.io/webauthn/#dom-authenticatorattestationresponse-getauthenticatordata
++GC::Ref<JS::ArrayBuffer> AuthenticatorAttestationResponse::get_authenticator_data(JS::Realm& realm) const
++{
++    return JS::ArrayBuffer::create(realm, MUST(ByteBuffer::copy(m_authenticator_data)));
++}
++
++// https://w3c.github.io/webauthn/#dom-authenticatorattestationresponse-getpublickey
++GC::Ptr<JS::ArrayBuffer> AuthenticatorAttestationResponse::get_public_key(JS::Realm& realm) const
++{
++    if (!m_public_key.has_value())
++        return nullptr;
++    return JS::ArrayBuffer::create(realm, MUST(ByteBuffer::copy(*m_public_key)));
++}
++
++}
+diff --git a/Libraries/LibWeb/WebAuthn/AuthenticatorAttestationResponse.h b/Libraries/LibWeb/WebAuthn/AuthenticatorAttestationResponse.h
+new file mode 100644
+index 00000000..2e3b5b3a
+--- /dev/null
++++ b/Libraries/LibWeb/WebAuthn/AuthenticatorAttestationResponse.h
+@@ -0,0 +1,58 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/Optional.h>
++#include <AK/String.h>
++#include <AK/Vector.h>
++#include <LibWeb/WebAuthn/AuthenticatorResponse.h>
++
++namespace Web::WebAuthn {
++
++struct AttestationResponseData {
++    ByteBuffer client_data_json;
++    ByteBuffer attestation_object;
++    ByteBuffer authenticator_data;
++    Optional<ByteBuffer> public_key;
++    i32 public_key_algorithm { 0 };
++    Vector<String> transports;
++};
++
++// https://w3c.github.io/webauthn/#authenticatorattestationresponse
++class AuthenticatorAttestationResponse final : public AuthenticatorResponse {
++    WEB_WRAPPABLE(AuthenticatorAttestationResponse, AuthenticatorResponse);
++    GC_DECLARE_ALLOCATOR(AuthenticatorAttestationResponse);
++
++public:
++    [[nodiscard]] static GC::Ref<AuthenticatorAttestationResponse> create(AttestationResponseData);
++    virtual ~AuthenticatorAttestationResponse() override;
++
++    GC::Ref<JS::ArrayBuffer> attestation_object(JS::Realm&);
++    Vector<String> get_transports() const { return m_transports; }
++    GC::Ref<JS::ArrayBuffer> get_authenticator_data(JS::Realm&) const;
++    GC::Ptr<JS::ArrayBuffer> get_public_key(JS::Realm&) const;
++    i32 get_public_key_algorithm() const { return m_public_key_algorithm; }
++
++    ByteBuffer const& attestation_object_bytes() const { return m_attestation_object; }
++    ByteBuffer const& authenticator_data_bytes() const { return m_authenticator_data; }
++    Optional<ByteBuffer> const& public_key_bytes() const { return m_public_key; }
++
++private:
++    explicit AuthenticatorAttestationResponse(AttestationResponseData);
++
++    virtual void visit_edges(Visitor&) override;
++
++    ByteBuffer m_attestation_object;
++    ByteBuffer m_authenticator_data;
++    Optional<ByteBuffer> m_public_key;
++    i32 m_public_key_algorithm { 0 };
++    Vector<String> m_transports;
++
++    GC::Ptr<JS::ArrayBuffer> m_attestation_object_object;
++};
++
++}
+diff --git a/Libraries/LibWeb/WebAuthn/AuthenticatorAttestationResponse.idl b/Libraries/LibWeb/WebAuthn/AuthenticatorAttestationResponse.idl
+new file mode 100644
+index 00000000..febe4d38
+--- /dev/null
++++ b/Libraries/LibWeb/WebAuthn/AuthenticatorAttestationResponse.idl
+@@ -0,0 +1,9 @@
++// https://w3c.github.io/webauthn/#authenticatorattestationresponse
++[SecureContext, Exposed=Window]
++interface AuthenticatorAttestationResponse : AuthenticatorResponse {
++    [SameObject, NeedsCallerRealm] readonly attribute ArrayBuffer attestationObject;
++    sequence<DOMString> getTransports();
++    [NeedsCallerRealm] ArrayBuffer getAuthenticatorData();
++    [NeedsCallerRealm] ArrayBuffer? getPublicKey();
++    long getPublicKeyAlgorithm();
++};
+diff --git a/Libraries/LibWeb/WebAuthn/AuthenticatorResponse.cpp b/Libraries/LibWeb/WebAuthn/AuthenticatorResponse.cpp
+new file mode 100644
+index 00000000..02f69acd
+--- /dev/null
++++ b/Libraries/LibWeb/WebAuthn/AuthenticatorResponse.cpp
+@@ -0,0 +1,41 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <LibJS/Runtime/ArrayBuffer.h>
++#include <LibJS/Runtime/Realm.h>
++#include <LibWeb/WebAuthn/AuthenticatorResponse.h>
++
++namespace Web::WebAuthn {
++
++GC_DEFINE_ALLOCATOR(AuthenticatorResponse);
++
++AuthenticatorResponse::AuthenticatorResponse(ByteBuffer client_data_json)
++    : m_client_data_json(move(client_data_json))
++{
++}
++
++AuthenticatorResponse::~AuthenticatorResponse() = default;
++
++void AuthenticatorResponse::visit_edges(Visitor& visitor)
++{
++    Base::visit_edges(visitor);
++    visitor.visit(m_client_data_json_object);
++}
++
++GC::Ref<JS::ArrayBuffer> AuthenticatorResponse::array_buffer_for(JS::Realm& realm, GC::Ptr<JS::ArrayBuffer>& cache, ByteBuffer const& bytes)
++{
++    if (!cache)
++        cache = JS::ArrayBuffer::create(realm, MUST(ByteBuffer::copy(bytes)));
++    return *cache;
++}
++
++// https://w3c.github.io/webauthn/#dom-authenticatorresponse-clientdatajson
++GC::Ref<JS::ArrayBuffer> AuthenticatorResponse::client_data_json(JS::Realm& realm)
++{
++    return array_buffer_for(realm, m_client_data_json_object, m_client_data_json);
++}
++
++}
+diff --git a/Libraries/LibWeb/WebAuthn/AuthenticatorResponse.h b/Libraries/LibWeb/WebAuthn/AuthenticatorResponse.h
+new file mode 100644
+index 00000000..978a7510
+--- /dev/null
++++ b/Libraries/LibWeb/WebAuthn/AuthenticatorResponse.h
+@@ -0,0 +1,40 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/ByteBuffer.h>
++#include <LibGC/Ptr.h>
++#include <LibJS/Forward.h>
++#include <LibWeb/Bindings/Wrappable.h>
++
++namespace Web::WebAuthn {
++
++// https://w3c.github.io/webauthn/#authenticatorresponse
++class AuthenticatorResponse : public Bindings::GCAllocatedWrappable {
++    WEB_WRAPPABLE(AuthenticatorResponse, Bindings::GCAllocatedWrappable);
++    GC_DECLARE_ALLOCATOR(AuthenticatorResponse);
++
++public:
++    virtual ~AuthenticatorResponse() override;
++
++    GC::Ref<JS::ArrayBuffer> client_data_json(JS::Realm&);
++    ByteBuffer const& client_data_json_bytes() const { return m_client_data_json; }
++
++protected:
++    explicit AuthenticatorResponse(ByteBuffer client_data_json);
++
++    virtual void visit_edges(Visitor&) override;
++
++    // [SameObject] ArrayBuffer attributes are created lazily, in the realm that first asks for them.
++    static GC::Ref<JS::ArrayBuffer> array_buffer_for(JS::Realm&, GC::Ptr<JS::ArrayBuffer>& cache, ByteBuffer const& bytes);
++
++private:
++    ByteBuffer m_client_data_json;
++    GC::Ptr<JS::ArrayBuffer> m_client_data_json_object;
++};
++
++}
+diff --git a/Libraries/LibWeb/WebAuthn/AuthenticatorResponse.idl b/Libraries/LibWeb/WebAuthn/AuthenticatorResponse.idl
+new file mode 100644
+index 00000000..febb93f6
+--- /dev/null
++++ b/Libraries/LibWeb/WebAuthn/AuthenticatorResponse.idl
+@@ -0,0 +1,5 @@
++// https://w3c.github.io/webauthn/#authenticatorresponse
++[SecureContext, Exposed=Window]
++interface AuthenticatorResponse {
++    [SameObject, NeedsCallerRealm] readonly attribute ArrayBuffer clientDataJSON;
++};
+diff --git a/Libraries/LibWeb/WebAuthn/PublicKeyCredential.cpp b/Libraries/LibWeb/WebAuthn/PublicKeyCredential.cpp
+new file mode 100644
+index 00000000..2be4cb59
+--- /dev/null
++++ b/Libraries/LibWeb/WebAuthn/PublicKeyCredential.cpp
+@@ -0,0 +1,155 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <AK/Base64.h>
++#include <AK/Enumerate.h>
++#include <LibGC/Heap.h>
++#include <LibJS/Runtime/Array.h>
++#include <LibJS/Runtime/ArrayBuffer.h>
++#include <LibJS/Runtime/Object.h>
++#include <LibJS/Runtime/PrimitiveString.h>
++#include <LibJS/Runtime/Realm.h>
++#include <LibWeb/WebAuthn/AuthenticatorAssertionResponse.h>
++#include <LibWeb/WebAuthn/AuthenticatorAttestationResponse.h>
++#include <LibWeb/WebAuthn/PublicKeyCredential.h>
++
++namespace Web::WebAuthn {
++
++GC_DEFINE_ALLOCATOR(PublicKeyCredential);
++
++static Utf16String base64url(ReadonlyBytes bytes)
++{
++    return MUST(encode_base64url_to_utf16(bytes, AK::OmitPadding::Yes));
++}
++
++GC::Ref<PublicKeyCredential> PublicKeyCredential::create(ByteBuffer raw_id, GC::Ref<AuthenticatorResponse> response, ClientExtensionResults extension_results)
++{
++    return GC::Heap::the().allocate<PublicKeyCredential>(move(raw_id), response, move(extension_results));
++}
++
++PublicKeyCredential::PublicKeyCredential(ByteBuffer raw_id, GC::Ref<AuthenticatorResponse> response, ClientExtensionResults extension_results)
++    // https://w3c.github.io/webauthn/#dom-publickeycredential-id
++    // This attribute is inherited from Credential, though PublicKeyCredential overrides Credential's getter, instead
++    // returning the base64url encoding of the data contained in the object's [[identifier]] internal slot.
++    : Credential(base64url(raw_id))
++    , m_raw_id(move(raw_id))
++    , m_response(response)
++    , m_client_extension_results(move(extension_results))
++{
++}
++
++PublicKeyCredential::~PublicKeyCredential() = default;
++
++void PublicKeyCredential::visit_edges(Visitor& visitor)
++{
++    Base::visit_edges(visitor);
++    visitor.visit(m_response);
++    visitor.visit(m_raw_id_object);
++}
++
++Utf16FlyString const& PublicKeyCredential::type() const
++{
++    static Utf16FlyString const& type = *new Utf16FlyString("public-key"_utf16_fly_string);
++    return type;
++}
++
++// https://w3c.github.io/webauthn/#dom-publickeycredential-isuserverifyingplatformauthenticatoravailable
++GC::Ref<WebIDL::Promise> PublicKeyCredential::is_user_verifying_platform_authenticator_available(JS::VM& vm)
++{
++    // The browser's built-in authenticator is a platform authenticator; the user confirms each use in the browser UI.
++    return WebIDL::create_resolved_promise(*vm.current_realm(), JS::Value(true));
++}
++
++// https://w3c.github.io/webauthn/#dom-publickeycredential-getclientcapabilities
++GC::Ref<WebIDL::Promise> PublicKeyCredential::get_client_capabilities(JS::VM& vm)
++{
++    auto& realm = *vm.current_realm();
++    auto capabilities = JS::Object::create(realm, realm.intrinsics().object_prototype());
++    auto set = [&](StringView key, bool value) {
++        MUST(capabilities->create_data_property(Utf16FlyString::from_utf8(key), JS::Value(value)));
++    };
++    set("conditionalCreate"sv, false);
++    set("conditionalGet"sv, false);
++    set("hybridTransport"sv, false);
++    set("passkeyPlatformAuthenticator"sv, true);
++    set("userVerifyingPlatformAuthenticator"sv, true);
++    set("relatedOrigins"sv, false);
++    set("signalAllAcceptedCredentials"sv, false);
++    set("signalCurrentUserDetails"sv, false);
++    set("signalUnknownCredential"sv, false);
++    set("extension:credProps"sv, true);
++    return WebIDL::create_resolved_promise(realm, capabilities);
++}
++
++// https://w3c.github.io/webauthn/#dom-publickeycredential-rawid
++GC::Ref<JS::ArrayBuffer> PublicKeyCredential::raw_id(JS::Realm& realm)
++{
++    if (!m_raw_id_object)
++        m_raw_id_object = JS::ArrayBuffer::create(realm, MUST(ByteBuffer::copy(m_raw_id)));
++    return *m_raw_id_object;
++}
++
++// https://w3c.github.io/webauthn/#dom-publickeycredential-authenticatorattachment
++Optional<String> PublicKeyCredential::authenticator_attachment() const
++{
++    return "platform"_string;
++}
++
++// https://w3c.github.io/webauthn/#dom-publickeycredential-getclientextensionresults
++GC::Ref<JS::Object> PublicKeyCredential::get_client_extension_results(JS::Realm& realm) const
++{
++    auto results = JS::Object::create(realm, realm.intrinsics().object_prototype());
++    if (m_client_extension_results.cred_props_rk.has_value()) {
++        auto cred_props = JS::Object::create(realm, realm.intrinsics().object_prototype());
++        MUST(cred_props->create_data_property("rk"_utf16_fly_string, JS::Value(*m_client_extension_results.cred_props_rk)));
++        MUST(results->create_data_property("credProps"_utf16_fly_string, cred_props));
++    }
++    return results;
++}
++
++// https://w3c.github.io/webauthn/#dom-publickeycredential-tojson
++GC::Ref<JS::Object> PublicKeyCredential::to_json(JS::Realm& realm) const
++{
++    auto& vm = realm.vm();
++    auto make_object = [&] { return JS::Object::create(realm, realm.intrinsics().object_prototype()); };
++    auto set_string = [&](JS::Object& object, StringView key, Utf16String value) {
++        MUST(object.create_data_property(Utf16FlyString::from_utf8(key), JS::PrimitiveString::create(vm, move(value))));
++    };
++
++    auto json = make_object();
++    set_string(json, "id"sv, id());
++    set_string(json, "rawId"sv, base64url(m_raw_id));
++
++    auto response = make_object();
++    set_string(response, "clientDataJSON"sv, base64url(m_response->client_data_json_bytes()));
++
++    if (auto const* attestation = m_response->fast_as<AuthenticatorAttestationResponse>()) {
++        // https://w3c.github.io/webauthn/#dictdef-authenticatorattestationresponsejson
++        set_string(response, "authenticatorData"sv, base64url(attestation->authenticator_data_bytes()));
++        auto transports = MUST(JS::Array::create(realm, 0));
++        for (auto [i, transport] : enumerate(attestation->get_transports()))
++            MUST(transports->create_data_property(JS::PropertyKey { i }, JS::PrimitiveString::create(vm, Utf16String::from_utf8(transport))));
++        MUST(response->create_data_property("transports"_utf16_fly_string, transports));
++        if (auto const& public_key = attestation->public_key_bytes(); public_key.has_value())
++            set_string(response, "publicKey"sv, base64url(*public_key));
++        MUST(response->create_data_property("publicKeyAlgorithm"_utf16_fly_string, JS::Value(attestation->get_public_key_algorithm())));
++        set_string(response, "attestationObject"sv, base64url(attestation->attestation_object_bytes()));
++    } else if (auto const* assertion = m_response->fast_as<AuthenticatorAssertionResponse>()) {
++        // https://w3c.github.io/webauthn/#dictdef-authenticatorassertionresponsejson
++        set_string(response, "authenticatorData"sv, base64url(assertion->authenticator_data_bytes()));
++        set_string(response, "signature"sv, base64url(assertion->signature_bytes()));
++        if (auto const& user_handle = assertion->user_handle_bytes(); user_handle.has_value())
++            set_string(response, "userHandle"sv, base64url(*user_handle));
++    }
++    MUST(json->create_data_property("response"_utf16_fly_string, response));
++
++    set_string(json, "authenticatorAttachment"sv, "platform"_utf16);
++    MUST(json->create_data_property("clientExtensionResults"_utf16_fly_string, get_client_extension_results(realm)));
++    set_string(json, "type"sv, "public-key"_utf16);
++    return json;
++}
++
++}
+diff --git a/Libraries/LibWeb/WebAuthn/PublicKeyCredential.h b/Libraries/LibWeb/WebAuthn/PublicKeyCredential.h
+new file mode 100644
+index 00000000..a372ceb9
+--- /dev/null
++++ b/Libraries/LibWeb/WebAuthn/PublicKeyCredential.h
+@@ -0,0 +1,55 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/ByteBuffer.h>
++#include <AK/Optional.h>
++#include <LibWeb/Bindings/PublicKeyCredential.h>
++#include <LibWeb/CredentialManagement/Credential.h>
++#include <LibWeb/WebAuthn/AuthenticatorResponse.h>
++#include <LibWeb/WebIDL/Promise.h>
++
++namespace Web::WebAuthn {
++
++struct ClientExtensionResults {
++    // https://w3c.github.io/webauthn/#sctn-authenticator-credential-properties-extension
++    Optional<bool> cred_props_rk;
++};
++
++// https://w3c.github.io/webauthn/#publickeycredential
++class PublicKeyCredential final : public CredentialManagement::Credential {
++    WEB_WRAPPABLE(PublicKeyCredential, CredentialManagement::Credential);
++    GC_DECLARE_ALLOCATOR(PublicKeyCredential);
++
++public:
++    [[nodiscard]] static GC::Ref<PublicKeyCredential> create(ByteBuffer raw_id, GC::Ref<AuthenticatorResponse>, ClientExtensionResults);
++    virtual ~PublicKeyCredential() override;
++
++    static GC::Ref<WebIDL::Promise> is_user_verifying_platform_authenticator_available(JS::VM&);
++    static GC::Ref<WebIDL::Promise> get_client_capabilities(JS::VM&);
++
++    GC::Ref<JS::ArrayBuffer> raw_id(JS::Realm&);
++    GC::Ref<AuthenticatorResponse> response() const { return m_response; }
++    Optional<String> authenticator_attachment() const;
++    GC::Ref<JS::Object> get_client_extension_results(JS::Realm&) const;
++    GC::Ref<JS::Object> to_json(JS::Realm&) const;
++
++    virtual Utf16FlyString const& type() const override;
++
++private:
++    PublicKeyCredential(ByteBuffer raw_id, GC::Ref<AuthenticatorResponse>, ClientExtensionResults);
++
++    virtual void visit_edges(Visitor&) override;
++
++    ByteBuffer m_raw_id;
++    GC::Ref<AuthenticatorResponse> m_response;
++    ClientExtensionResults m_client_extension_results;
++
++    GC::Ptr<JS::ArrayBuffer> m_raw_id_object;
++};
++
++}
+diff --git a/Libraries/LibWeb/WebAuthn/PublicKeyCredential.idl b/Libraries/LibWeb/WebAuthn/PublicKeyCredential.idl
+new file mode 100644
+index 00000000..7b09c6fc
+--- /dev/null
++++ b/Libraries/LibWeb/WebAuthn/PublicKeyCredential.idl
+@@ -0,0 +1,91 @@
++// https://w3c.github.io/webauthn/#publickeycredential
++[SecureContext, Exposed=Window]
++interface PublicKeyCredential : Credential {
++    [SameObject, NeedsCallerRealm] readonly attribute ArrayBuffer rawId;
++    [SameObject] readonly attribute AuthenticatorResponse response;
++    readonly attribute DOMString? authenticatorAttachment;
++    [NeedsCallerRealm] object getClientExtensionResults();
++    static Promise<boolean> isUserVerifyingPlatformAuthenticatorAvailable();
++    // FIXME: The spec returns Promise<PublicKeyCredentialClientCapabilities>, a record<DOMString, boolean>.
++    static Promise<any> getClientCapabilities();
++    [NeedsCallerRealm] object toJSON();
++};
++
++// https://w3c.github.io/webauthn/#dictionary-pkcredentialentity
++dictionary PublicKeyCredentialEntity {
++    required DOMString name;
++};
++
++// https://w3c.github.io/webauthn/#dictionary-rp-credential-params
++dictionary PublicKeyCredentialRpEntity : PublicKeyCredentialEntity {
++    DOMString id;
++};
++
++// https://w3c.github.io/webauthn/#dictionary-user-credential-params
++dictionary PublicKeyCredentialUserEntity : PublicKeyCredentialEntity {
++    required BufferSource id;
++    required DOMString displayName;
++};
++
++// https://w3c.github.io/webauthn/#dictionary-credential-params
++dictionary PublicKeyCredentialParameters {
++    required DOMString type;
++    required long alg;
++};
++
++// https://w3c.github.io/webauthn/#dictionary-credential-descriptor
++dictionary PublicKeyCredentialDescriptor {
++    required DOMString type;
++    required BufferSource id;
++    sequence<DOMString> transports;
++};
++
++// https://w3c.github.io/webauthn/#dictionary-authenticatorSelection
++dictionary AuthenticatorSelectionCriteria {
++    DOMString authenticatorAttachment;
++    DOMString residentKey;
++    boolean requireResidentKey = false;
++    DOMString userVerification = "preferred";
++};
++
++// https://w3c.github.io/webauthn/#dictdef-authenticationextensionsclientinputs
++dictionary AuthenticationExtensionsClientInputs {
++    // https://w3c.github.io/webauthn/#sctn-authenticator-credential-properties-extension
++    boolean credProps;
++};
++
++// https://w3c.github.io/webauthn/#dictionary-makecredentialoptions
++dictionary PublicKeyCredentialCreationOptions {
++    required PublicKeyCredentialRpEntity rp;
++    required PublicKeyCredentialUserEntity user;
++    required BufferSource challenge;
++    required sequence<PublicKeyCredentialParameters> pubKeyCredParams;
++    unsigned long timeout;
++    sequence<PublicKeyCredentialDescriptor> excludeCredentials;
++    AuthenticatorSelectionCriteria authenticatorSelection;
++    sequence<DOMString> hints;
++    DOMString attestation = "none";
++    sequence<DOMString> attestationFormats;
++    AuthenticationExtensionsClientInputs extensions;
++};
++
++// https://w3c.github.io/webauthn/#dictionary-assertion-options
++dictionary PublicKeyCredentialRequestOptions {
++    required BufferSource challenge;
++    unsigned long timeout;
++    DOMString rpId;
++    sequence<PublicKeyCredentialDescriptor> allowCredentials;
++    DOMString userVerification = "preferred";
++    sequence<DOMString> hints;
++    AuthenticationExtensionsClientInputs extensions;
++};
++
++// https://w3c.github.io/webauthn/#sctn-credentialcreationoptions-extension
++partial dictionary CredentialCreationOptions {
++    PublicKeyCredentialCreationOptions publicKey;
++};
++
++// https://w3c.github.io/webauthn/#sctn-credentialrequestoptions-extension
++partial dictionary CredentialRequestOptions {
++    PublicKeyCredentialRequestOptions publicKey;
++};
+diff --git a/Libraries/LibWeb/WebAuthn/WebAuthn.cpp b/Libraries/LibWeb/WebAuthn/WebAuthn.cpp
+new file mode 100644
+index 00000000..3dc6655f
+--- /dev/null
++++ b/Libraries/LibWeb/WebAuthn/WebAuthn.cpp
+@@ -0,0 +1,434 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <AK/Base64.h>
++#include <AK/JsonArray.h>
++#include <AK/JsonObject.h>
++#include <AK/JsonValue.h>
++#include <AK/RefCounted.h>
++#include <AK/StringBuilder.h>
++#include <LibCrypto/Hash/SHA2.h>
++#include <LibGC/Heap.h>
++#include <LibJS/Runtime/Error.h>
++#include <LibJS/Runtime/Realm.h>
++#include <LibWeb/Bindings/WrapperWorld.h>
++#include <LibWeb/DOM/AbortSignal.h>
++#include <LibWeb/DOM/Document.h>
++#include <LibWeb/HTML/EventLoop/EventLoop.h>
++#include <LibWeb/HTML/LocalNavigable.h>
++#include <LibWeb/HTML/Navigable.h>
++#include <LibWeb/HTML/Scripting/Environments.h>
++#include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
++#include <LibWeb/HTML/Window.h>
++#include <LibWeb/Page/Page.h>
++#include <LibWeb/WebAuthn/AuthenticatorAssertionResponse.h>
++#include <LibWeb/WebAuthn/AuthenticatorAttestationResponse.h>
++#include <LibWeb/WebAuthn/PublicKeyCredential.h>
++#include <LibWeb/WebAuthn/WebAuthn.h>
++#include <LibWeb/WebIDL/AbstractOperations.h>
++#include <LibWeb/WebIDL/Buffers.h>
++#include <LibWeb/WebIDL/DOMException.h>
++#include <LibWeb/WebIDL/Promise.h>
++
++namespace Web::WebAuthn {
++
++// https://www.iana.org/assignments/cose/cose.xhtml#algorithms
++static constexpr i32 COSE_ALGORITHM_ES256 = -7;
++static constexpr i32 COSE_ALGORITHM_RS256 = -257;
++
++// One ceremony: settled at most once, by the authenticator's reply or by the abort signal.
++class Ceremony : public RefCounted<Ceremony> {
++public:
++    bool settled { false };
++    Optional<DOM::AbortSignal::AbortAlgorithmID> abort_algorithm_id;
++};
++
++static String base64url(ReadonlyBytes bytes)
++{
++    return MUST(encode_base64url(bytes, AK::OmitPadding::Yes));
++}
++
++[[maybe_unused]] static String to_utf8(String const& string) { return string; }
++static String to_utf8(Utf16String const& string) { return string.to_utf8(); }
++
++template<typename BufferSourceType>
++static ErrorOr<ByteBuffer> copy_buffer_source(BufferSourceType const& buffer_source)
++{
++    return WebIDL::get_buffer_source_copy(WebIDL::BufferSource { buffer_source });
++}
++
++struct CallerContext {
++    GC::Ref<HTML::Window> window;
++    URL::Origin origin;
++    URL::Host effective_domain;
++    bool cross_origin { false };
++};
++
++static void reject(GC::Ref<WebIDL::Promise> promise, FlyString const& name, Utf16String const& message)
++{
++    WebIDL::reject_promise(promise, WebIDL::DOMException::create(name, message));
++}
++
++static void reject_with_type_error(JS::Realm& realm, GC::Ref<WebIDL::Promise> promise, Utf16String message)
++{
++    WebIDL::reject_promise(promise, JS::TypeError::create(realm, move(message)));
++}
++
++// Steps shared by https://w3c.github.io/webauthn/#sctn-createCredential and #sctn-getAssertion that establish who is
++// calling. Rejects the promise and returns an empty Optional on failure.
++static Optional<CallerContext> establish_caller(JS::Realm& realm, GC::Ref<WebIDL::Promise> promise)
++{
++    auto& window = HTML::relevant_window(realm.global_object());
++    auto& document = window.associated_document();
++
++    // Let callerOrigin be origin. If callerOrigin is an opaque origin, return a DOMException whose name is
++    // "NotAllowedError", and terminate this algorithm.
++    auto origin = HTML::relevant_settings_object(window).origin();
++    if (origin.is_opaque()) {
++        reject(promise, "NotAllowedError"_fly_string, "Web Authentication is not available to opaque origins"_utf16);
++        return {};
++    }
++
++    // Let effectiveDomain be the callerOrigin's effective domain. If effective domain is not a valid domain, then return
++    // a DOMException whose name is "SecurityError" and terminate this algorithm.
++    auto effective_domain = origin.effective_domain();
++    if (!effective_domain.has_value() || !effective_domain->is_domain() || effective_domain->is_empty_host()) {
++        reject(promise, "SecurityError"_fly_string, "The document's effective domain is not a valid domain"_utf16);
++        return {};
++    }
++
++    // AD-HOC: Ceremonies from cross-origin frames need the publickey-credentials-* permissions policy, which we don't
++    //         implement yet, so we only allow documents that are same-origin with their top-level document.
++    bool cross_origin = false;
++    if (auto navigable = document.navigable()) {
++        if (auto top_level_origin = navigable->active_document_top_level_origin(); top_level_origin.has_value())
++            cross_origin = !top_level_origin->is_same_origin(origin);
++    }
++    if (cross_origin) {
++        reject(promise, "NotAllowedError"_fly_string, "Web Authentication is not available in cross-origin frames"_utf16);
++        return {};
++    }
++
++    return CallerContext { window, move(origin), effective_domain.release_value(), cross_origin };
++}
++
++// https://w3c.github.io/webauthn/#rp-id
++static Optional<String> determine_rp_id(Optional<String> const& requested_rp_id, CallerContext const& caller, GC::Ref<WebIDL::Promise> promise)
++{
++    if (!requested_rp_id.has_value())
++        return caller.effective_domain.serialize();
++
++    // If options.rp.id (or options.rpId) is not a registrable domain suffix of and is not equal to effectiveDomain,
++    // return a DOMException whose name is "SecurityError", and terminate this algorithm.
++    auto rp_id = requested_rp_id->to_ascii_lowercase();
++    auto rp_id_utf16 = Utf16String::from_utf8(rp_id);
++    if (!DOM::is_a_registrable_domain_suffix_of_or_is_equal_to(rp_id_utf16.utf16_view(), caller.effective_domain)) {
++        reject(promise, "SecurityError"_fly_string, "The relying party ID is not a registrable domain suffix of, nor equal to the current domain"_utf16);
++        return {};
++    }
++    return rp_id;
++}
++
++// https://w3c.github.io/webauthn/#clientdatajson-serialization
++static ByteBuffer serialize_client_data(StringView type, ReadonlyBytes challenge, CallerContext const& caller)
++{
++    StringBuilder builder;
++    builder.append("{\"type\":"sv);
++    builder.append(JsonValue(MUST(String::from_utf8(type))).serialized());
++    builder.append(",\"challenge\":"sv);
++    builder.append(JsonValue(base64url(challenge)).serialized());
++    builder.append(",\"origin\":"sv);
++    builder.append(JsonValue(caller.origin.serialize()).serialized());
++    builder.append(",\"crossOrigin\":"sv);
++    builder.append(caller.cross_origin ? "true"sv : "false"sv);
++    builder.append('}');
++    return MUST(builder.to_byte_buffer());
++}
++
++static ByteBuffer hash_client_data(ReadonlyBytes client_data_json)
++{
++    auto digest = ::Crypto::Hash::SHA256::hash(client_data_json);
++    return MUST(ByteBuffer::copy(digest.bytes()));
++}
++
++static ErrorOr<ByteBuffer> decode_member(JsonObject const& object, StringView key)
++{
++    auto value = object.get_string(key);
++    if (!value.has_value())
++        return Error::from_string_literal("Missing member in authenticator reply");
++    return decode_base64url(*value);
++}
++
++static FlyString exception_name_from_reply(JsonObject const& reply)
++{
++    static constexpr Array allowed_names { "NotAllowedError"sv, "InvalidStateError"sv, "NotSupportedError"sv, "SecurityError"sv, "AbortError"sv, "ConstraintError"sv, "UnknownError"sv };
++    auto name = reply.get_string("error"sv);
++    if (name.has_value()) {
++        for (auto allowed_name : allowed_names) {
++            if (*name == allowed_name)
++                return FlyString { *name };
++        }
++    }
++    return "NotAllowedError"_fly_string;
++}
++
++// Sends the request to the authenticator and calls on_success with its reply on the realm's event loop. Takes care of
++// abort signals, rejections and malformed replies.
++static void run_ceremony(JS::Realm& realm, CallerContext const& caller, JsonObject request, GC::Ptr<DOM::AbortSignal> signal, GC::Ref<WebIDL::Promise> promise,
++    Function<void(JsonObject const&)> on_success)
++{
++    auto ceremony = adopt_ref(*new Ceremony);
++
++    if (signal) {
++        ceremony->abort_algorithm_id = signal->add_abort_algorithm([&realm, ceremony, signal, promise] {
++            if (ceremony->settled)
++                return;
++            ceremony->settled = true;
++            HTML::TemporaryExecutionContext execution_context { realm };
++            WebIDL::reject_promise(promise, signal->reason());
++        });
++    }
++
++    auto success = GC::Function<void(JsonObject const&)>::create(GC::Heap::the(), move(on_success));
++    caller.window->page().request_webauthn(request.serialized(), GC::create_function(GC::Heap::the(), [&realm, ceremony, signal, promise, success](String reply_json) {
++        HTML::queue_global_task(HTML::Task::Source::UserInteraction, realm.global_object(), GC::create_function(GC::Heap::the(), [&realm, ceremony, signal, promise, success, reply_json = move(reply_json)] {
++            if (ceremony->settled)
++                return;
++            ceremony->settled = true;
++            if (signal && ceremony->abort_algorithm_id.has_value())
++                signal->remove_abort_algorithm(*ceremony->abort_algorithm_id);
++
++            HTML::TemporaryExecutionContext execution_context { realm };
++
++            auto reply = JsonValue::from_string(reply_json);
++            if (reply.is_error() || !reply.value().is_object()) {
++                reject(promise, "UnknownError"_fly_string, "The authenticator sent a malformed reply"_utf16);
++                return;
++            }
++            auto const& reply_object = reply.value().as_object();
++            if (reply_object.has("error"sv)) {
++                auto message = "The operation either timed out or was not allowed"_string;
++                if (auto reply_message = reply_object.get_string("message"sv); reply_message.has_value())
++                    message = *reply_message;
++                reject(promise, exception_name_from_reply(reply_object), Utf16String::from_utf8(message));
++                return;
++            }
++            success->function()(reply_object);
++        }));
++    }));
++}
++
++// https://w3c.github.io/webauthn/#sctn-createCredential
++void create_credential(JS::Realm& realm, Bindings::PublicKeyCredentialCreationOptions const& options, GC::Ptr<DOM::AbortSignal> signal, GC::Ref<WebIDL::Promise> promise)
++{
++    // If sameOriginWithAncestors is false: ... (see establish_caller())
++    // If options.signal is present and aborted, reject promise with options.signal's abort reason.
++    if (signal && signal->aborted()) {
++        WebIDL::reject_promise(promise, signal->reason());
++        return;
++    }
++
++    auto caller = establish_caller(realm, promise);
++    if (!caller.has_value())
++        return;
++
++    // If the length of options.user.id is not between 1 and 64 bytes (inclusive) then throw a TypeError.
++    auto user_id = copy_buffer_source(options.user.id);
++    if (user_id.is_error() || user_id.value().is_empty() || user_id.value().size() > 64) {
++        reject_with_type_error(realm, promise, "user.id must be between 1 and 64 bytes long"_utf16);
++        return;
++    }
++
++    auto challenge = copy_buffer_source(options.challenge);
++    if (challenge.is_error()) {
++        reject_with_type_error(realm, promise, "Unable to read the challenge"_utf16);
++        return;
++    }
++
++    Optional<String> requested_rp_id;
++    if (options.rp.id.has_value())
++        requested_rp_id = to_utf8(*options.rp.id);
++    auto rp_id = determine_rp_id(requested_rp_id, *caller, promise);
++    if (!rp_id.has_value())
++        return;
++
++    // Let credTypesAndPubKeyAlgs be a new list whose items are pairs of PublicKeyCredentialType and a
++    // COSEAlgorithmIdentifier. If pkOptions.pubKeyCredParams's size is zero, append ES256 and RS256.
++    JsonArray algorithms;
++    if (options.pub_key_cred_params.is_empty()) {
++        algorithms.must_append(COSE_ALGORITHM_ES256);
++        algorithms.must_append(COSE_ALGORITHM_RS256);
++    } else {
++        for (auto const& parameters : options.pub_key_cred_params) {
++            // If current.type does not contain a PublicKeyCredentialType supported by this implementation, then continue.
++            if (to_utf8(parameters.type) != "public-key"sv)
++                continue;
++            algorithms.must_append(parameters.alg);
++        }
++        // If credTypesAndPubKeyAlgs is empty, return a DOMException whose name is "NotSupportedError".
++        if (algorithms.is_empty()) {
++            reject(promise, "NotSupportedError"_fly_string, "None of the requested credential types are supported"_utf16);
++            return;
++        }
++    }
++
++    JsonArray exclude_credentials;
++    if (options.exclude_credentials.has_value()) {
++        for (auto const& descriptor : *options.exclude_credentials) {
++            if (to_utf8(descriptor.type) != "public-key"sv)
++                continue;
++            if (auto id = copy_buffer_source(descriptor.id); !id.is_error())
++                exclude_credentials.must_append(base64url(id.value()));
++        }
++    }
++
++    String resident_key = "preferred"_string;
++    String user_verification = "preferred"_string;
++    if (options.authenticator_selection.has_value()) {
++        auto const& selection = *options.authenticator_selection;
++        // If authenticatorSelection.authenticatorAttachment is "cross-platform", no authenticator we have can satisfy it.
++        if (selection.authenticator_attachment.has_value() && to_utf8(*selection.authenticator_attachment) == "cross-platform"sv) {
++            reject(promise, "NotAllowedError"_fly_string, "No security key is available"_utf16);
++            return;
++        }
++        if (selection.resident_key.has_value())
++            resident_key = to_utf8(*selection.resident_key);
++        else if (selection.require_resident_key)
++            resident_key = "required"_string;
++        user_verification = to_utf8(selection.user_verification);
++    }
++
++    bool wants_cred_props = options.extensions.has_value() && options.extensions->cred_props.value_or(false);
++
++    // Let collectedClientData be a new CollectedClientData instance ...
++    auto client_data_json = serialize_client_data("webauthn.create"sv, challenge.value(), *caller);
++    auto client_data_hash = hash_client_data(client_data_json);
++
++    JsonObject request;
++    request.set("type"sv, "create"_string);
++    request.set("origin"sv, caller->origin.serialize());
++    request.set("rpId"sv, *rp_id);
++    request.set("rpName"sv, to_utf8(options.rp.name));
++    request.set("userId"sv, base64url(user_id.value()));
++    request.set("userName"sv, to_utf8(options.user.name));
++    request.set("userDisplayName"sv, to_utf8(options.user.display_name));
++    request.set("clientDataHash"sv, base64url(client_data_hash));
++    request.set("excludeCredentials"sv, move(exclude_credentials));
++    request.set("residentKey"sv, resident_key);
++    request.set("userVerification"sv, user_verification);
++    request.set("algorithms"sv, move(algorithms));
++
++    run_ceremony(realm, *caller, move(request), signal, promise, [&realm, promise, client_data_json = move(client_data_json), wants_cred_props](JsonObject const& reply) mutable {
++        auto credential_id = decode_member(reply, "credentialId"sv);
++        auto authenticator_data = decode_member(reply, "authenticatorData"sv);
++        auto attestation_object = decode_member(reply, "attestationObject"sv);
++        auto public_key = decode_member(reply, "publicKey"sv);
++        if (credential_id.is_error() || authenticator_data.is_error() || attestation_object.is_error()) {
++            reject(promise, "UnknownError"_fly_string, "The authenticator sent an incomplete reply"_utf16);
++            return;
++        }
++
++        AttestationResponseData data;
++        data.client_data_json = move(client_data_json);
++        data.attestation_object = attestation_object.release_value();
++        data.authenticator_data = authenticator_data.release_value();
++        if (!public_key.is_error())
++            data.public_key = public_key.release_value();
++        data.public_key_algorithm = reply.get_integer<i32>("publicKeyAlgorithm"sv).value_or(COSE_ALGORITHM_ES256);
++        data.transports = { "internal"_string };
++
++        ClientExtensionResults extension_results;
++        if (wants_cred_props)
++            extension_results.cred_props_rk = reply.get_bool("residentKey"sv).value_or(true);
++
++        auto response = AuthenticatorAttestationResponse::create(move(data));
++        auto credential = PublicKeyCredential::create(credential_id.release_value(), response, move(extension_results));
++        WebIDL::resolve_promise(promise, Bindings::wrap(Bindings::host_defined_wrapper_world(realm), realm, credential));
++    });
++}
++
++// https://w3c.github.io/webauthn/#sctn-getAssertion
++void get_assertion(JS::Realm& realm, Bindings::PublicKeyCredentialRequestOptions const& options, Bindings::CredentialMediationRequirement mediation, GC::Ptr<DOM::AbortSignal> signal, GC::Ref<WebIDL::Promise> promise)
++{
++    if (signal && signal->aborted()) {
++        WebIDL::reject_promise(promise, signal->reason());
++        return;
++    }
++
++    // AD-HOC: We have no autofill UI for passkeys, so conditional mediation never completes, the same as a user who
++    //         never picks a passkey from the (absent) autofill list. It still honours the abort signal.
++    //         Credential.isConditionalMediationAvailable() tells sites not to rely on it.
++    if (mediation == Bindings::CredentialMediationRequirement::Conditional) {
++        if (signal) {
++            (void)signal->add_abort_algorithm([&realm, signal, promise] {
++                HTML::TemporaryExecutionContext execution_context { realm };
++                WebIDL::reject_promise(promise, signal->reason());
++            });
++        }
++        return;
++    }
++
++    auto caller = establish_caller(realm, promise);
++    if (!caller.has_value())
++        return;
++
++    auto challenge = copy_buffer_source(options.challenge);
++    if (challenge.is_error()) {
++        reject_with_type_error(realm, promise, "Unable to read the challenge"_utf16);
++        return;
++    }
++
++    Optional<String> requested_rp_id;
++    if (options.rp_id.has_value())
++        requested_rp_id = to_utf8(*options.rp_id);
++    auto rp_id = determine_rp_id(requested_rp_id, *caller, promise);
++    if (!rp_id.has_value())
++        return;
++
++    JsonArray allow_credentials;
++    if (options.allow_credentials.has_value()) {
++        for (auto const& descriptor : *options.allow_credentials) {
++            if (to_utf8(descriptor.type) != "public-key"sv)
++                continue;
++            if (auto id = copy_buffer_source(descriptor.id); !id.is_error())
++                allow_credentials.must_append(base64url(id.value()));
++        }
++    }
++
++    auto client_data_json = serialize_client_data("webauthn.get"sv, challenge.value(), *caller);
++    auto client_data_hash = hash_client_data(client_data_json);
++
++    JsonObject request;
++    request.set("type"sv, "get"_string);
++    request.set("origin"sv, caller->origin.serialize());
++    request.set("rpId"sv, *rp_id);
++    request.set("clientDataHash"sv, base64url(client_data_hash));
++    request.set("allowCredentials"sv, move(allow_credentials));
++    request.set("userVerification"sv, to_utf8(options.user_verification));
++
++    run_ceremony(realm, *caller, move(request), signal, promise, [&realm, promise, client_data_json = move(client_data_json)](JsonObject const& reply) mutable {
++        auto credential_id = decode_member(reply, "credentialId"sv);
++        auto authenticator_data = decode_member(reply, "authenticatorData"sv);
++        auto signature = decode_member(reply, "signature"sv);
++        if (credential_id.is_error() || authenticator_data.is_error() || signature.is_error()) {
++            reject(promise, "UnknownError"_fly_string, "The authenticator sent an incomplete reply"_utf16);
++            return;
++        }
++
++        AssertionResponseData data;
++        data.client_data_json = move(client_data_json);
++        data.authenticator_data = authenticator_data.release_value();
++        data.signature = signature.release_value();
++        if (auto user_handle = decode_member(reply, "userHandle"sv); !user_handle.is_error() && !user_handle.value().is_empty())
++            data.user_handle = user_handle.release_value();
++
++        auto response = AuthenticatorAssertionResponse::create(move(data));
++        auto credential = PublicKeyCredential::create(credential_id.release_value(), response, {});
++        WebIDL::resolve_promise(promise, Bindings::wrap(Bindings::host_defined_wrapper_world(realm), realm, credential));
++    });
++}
++
++}
+diff --git a/Libraries/LibWeb/WebAuthn/WebAuthn.h b/Libraries/LibWeb/WebAuthn/WebAuthn.h
+new file mode 100644
+index 00000000..f604be5d
+--- /dev/null
++++ b/Libraries/LibWeb/WebAuthn/WebAuthn.h
+@@ -0,0 +1,37 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <LibGC/Ptr.h>
++#include <LibJS/Forward.h>
++#include <LibWeb/Bindings/PublicKeyCredential.h>
++#include <LibWeb/Forward.h>
++
++// The client side of Web Authentication. The authenticator itself lives in the browser process: LibWeb sends it a JSON
++// request through PageClient::page_did_request_webauthn() and gets a JSON reply back through Page::webauthn_response().
++//
++// Request (UI process receives):
++//   { "type": "create", "origin", "rpId", "rpName", "userId" (base64url), "userName", "userDisplayName",
++//     "clientDataHash" (base64url), "excludeCredentials": [base64url], "residentKey", "userVerification",
++//     "algorithms": [COSE ids] }
++//   { "type": "get", "origin", "rpId", "clientDataHash", "allowCredentials": [base64url], "userVerification" }
++// Reply:
++//   create: { "credentialId", "authenticatorData", "attestationObject", "publicKey" (SPKI), "publicKeyAlgorithm",
++//             "residentKey" (bool) }
++//   get:    { "credentialId", "authenticatorData", "signature", "userHandle" (optional) }
++//   error:  { "error": "<DOMException name>", "message" }
++// All binary values are unpadded base64url.
++
++namespace Web::WebAuthn {
++
++// https://w3c.github.io/webauthn/#sctn-createCredential
++void create_credential(JS::Realm&, Bindings::PublicKeyCredentialCreationOptions const&, GC::Ptr<DOM::AbortSignal>, GC::Ref<WebIDL::Promise>);
++
++// https://w3c.github.io/webauthn/#sctn-getAssertion
++void get_assertion(JS::Realm&, Bindings::PublicKeyCredentialRequestOptions const&, Bindings::CredentialMediationRequirement, GC::Ptr<DOM::AbortSignal>, GC::Ref<WebIDL::Promise>);
++
++}
+diff --git a/Libraries/LibWeb/idl_files.cmake b/Libraries/LibWeb/idl_files.cmake
+index d4d36275..40aeecd6 100644
+--- a/Libraries/LibWeb/idl_files.cmake
++++ b/Libraries/LibWeb/idl_files.cmake
+@@ -585,6 +585,10 @@ libweb_js_bindings(WebAssembly/Memory)
+ libweb_js_bindings(WebAssembly/Module)
+ libweb_js_bindings(WebAssembly/Table)
+ libweb_js_bindings(WebAssembly/WebAssembly)
++libweb_js_bindings(WebAuthn/AuthenticatorAssertionResponse)
++libweb_js_bindings(WebAuthn/AuthenticatorAttestationResponse)
++libweb_js_bindings(WebAuthn/AuthenticatorResponse)
++libweb_js_bindings(WebAuthn/PublicKeyCredential)
+ libweb_js_bindings(WebAudio/AnalyserNode)
+ libweb_js_bindings(WebAudio/AudioParamMap)
+ libweb_js_bindings(WebAudio/AudioWorklet)
+diff --git a/Libraries/LibWebView/ViewImplementation.h b/Libraries/LibWebView/ViewImplementation.h
+index bef28f96..5f0c2425 100644
+--- a/Libraries/LibWebView/ViewImplementation.h
++++ b/Libraries/LibWebView/ViewImplementation.h
+@@ -480,6 +480,9 @@ public:
+     Function<void()> on_exit_fullscreen_window;
+     Function<void(Color current_color)> on_request_color_picker;
+     Function<void(WebContentPage& requesting_page, u64 request_id)> on_request_geolocation_position;
++    // A Web Authentication request (JSON, see LibWeb/WebAuthn/WebAuthn.h). Answer it with
++    // requesting_page.async_webauthn_response(request_id, reply_json).
++    Function<void(WebContentPage& requesting_page, u64 request_id, String const& request)> on_request_webauthn;
+     Function<void(WebContentPage& requesting_page, u64 request_id)> on_cancel_geolocation_position_request;
+     Function<void(WebContentPage& requesting_page, u64 request_id)> on_start_geolocation_position_watch;
+     Function<void(WebContentPage& requesting_page, u64 request_id)> on_stop_geolocation_position_watch;
+diff --git a/Libraries/LibWebView/WebContentPage.cpp b/Libraries/LibWebView/WebContentPage.cpp
+index 28587b5d..cd720e0f 100644
+--- a/Libraries/LibWebView/WebContentPage.cpp
++++ b/Libraries/LibWebView/WebContentPage.cpp
+@@ -1614,6 +1614,16 @@ void WebContentPage::did_update_indexed_database(String update)
+         view().notify_indexed_database_changed(parse_json(update, "IndexedDB update"sv));
+ }
+ 
++void WebContentPage::did_request_webauthn(u64 request_id, String request)
++{
++    // The authenticator belongs to the embedder; without one, every ceremony fails as if the user had cancelled it.
++    if (view().on_request_webauthn) {
++        view().on_request_webauthn(*this, request_id, request);
++        return;
++    }
++    async_webauthn_response(request_id, R"({"error":"NotAllowedError","message":"This browser has no authenticator"})"_string);
++}
++
+ void WebContentPage::did_request_clipboard_entries(u64 request_id)
+ {
+     Vector<Web::Clipboard::SystemClipboardItem> items;
+diff --git a/Libraries/LibWebView/WebContentPage.h b/Libraries/LibWebView/WebContentPage.h
+index b9f49235..320677b1 100644
+--- a/Libraries/LibWebView/WebContentPage.h
++++ b/Libraries/LibWebView/WebContentPage.h
+@@ -278,6 +278,7 @@ private:
+     virtual void did_change_storage_item(Web::StorageAPI::StorageEndpointType storage_endpoint, String url, Optional<Utf16String> key, Optional<Utf16String> old_value, Optional<Utf16String> new_value) override;
+     virtual void did_update_indexed_database(String update) override;
+     virtual void did_request_clipboard_entries(u64 request_id) override;
++    virtual void did_request_webauthn(u64 request_id, String request) override;
+     virtual void did_request_set_system_focus(bool has_system_focus) override;
+     virtual void did_request_set_system_visibility_state(Web::HTML::VisibilityState visibility_state) override;
+     virtual void did_request_navigation_start(Web::HTML::CrossProcessId navigable_id, Web::NavigationTarget target, URL::URL url, Utf16String navigation_id, Optional<Web::HTML::NavigationStartRequest> start_request) override;
+diff --git a/Services/WebContent/ConnectionFromClient.cpp b/Services/WebContent/ConnectionFromClient.cpp
+index 4c4a13e1..d3a4f8c9 100644
+--- a/Services/WebContent/ConnectionFromClient.cpp
++++ b/Services/WebContent/ConnectionFromClient.cpp
+@@ -3349,6 +3349,12 @@ void ConnectionFromClient::retrieved_clipboard_entries(Web::PageId page_id, u64
+         page->page().retrieved_clipboard_entries(request_id, move(items));
+ }
+ 
++void ConnectionFromClient::webauthn_response(Web::PageId page_id, u64 request_id, String response)
++{
++    if (auto page = this->page(page_id); page.has_value())
++        page->page().webauthn_response(request_id, move(response));
++}
++
+ void ConnectionFromClient::did_delete_all_cookies(Web::PageId page_id, u64 request_id)
+ {
+     if (auto page = this->page(page_id); page.has_value())
+diff --git a/Services/WebContent/ConnectionFromClient.h b/Services/WebContent/ConnectionFromClient.h
+index 41f552c0..eeaaaffd 100644
+--- a/Services/WebContent/ConnectionFromClient.h
++++ b/Services/WebContent/ConnectionFromClient.h
+@@ -269,6 +269,7 @@ private:
+     virtual void select_dropdown_closed(Web::PageId page_id, Optional<u32> selected_item_id) override;
+ 
+     virtual void retrieved_clipboard_entries(Web::PageId page_id, u64 request_id, Vector<Web::Clipboard::SystemClipboardItem>) override;
++    virtual void webauthn_response(Web::PageId page_id, u64 request_id, String response) override;
+ 
+     virtual void toggle_media_play_state(Web::PageId page_id) override;
+     virtual void toggle_media_mute_state(Web::PageId page_id) override;
+diff --git a/Services/WebContent/PageClient.cpp b/Services/WebContent/PageClient.cpp
+index 7d41dfbb..07d23f8e 100644
+--- a/Services/WebContent/PageClient.cpp
++++ b/Services/WebContent/PageClient.cpp
+@@ -1836,6 +1836,11 @@ void PageClient::page_did_request_clipboard_entries(u64 request_id)
+     client().async_did_request_clipboard_entries(m_id, request_id);
+ }
+ 
++void PageClient::page_did_request_webauthn(u64 request_id, String const& request)
++{
++    client().async_did_request_webauthn(m_id, request_id, request);
++}
++
+ void PageClient::page_did_request_primary_paste()
+ {
+     client().async_did_request_primary_paste(m_id);
+diff --git a/Services/WebContent/PageClient.h b/Services/WebContent/PageClient.h
+index 1511b536..cf26ca5f 100644
+--- a/Services/WebContent/PageClient.h
++++ b/Services/WebContent/PageClient.h
+@@ -343,6 +343,7 @@ private:
+     virtual void page_did_change_background_color(Gfx::Color color) override;
+     virtual void page_did_insert_clipboard_item(Web::Clipboard::SystemClipboardItem const&, StringView presentation_style) override;
+     virtual void page_did_request_clipboard_entries(u64 request_id) override;
++    virtual void page_did_request_webauthn(u64 request_id, String const& request) override;
+     virtual void page_did_request_primary_paste() override;
+     virtual void page_did_complete_paste_action() override;
+     virtual void page_did_update_primary_selection(Utf16String const&) override;
+diff --git a/Services/WebContent/WebContentClient.ipc b/Services/WebContent/WebContentClient.ipc
+index bb558e7a..b196da5f 100644
+--- a/Services/WebContent/WebContentClient.ipc
++++ b/Services/WebContent/WebContentClient.ipc
+@@ -231,6 +231,7 @@ endpoint WebContentClient routed by Web::PageId page_id
+ 
+     did_insert_clipboard_item(Web::PageId page_id, Web::Clipboard::SystemClipboardItem item, String presentation_style) =|
+     did_request_clipboard_entries(Web::PageId page_id, u64 request_id) =|
++    did_request_webauthn(Web::PageId page_id, u64 request_id, String request) =|
+     did_request_primary_paste(Web::PageId page_id) =|
+     did_update_primary_selection(Web::PageId page_id, String text) =|
+ 
+diff --git a/Services/WebContent/WebContentServer.ipc b/Services/WebContent/WebContentServer.ipc
+index aa98ca4d..091f3608 100644
+--- a/Services/WebContent/WebContentServer.ipc
++++ b/Services/WebContent/WebContentServer.ipc
+@@ -275,6 +275,7 @@ endpoint WebContentServer routed by Web::PageId page_id
+     select_dropdown_closed(Web::PageId page_id, Optional<u32> selected_item_id) =|
+ 
+     retrieved_clipboard_entries(Web::PageId page_id, u64 request_id, Vector<Web::Clipboard::SystemClipboardItem> items) =|
++    webauthn_response(Web::PageId page_id, u64 request_id, String response) =|
+ 
+     toggle_media_play_state(Web::PageId page_id) =|
+     toggle_media_mute_state(Web::PageId page_id) =|

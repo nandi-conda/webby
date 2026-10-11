@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/JsonArray.h>
+#include <AK/JsonValue.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/SharedImageBuffer.h>
 #include <LibWebView/Menu.h>
@@ -88,12 +90,133 @@ View::View(Core::AnonymousBuffer theme, Web::DevicePixelSize size)
         m_cursor = cursor_to_int(cursor);
         state_changed();
     };
+
+    on_request_webauthn = [this](WebView::WebContentPage& page, u64 request_id, String const& request) {
+        handle_webauthn_request(page, request_id, request);
+    };
+}
+
+View::~View()
+{
+    respond_to_webauthn(false, -1);
 }
 
 void View::resize(Web::DevicePixelSize size, double device_pixel_ratio)
 {
     m_device_pixel_ratio = device_pixel_ratio;
     reset_viewport_size(size);
+}
+
+static Vector<String> string_array(JsonObject const& object, StringView key)
+{
+    Vector<String> strings;
+    if (auto array = object.get_array(key); array.has_value()) {
+        array->for_each([&](JsonValue const& value) {
+            if (value.is_string())
+                strings.append(value.as_string());
+        });
+    }
+    return strings;
+}
+
+static String string_member(JsonObject const& object, StringView key)
+{
+    if (auto value = object.get_string(key); value.has_value())
+        return *value;
+    return {};
+}
+
+void View::handle_webauthn_request(WebView::WebContentPage& page, u64 request_id, String const& request_json)
+{
+    auto reply = [&](String const& json) { page.async_webauthn_response(request_id, json); };
+
+    auto parsed = JsonValue::from_string(request_json);
+    if (parsed.is_error() || !parsed.value().is_object()) {
+        reply(error_reply("UnknownError"sv, "Malformed request"sv));
+        return;
+    }
+    // One dialog at a time; a page that asks again while the user is deciding is turned away.
+    if (m_pending_webauthn.has_value()) {
+        reply(error_reply("NotAllowedError"sv, "Another passkey request is waiting for the user"sv));
+        return;
+    }
+
+    auto request = move(parsed.value().as_object());
+    auto type = string_member(request, "type"sv);
+    auto rp_id = string_member(request, "rpId"sv);
+
+    PendingWebAuthn pending { page, request_id, {}, {}, false };
+    JsonObject prompt;
+    prompt.set("type"sv, type);
+    prompt.set("rpId"sv, rp_id);
+    prompt.set("origin"sv, string_member(request, "origin"sv));
+
+    if (type == "create"sv) {
+        bool supports_es256 = false;
+        if (auto algorithms = request.get_array("algorithms"sv); algorithms.has_value()) {
+            algorithms->for_each([&](JsonValue const& value) {
+                if (value.get_i64() == -7)
+                    supports_es256 = true;
+            });
+        }
+        if (!supports_es256) {
+            reply(error_reply("NotSupportedError"sv, "This browser's passkeys only support ES256"sv));
+            return;
+        }
+        pending.already_registered = PasskeyStore::the().contains_any(rp_id, string_array(request, "excludeCredentials"sv));
+        prompt.set("rpName"sv, string_member(request, "rpName"sv));
+        prompt.set("userName"sv, string_member(request, "userName"sv));
+        prompt.set("userDisplayName"sv, string_member(request, "userDisplayName"sv));
+        prompt.set("alreadyRegistered"sv, pending.already_registered);
+    } else if (type == "get"sv) {
+        pending.accounts = PasskeyStore::the().passkeys_for(rp_id, string_array(request, "allowCredentials"sv));
+        JsonArray accounts;
+        for (auto const& passkey : pending.accounts) {
+            JsonObject account;
+            account.set("userName"sv, passkey.user_name);
+            account.set("userDisplayName"sv, passkey.user_display_name);
+            account.set("createdAt"sv, passkey.created_at);
+            accounts.must_append(move(account));
+        }
+        prompt.set("accounts"sv, move(accounts));
+    } else {
+        reply(error_reply("NotSupportedError"sv, "Unknown request"sv));
+        return;
+    }
+
+    pending.request = move(request);
+    m_pending_webauthn = move(pending);
+    m_webauthn_prompt = prompt.serialized().to_byte_string();
+    state_changed();
+}
+
+void View::respond_to_webauthn(bool accepted, int account_index)
+{
+    if (!m_pending_webauthn.has_value())
+        return;
+    auto pending = m_pending_webauthn.release_value();
+    m_webauthn_prompt = {};
+    state_changed();
+
+    String reply;
+    auto type = string_member(pending.request, "type"sv);
+    if (!accepted) {
+        reply = error_reply("NotAllowedError"sv, "The user cancelled the request"sv);
+    } else if (type == "create"sv) {
+        // https://w3c.github.io/webauthn/#sctn-op-make-cred step 3: after the user consents, report that one of the
+        // excluded credentials is already here.
+        if (pending.already_registered)
+            reply = error_reply("InvalidStateError"sv, "A passkey for this account already exists in this browser"sv);
+        else
+            reply = make_credential(pending.request);
+    } else if (account_index < 0 || static_cast<size_t>(account_index) >= pending.accounts.size()) {
+        reply = error_reply("NotAllowedError"sv, "No passkey was chosen"sv);
+    } else {
+        reply = get_assertion(pending.request, pending.accounts[account_index]);
+    }
+
+    if (pending.page && pending.page->is_open())
+        pending.page->async_webauthn_response(pending.request_id, reply);
 }
 
 void View::copy_front_bitmap()

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:ffi' hide Size;
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -60,6 +61,9 @@ class WebbyController extends ChangeNotifier {
   int frameWidth = 0;
   int frameHeight = 0;
   final FrameStats stats = FrameStats();
+  /// A passkey request waiting for the user (see `webby_view_webauthn_prompt` in webby_ffi.h), or null.
+  Map<String, Object?>? webauthnPrompt;
+  String _webauthnPromptJson = '';
 
   ui.Image? get image => _image;
 
@@ -95,6 +99,10 @@ class WebbyController extends ChangeNotifier {
   void stop() => _ifAttached(_bindings.stop);
   void setFocus(bool focused) => _ifAttached((v) => _bindings.setFocus(v, focused ? 1 : 0));
   void runJavaScript(String source) => _ifAttached((v) => _withString(source, (s) => _bindings.runJavaScript(v, s)));
+
+  /// Answers [webauthnPrompt]: `accepted: false` cancels it; for a sign-in, [accountIndex] picks one of its accounts.
+  void respondToWebAuthn({required bool accepted, int accountIndex = -1}) =>
+      _ifAttached((v) => _bindings.webauthnRespond(v, accepted ? 1 : 0, accountIndex));
 
   void mouseEvent(int type, Offset position, {int button = 0, int buttons = 0, int modifiers = 0, int clickCount = 0}) =>
       _ifAttached((v) => _bindings.mouseEvent(
@@ -133,6 +141,11 @@ class WebbyController extends ChangeNotifier {
       canGoBack = _bindings.canGoBack(_view) != 0;
       canGoForward = _bindings.canGoForward(_view) != 0;
       cursor = _bindings.cursor(_view);
+      final prompt = _bindings.webauthnPrompt(_view).toDartString();
+      if (prompt != _webauthnPromptJson) {
+        _webauthnPromptJson = prompt;
+        webauthnPrompt = prompt.isEmpty ? null : jsonDecode(prompt) as Map<String, Object?>;
+      }
       notifyListeners();
     }
 

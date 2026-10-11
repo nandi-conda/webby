@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'src/frame_bench.dart';
+import 'src/passkey_dialog.dart';
 import 'src/web_view.dart';
 
 void main(List<String> args) {
@@ -39,6 +40,7 @@ class _BrowserPageState extends State<BrowserPage> {
   final _addressFocus = FocusNode(debugLabel: 'address');
   final _pageFocus = FocusNode(debugLabel: 'page');
   String _shownUrl = '';
+  Map<String, Object?>? _shownPasskeyPrompt;
 
   @override
   void initState() {
@@ -58,6 +60,11 @@ class _BrowserPageState extends State<BrowserPage> {
     if (controller.url != _shownUrl && !_addressFocus.hasFocus) {
       _shownUrl = controller.url;
       _address.text = controller.url;
+    }
+    final passkeyPrompt = controller.webauthnPrompt;
+    if (passkeyPrompt != null && !identical(passkeyPrompt, _shownPasskeyPrompt)) {
+      _shownPasskeyPrompt = passkeyPrompt;
+      showPasskeyDialog(context, controller, passkeyPrompt);
     }
     setState(() {});
   }

@@ -44,7 +44,11 @@ class WebbyBindings {
         wheelEvent = lib.lookupFunction<Void Function(ViewPtr, Int32, Int32, Double, Double, Int32, Int32),
             void Function(ViewPtr, int, int, double, double, int, int)>('webby_view_wheel_event'),
         keyEvent = lib.lookupFunction<Void Function(ViewPtr, Int32, Int32, Int32, Uint32, Int32),
-            void Function(ViewPtr, int, int, int, int, int)>('webby_view_key_event');
+            void Function(ViewPtr, int, int, int, int, int)>('webby_view_key_event'),
+        webauthnPrompt = lib.lookupFunction<Pointer<Utf8> Function(ViewPtr), Pointer<Utf8> Function(ViewPtr)>(
+            'webby_view_webauthn_prompt'),
+        webauthnRespond = lib.lookupFunction<Void Function(ViewPtr, Int32, Int32), void Function(ViewPtr, int, int)>(
+            'webby_view_webauthn_respond');
 
   /// The Ladybird prefix (contains bin/, lib/, libexec/, share/Lagom).
   final String prefix;
@@ -76,6 +80,8 @@ class WebbyBindings {
   final void Function(ViewPtr, int, int, int, int, int, int, int) mouseEvent;
   final void Function(ViewPtr, int, int, double, double, int, int) wheelEvent;
   final void Function(ViewPtr, int, int, int, int, int) keyEvent;
+  final Pointer<Utf8> Function(ViewPtr) webauthnPrompt;
+  final void Function(ViewPtr, int, int) webauthnRespond;
 
   static WebbyBindings? _instance;
 

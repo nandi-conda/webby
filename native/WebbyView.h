@@ -7,10 +7,14 @@
 #pragma once
 
 #include <AK/ByteString.h>
+#include <AK/JsonObject.h>
+#include <AK/Optional.h>
 #include <AK/Vector.h>
+#include <Authenticator.h>
 #include <LibWebView/Application.h>
 #include <LibWebView/HeadlessWebView.h>
 #include <LibWebView/Menu.h>
+#include <LibWebView/WebContentPage.h>
 
 namespace Webby {
 
@@ -33,6 +37,7 @@ private:
 class View final : public WebView::HeadlessWebView {
 public:
     static NonnullOwnPtr<View> create(Core::AnonymousBuffer theme, Web::DevicePixelSize size, double device_pixel_ratio);
+    virtual ~View() override;
 
     void resize(Web::DevicePixelSize, double device_pixel_ratio);
 
@@ -50,11 +55,17 @@ public:
     bool can_go_forward() { return navigate_forward_action().enabled(); }
     int cursor() const { return m_cursor; }
 
+    // A passkey request waiting for the user, as JSON for the UI (empty when there is none). See webby_ffi.h.
+    ByteString const& webauthn_prompt() const { return m_webauthn_prompt; }
+    void respond_to_webauthn(bool accepted, int account_index);
+
 private:
     View(Core::AnonymousBuffer theme, Web::DevicePixelSize size);
 
     void copy_front_bitmap();
     void state_changed() { ++m_state_serial; }
+
+    void handle_webauthn_request(WebView::WebContentPage&, u64 request_id, String const& request);
 
     Vector<u8> m_frame;
     int m_frame_width { 0 };
@@ -67,6 +78,16 @@ private:
     ByteString m_hovered_link;
     bool m_loading { false };
     int m_cursor { 0 };
+
+    struct PendingWebAuthn {
+        RefPtr<WebView::WebContentPage> page;
+        u64 request_id { 0 };
+        JsonObject request;
+        Vector<Passkey> accounts;
+        bool already_registered { false };
+    };
+    Optional<PendingWebAuthn> m_pending_webauthn;
+    ByteString m_webauthn_prompt;
 };
 
 }
