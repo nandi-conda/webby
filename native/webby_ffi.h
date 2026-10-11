@@ -44,7 +44,8 @@ WEBBY_API void webby_view_run_javascript(WebbyView*, char const* source);
 
 /* What `prefers-color-scheme` reports to pages, and the colour of the blank
  * canvas before a page paints: 0 auto (Ladybird's theme), 1 light, 2 dark.
- * Takes effect at once on the loaded page. */
+ * Takes effect at once, and it is process-wide: every view and every page
+ * opened later gets it. */
 enum {
     WEBBY_COLOR_SCHEME_AUTO = 0,
     WEBBY_COLOR_SCHEME_LIGHT = 1,

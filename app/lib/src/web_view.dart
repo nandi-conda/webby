@@ -366,6 +366,9 @@ class WebbyController extends ChangeNotifier {
       hoveredLink = _bindings.hoveredLink(_view).toDartString();
       isLoading = _bindings.isLoading(_view) != 0;
       if ((url, title, isLoading) != previous) _runPageCompat();
+      // Ladybird resets a page's colour scheme to its own default whenever navigation brings up a new WebContent page
+      // (cross-site loads), so say it again once the new page is in.
+      if (url != previous.$1 || isLoading != previous.$3) _colorScheme?.call();
       canGoBack = _bindings.canGoBack(_view) != 0;
       canGoForward = _bindings.canGoForward(_view) != 0;
       cursor = _bindings.cursor(_view);

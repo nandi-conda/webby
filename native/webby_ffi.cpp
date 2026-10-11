@@ -15,6 +15,7 @@
 #include <LibWebCommon/Page/InputEvent.h>
 #include <LibRequests/RequestControlClient.h>
 #include <LibWebView/Application.h>
+#include <LibWebView/Menu.h>
 #include <LibWebView/Utilities.h>
 #include <WebbyView.h>
 #include <webby_ffi.h>
@@ -126,6 +127,19 @@ void webby_view_set_color_scheme(WebbyView* handle, int scheme)
         preferred = Web::CSS::PreferredColorScheme::Light;
     else if (scheme == WEBBY_COLOR_SCHEME_DARK)
         preferred = Web::CSS::PreferredColorScheme::Dark;
+    // The application's colour scheme is what Ladybird gives every new WebContent page (cross-site navigations get
+    // one), so set it there too, or such loads fall back to Auto. Its menu holds Auto, Dark, Light in that order.
+    if (s_application) {
+        auto index = preferred == Web::CSS::PreferredColorScheme::Dark ? 1 : preferred == Web::CSS::PreferredColorScheme::Light ? 2 : 0;
+        auto items = s_application->color_scheme_menu().items();
+        if (static_cast<size_t>(index) < items.size()) {
+            if (auto* action = items[index].get_pointer<NonnullRefPtr<WebView::Action>>()) {
+                (*action)->set_checked(true);
+                (*action)->activate();
+                return;
+            }
+        }
+    }
     handle->view->set_preferred_color_scheme(preferred);
 }
 
