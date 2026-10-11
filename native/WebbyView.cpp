@@ -163,13 +163,15 @@ void View::handle_webauthn_request(WebView::WebContentPage& page, u64 request_id
             reply(error_reply("NotSupportedError"sv, "This browser's passkeys only support ES256"sv));
             return;
         }
-        pending.already_registered = PasskeyStore::the().contains_any(rp_id, string_array(request, "excludeCredentials"sv));
+        // An empty exclude list means "exclude nothing", not "any passkey for this site".
+        if (auto excluded = string_array(request, "excludeCredentials"sv); !excluded.is_empty())
+            pending.already_registered = !credential_store().list(rp_id, excluded).is_empty();
         prompt.set("rpName"sv, string_member(request, "rpName"sv));
         prompt.set("userName"sv, string_member(request, "userName"sv));
         prompt.set("userDisplayName"sv, string_member(request, "userDisplayName"sv));
         prompt.set("alreadyRegistered"sv, pending.already_registered);
     } else if (type == "get"sv) {
-        pending.accounts = PasskeyStore::the().passkeys_for(rp_id, string_array(request, "allowCredentials"sv));
+        pending.accounts = credential_store().list(rp_id, string_array(request, "allowCredentials"sv));
         JsonArray accounts;
         for (auto const& passkey : pending.accounts) {
             JsonObject account;

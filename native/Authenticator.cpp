@@ -8,6 +8,7 @@
 #include <AK/JsonArray.h>
 #include <AK/JsonValue.h>
 #include <AK/LexicalPath.h>
+#include <AK/OwnPtr.h>
 #include <AK/ScopeGuard.h>
 #include <AK/StringBuilder.h>
 #include <Authenticator.h>
@@ -244,7 +245,7 @@ String make_credential(JsonObject const& request)
     passkey.user_display_name = string_member(request, "userDisplayName"sv);
     passkey.private_key = MUST(encode_base64(private_key.value()));
     passkey.created_at = time(nullptr);
-    if (auto result = PasskeyStore::the().add(passkey); result.is_error())
+    if (auto result = credential_store().create(passkey); result.is_error())
         return error_reply("UnknownError"sv, ByteString::formatted("Unable to save the passkey: {}", result.error()));
 
     JsonObject reply;
@@ -331,13 +332,21 @@ static void make_directories(ByteString const& directory)
     }
 }
 
-PasskeyStore& PasskeyStore::the()
+static OwnPtr<CredentialStore> s_credential_store;
+
+CredentialStore& credential_store()
 {
-    static PasskeyStore store;
-    return store;
+    if (!s_credential_store)
+        s_credential_store = make<FileCredentialStore>();
+    return *s_credential_store;
 }
 
-PasskeyStore::PasskeyStore()
+void set_credential_store(NonnullOwnPtr<CredentialStore> store)
+{
+    s_credential_store = move(store);
+}
+
+FileCredentialStore::FileCredentialStore()
     : m_path(passkeys_path())
 {
     auto* file = fopen(m_path.characters(), "r");
@@ -376,7 +385,7 @@ PasskeyStore::PasskeyStore()
     });
 }
 
-Vector<Passkey> PasskeyStore::passkeys_for(StringView rp_id, Vector<String> const& allowed_credential_ids) const
+Vector<Passkey> FileCredentialStore::list(StringView rp_id, Vector<String> const& allowed_credential_ids) const
 {
     Vector<Passkey> result;
     for (auto const& passkey : m_passkeys) {
@@ -389,18 +398,17 @@ Vector<Passkey> PasskeyStore::passkeys_for(StringView rp_id, Vector<String> cons
     return result;
 }
 
-bool PasskeyStore::contains_any(StringView rp_id, Vector<String> const& credential_ids) const
+Optional<Passkey> FileCredentialStore::get(StringView credential_id) const
 {
     for (auto const& passkey : m_passkeys) {
-        if (passkey.rp_id == rp_id && credential_ids.contains_slow(passkey.credential_id))
-            return true;
+        if (passkey.credential_id == credential_id)
+            return passkey;
     }
-    return false;
+    return {};
 }
 
-ErrorOr<void> PasskeyStore::add(Passkey passkey)
+ErrorOr<void> FileCredentialStore::create(Passkey passkey)
 {
-    // A new credential for the same account replaces the old one.
     m_passkeys.remove_all_matching([&](Passkey const& existing) {
         return existing.rp_id == passkey.rp_id && existing.user_id == passkey.user_id;
     });
@@ -408,7 +416,14 @@ ErrorOr<void> PasskeyStore::add(Passkey passkey)
     return save();
 }
 
-ErrorOr<void> PasskeyStore::save() const
+ErrorOr<void> FileCredentialStore::remove(StringView credential_id)
+{
+    if (!m_passkeys.remove_all_matching([&](Passkey const& passkey) { return passkey.credential_id == credential_id; }))
+        return {};
+    return save();
+}
+
+ErrorOr<void> FileCredentialStore::save() const
 {
     JsonArray passkeys;
     for (auto const& passkey : m_passkeys) {

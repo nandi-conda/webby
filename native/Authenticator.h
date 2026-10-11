@@ -8,6 +8,8 @@
 
 #include <AK/ByteString.h>
 #include <AK/JsonObject.h>
+#include <AK/NonnullOwnPtr.h>
+#include <AK/Optional.h>
 #include <AK/String.h>
 #include <AK/Vector.h>
 
@@ -25,21 +27,40 @@ struct Passkey {
     i64 created_at { 0 };
 };
 
-// Passkeys live in a JSON file readable only by the user: $WEBBY_PASSKEYS_FILE, or
-// ${XDG_DATA_HOME:-~/.local/share}/webby/passkeys.json.
-class PasskeyStore {
+// Where passkeys are kept. The authenticator and the UI only go through this interface, so storage can move (into
+// the password manager's encrypted vault, say) without touching the ceremonies.
+class CredentialStore {
 public:
-    static PasskeyStore& the();
+    AK_ALLOC_WITH_KMALLOC;
 
-    Vector<Passkey> const& passkeys() const { return m_passkeys; }
-    Vector<Passkey> passkeys_for(StringView rp_id, Vector<String> const& allowed_credential_ids) const;
-    bool contains_any(StringView rp_id, Vector<String> const& credential_ids) const;
+    virtual ~CredentialStore() = default;
 
-    ErrorOr<void> add(Passkey);
+    // The passkeys for `rp_id`; when `allowed_credential_ids` isn't empty, only those among them.
+    virtual Vector<Passkey> list(StringView rp_id, Vector<String> const& allowed_credential_ids = {}) const = 0;
+    virtual Optional<Passkey> get(StringView credential_id) const = 0;
+    // Saves a new passkey. One for the same relying party and user replaces the old one.
+    virtual ErrorOr<void> create(Passkey) = 0;
+    virtual ErrorOr<void> remove(StringView credential_id) = 0;
+};
+
+// The store in use: a FileCredentialStore unless set_credential_store() swapped in another.
+CredentialStore& credential_store();
+void set_credential_store(NonnullOwnPtr<CredentialStore>);
+
+// Passkeys in a JSON file readable only by the user: $WEBBY_PASSKEYS_FILE, or
+// ${XDG_DATA_HOME:-~/.local/share}/webby/passkeys.json.
+class FileCredentialStore final : public CredentialStore {
+public:
+    FileCredentialStore();
+
+    virtual Vector<Passkey> list(StringView rp_id, Vector<String> const& allowed_credential_ids = {}) const override;
+    virtual Optional<Passkey> get(StringView credential_id) const override;
+    virtual ErrorOr<void> create(Passkey) override;
+    virtual ErrorOr<void> remove(StringView credential_id) override;
+
     ByteString const& path() const { return m_path; }
 
 private:
-    PasskeyStore();
     ErrorOr<void> save() const;
 
     ByteString m_path;
