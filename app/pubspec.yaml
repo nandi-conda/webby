@@ -11,6 +11,10 @@ dependencies:
     sdk: flutter
   cryptography: ^2.7.0
   ffi: ^2.2.0
+  flatkit:
+    git:
+      url: https://github.com/codegod100/flutterkit.git
+      ref: main
   webby_keyring:
     path: webby_keyring
   webby_texture:

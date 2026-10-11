@@ -1,3 +1,4 @@
+import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -24,11 +25,15 @@ class WebbyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Webby',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(colorSchemeSeed: Colors.deepOrange, useMaterial3: true),
-      home: BrowserPage(initialUrl: initialUrl),
+    // flatkit colours: the KDE colour scheme on Plasma, otherwise light or dark with the desktop.
+    return KitSystemTheme(
+      builder: (context, colors) => MaterialApp(
+        title: 'Webby',
+        debugShowCheckedModeBanner: false,
+        theme: KitTheme.material(colors),
+        builder: (context, child) => Material(color: colors.background, child: child),
+        home: BrowserPage(initialUrl: initialUrl),
+      ),
     );
   }
 }
@@ -143,12 +148,15 @@ class _BrowserPageState extends State<BrowserPage> {
 
   @override
   Widget build(BuildContext context) {
+    final c = KitTheme.of(context);
     final controller = _controller;
     if (controller == null) {
-      return Scaffold(
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
+      return Material(
+        color: c.background,
+        child: Center(
+          child: KitPanel(
+            margin: const EdgeInsets.all(24),
+            padding: const EdgeInsets.all(20),
             child: SelectableText('Could not start Ladybird:\n\n$_startupError'),
           ),
         ),
@@ -158,79 +166,78 @@ class _BrowserPageState extends State<BrowserPage> {
     final bookmarked = BookmarkStore.instance.bookmarkFor(controller.url) != null;
     return CallbackShortcuts(
       bindings: {for (final entry in _shortcuts.entries) entry.key: () => _runShortcut(entry.value)},
-      child: Scaffold(
-        body: Column(
+      child: Material(
+        color: c.background,
+        child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Material(
-              elevation: 1,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                child: Row(
-                  children: [
-                    IconButton(
-                      tooltip: 'Back',
-                      icon: const Icon(Icons.arrow_back),
-                      onPressed: controller.canGoBack ? controller.goBack : null,
-                    ),
-                    IconButton(
-                      tooltip: 'Forward',
-                      icon: const Icon(Icons.arrow_forward),
-                      onPressed: controller.canGoForward ? controller.goForward : null,
-                    ),
-                    IconButton(
-                      tooltip: controller.isLoading ? 'Stop' : 'Reload',
-                      icon: Icon(controller.isLoading ? Icons.close : Icons.refresh),
-                      onPressed: controller.isLoading ? controller.stop : controller.reload,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: TextField(
-                        controller: _address,
-                        focusNode: _addressFocus,
-                        onSubmitted: _go,
-                        textInputAction: TextInputAction.go,
-                        decoration: InputDecoration(
-                          isDense: true,
-                          filled: true,
-                          hintText: 'Search or enter address',
-                          prefixIcon: const Icon(Icons.public, size: 18),
-                          suffixIcon: IconButton(
-                            tooltip: bookmarked ? 'Edit bookmark (Ctrl+D)' : 'Bookmark this page (Ctrl+D)',
-                            icon: Icon(bookmarked ? Icons.star : Icons.star_border, size: 20),
-                            onPressed: controller.url.isEmpty ? null : _bookmarkPage,
-                          ),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none),
-                        ),
+            Container(
+              color: c.surface,
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+              child: Row(
+                children: [
+                  KitIconButton(
+                    Icons.arrow_back,
+                    tooltip: 'Back',
+                    onPressed: controller.canGoBack ? controller.goBack : null,
+                  ),
+                  KitIconButton(
+                    Icons.arrow_forward,
+                    tooltip: 'Forward',
+                    onPressed: controller.canGoForward ? controller.goForward : null,
+                  ),
+                  KitIconButton(
+                    controller.isLoading ? Icons.close : Icons.refresh,
+                    tooltip: controller.isLoading ? 'Stop' : 'Reload',
+                    onPressed: controller.isLoading ? controller.stop : controller.reload,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: KitTextField(
+                      controller: _address,
+                      focusNode: _addressFocus,
+                      onSubmitted: _go,
+                      hint: 'Search or enter address',
+                      prefixIcon: Icons.public,
+                      trailing: KitIconButton.compact(
+                        bookmarked ? Icons.star : Icons.star_border,
+                        tooltip: bookmarked ? 'Edit bookmark (Ctrl+D)' : 'Bookmark this page (Ctrl+D)',
+                        color: bookmarked ? c.accent : null,
+                        onPressed: controller.url.isEmpty ? null : _bookmarkPage,
                       ),
                     ),
-                    const SizedBox(width: 4),
-                    PopupMenuButton<String>(
-                      tooltip: 'Bookmarks',
-                      icon: const Icon(Icons.bookmarks_outlined),
-                      onSelected: _runShortcut,
-                      itemBuilder: (context) => [
-                        const PopupMenuItem(value: 'bookmark', child: Text('Bookmark this page    Ctrl+D')),
-                        CheckedPopupMenuItem(
-                          value: 'bar',
-                          checked: BookmarkStore.instance.showBar,
-                          child: const Text('Show bookmarks bar    Ctrl+Shift+B'),
-                        ),
-                        const PopupMenuItem(value: 'manager', child: Text('Bookmark manager    Ctrl+Shift+O')),
-                      ],
-                    ),
-                    IconButton(
-                      tooltip: 'Passwords and passkeys',
-                      icon: const Icon(Icons.key),
-                      onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const VaultPage())),
-                    ),
-                  ],
-                ),
+                  ),
+                  const SizedBox(width: 6),
+                  KitMenu(
+                    minWidth: 260,
+                    items: () => [
+                      KitMenuItem('Bookmark this page', shortcut: 'Ctrl+D', onSelected: _bookmarkPage),
+                      KitMenuItem(
+                        'Show bookmarks bar',
+                        shortcut: 'Ctrl+Shift+B',
+                        checked: BookmarkStore.instance.showBar,
+                        onSelected: _toggleBookmarkBar,
+                      ),
+                      const KitMenuDivider(),
+                      KitMenuItem('Bookmark manager', shortcut: 'Ctrl+Shift+O', onSelected: _openBookmarks),
+                    ],
+                    builder: (context, toggle, open) =>
+                        KitIconButton(Icons.bookmarks_outlined, tooltip: 'Bookmarks', onPressed: toggle),
+                  ),
+                  KitIconButton(
+                    Icons.key,
+                    tooltip: 'Passwords and passkeys',
+                    onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const VaultPage())),
+                  ),
+                ],
               ),
             ),
+            // The loading line doubles as the toolbar's bottom border.
             SizedBox(
               height: 2,
-              child: controller.isLoading ? const LinearProgressIndicator() : null,
+              child: controller.isLoading
+                  ? LinearProgressIndicator(minHeight: 2, color: c.accent, backgroundColor: c.border)
+                  : Align(alignment: Alignment.topCenter, child: Container(height: 1, color: c.border)),
             ),
             BookmarkBar(onOpen: _go),
             if (_passwords != null) PasswordBar(agent: _passwords!),
@@ -247,8 +254,16 @@ class _BrowserPageState extends State<BrowserPage> {
                       child: Container(
                         constraints: const BoxConstraints(maxWidth: 600),
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                        child: Text(controller.hoveredLink, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
+                        decoration: BoxDecoration(
+                          color: c.surface,
+                          border: Border(top: BorderSide(color: c.border), right: BorderSide(color: c.border)),
+                          borderRadius: const BorderRadius.only(topRight: Radius.circular(kitRadius)),
+                        ),
+                        child: Text(
+                          controller.hoveredLink,
+                          overflow: TextOverflow.ellipsis,
+                          style: KitText.small(context, color: c.textDim),
+                        ),
                       ),
                     ),
                 ],
