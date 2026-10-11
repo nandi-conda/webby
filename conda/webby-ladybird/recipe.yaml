@@ -15,10 +15,10 @@ source:
   sha256: cb0dd83831c1b81a6c82ca2193cc63c6c3e64eaec84cee5e8a77c79d126b133a
 
 build:
-  number: 0
+  number: 1
   skip:
     - not linux64
-  # Prebuilt binaries with relative ($ORIGIN) RPATHs: copy them as-is.
+  # Prebuilt binaries; the script points their RPATHs at the bundled lib/ ($ORIGIN-relative) and conda leaves them be.
   prefix_detection:
     ignore: true
   dynamic_linking:
@@ -28,10 +28,20 @@ build:
   script:
     - mkdir -p $PREFIX/lib/webby-ladybird $PREFIX/etc/conda/activate.d $PREFIX/etc/conda/deactivate.d
     - cp -a lib libexec share $PREFIX/lib/webby-ladybird/
+    # 2026.10.11.3's tarball kept its build machine's RUNPATHs, so libwebby.so couldn't find liblagom-*.so.
+    - |
+      cd $PREFIX/lib/webby-ladybird
+      for f in lib/* libexec/*; do
+        [ -f "$f" ] && [ ! -L "$f" ] && [ "$(head -c4 "$f")" = "$(printf '\177ELF')" ] || continue
+        case "$f" in lib/*) rp='$ORIGIN' ;; *) rp='$ORIGIN/../lib' ;; esac
+        patchelf --set-rpath "$rp" "$f"
+      done
     - cp $RECIPE_DIR/activate.sh $PREFIX/etc/conda/activate.d/webby-ladybird.sh
     - cp $RECIPE_DIR/deactivate.sh $PREFIX/etc/conda/deactivate.d/webby-ladybird.sh
 
 requirements:
+  build:
+    - patchelf
   run:
     # Built on Ubuntu 26.04.
     - __glibc >=2.43
