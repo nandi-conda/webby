@@ -1,0 +1,48 @@
+diff --git a/Services/ImageDecoder/CMakeLists.txt b/Services/ImageDecoder/CMakeLists.txt
+index 8961a55f..c671b3a0 100644
+--- a/Services/ImageDecoder/CMakeLists.txt
++++ b/Services/ImageDecoder/CMakeLists.txt
+@@ -6,7 +6,7 @@ set(SOURCES
+     ConnectionFromClient.cpp
+ )
+ 
+-if (ANDROID)
++if (ANDROID AND NOT LADYBIRD_UI_FLUTTER)
+     add_library(imagedecoderservice SHARED
+         ${LADYBIRD_SOURCE_DIR}/UI/Android/src/main/cpp/ImageDecoderService.cpp
+         ${LADYBIRD_SOURCE_DIR}/UI/Android/src/main/cpp/LadybirdServiceBaseJNI.cpp
+diff --git a/Services/RequestServer/CMakeLists.txt b/Services/RequestServer/CMakeLists.txt
+index 604cdf23..56f9b1d9 100644
+--- a/Services/RequestServer/CMakeLists.txt
++++ b/Services/RequestServer/CMakeLists.txt
+@@ -26,7 +26,7 @@ set(GENERATED_SOURCES
+ )
+ 
+ set(RS_LIB_TYPE STATIC)
+-if (ANDROID)
++if (ANDROID AND NOT LADYBIRD_UI_FLUTTER)
+     list(APPEND SOURCES
+         ${LADYBIRD_SOURCE_DIR}/UI/Android/src/main/cpp/RequestServerService.cpp
+         ${LADYBIRD_SOURCE_DIR}/UI/Android/src/main/cpp/LadybirdServiceBaseJNI.cpp
+@@ -58,7 +58,7 @@ if (HAIKU)
+     # Haiku has networking related functions in the network library
+     target_link_libraries(RequestServer PRIVATE network)
+ endif()
+-if (ANDROID)
++if (ANDROID AND NOT LADYBIRD_UI_FLUTTER)
+     # We need s_ladybird_resource_root from LibWebView
+     target_link_libraries(requestserverservice PUBLIC LibWebView)
+ endif()
+diff --git a/Services/WebContent/CMakeLists.txt b/Services/WebContent/CMakeLists.txt
+index 9ddc2af9..8c52c8db 100644
+--- a/Services/WebContent/CMakeLists.txt
++++ b/Services/WebContent/CMakeLists.txt
+@@ -13,7 +13,7 @@ set(SOURCES
+     WebUIConnection.cpp
+ )
+ 
+-if (ANDROID)
++if (ANDROID AND NOT LADYBIRD_UI_FLUTTER)
+     add_library(webcontentservice SHARED
+         ${LADYBIRD_SOURCE_DIR}/UI/Android/src/main/cpp/WebContentService.cpp
+         ${LADYBIRD_SOURCE_DIR}/UI/Android/src/main/cpp/WebContentServiceJNI.cpp

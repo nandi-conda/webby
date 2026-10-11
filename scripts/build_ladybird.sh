@@ -48,6 +48,11 @@ python3 Meta/ladybird.py vcpkg --preset Release
 export VCPKG_ROOT="$LADYBIRD_DIR/Build/vcpkg-release"
 export PATH="$PATH:$VCPKG_ROOT"
 
+# scripts/android/build_ladybird.sh reuses the checkout, patches and vcpkg tool, then configures its own build.
+if [ -n "${WEBBY_PREPARE_ONLY:-}" ]; then
+    exit 0
+fi
+
 if [ ! -f Build/release/build.ninja ]; then
     cmake --preset Release -S . -B Build/release \
         -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \
