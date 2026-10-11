@@ -124,6 +124,8 @@ void main() {
       String? opened;
       await tester.pumpWidget(
         MaterialApp(
+          // Desktop: the hint mentions Ctrl+D.
+          theme: ThemeData(platform: TargetPlatform.linux),
           home: Scaffold(
             body: Builder(
               builder: (context) => Column(
@@ -217,12 +219,14 @@ void main() {
       expect(label.top, greaterThanOrEqualTo(bar.top));
       expect(label.bottom, lessThanOrEqualTo(bar.bottom));
 
-      // The empty-state hint wraps on a phone-width screen; the bar grows to fit it.
+      // On a phone the empty-state hint is the short one, without Ctrl+D, and sits inside the bar.
       store.remove(store.bar.children!.single);
       await tester.pump();
+      expect(find.textContaining('Ctrl+D'), findsNothing);
       final empty = tester.getRect(find.byType(BookmarkBar));
-      final hint = tester.getRect(find.textContaining('Ctrl+D'));
+      final hint = tester.getRect(find.textContaining('Tap the star'));
       expect(hint.bottom, lessThanOrEqualTo(empty.bottom));
+      expect(empty.height, bar.height, reason: 'the short hint fits on one line');
     });
 
     testWidgets('manager browses folders, deletes and opens', (tester) async {

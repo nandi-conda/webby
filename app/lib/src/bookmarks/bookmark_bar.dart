@@ -27,6 +27,11 @@ class BookmarkBar extends StatelessWidget {
         // 30 px at normal text size; grows with the system font scale (Android phones often run above 1.0) so labels
         // aren't clipped top and bottom.
         final height = MediaQuery.textScalerOf(context).scale(20) + 10;
+        // Phones and narrow windows get a shorter hint that fits on one line; Ctrl+D means nothing on a touch screen.
+        final platform = Theme.of(context).platform;
+        final compact = platform == TargetPlatform.android ||
+            platform == TargetPlatform.iOS ||
+            MediaQuery.sizeOf(context).width < 600;
         return Container(
           // The empty-state hint may wrap on a narrow screen, so it gets a minimum height instead of a fixed one.
           height: items.isEmpty ? null : height,
@@ -41,7 +46,9 @@ class BookmarkBar extends StatelessWidget {
                   child: Align(
                     alignment: Alignment.centerLeft,
                     child: Text(
-                      'Bookmark pages with the star in the address bar or Ctrl+D; they show up here.',
+                      compact
+                          ? 'Tap the star to bookmark a page.'
+                          : 'Bookmark pages with the star in the address bar or Ctrl+D; they show up here.',
                       style: KitText.dim(context, small: true),
                     ),
                   ),
