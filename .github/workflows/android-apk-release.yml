@@ -1,0 +1,41 @@
+# Publishes an Android APK built on the build machine (scripts/android/build_apk.sh) as the GitHub Release
+# `webby-android-<version>`, so phones can download and sideload it.
+# Give it any URL the APK can be fetched from (e.g. a temporary upload) and its sha256; the asset is verified first.
+name: android-apk-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: APK version (e.g. 2026.10.11.1)
+        required: true
+      url:
+        description: URL to fetch the APK from
+        required: true
+      sha256:
+        description: Expected sha256 of the APK
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch and verify
+        env:
+          URL: ${{ inputs.url }}
+          SHA256: ${{ inputs.sha256 }}
+        run: |
+          curl -fsSL --retry 5 -o webby-android-arm64.apk "$URL"
+          echo "$SHA256  webby-android-arm64.apk" | tee webby-android-arm64.apk.sha256 | sha256sum -c -
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh release create "webby-android-$VERSION" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "webby for Android $VERSION" \
+            --notes "Debug build for arm64 phones on Android 11 or newer. Allow installs from your browser or file manager, then open the APK." \
+            webby-android-arm64.apk webby-android-arm64.apk.sha256
