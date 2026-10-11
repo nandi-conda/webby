@@ -380,7 +380,7 @@ class _BrowserPageState extends State<BrowserPage> {
     final text = input.trim();
     final tab = _tab;
     if (text.isEmpty || tab == null) return;
-    tab.controller.load(text);
+    tab.controller.load(addressToUrl(text));
     tab.focus.requestFocus();
   }
 

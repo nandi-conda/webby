@@ -128,10 +128,18 @@ class _OmniboxState extends State<Omnibox> {
                     if (parts != null)
                       IgnorePointer(
                         child: Text.rich(
-                          TextSpan(children: [
-                            TextSpan(text: parts.$1, style: style.copyWith(color: c.text)),
-                            TextSpan(text: parts.$2, style: style.copyWith(color: c.textDim)),
-                          ]),
+                          TextSpan(
+                            children: [
+                              TextSpan(
+                                text: parts.$1,
+                                style: style.copyWith(color: c.text),
+                              ),
+                              TextSpan(
+                                text: parts.$2,
+                                style: style.copyWith(color: c.textDim),
+                              ),
+                            ],
+                          ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -146,4 +154,39 @@ class _OmniboxState extends State<Omnibox> {
       ),
     );
   }
+}
+
+/// What the address bar loads for [input]: the address itself when it looks like one, otherwise a Google search.
+String addressToUrl(String input) {
+  final text = input.trim();
+  if (_looksLikeAddress(text)) return text;
+  return 'https://www.google.com/search?q=${Uri.encodeQueryComponent(text)}';
+}
+
+final _scheme = RegExp(r'^[a-zA-Z][a-zA-Z0-9+.-]*:');
+final _hostPort = RegExp(r'^(\[[0-9a-fA-F:.]+\]|[^\s/:?#@]+)(:\d{1,5})?$');
+
+bool _looksLikeAddress(String text) {
+  if (text.isEmpty || text.contains(RegExp(r'\s'))) return false;
+  // "https://…", "about:blank", "file:///…"; but "localhost:8080" is a host with a port, not a scheme.
+  final scheme = _scheme.firstMatch(text);
+  if (scheme != null && !RegExp(r'^[^:]+:\d').hasMatch(text)) {
+    return text.contains('://') ||
+        const {
+          'about',
+          'data',
+          'file',
+          'mailto',
+          'javascript',
+          'view-source',
+        }.contains(scheme.group(0)!.toLowerCase().replaceAll(':', ''));
+  }
+  final authority = text.split(RegExp(r'[/?#]')).first;
+  final match = _hostPort.firstMatch(authority.contains('@') ? authority.split('@').last : authority);
+  if (match == null) return false;
+  final host = match.group(1)!.toLowerCase();
+  if (host == 'localhost' || host.startsWith('[')) return true;
+  if (RegExp(r'^\d{1,3}(\.\d{1,3}){3}$').hasMatch(host)) return true;
+  // A dot-separated name ending in a letters-only TLD: "example.com", "news.ycombinator.com".
+  return RegExp(r'^([a-z0-9-]+\.)+[a-z]{2,63}\.?$').hasMatch(host);
 }
