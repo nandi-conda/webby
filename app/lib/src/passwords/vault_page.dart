@@ -232,26 +232,34 @@ class _VaultPageState extends State<VaultPage> {
                       ),
                     Padding(
                       padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: KitTabs<_Tab>(
-                              tabs: const [(_Tab.passwords, 'Passwords'), (_Tab.passkeys, 'Passkeys')],
-                              selected: _tab,
-                              onChanged: (tab) => setState(() => _tab = tab),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          SizedBox(
-                            width: 260,
-                            child: KitTextField(
-                              controller: _search,
-                              hint: 'Search',
-                              prefixIcon: Icons.search,
-                              onChanged: (_) => setState(() {}),
-                            ),
-                          ),
-                        ],
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          final tabs = KitTabs<_Tab>(
+                            tabs: const [(_Tab.passwords, 'Passwords'), (_Tab.passkeys, 'Passkeys')],
+                            selected: _tab,
+                            onChanged: (tab) => setState(() => _tab = tab),
+                          );
+                          final search = KitTextField(
+                            controller: _search,
+                            hint: 'Search',
+                            prefixIcon: Icons.search,
+                            onChanged: (_) => setState(() {}),
+                          );
+                          // On a phone the search box would squeeze the Passkeys tab out of view; stack them.
+                          if (constraints.maxWidth < 560) {
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [tabs, const SizedBox(height: 8), search],
+                            );
+                          }
+                          return Row(
+                            children: [
+                              Expanded(child: tabs),
+                              const SizedBox(width: 12),
+                              SizedBox(width: 260, child: search),
+                            ],
+                          );
+                        },
                       ),
                     ),
                     Expanded(child: _tab == _Tab.passwords ? _passwords(vault) : _passkeys()),
