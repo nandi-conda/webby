@@ -29,9 +29,9 @@ if [ "$(git rev-parse -q --verify HEAD || true)" != "$LADYBIRD_COMMIT" ]; then
     git checkout -q -f FETCH_HEAD
 fi
 
-# Our Ladybird patches: 0001 teaches UI/ about the Flutter frontend, 0002 adds Web Authentication (passkeys), 0003 and
-# 0004 make the Android build use plain helper executables and ship HarfBuzz/FreeType for Skia. When the patch set
-# changes, the tree goes back to the pinned commit first so every patch applies to pristine sources.
+# Our Ladybird patches: 0001 teaches UI/ about the Flutter frontend, 0002 adds Web Authentication (passkeys), 0003 to
+# 0007 get the Android build working (plain helper executables, HarfBuzz/FreeType for Skia, bit-rotted Android code).
+# When the patch set changes, the tree goes back to the pinned commit first so every patch applies to pristine sources.
 PATCHES_STAMP="$(cat "$ROOT"/patches/*.patch | sha256sum | cut -d' ' -f1)"
 if [ "$(cat .git/webby-patches 2>/dev/null || true)" != "$PATCHES_STAMP" ]; then
     git reset -q --hard HEAD

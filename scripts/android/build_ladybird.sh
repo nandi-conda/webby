@@ -34,7 +34,10 @@ export VCPKG_ROOT="$LADYBIRD_DIR/Build/vcpkg-release"
 
 BUILD_DIR="$LADYBIRD_DIR/Build/android-$ANDROID_ABI"
 cd "$LADYBIRD_DIR"
-if [ ! -f "$BUILD_DIR/build.ninja" ]; then
+# Ladybird links statically on Android, and several of its Rust static libraries each carry their own copy of shared
+# crates (regex, ICU glue); the copies are the same code, so the linker may keep the first one it sees.
+LINK_FLAGS="-Wl,--allow-multiple-definition"
+if [ ! -f "$BUILD_DIR/build.ninja" ] || ! grep -q -- "$LINK_FLAGS" "$BUILD_DIR/CMakeCache.txt"; then
     # VCPKG_TARGET_ANDROID makes Ladybird chain vcpkg's toolchain with the NDK's (UI/Android/vcpkg_android.cmake).
     # The helpers are plain executables here, not Ladybird's Android services: the app ships them as lib*.so files
     # and runs them from its native library directory. Everything links libc++ statically, so the helpers need no
@@ -51,7 +54,9 @@ if [ ! -f "$BUILD_DIR/build.ninja" ]; then
         -DLADYBIRD_UI_FLUTTER=ON \
         -DBUILD_TESTING=OFF \
         -DENABLE_LTO_FOR_RELEASE=OFF \
-        -DENABLE_CRANELIFT_JIT=OFF
+        -DENABLE_CRANELIFT_JIT=OFF \
+        -DCMAKE_EXE_LINKER_FLAGS="$LINK_FLAGS" \
+        -DCMAKE_SHARED_LINKER_FLAGS="$LINK_FLAGS"
 fi
 
 cmake --build "$BUILD_DIR" --target ladybird -- ${WEBBY_NINJA_ARGS:-}
