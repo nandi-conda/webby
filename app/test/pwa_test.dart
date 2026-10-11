@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:webby/src/pwa/app_store.dart';
 import 'package:webby/src/pwa/manifest.dart';
+import 'package:webby/src/pwa/offline.dart';
 
 void main() {
   final doc = Uri.parse('https://example.com/app/index.html');
@@ -93,6 +94,35 @@ void main() {
     test('slugs are stable and file-name safe', () {
       expect(AppStore.slugFor('https://example.com/app/'), AppStore.slugFor('https://example.com/app/'));
       expect(AppStore.slugFor('https://example.com/app/'), matches(RegExp(r'^example-com-[0-9a-f]{8}$')));
+    });
+  });
+
+  group('offline', () {
+    late Directory dir;
+    setUp(() => dir = Directory.systemTemp.createTempSync('webby-route'));
+    tearDown(() => dir.deleteSync(recursive: true));
+
+    String file(String name, String text) => (File('${dir.path}/$name')..writeAsStringSync(text)).path;
+    const header = 'Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\n';
+    const noV6 = '00000000000000000000000000000001 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000002 00000000 80200001       lo\n';
+
+    test('a default route means online', () {
+      final v4 = file('r4', '${header}wlan0\t00000000\t0102A8C0\t0003\t0\t0\t600\t00000000\n');
+      expect(OfflineMonitor.hasDefaultRoute(ipv4: v4, ipv6: file('r6', noV6)), isTrue);
+    });
+
+    test('only local routes means offline', () {
+      final v4 = file('r4', '${header}wlan0\t0002A8C0\t00000000\t0001\t0\t0\t600\t00FFFFFF\n');
+      expect(OfflineMonitor.hasDefaultRoute(ipv4: v4, ipv6: file('r6', noV6)), isFalse);
+    });
+
+    test('an IPv6 default route counts', () {
+      final v6 = file('r6', '${'0' * 32} 00 ${'0' * 32} 00 fe800000000000000000000000000001 00000400 00000001 00000000 00000003    wlan0\n');
+      expect(OfflineMonitor.hasDefaultRoute(ipv4: file('r4', header), ipv6: v6), isTrue);
+    });
+
+    test('unreadable tables never mean offline', () {
+      expect(OfflineMonitor.hasDefaultRoute(ipv4: '${dir.path}/none', ipv6: '${dir.path}/none6'), isTrue);
     });
   });
 }

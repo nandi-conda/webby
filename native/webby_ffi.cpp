@@ -11,6 +11,8 @@
 #include <LibGfx/SystemTheme.h>
 #include <LibMain/Main.h>
 #include <LibWebCommon/Page/InputEvent.h>
+#include <LibRequests/RequestControlClient.h>
+#include <LibWebView/Application.h>
 #include <LibWebView/Utilities.h>
 #include <WebbyView.h>
 #include <webby_ffi.h>
@@ -172,6 +174,13 @@ void webby_view_set_message_prefix(WebbyView* handle, char const* prefix)
 char const* webby_view_next_message(WebbyView* handle) { return handle->view->take_message().characters(); }
 
 static Webby::VaultCredentialStore* s_vault_store;
+
+void webby_set_offline(int offline)
+{
+    if (!s_application || !WebView::Application::has_request_server_control_client())
+        return;
+    WebView::Application::request_server_control_client().async_set_offline_mode(offline != 0);
+}
 
 int webby_passkeys_use_vault(char const* json)
 {

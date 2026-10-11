@@ -116,6 +116,12 @@ WEBBY_API void webby_view_wheel_event(WebbyView*, int x, int y, double delta_x, 
  * Unicode text the key produces (0 for none). */
 WEBBY_API void webby_view_key_event(WebbyView*, int is_down, int key_code, int modifiers, uint32_t code_point, int repeat);
 
+/* Offline mode (patches/0003-offline-disk-cache.patch): while on, RequestServer
+ * answers every fetch from Ladybird's HTTP disk cache only, expired entries
+ * included, and fails a miss at once. Lets pages and installed web apps that
+ * were opened before load without a network. Off by default. */
+WEBBY_API void webby_set_offline(int offline);
+
 #ifdef __cplusplus
 }
 #endif

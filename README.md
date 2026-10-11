@@ -140,8 +140,13 @@ to PNG, or kept as SVG) and writes a `webby-app-<app>.desktop` launcher to `${XD
 shows in the desktop's app menu. The launcher runs `webby --app=<start_url>`: a window with just the page, no
 toolbar; pages outside the manifest's `scope` get a thin strip with their host and an "Open in Webby" button. On an
 installed app's page the button opens the app or uninstalls it. Code: `app/lib/src/pwa/`.
-Offline use doesn't work yet: Ladybird (at `LADYBIRD_COMMIT`) accepts `navigator.serviceWorker.register()` but never
+Service workers don't run: Ladybird (at `LADYBIRD_COMMIT`) accepts `navigator.serviceWorker.register()` but never
 starts the worker (`ServiceWorker/Job.cpp`: "FIXME: Actually create service worker"), so there are no install,
-activate or fetch events, and `caches` (CacheStorage) is in memory only. Installed apps need the network like any
-page, and everything they keep in localStorage/IndexedDB is shared with the browser profile. All app windows share
+activate or fetch events, and `caches` (CacheStorage) is in memory only. In their place webby has an offline mode
+(`app/lib/src/pwa/offline.dart`, `patches/0003-offline-disk-cache.patch`): when the machine has no default route,
+RequestServer answers every fetch from Ladybird's HTTP disk cache only, expired copies included, so pages and apps
+opened before still load (as they were last time; anything not cached fails at once). A cloud icon in the address
+bar, or a strip in an app window, shows it. `WEBBY_OFFLINE=1` forces it on, `WEBBY_OFFLINE=0` off. Site logic in a
+worker (custom offline pages, background sync, push) doesn't run. Apps' localStorage/IndexedDB is shared with the
+browser profile. All app windows share
 webby's window class, so docks group them under webby's icon.

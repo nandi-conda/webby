@@ -15,6 +15,7 @@ import 'src/passwords/password_manager.dart';
 import 'src/passwords/vault_page.dart';
 import 'src/pwa/app_window.dart';
 import 'src/pwa/install_dialog.dart';
+import 'src/pwa/offline.dart';
 import 'src/pwa/pwa_agent.dart';
 import 'src/tab_strip.dart';
 import 'src/web_view.dart';
@@ -99,6 +100,7 @@ class _BrowserPageState extends State<BrowserPage> {
       final tab = _addTab(widget.initialUrl);
       _address.text = widget.initialUrl;
       PasswordManager.instance.start(WebbyBindings.open());
+      OfflineMonitor.start(WebbyBindings.open())?.addListener(_onBookmarksChanged);
       maybeStartBench(tab.controller);
       BookmarkStore.instance.addListener(_onBookmarksChanged);
     } catch (error) {
@@ -293,6 +295,7 @@ class _BrowserPageState extends State<BrowserPage> {
   @override
   void dispose() {
     BookmarkStore.instance.removeListener(_onBookmarksChanged);
+    OfflineMonitor.instance?.removeListener(_onBookmarksChanged);
     for (final tab in _tabs) {
       tab.dispose();
     }
@@ -365,6 +368,14 @@ class _BrowserPageState extends State<BrowserPage> {
                       url: controller.url,
                       onSubmitted: _go,
                       trailing: [
+                        if (OfflineMonitor.instance?.offline ?? false)
+                          KitTooltip(
+                            message: 'Offline: pages come from the copies saved when you last opened them',
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 5),
+                              child: Icon(Icons.cloud_off, size: 16, color: c.textDim),
+                            ),
+                          ),
                         InstallAppButton(agent: tab.pwa),
                         KitIconButton(
                           bookmarked ? Icons.star : Icons.star_border,

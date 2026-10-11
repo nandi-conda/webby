@@ -6,8 +6,10 @@ import '../bindings.dart';
 import '../passkey_dialog.dart';
 import '../passwords/password_bar.dart';
 import '../passwords/password_manager.dart';
+import '../ui.dart';
 import '../web_view.dart';
 import 'app_store.dart';
+import 'offline.dart';
 
 /// An installed web app's window (`webby --app=<url>`): just the page, no browser toolbar. Pages outside the app's
 /// scope get a thin strip with their origin and a way out to the browser, like other browsers' app windows.
@@ -37,11 +39,14 @@ class _AppWindowPageState extends State<AppWindowPage> {
       _controller = WebbyController(initialUrl: widget.startUrl)..addListener(_onPageChanged);
       _passwords = PasswordAgent(_controller!);
       PasswordManager.instance.start(WebbyBindings.open());
+      OfflineMonitor.start(WebbyBindings.open())?.addListener(_onOffline);
     } catch (error) {
       _startupError = error;
     }
     WidgetsBinding.instance.addPostFrameCallback((_) => _pageFocus.requestFocus());
   }
+
+  void _onOffline() => setState(() {});
 
   void _onPageChanged() {
     final passkeyPrompt = _controller!.webauthnPrompt;
@@ -71,6 +76,7 @@ class _AppWindowPageState extends State<AppWindowPage> {
 
   @override
   void dispose() {
+    OfflineMonitor.instance?.removeListener(_onOffline);
     _passwords?.dispose();
     _controller?.dispose();
     _pageFocus.dispose();
@@ -141,6 +147,8 @@ class _AppWindowPageState extends State<AppWindowPage> {
                   ],
                 ),
               ),
+            if (OfflineMonitor.instance?.offline ?? false)
+              const KitBanner(message: 'Offline: showing the copy saved when you last opened this.', icon: Icons.cloud_off),
             SizedBox(
               height: 2,
               child: controller.isLoading

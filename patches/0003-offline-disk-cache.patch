@@ -1,0 +1,97 @@
+diff --git a/Services/RequestServer/ControlConnectionFromClient.cpp b/Services/RequestServer/ControlConnectionFromClient.cpp
+index a97611a310..30a9a70d38 100644
+--- a/Services/RequestServer/ControlConnectionFromClient.cpp
++++ b/Services/RequestServer/ControlConnectionFromClient.cpp
+@@ -134,6 +134,11 @@ void ControlConnectionFromClient::set_disk_cache_settings(HTTP::DiskCacheSetting
+         m_disk_cache->set_maximum_disk_cache_size(disk_cache_settings.maximum_size);
+ }
+ 
++void ControlConnectionFromClient::set_offline_mode(bool offline)
++{
++    Request::set_offline_mode(offline);
++}
++
+ void ControlConnectionFromClient::set_dns_server(ByteString host_or_address, u16 port, bool use_tls, bool validate_dnssec_locally)
+ {
+     auto& dns_info = DNSInfo::the();
+diff --git a/Services/RequestServer/ControlConnectionFromClient.h b/Services/RequestServer/ControlConnectionFromClient.h
+index 82e449af4f..f7f8221cb6 100644
+--- a/Services/RequestServer/ControlConnectionFromClient.h
++++ b/Services/RequestServer/ControlConnectionFromClient.h
+@@ -43,6 +43,7 @@ private:
+     virtual void bind_client_to_site(int client_id, Utf16String top_level_site, Optional<Utf16String> frame_site) override;
+ 
+     virtual void set_disk_cache_settings(HTTP::DiskCacheSettings) override;
++    virtual void set_offline_mode(bool) override;
+ 
+     virtual void set_dns_server(ByteString host_or_address, u16 port, bool use_tls, bool validate_dnssec_locally) override;
+     virtual void set_use_system_dns() override;
+diff --git a/Services/RequestServer/Request.cpp b/Services/RequestServer/Request.cpp
+index 14a8e538fd..465024e6f3 100644
+--- a/Services/RequestServer/Request.cpp
++++ b/Services/RequestServer/Request.cpp
+@@ -35,6 +35,26 @@ extern OwnPtr<ResourceSubstitutionMap> g_resource_substitution_map;
+ static long s_connect_timeout_seconds = 90L;
+ static AK::Duration s_wait_for_cache_timeout = AK::Duration::from_seconds(10);
+ static AK::Duration s_revalidation_stall_timeout = AK::Duration::from_seconds(30);
++static bool s_offline_mode = false;
++
++void Request::set_offline_mode(bool offline)
++{
++    s_offline_mode = offline;
++}
++
++bool Request::offline_mode()
++{
++    return s_offline_mode;
++}
++
++// webby: offline, a fetch may only be answered from the disk cache. OnlyIfCached opens expired entries without
++// revalidating them, and a miss fails at once instead of waiting for a connection that can't succeed.
++static HTTP::CacheMode effective_cache_mode(HTTP::CacheMode cache_mode, RequestType type)
++{
++    if (!s_offline_mode || type != RequestType::Fetch)
++        return cache_mode;
++    return HTTP::CacheMode::OnlyIfCached;
++}
+ 
+ static CURLcode configure_ssl_context(CURL*, [[maybe_unused]] void* ssl_context, [[maybe_unused]] void* aia_collector)
+ {
+@@ -518,7 +538,7 @@ Request::Request(
+     , m_network_isolation_key(move(network_isolation_key))
+     , m_disk_cache(m_network_isolation_key.has_value() && m_network_isolation_key->frame_site.has_value() ? disk_cache : OptionalNone {})
+     , m_disk_cache_partition(m_network_isolation_key.has_value() ? m_network_isolation_key->disk_cache_partition() : OptionalNone {})
+-    , m_cache_mode(cache_mode)
++    , m_cache_mode(effective_cache_mode(cache_mode, type))
+     , m_client(&client)
+     , m_curl_multi_handle(curl_multi)
+     , m_resolver(resolver)
+diff --git a/Services/RequestServer/Request.h b/Services/RequestServer/Request.h
+index 3f4d528c1f..c7e2ec877b 100644
+--- a/Services/RequestServer/Request.h
++++ b/Services/RequestServer/Request.h
+@@ -88,6 +88,10 @@ public:
+     virtual ~Request() override;
+ 
+     static void set_performance_monitor_enabled(bool);
++
++    // webby: offline, fetches use the disk cache only (HTTP::CacheMode::OnlyIfCached), including expired entries.
++    static void set_offline_mode(bool);
++    static bool offline_mode();
+     static Vector<Requests::NetworkUsage> take_network_usage();
+     void set_performance_origin(i32 process_id, u64 page_id);
+     void sample_network_usage();
+diff --git a/Services/RequestServer/RequestServerControl.ipc b/Services/RequestServer/RequestServerControl.ipc
+index 2bb2931954..aba086df03 100644
+--- a/Services/RequestServer/RequestServerControl.ipc
++++ b/Services/RequestServer/RequestServerControl.ipc
+@@ -19,6 +19,9 @@ endpoint RequestServerControl
+ 
+     set_disk_cache_settings(HTTP::DiskCacheSettings disk_cache_settings) =|
+ 
++    // webby: while offline, every fetch is answered from the disk cache only, stale or not.
++    set_offline_mode(bool offline) =|
++
+     // use_tls: enable DNS over TLS
+     set_dns_server(ByteString host_or_address, u16 port, bool use_tls, bool validate_dnssec_locally) =|
+     set_use_system_dns() =|
