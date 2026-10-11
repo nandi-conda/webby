@@ -26,24 +26,21 @@ import 'passwords/native.dart';
 class WebbyController extends ChangeNotifier {
   WebbyController({String initialUrl = 'https://ladybird.org', bool? useTexture}) : _pendingUrl = initialUrl {
     _bindings = WebbyBindings.open();
-    if (useTexture ?? Platform.environment['WEBBY_TEXTURE'] != '0') {
-      _texturePending = true;
-      WebbyTexture.create().then((texture) {
-        _texturePending = false;
-        if (_disposed) {
-          texture?.dispose();
-        } else {
-          _texture = texture;
-        }
-      });
-    }
+    _useTexture = useTexture ?? Platform.environment['WEBBY_TEXTURE'] != '0';
+    if (_useTexture) _createTexture();
     // Pump Ladybird's event loop from the Dart thread; all FFI calls stay on this thread.
     _pumpTimer = Timer.periodic(const Duration(milliseconds: 4), (_) => _pump());
   }
 
   late final WebbyBindings _bindings;
   late final Timer _pumpTimer;
+  late final bool _useTexture;
   ViewPtr _view = nullptr;
+  // The last size given to setViewport, so a discarded view can be recreated at that size.
+  ({int width, int height, double ratio})? _viewport;
+  bool _visible = true;
+  bool _discarded = false;
+  Timer? _releaseFrames;
   VoidCallback? _colorScheme;
   String? _pendingUrl;
   bool _disposed = false;
@@ -101,20 +98,121 @@ class WebbyController extends ChangeNotifier {
   int? get textureId => frameWidth > 0 ? _texture?.id : null;
   bool get isAttached => _view != nullptr;
 
+  /// Whether this view is on screen. Background tabs are hidden: the page is told so (it stops rendering, see
+  /// `webby_view_set_visible`), no frames are copied out, and after [_frameGrace] its texture and frame copies are
+  /// freed. Showing it again pushes the last frame straight away.
+  bool get visible => _visible;
+  set visible(bool value) {
+    if (value == _visible) return;
+    _visible = value;
+    if (value) {
+      _releaseFrames?.cancel();
+      _releaseFrames = null;
+      if (_discarded) _restore();
+      if (_useTexture && _texture == null && !_texturePending) _createTexture();
+      // Re-read the frame Ladybird already has, even if it hasn't changed since the tab was hidden.
+      _frameSerial = -1;
+    } else {
+      _releaseFrames ??= Timer(_frameGrace, _freeFrames);
+    }
+    _applyVisible();
+  }
+
+  /// How long a hidden view keeps its texture, so quickly flipping between tabs doesn't flash.
+  static const _frameGrace = Duration(seconds: 10);
+
+  /// Whether the native view (and its WebContent process) was thrown away to save memory; see [discard].
+  bool get isDiscarded => _discarded;
+
+  /// Throws away a hidden view's page and WebContent process, keeping [url] and [title] for the tab strip. Showing
+  /// the view again loads [url] afresh (scroll position, form contents and back/forward history are lost).
+  void discard() {
+    if (_visible || _discarded || _view == nullptr || _disposed) return;
+    _discarded = true;
+    _pendingUrl = url;
+    PageColorScheme.unfollow(_colorScheme);
+    _colorScheme = null;
+    _bindings.viewDestroy(_view);
+    _view = nullptr;
+    _stateSerial = -1;
+    isLoading = false;
+    webauthnPrompt = null;
+    _webauthnPromptJson = '';
+    _freeFrames();
+    notifyListeners();
+  }
+
+  void _restore() {
+    _discarded = false;
+    final viewport = _viewport;
+    if (viewport != null) _attach(viewport.width, viewport.height, viewport.ratio);
+  }
+
+  void _createTexture() {
+    _texturePending = true;
+    WebbyTexture.create().then((texture) {
+      _texturePending = false;
+      if (_disposed || !_visible) {
+        texture?.dispose();
+      } else {
+        _texture = texture;
+        _frameSerial = -1;
+      }
+    });
+  }
+
+  void _freeFrames() {
+    _releaseFrames?.cancel();
+    _releaseFrames = null;
+    if (_visible) return;
+    _texture?.dispose();
+    _texture = null;
+    _image?.dispose();
+    _image = null;
+    frameWidth = 0;
+    frameHeight = 0;
+  }
+
+  static bool _visibleLooked = false;
+  static void Function(ViewPtr, int)? _setVisible;
+
+  void _applyVisible() {
+    if (_view == nullptr) return;
+    if (!_visibleLooked) {
+      _visibleLooked = true;
+      // Runtimes older than webby_view_set_visible keep hidden pages rendering; frames are still not copied out.
+      final lib = DynamicLibrary.open('${_bindings.prefix}/lib/libwebby.so');
+      if (lib.providesSymbol('webby_view_set_visible')) {
+        _setVisible = lib.lookupFunction<Void Function(ViewPtr, Int32), void Function(ViewPtr, int)>(
+          'webby_view_set_visible',
+        );
+      }
+    }
+    _setVisible?.call(_view, _visible ? 1 : 0);
+  }
+
   /// Creates the native view the first time the widget knows its size, then keeps it in sync.
   void setViewport(int width, int height, double devicePixelRatio) {
     if (width <= 0 || height <= 0) return;
+    _viewport = (width: width, height: height, ratio: devicePixelRatio);
+    if (_discarded) return;
     if (_view == nullptr) {
-      _view = _bindings.viewCreate(width, height, devicePixelRatio);
-      _applyMessagePrefix();
-      _colorScheme = PageColorScheme.follow(_bindings, () => _view);
-      if (_pendingUrl != null) {
-        load(_pendingUrl!);
-        _pendingUrl = null;
-      }
+      _attach(width, height, devicePixelRatio);
       return;
     }
     _bindings.resize(_view, width, height, devicePixelRatio);
+  }
+
+  void _attach(int width, int height, double devicePixelRatio) {
+    _view = _bindings.viewCreate(width, height, devicePixelRatio);
+    if (_view == nullptr) return;
+    _applyMessagePrefix();
+    _applyVisible();
+    _colorScheme = PageColorScheme.follow(_bindings, () => _view);
+    if (_pendingUrl != null) {
+      load(_pendingUrl!);
+      _pendingUrl = null;
+    }
   }
 
   void load(String input) {
@@ -196,8 +294,9 @@ class WebbyController extends ChangeNotifier {
       }
     }
 
-    // Until we know whether there's a texture, leave frames unread; the latest one goes wherever it ends up.
-    if (_texturePending) return;
+    // Until we know whether there's a texture, leave frames unread; the latest one goes wherever it ends up. Hidden
+    // views aren't drawn, so their frames stay in Ladybird until they're shown.
+    if (_texturePending || !_visible) return;
     final frameSerial = _bindings.frameSerial(_view);
     final texture = _texture;
     if (frameSerial == _frameSerial || (texture == null && _decoding)) return;
@@ -243,6 +342,7 @@ class WebbyController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _pumpTimer.cancel();
+    _releaseFrames?.cancel();
     PageColorScheme.unfollow(_colorScheme);
     _texture?.dispose();
     _texture = null;

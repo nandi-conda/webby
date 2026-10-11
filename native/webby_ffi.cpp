@@ -128,6 +128,11 @@ void webby_view_set_color_scheme(WebbyView* handle, int scheme)
     handle->view->set_preferred_color_scheme(preferred);
 }
 
+void webby_view_set_visible(WebbyView* handle, int visible)
+{
+    handle->view->set_system_visibility_state(visible ? Web::HTML::VisibilityState::Visible : Web::HTML::VisibilityState::Hidden);
+}
+
 void webby_view_reload(WebbyView* handle)
 {
     handle->view->reload();

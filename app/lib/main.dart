@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -76,6 +79,8 @@ class _BrowserTab {
   late final PwaAgent pwa;
   final focus = FocusNode(debugLabel: 'page');
   Map<String, Object?>? shownPasskeyPrompt;
+  /// When the tab last went into the background (null while it is the active tab).
+  DateTime? hiddenSince;
 
   void dispose() {
     passwords.dispose();
@@ -96,6 +101,14 @@ class _BrowserPageState extends State<BrowserPage> {
   final _address = TextEditingController();
   final _addressFocus = FocusNode(debugLabel: 'address');
   String _shownUrl = '';
+  Timer? _discardTimer;
+
+  /// Background tabs hidden this long lose their page (and its WebContent process) until they're shown again.
+  /// WEBBY_DISCARD_MINUTES overrides it; 0 never discards on age (low memory still does).
+  static final Duration? _discardAfter = () {
+    final minutes = int.tryParse(Platform.environment['WEBBY_DISCARD_MINUTES'] ?? '') ?? 30;
+    return minutes > 0 ? Duration(minutes: minutes) : null;
+  }();
 
   _BrowserTab? get _tab => _tabs.isEmpty ? null : _tabs[_active];
   WebbyController? get _controller => _tab?.controller;
@@ -110,6 +123,7 @@ class _BrowserPageState extends State<BrowserPage> {
       OfflineMonitor.start(WebbyBindings.open())?.addListener(_onBookmarksChanged);
       maybeStartBench(tab.controller);
       BookmarkStore.instance.addListener(_onBookmarksChanged);
+      _discardTimer = Timer.periodic(const Duration(minutes: 1), (_) => _discardIdleTabs());
     } catch (error) {
       _startupError = error;
     }
@@ -144,7 +158,63 @@ class _BrowserPageState extends State<BrowserPage> {
   /// Opens [url] in a new tab next to the current one without switching to it, like a middle-clicked link.
   void _openInBackgroundTab(String url) {
     if (_tabs.isEmpty) return;
-    setState(() => _addTab(url, at: _active + 1));
+    setState(() => _addTab(url, at: _active + 1).controller.visible = false);
+    _syncVisibility();
+  }
+
+  /// Only the active tab's page renders; the others are told they're hidden and stop making frames.
+  void _syncVisibility() {
+    final now = DateTime.now();
+    for (final t in _tabs) {
+      final active = t == _tab;
+      if (active) {
+        t.hiddenSince = null;
+      } else {
+        t.hiddenSince ??= now;
+      }
+      t.controller.visible = active;
+    }
+  }
+
+  /// Discards background tabs that have been hidden for [_discardAfter], or, when the system is short of memory,
+  /// the longest-hidden ones first until it isn't.
+  void _discardIdleTabs() {
+    final now = DateTime.now();
+    final candidates = _tabs
+        .where((t) =>
+            t != _tab &&
+            t.hiddenSince != null &&
+            !t.controller.isDiscarded &&
+            t.controller.isAttached &&
+            t.controller.webauthnPrompt == null)
+        .toList()
+      ..sort((a, b) => a.hiddenSince!.compareTo(b.hiddenSince!));
+    var changed = false;
+    final after = _discardAfter;
+    for (final t in candidates) {
+      final hidden = now.difference(t.hiddenSince!);
+      if ((after != null && hidden >= after) ||
+          (hidden >= const Duration(minutes: 1) && _lowOnMemory())) {
+        t.controller.discard();
+        changed = true;
+      }
+    }
+    if (changed) setState(() {});
+  }
+
+  /// Whether less than a tenth of RAM is available (Linux /proc/meminfo).
+  static bool _lowOnMemory() {
+    try {
+      int? total, available;
+      for (final line in File('/proc/meminfo').readAsLinesSync()) {
+        final kb = int.tryParse(line.split(RegExp(r'\s+')).elementAtOrNull(1) ?? '');
+        if (line.startsWith('MemTotal:')) total = kb;
+        if (line.startsWith('MemAvailable:')) available = kb;
+      }
+      return total != null && available != null && available * 10 < total;
+    } on FileSystemException {
+      return false;
+    }
   }
 
   void _reopenClosedTab() {
@@ -154,6 +224,7 @@ class _BrowserPageState extends State<BrowserPage> {
   void _selectTab(int index, {bool force = false}) {
     if (index < 0 || index >= _tabs.length || (index == _active && !force)) return;
     setState(() => _active = index);
+    _syncVisibility();
     final tab = _tabs[index];
     final url = tab.controller.url;
     _shownUrl = url;
@@ -301,6 +372,7 @@ class _BrowserPageState extends State<BrowserPage> {
 
   @override
   void dispose() {
+    _discardTimer?.cancel();
     BookmarkStore.instance.removeListener(_onBookmarksChanged);
     OfflineMonitor.instance?.removeListener(_onBookmarksChanged);
     for (final tab in _tabs) {

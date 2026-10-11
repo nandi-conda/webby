@@ -52,6 +52,12 @@ enum {
 };
 WEBBY_API void webby_view_set_color_scheme(WebbyView*, int scheme);
 
+/* Whether the view is on screen (1, the default) or in a background tab (0).
+ * A hidden page gets document.visibilityState "hidden" and stops its
+ * rendering updates (requestAnimationFrame, painting), so background tabs stop
+ * producing frames. The last frame stays readable. */
+WEBBY_API void webby_view_set_visible(WebbyView*, int visible);
+
 /* Frame access. frame_serial() increments every time a new frame is copied.
  * The pointer stays valid until the next webby_pump() call. */
 WEBBY_API uint64_t webby_view_frame_serial(WebbyView*);
