@@ -14,7 +14,7 @@ source:
   sha256: 0e823e68514a2e1a6fc3c13abafd7a666589f9e05ffc92d8167fb0916e653419
 
 build:
-  number: 0
+  number: 1
   skip:
     - not linux64
   # Prebuilt binaries with relative ($ORIGIN) RPATHs: copy them as-is.

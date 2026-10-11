@@ -1,11 +1,18 @@
-# `pixi run start` fetches Flutter and the prebuilt Ladybird runtime (once, into third_party/) and launches the app.
-# Flutter isn't on conda-forge, so its SDK tarball is downloaded; the Linux desktop toolchain comes from conda-forge.
+# `pixi run start` fetches Flutter (once, into third_party/) and launches the app.
+# Flutter isn't on conda-forge, so its SDK tarball is downloaded; the Linux desktop toolchain comes from conda-forge
+# and the prebuilt Ladybird runtime from the webby-ladybird package (conda/webby-ladybird) on prefix.dev/nandi-testing.
 [workspace]
 name = "webby"
-channels = ["conda-forge"]
+channels = ["https://prefix.dev/nandi-testing", "conda-forge"]
 platforms = ["linux-64"]
 
+# The prebuilt Ladybird runtime was built on Ubuntu 26.04.
+[system-requirements]
+libc = "2.43"
+
 [dependencies]
+# libwebby.so (LibWeb/LibJS) and the helper processes; activation sets WEBBY_LADYBIRD_PREFIX unless it's already set.
+webby-ladybird = ">=2026.10.10"
 # Flutter's Linux desktop build: compiler, build tools, GTK 3 and the .pc files its pkg-config lookup pulls in.
 clang = ">=19"
 clangxx = ">=19"
@@ -32,5 +39,5 @@ unzip = "*"
 which = "*"
 
 [tasks]
-fetch = { cmd = "scripts/pixi_fetch.sh", description = "Download Flutter and the prebuilt Ladybird runtime into third_party/ if missing" }
+fetch = { cmd = "scripts/pixi_fetch.sh", description = "Download Flutter into third_party/ if missing" }
 start = { cmd = "scripts/pixi_start.sh", depends-on = ["fetch"], description = "Run webby (extra args go to `flutter run`, e.g. -a https://example.com)" }
