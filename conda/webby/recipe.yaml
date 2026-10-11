@@ -2,8 +2,9 @@
 # The Ladybird engine comes from the webby-ladybird package; the launcher points the app at it.
 # Install: pixi global install -c https://prefix.dev/nandi-testing -c conda-forge webby
 # Build + upload: scripts/publish_conda.sh webby (needs PREFIX_API_KEY; downloads the Flutter SDK while building).
+# CI sets WEBBY_VERSION (commit date) and WEBBY_BUILD_NUMBER (pipeline number); see .gitlab-ci.yml.
 context:
-  version: "2026.10.11"
+  version: ${{ env.get("WEBBY_VERSION", default="2026.10.11") }}
   flutter_version: "3.35.5"
 
 package:
@@ -19,7 +20,7 @@ source:
     target_directory: flutter
 
 build:
-  number: 1
+  number: ${{ env.get("WEBBY_BUILD_NUMBER", default="1") | int }}
   skip:
     - not linux64
   dynamic_linking:
