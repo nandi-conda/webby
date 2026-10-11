@@ -1,0 +1,88 @@
+diff --git a/Libraries/LibCore/MappedFile.cpp b/Libraries/LibCore/MappedFile.cpp
+index fbd02727..27bc8b4f 100644
+--- a/Libraries/LibCore/MappedFile.cpp
++++ b/Libraries/LibCore/MappedFile.cpp
+@@ -63,7 +63,12 @@ ErrorOr<NonnullOwnPtr<MappedFile>> MappedFile::map_from_fd_range_and_close(int f
+     switch (mode) {
+     case Mode::ReadOnly:
+         protection = PROT_READ;
++#if defined(AK_OS_ANDROID)
++        // Older Android kernels refuse any MAP_SHARED mapping of a write-sealed memfd (e.g. the font catalog).
++        flags = MAP_PRIVATE;
++#else
+         flags = MAP_SHARED;
++#endif
+         break;
+     case Mode::ReadWrite:
+         protection = PROT_READ | PROT_WRITE;
+diff --git a/Libraries/LibCore/StandardPaths.cpp b/Libraries/LibCore/StandardPaths.cpp
+index 9b6c68c5..00203757 100644
+--- a/Libraries/LibCore/StandardPaths.cpp
++++ b/Libraries/LibCore/StandardPaths.cpp
+@@ -251,6 +251,11 @@ ByteString StandardPaths::tempfile_directory()
+ {
+ #if defined(AK_OS_WINDOWS)
+     return getenv("TEMP");
++#elif defined(AK_OS_ANDROID)
++    // Apps cannot write to /tmp; the host points TMPDIR at its cache directory.
++    if (auto* tmpdir = getenv("TMPDIR"); tmpdir && *tmpdir)
++        return tmpdir;
++    return "/data/local/tmp";
+ #else
+     return "/tmp";
+ #endif
+diff --git a/Libraries/LibGC/PrimitiveStorage.h b/Libraries/LibGC/PrimitiveStorage.h
+index 7c0630f0..caa59abe 100644
+--- a/Libraries/LibGC/PrimitiveStorage.h
++++ b/Libraries/LibGC/PrimitiveStorage.h
+@@ -10,6 +10,7 @@
+ #include <AK/Error.h>
+ #include <AK/Noncopyable.h>
+ #include <AK/Optional.h>
++#include <AK/Platform.h>
+ #include <AK/StdLibExtras.h>
+ #include <AK/Types.h>
+ #include <AK/Vector.h>
+@@ -30,7 +31,13 @@ public:
+         Yes,
+     };
+ 
++#if AK_IS_ARCH_AARCH64() && !defined(AK_OS_MACOS)
++    // Some AArch64 systems (e.g. Android phones) provide only 39 bits of user virtual address space, where a 4 TiB
++    // reservation cannot succeed. Keep in sync with LibJS/Rust/build.rs.
++    static constexpr size_t default_cage_size = 64ull * GiB;
++#else
+     static constexpr size_t default_cage_size = 4ull * TiB;
++#endif
+     static_assert(is_power_of_two(default_cage_size));
+     static constexpr size_t cage_offset_mask = default_cage_size - 1;
+     static constexpr size_t invalid_offset = NumericLimits<size_t>::max();
+diff --git a/Libraries/LibJS/Rust/build.rs b/Libraries/LibJS/Rust/build.rs
+index 8e911d0d..d94bfa24 100644
+--- a/Libraries/LibJS/Rust/build.rs
++++ b/Libraries/LibJS/Rust/build.rs
+@@ -106,6 +106,15 @@ fn heap_region_size(target: &Target, thread_sanitizer: bool) -> u64 {
+     }
+ }
+ 
++fn primitive_storage_cage_size(target: &Target) -> u64 {
++    let os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS");
++    if matches!(target.architecture, flapc::Architecture::Aarch64) && os != "macos" {
++        64 * GIB
++    } else {
++        4 * TIB
++    }
++}
++
+ fn main() {
+     let manifest_directory = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+     let output_directory = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
+@@ -130,7 +139,7 @@ fn main() {
+     let configuration = layout_table::LayoutConfiguration {
+         heap_region_offset_mask: heap_region_size(&target, thread_sanitizer) - 1,
+         // Mirrors GC::PrimitiveStorage::default_cage_size.
+-        primitive_storage_cage_offset_mask: 4 * TIB - 1,
++        primitive_storage_cage_offset_mask: primitive_storage_cage_size(&target) - 1,
+         // Instrumented frames need more room before the stack is considered exhausted.
+         vm_stack_space_limit: if address_sanitizer { 96 * KIB } else { 32 * KIB },
+     };
