@@ -24,6 +24,8 @@ import 'src/pwa/install_dialog.dart';
 import 'src/pwa/offline.dart';
 import 'src/pwa/pwa_agent.dart';
 import 'src/tab_strip.dart';
+import 'src/tabs/device_tabs.dart';
+import 'src/tabs/device_tabs_page.dart';
 import 'src/web_view.dart';
 
 Future<void> main(List<String> args) async {
@@ -151,6 +153,7 @@ class _BrowserPageState extends State<BrowserPage> {
       _selectTab(_tabs.indexOf(opened));
     };
     _tabs.insert(at ?? _tabs.length, tab);
+    _publishTabs();
     return tab;
   }
 
@@ -171,6 +174,25 @@ class _BrowserPageState extends State<BrowserPage> {
     if (_active > index || _active >= _tabs.length) _active = (_active - 1).clamp(0, _tabs.length - 1);
     tab.dispose();
     _selectTab(_active, force: true);
+    _publishTabs();
+  }
+
+  /// Lets the user's other devices see this window's tabs (see [DeviceTabs]).
+  void _publishTabs() =>
+      DeviceTabs.instance.setTabs([for (final t in _tabs) DeviceTab(t.controller.title, t.controller.url)]);
+
+  Future<void> _openDeviceTabs() async {
+    final urls = await Navigator.of(context).push<List<String>>(MaterialPageRoute(builder: (_) => const DeviceTabsPage()));
+    if (urls == null || urls.isEmpty || !mounted) return;
+    // Like opening a bookmark: reuse a blank tab, otherwise open new ones.
+    final blank = _controller?.url.isEmpty != false || _controller?.url == _blankUrl;
+    for (final (i, url) in urls.indexed) {
+      if (i == 0 && blank) {
+        _go(url);
+      } else {
+        _newTab(url);
+      }
+    }
   }
 
   /// Opens [url] in a new tab next to the current one without switching to it, like a middle-clicked link.
@@ -271,6 +293,7 @@ class _BrowserPageState extends State<BrowserPage> {
       scheduleMicrotask(() => _closeTab(_tabs.indexOf(tab)));
       return;
     }
+    _publishTabs();
     // Don't clobber what the user is typing.
     if (tab == _tab && controller.url != _shownUrl && !_addressFocus.hasFocus) {
       _shownUrl = controller.url;
@@ -513,6 +536,8 @@ class _BrowserPageState extends State<BrowserPage> {
                       ),
                       const KitMenuDivider(),
                       KitMenuItem('Bookmark manager', shortcut: 'Ctrl+Shift+O', onSelected: _openBookmarks),
+                      const KitMenuDivider(),
+                      KitMenuItem('Tabs from other devices', onSelected: _openDeviceTabs),
                     ],
                     builder: (context, toggle, open) =>
                         KitIconButton(Icons.bookmarks_outlined, tooltip: 'Bookmarks', onPressed: toggle),

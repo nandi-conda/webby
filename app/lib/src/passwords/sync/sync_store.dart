@@ -40,6 +40,9 @@ abstract class BlobStore {
   Future<void> delete();
 }
 
+/// The blobs a sync key has on the server, all with the same token and encryption key.
+enum SyncBlob { vault, bookmarks, tabs }
+
 /// Which kind of storage the user picked.
 enum SyncBackend { webbySync, webdav }
 
@@ -134,10 +137,14 @@ class SyncSettings {
         if (lastError != null) 'lastError': lastError,
       };
 
-  /// The passwords blob, or with [bookmarks] the bookmarks one.
-  BlobStore store(SyncKeys keys, {bool bookmarks = false}) {
+  /// The passwords blob, or another of the sync key's [SyncBlob]s.
+  BlobStore store(SyncKeys keys, {SyncBlob blob = SyncBlob.vault}) {
     final base = server.endsWith('/') ? server.substring(0, server.length - 1) : server;
-    final blobId = bookmarks ? keys.bookmarksBlobId : keys.blobId;
+    final blobId = switch (blob) {
+      SyncBlob.vault => keys.blobId,
+      SyncBlob.bookmarks => keys.bookmarksBlobId,
+      SyncBlob.tabs => keys.tabsBlobId,
+    };
     if (backend == SyncBackend.webdav) {
       final login = base64Encode(utf8.encode('$username:$password'));
       return HttpBlobStore(Uri.parse('$base/webby-sync-${blobId.substring(0, 32)}.json'),

@@ -36,7 +36,7 @@ void main() {
   /// What VaultSync does for bookmarks.
   Future<void> sync(BookmarkStore store) async {
     clock++;
-    final outcome = await syncOnce(settings, store.toSyncDoc(), store: server, now: clock, bookmarks: true);
+    final outcome = await syncOnce(settings, store.toSyncDoc(), store: server, now: clock, blob: SyncBlob.bookmarks);
     store.applySyncDoc(mergeDocs(store.toSyncDoc(), outcome.doc, now: clock));
   }
 

@@ -6,10 +6,14 @@ import 'dart:convert';
 /// How long a deletion is remembered, so devices that were offline still learn about it.
 const tombstoneLifetime = Duration(days: 180);
 
+/// How long a device that stopped syncing keeps showing up under "Tabs from other devices".
+const deviceLifetime = Duration(days: 30);
+
 /// Everything that syncs: passwords by id, passkeys by credentialId, never-save sites by origin and bookmarks by id.
 ///
 /// Bookmarks travel in their own blob (see [SyncKeys.bookmarksBlobId]), so webby versions that predate bookmark
-/// sync never see them and can't drop them; in that blob only [bookmarks] is used.
+/// sync never see them and can't drop them; in that blob only [bookmarks] is used. Open tabs are the same, in a third
+/// blob holding only [devices].
 ///
 /// Each record is a JSON map with an `updatedAt` (seconds since the epoch). A deleted item stays as a tombstone
 /// `{updatedAt, deleted: true}` (passwords also keep `id`) until [tombstoneLifetime] has passed.
@@ -19,10 +23,12 @@ class SyncDoc {
     Map<String, Map<String, Object?>>? passkeys,
     Map<String, Map<String, Object?>>? neverSave,
     Map<String, Map<String, Object?>>? bookmarks,
+    Map<String, Map<String, Object?>>? devices,
   })  : passwords = passwords ?? {},
         passkeys = passkeys ?? {},
         neverSave = neverSave ?? {},
-        bookmarks = bookmarks ?? {};
+        bookmarks = bookmarks ?? {},
+        devices = devices ?? {};
 
   factory SyncDoc.fromJson(Map<String, Object?> json) {
     Map<String, Map<String, Object?>> section(String name) {
@@ -38,7 +44,8 @@ class SyncDoc {
         passwords: section('passwords'),
         passkeys: section('passkeys'),
         neverSave: section('neverSave'),
-        bookmarks: section('bookmarks'));
+        bookmarks: section('bookmarks'),
+        devices: section('devices'));
   }
 
   final Map<String, Map<String, Object?>> passwords;
@@ -50,12 +57,18 @@ class SyncDoc {
   /// orders a folder's children. A folder merged into a same-named one is a tombstone with `mergedInto`.
   final Map<String, Map<String, Object?>> bookmarks;
 
+  /// Each device's open tabs by device id: `{name, platform, updatedAt, tabs: [{title, url}]}`. Only the device
+  /// itself writes its record (refreshing `updatedAt` at least hourly), so the newest copy is always right; one not
+  /// refreshed for [deviceLifetime] is dropped.
+  final Map<String, Map<String, Object?>> devices;
+
   Map<String, Object?> toJson() => {
         'version': 1,
         'passwords': _sorted(passwords),
         'passkeys': _sorted(passkeys),
         'neverSave': _sorted(neverSave),
         if (bookmarks.isNotEmpty) 'bookmarks': _sorted(bookmarks),
+        if (devices.isNotEmpty) 'devices': _sorted(devices),
       };
 
   /// A stable encoding: equal documents encode to equal strings.
@@ -139,6 +152,8 @@ SyncDoc mergeDocs(SyncDoc a, SyncDoc b, {required int now}) {
     passkeys: _mergeSection(a.passkeys, b.passkeys, expireBefore),
     neverSave: _mergeSection(a.neverSave, b.neverSave, expireBefore),
     bookmarks: _repairBookmarks(_mergeSection(a.bookmarks, b.bookmarks, expireBefore)),
+    devices: _mergeSection(a.devices, b.devices, expireBefore)
+      ..removeWhere((_, record) => !isDeleted(record) && updatedAtOf(record) < now - deviceLifetime.inSeconds),
   );
 }
 

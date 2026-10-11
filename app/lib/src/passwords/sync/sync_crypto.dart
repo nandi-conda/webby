@@ -88,6 +88,7 @@ class SyncKey {
     return SyncKeys(
       blobId: _hex(await part('id')),
       bookmarksBlobId: _hex(await part('id-bookmarks')),
+      tabsBlobId: _hex(await part('id-tabs')),
       authToken: base64UrlEncode(await part('auth')).replaceAll('=', ''),
       encryptionKey: SecretKey(await part('enc')),
     );
@@ -96,13 +97,21 @@ class SyncKey {
 
 /// What a [SyncKey] turns into: where the blob lives, how to prove we may write it, and how to read it.
 class SyncKeys {
-  SyncKeys({required this.blobId, required this.bookmarksBlobId, required this.authToken, required this.encryptionKey});
+  SyncKeys(
+      {required this.blobId,
+      required this.bookmarksBlobId,
+      required this.tabsBlobId,
+      required this.authToken,
+      required this.encryptionKey});
 
   /// 64 hex characters naming the blob on the server.
   final String blobId;
 
   /// The same for the bookmarks blob, which sits beside the passwords one with the same token and encryption key.
   final String bookmarksBlobId;
+
+  /// The same for the open-tabs blob, where each device lists its tabs for the others.
+  final String tabsBlobId;
 
   /// Bearer token for the webby-sync server, which keeps only its hash.
   final String authToken;
