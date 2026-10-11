@@ -54,7 +54,7 @@ if [ ! -f "$BUILD_DIR/build.ninja" ]; then
         -DENABLE_CRANELIFT_JIT=OFF
 fi
 
-cmake --build "$BUILD_DIR" --target ladybird
+cmake --build "$BUILD_DIR" --target ladybird -- ${WEBBY_NINJA_ARGS:-}
 
 echo
 echo "Android Ladybird prefix: $BUILD_DIR"
