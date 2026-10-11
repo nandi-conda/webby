@@ -6,8 +6,10 @@ import 'dart:convert';
 /// view answers those itself and queues them for Dart, see `webby_view_set_message_prefix`). Messages are JSON:
 ///   {"type": "fields"}   the page has a visible password field (sent once per page, and again when one appears)
 ///   {"type": "focus"}    the user focused a username or password field
+///   {"type": "newPassword"}   the user focused a field for choosing a new password (sign-up or change password)
 ///   {"type": "submit", "username", "password"}   a login was sent (form submit, Enter, or a click on a button)
-/// It also defines `window.__webbyPasswords.fill(username, password, origin)` for the browser to call.
+/// It also defines `window.__webbyPasswords.fill(username, password, origin)` and `.fillNew(password, origin)` for the
+/// browser to call.
 ///
 /// The prefix carries a random token per browser session, so frames and scripts that don't know it can't pose as this
 /// script. It runs again after every load; a page that already has it keeps the first copy.
@@ -51,6 +53,22 @@ String passwordPageScript(String prefix) => '''
     return inputs.find(isTextLike) || null;
   }
 
+  // A field for choosing a password rather than entering one. Tagged new-password, or untagged and one of several
+  // password fields in its form: next to a tagged one (the confirm field, or the new one beside current-password),
+  // as password + confirm, or as the 2nd/3rd of current + new + confirm.
+  const autocompleteOf = (el) => (el.getAttribute('autocomplete') || '').toLowerCase();
+  function isNewPasswordField(el) {
+    if (!(el instanceof HTMLInputElement) || el.type !== 'password') return false;
+    const autocomplete = autocompleteOf(el);
+    if (autocomplete === 'new-password') return true;
+    if (autocomplete === 'current-password') return false;
+    const fields = passwordFields(el.form);
+    const untagged = fields.filter((f) => !['current-password', 'new-password'].includes(autocompleteOf(f)));
+    if (untagged.length < fields.length) return true;
+    if (untagged.length === 2) return true;
+    return untagged.length >= 3 && untagged.indexOf(el) > 0;
+  }
+
   let lastSent = '';
   function capture(root) {
     const filled = passwordFields(root).filter((el) => el.value);
@@ -81,7 +99,8 @@ String passwordPageScript(String prefix) => '''
     const el = event.target;
     if (filling) return;
     if (!(el instanceof HTMLInputElement)) return;
-    if (el.type === 'password' || (isTextLike(el) && passwordFields(el.form).length)) send({ type: 'focus' });
+    if (isNewPasswordField(el)) send({ type: 'newPassword' });
+    else if (el.type === 'password' || (isTextLike(el) && passwordFields(el.form).length)) send({ type: 'focus' });
   }, true);
 
   let hadFields = false;
@@ -122,10 +141,30 @@ String passwordPageScript(String prefix) => '''
         }
         lastSent = (username || '') + '\\u0000' + password;
       },
+      // Puts a generated password in the new-password field the user is on and in its confirm field.
+      fillNew(password, origin) {
+        if (location.origin !== origin) return;
+        const passwords = passwordFields(document);
+        const focused = passwords.find((el) => el === document.activeElement);
+        const first = focused && isNewPasswordField(focused) ? focused : passwords.find(isNewPasswordField);
+        if (!first) return;
+        const targets = passwordFields(first.form).filter((el) => el === first || isNewPasswordField(el));
+        filling = true;
+        try {
+          for (const el of targets) setValue(el, password);
+          first.focus();
+        } finally {
+          filling = false;
+        }
+      },
     }),
   });
 })();
 ''';
+
+/// JavaScript that puts a generated [password] into the page's new-password fields, if the page is still on [origin].
+String passwordFillNewScript(String origin, String password) =>
+    'window.__webbyPasswords && window.__webbyPasswords.fillNew(${jsonEncode(password)}, ${jsonEncode(origin)});';
 
 /// JavaScript that fills [username] and [password] into the page's login form, if the page is still on [origin].
 String passwordFillScript(String origin, String username, String password) =>

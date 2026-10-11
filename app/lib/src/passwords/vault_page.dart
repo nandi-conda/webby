@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'generator.dart';
 import 'password_manager.dart';
 import 'vault.dart';
 
@@ -303,10 +304,21 @@ class _PasswordDialogState extends State<_PasswordDialog> {
               onSubmitted: (_) => _submit(),
               decoration: InputDecoration(
                 labelText: 'Password',
-                suffixIcon: IconButton(
-                  icon: Icon(_obscure ? Icons.visibility : Icons.visibility_off),
-                  onPressed: () => setState(() => _obscure = !_obscure),
-                ),
+                suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
+                  IconButton(
+                    tooltip: 'Generate a strong password',
+                    icon: const Icon(Icons.casino_outlined),
+                    onPressed: () => setState(() {
+                      _password.text = generatePassword();
+                      _obscure = false;
+                    }),
+                  ),
+                  IconButton(
+                    tooltip: _obscure ? 'Show password' : 'Hide password',
+                    icon: Icon(_obscure ? Icons.visibility : Icons.visibility_off),
+                    onPressed: () => setState(() => _obscure = !_obscure),
+                  ),
+                ]),
               ),
             ),
           ],

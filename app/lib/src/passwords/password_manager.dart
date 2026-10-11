@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 
 import '../bindings.dart';
 import '../web_view.dart';
+import 'generator.dart';
 import 'native.dart';
 import 'page_script.dart';
 import 'vault.dart';
@@ -110,6 +111,12 @@ class FillOffer extends PasswordOffer {
   final List<SavedPassword> accounts;
 }
 
+/// "Use a strong password?" when the user is on a sign-up or change-password field.
+class GenerateOffer extends PasswordOffer {
+  const GenerateOffer(super.origin, this.password);
+  final String password;
+}
+
 /// Connects one [WebbyController] to the [PasswordManager]: runs the form script in its pages, fills saved
 /// passwords and offers to save new ones.
 class PasswordAgent extends ChangeNotifier {
@@ -128,6 +135,9 @@ class PasswordAgent extends ChangeNotifier {
   bool _wasLoading = false;
   String? _filledOrigin;
 
+  /// The generated password the user put in the page, saved without asking once the form is sent with it.
+  String? _generated;
+
   void _onPageChanged() {
     // Run the script once per load, and again when the URL changes without a load (single-page apps reuse the page,
     // and the script skips pages that already have it).
@@ -136,6 +146,7 @@ class PasswordAgent extends ChangeNotifier {
     if (controller.url != _scriptedUrl || loadFinished) {
       if (controller.url != _scriptedUrl) {
         _filledOrigin = null;
+        _generated = null;
         if (offer is FillOffer && offer!.origin != originOf(controller.url)) _setOffer(null);
       }
       _scriptedUrl = controller.url;
@@ -157,6 +168,10 @@ class PasswordAgent extends ChangeNotifier {
     }
 
     switch (message['type']) {
+      case 'newPassword':
+        // Not again for the confirm field once a password is in, or while one is on offer.
+        if (_generated != null || offer is SaveOffer || (offer is GenerateOffer && offer!.origin == origin)) return;
+        _setOffer(GenerateOffer(origin, generatePassword()));
       case 'fields' || 'focus':
         final accounts = vault.passwordsFor(origin);
         if (accounts.isEmpty || offer is SaveOffer) return;
@@ -169,7 +184,14 @@ class PasswordAgent extends ChangeNotifier {
       case 'submit':
         final username = message['username'] as String? ?? '';
         final password = message['password'] as String? ?? '';
-        if (password.isEmpty || vault.isNeverSave(origin)) return;
+        if (password.isEmpty) return;
+        if (password == _generated) {
+          _generated = null;
+          vault.savePassword(origin, username, password);
+          if (offer is GenerateOffer) _setOffer(null);
+          return;
+        }
+        if (vault.isNeverSave(origin)) return;
         final existing = vault.find(origin, username);
         if (existing != null && existing.password == password) return;
         _setOffer(SaveOffer(origin, username, password, existing));
@@ -188,6 +210,16 @@ class PasswordAgent extends ChangeNotifier {
     controller.runJavaScript(passwordFillScript(origin, account.username, account.password));
     if (offer is FillOffer) _setOffer(null);
   }
+
+  /// Puts [offer]'s password in the page's new-password fields; it's saved when the form is sent.
+  void useGenerated(GenerateOffer offer) {
+    if (originOf(controller.url) != offer.origin) return;
+    _generated = offer.password;
+    controller.runJavaScript(passwordFillNewScript(offer.origin, offer.password));
+    _setOffer(null);
+  }
+
+  void regenerate(GenerateOffer offer) => _setOffer(GenerateOffer(offer.origin, generatePassword()));
 
   void save(SaveOffer offer) {
     manager.vault?.savePassword(offer.origin, offer.username, offer.password);

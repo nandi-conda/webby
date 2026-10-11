@@ -38,6 +38,21 @@ class PasswordBar extends StatelessWidget {
                 ),
               ],
             ),
+          GenerateOffer() => (
+              Text.rich(TextSpan(children: [
+                const TextSpan(text: 'Use a strong password  '),
+                TextSpan(text: offer.password, style: bold?.copyWith(fontFamily: 'monospace')),
+              ])),
+              [
+                IconButton(
+                  tooltip: 'Another one',
+                  icon: const Icon(Icons.refresh),
+                  onPressed: () => agent.regenerate(offer),
+                ),
+                TextButton(onPressed: agent.dismiss, child: const Text('No thanks')),
+                FilledButton(onPressed: () => agent.useGenerated(offer), child: const Text('Use password')),
+              ],
+            ),
           FillOffer() => (
               Text.rich(TextSpan(children: [
                 const TextSpan(text: 'Fill a saved password for '),
