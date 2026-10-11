@@ -58,7 +58,7 @@ requirements:
     - expat
     - zlib
   run:
-    - webby-ladybird >=2026.10.11
+    - webby-ladybird >=2026.10.11.1
     - gtk3
     - epoxy
     - fontconfig
