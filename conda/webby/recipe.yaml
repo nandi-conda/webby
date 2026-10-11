@@ -14,6 +14,8 @@ package:
 source:
   - path: ../../app
     target_directory: app
+  - path: ../../icons
+    target_directory: icons
   # Flutter isn't on conda-forge, so the SDK is a build-time source.
   - url: https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${{ flutter_version }}-stable.tar.xz
     sha256: 8eead69e5d84131fcfbb2cfd44164c00e9a04df725f24672ea234c6bd136353d
@@ -50,6 +52,8 @@ requirements:
     - which
     # rattler-build relinks the Flutter bundle with it.
     - patchelf
+    # rsvg-convert renders the icon PNGs.
+    - librsvg
   host:
     - gtk3
     - glib
@@ -75,6 +79,11 @@ tests:
         - lib/webby/lib/libapp.so
         - lib/webby/lib/libflutter_linux_gtk.so
         - lib/webby/data/icudtl.dat
+        - lib/webby/data/webby.png
+        - Menu/webby.json
+        - Menu/webby.png
+        - share/icons/hicolor/16x16/apps/dev.webby.webby.png
+        - share/icons/hicolor/512x512/apps/dev.webby.webby.png
 
 about:
   homepage: https://gitlab.latha.org/nandi/webby

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>webby</title>
+  <!-- Simplified webby.svg for 16-32 px: fewer, thicker threads. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b2fd6"/>
+      <stop offset="1" stop-color="#0e1a4f"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.42" r="0.6">
+      <stop offset="0" stop-color="#5ee7ff" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#5ee7ff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="silk" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#9eeaff"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#glow)"/>
+  <circle cx="256" cy="256" r="176" fill="none" stroke="url(#silk)" stroke-width="30"/>
+  <g fill="none" stroke="url(#silk)" stroke-width="30" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="256" y1="256" x2="256.0" y2="80.0"/>
+    <line x1="256" y1="256" x2="408.4" y2="168.0"/>
+    <line x1="256" y1="256" x2="408.4" y2="344.0"/>
+    <line x1="256" y1="256" x2="256.0" y2="432.0"/>
+    <line x1="256" y1="256" x2="103.6" y2="344.0"/>
+    <line x1="256" y1="256" x2="103.6" y2="168.0"/>
+    <path d="M256.0,156.0 Q291.5,194.5 342.6,206.0 Q327.0,256.0 342.6,306.0 Q291.5,317.5 256.0,356.0 Q220.5,317.5 169.4,306.0 Q185.0,256.0 169.4,206.0 Q220.5,194.5 256.0,156.0Z"/>
+  </g>
+  <circle cx="342.6" cy="206.0" r="34" fill="#ffb547" stroke="#0e1a4f" stroke-width="11"/>
+</svg>
