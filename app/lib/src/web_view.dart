@@ -13,6 +13,7 @@ import 'package:webby_texture/webby_texture.dart';
 import 'bindings.dart';
 import 'frame_bench.dart';
 import 'keys.dart';
+import 'passwords/native.dart';
 
 /// Drives one Ladybird view: pumps the event loop, hands presented frames to Flutter and exposes page state.
 ///
@@ -65,6 +66,24 @@ class WebbyController extends ChangeNotifier {
   Map<String, Object?>? webauthnPrompt;
   String _webauthnPromptJson = '';
 
+  /// Messages from the browser's own page scripts (see `webby_view_set_message_prefix` in webby_ffi.h); none arrive
+  /// until [messagePrefix] is set.
+  Stream<String> get pageMessages => _pageMessages.stream;
+  final _pageMessages = StreamController<String>.broadcast();
+  late final PasswordNative _passwordNative = PasswordNative.of(_bindings);
+  String _messagePrefix = '';
+  String get messagePrefix => _messagePrefix;
+  set messagePrefix(String prefix) {
+    _messagePrefix = prefix;
+    _applyMessagePrefix();
+  }
+
+  void _applyMessagePrefix() {
+    final setPrefix = _passwordNative.setMessagePrefix;
+    if (_view == nullptr || setPrefix == null) return;
+    _withString(_messagePrefix, (s) => setPrefix(_view, s));
+  }
+
   ui.Image? get image => _image;
 
   /// The texture to show once it has a frame; null when frames come as [image]s.
@@ -76,6 +95,7 @@ class WebbyController extends ChangeNotifier {
     if (width <= 0 || height <= 0) return;
     if (_view == nullptr) {
       _view = _bindings.viewCreate(width, height, devicePixelRatio);
+      _applyMessagePrefix();
       if (_pendingUrl != null) {
         load(_pendingUrl!);
         _pendingUrl = null;
@@ -149,6 +169,13 @@ class WebbyController extends ChangeNotifier {
       notifyListeners();
     }
 
+    final nextMessage = _passwordNative.nextMessage;
+    if (nextMessage != null && _messagePrefix.isNotEmpty) {
+      for (var message = nextMessage(_view).toDartString(); message.isNotEmpty; message = nextMessage(_view).toDartString()) {
+        _pageMessages.add(message);
+      }
+    }
+
     // Until we know whether there's a texture, leave frames unread; the latest one goes wherever it ends up.
     if (_texturePending) return;
     final frameSerial = _bindings.frameSerial(_view);
@@ -203,6 +230,7 @@ class WebbyController extends ChangeNotifier {
       _view = nullptr;
     }
     _image?.dispose();
+    _pageMessages.close();
     super.dispose();
   }
 }

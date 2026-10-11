@@ -9,7 +9,10 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  cryptography: ^2.7.0
   ffi: ^2.2.0
+  webby_keyring:
+    path: webby_keyring
   webby_texture:
     path: webby_texture
 

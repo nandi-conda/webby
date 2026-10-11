@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 
+import 'src/bindings.dart';
 import 'src/frame_bench.dart';
 import 'src/passkey_dialog.dart';
+import 'src/passwords/password_bar.dart';
+import 'src/passwords/password_manager.dart';
+import 'src/passwords/vault_page.dart';
 import 'src/web_view.dart';
 
 void main(List<String> args) {
@@ -35,6 +39,7 @@ class BrowserPage extends StatefulWidget {
 
 class _BrowserPageState extends State<BrowserPage> {
   WebbyController? _controller;
+  PasswordAgent? _passwords;
   Object? _startupError;
   final _address = TextEditingController();
   final _addressFocus = FocusNode(debugLabel: 'address');
@@ -48,6 +53,8 @@ class _BrowserPageState extends State<BrowserPage> {
     try {
       _controller = WebbyController(initialUrl: widget.initialUrl)..addListener(_onPageChanged);
       _address.text = widget.initialUrl;
+      _passwords = PasswordAgent(_controller!);
+      PasswordManager.instance.start(WebbyBindings.open());
       maybeStartBench(_controller!);
     } catch (error) {
       _startupError = error;
@@ -78,6 +85,7 @@ class _BrowserPageState extends State<BrowserPage> {
 
   @override
   void dispose() {
+    _passwords?.dispose();
     _controller?.dispose();
     _address.dispose();
     _addressFocus.dispose();
@@ -140,6 +148,12 @@ class _BrowserPageState extends State<BrowserPage> {
                       ),
                     ),
                   ),
+                  const SizedBox(width: 4),
+                  IconButton(
+                    tooltip: 'Passwords and passkeys',
+                    icon: const Icon(Icons.key),
+                    onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const VaultPage())),
+                  ),
                 ],
               ),
             ),
@@ -148,6 +162,7 @@ class _BrowserPageState extends State<BrowserPage> {
             height: 2,
             child: controller.isLoading ? const LinearProgressIndicator() : null,
           ),
+          if (_passwords != null) PasswordBar(agent: _passwords!),
           Expanded(
             child: Stack(
               children: [
