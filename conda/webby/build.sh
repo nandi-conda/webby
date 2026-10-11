@@ -24,6 +24,12 @@ runner=linux/runner/my_application.cc
 grep -q webby.png "$runner" ||
   sed -i "/gtk_window_set_default_size(window, 1280, 720);/r $RECIPE_DIR/window_icon.inc" "$runner"
 grep -q webby.png "$runner"
+# Web apps (webby --app) get their own application id; see app_id.inc.
+if ! grep -q WEBBY_APP_ID "$runner"; then
+  sed -i "/^MyApplication\* my_application_new() {/r $RECIPE_DIR/app_id.inc" "$runner"
+  sed -i 's/g_set_prgname(APPLICATION_ID);/g_set_prgname(webby_app_id);/; s/"application-id", APPLICATION_ID,/"application-id", webby_app_id,/' "$runner"
+fi
+[ "$(grep -c webby_app_id "$runner")" -ge 4 ]
 flutter build linux --release
 
 mkdir -p "$PREFIX/lib/webby" "$PREFIX/bin"

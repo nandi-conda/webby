@@ -83,7 +83,13 @@ void main() {
       final entry = store.desktopFile(app.slug).readAsStringSync();
       expect(entry, contains('Name=Example\n'));
       expect(entry, contains(r'Comment=Line one\nline two'));
-      expect(entry, contains('Exec=env WEBBY_LADYBIRD_PREFIX=/opt/lb /opt/webby/webby "--app=https://example.com/app/?a=1&b=%%20"\n'));
+      expect(
+        entry,
+        contains('Exec=env WEBBY_APP_ID=dev.webby.WebApp-${app.slug} WEBBY_APP_NAME=Example WEBBY_APP_ICON=${app.iconPath} '
+            'WEBBY_LADYBIRD_PREFIX=/opt/lb /opt/webby/webby "--app=https://example.com/app/?a=1&b=%%20"\n'),
+      );
+      expect(store.desktopFile(app.slug).path, endsWith('/applications/dev.webby.WebApp-${app.slug}.desktop'));
+      expect(entry, contains('StartupWMClass=dev.webby.WebApp-${app.slug}\n'));
       expect(entry, contains('Icon=${app.iconPath}\n'));
 
       await store.uninstall(app);

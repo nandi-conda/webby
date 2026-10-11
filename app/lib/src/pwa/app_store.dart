@@ -17,6 +17,7 @@ class InstalledApp {
     required this.manifestUrl,
     this.iconPath,
     this.themeColor,
+    this.description = '',
   });
 
   /// File-name-safe key, unique per app id.
@@ -28,6 +29,7 @@ class InstalledApp {
   final String manifestUrl;
   final String? iconPath;
   final String? themeColor;
+  final String description;
 
   bool inScope(Uri url) {
     final s = Uri.parse(scope);
@@ -42,6 +44,7 @@ class InstalledApp {
         'manifestUrl': manifestUrl,
         if (iconPath != null) 'icon': iconPath,
         if (themeColor != null) 'themeColor': themeColor,
+        if (description.isNotEmpty) 'description': description,
       };
 
   static InstalledApp? fromJson(String slug, Object? json) {
@@ -55,6 +58,7 @@ class InstalledApp {
       manifestUrl: json['manifestUrl'] as String? ?? '',
       iconPath: json['icon'] as String?,
       themeColor: json['themeColor'] as String?,
+      description: json['description'] as String? ?? '',
     );
   }
 }
@@ -63,7 +67,7 @@ class InstalledApp {
 typedef IconToPng = Future<Uint8List?> Function(Uint8List bytes);
 
 /// Installed web apps: one folder per app under `${XDG_DATA_HOME:-~/.local/share}/webby/apps/` (app.json and the
-/// icon) and a `webby-app-<slug>.desktop` launcher in `${XDG_DATA_HOME}/applications/` that runs `webby --app=<url>`.
+/// icon) and a `<app id>.desktop` launcher in `${XDG_DATA_HOME}/applications/` that runs `webby --app=<url>`.
 class AppStore extends ChangeNotifier {
   AppStore({String? dataHome, Map<String, String>? environment, String? executable})
       : _env = environment ?? Platform.environment,
@@ -84,7 +88,22 @@ class AppStore extends ChangeNotifier {
 
   Directory get appsDir => Directory('$_dataHome/webby/apps');
   Directory get applicationsDir => Directory('$_dataHome/applications');
-  File desktopFile(String slug) => File('${applicationsDir.path}/webby-app-$slug.desktop');
+  File desktopFile(String slug) => File('${applicationsDir.path}/${appIdFor(slug)}.desktop');
+
+  /// The app's own application id, which its window uses as Wayland app id and X11 WM_CLASS (the Flutter runner reads
+  /// WEBBY_APP_ID, see conda/webby/window_icon.inc), so docks show it apart from webby, with its launcher's icon.
+  static String appIdFor(String slug) => 'dev.webby.WebApp-$slug';
+
+  /// What the app's window needs to look like the app: its id, name and icon (read by the Flutter runner).
+  static Map<String, String> windowEnvironment(InstalledApp app) => {
+        'WEBBY_APP_ID': appIdFor(app.slug),
+        'WEBBY_APP_NAME': app.name,
+        if (app.iconPath != null) 'WEBBY_APP_ICON': app.iconPath!,
+      };
+
+  /// This process's environment minus the app-window variables, so a browser window started from an app is webby.
+  Map<String, String> get _browserEnvironment =>
+      {for (final e in _env.entries) if (!e.key.startsWith('WEBBY_APP_')) e.key: e.value};
 
   /// A file-name-safe key for an app id: its host plus a short hash of the whole id.
   static String slugFor(String id) {
@@ -147,12 +166,22 @@ class AppStore extends ChangeNotifier {
   }
 
   /// Starts [app] in its own window.
-  Future<void> launch(InstalledApp app) =>
-      Process.start(launchCommand.first, [...launchCommand.skip(1), '--app=${app.startUrl}'], mode: ProcessStartMode.detached);
+  Future<void> launch(InstalledApp app) => Process.start(
+        launchCommand.first,
+        [...launchCommand.skip(1), '--app=${app.startUrl}'],
+        environment: {..._browserEnvironment, ...windowEnvironment(app)},
+        includeParentEnvironment: false,
+        mode: ProcessStartMode.detached,
+      );
 
   /// Opens [url] in a normal browser window.
-  Future<void> openInBrowser(String url) =>
-      Process.start(launchCommand.first, [...launchCommand.skip(1), url], mode: ProcessStartMode.detached);
+  Future<void> openInBrowser(String url) => Process.start(
+        launchCommand.first,
+        [...launchCommand.skip(1), url],
+        environment: _browserEnvironment,
+        includeParentEnvironment: false,
+        mode: ProcessStartMode.detached,
+      );
 
   /// Installs [manifest] as [name]: saves its icon (as PNG, or SVG as is) and writes the launcher.
   Future<InstalledApp> install(
@@ -195,6 +224,7 @@ class AppStore extends ChangeNotifier {
       manifestUrl: manifest.manifestUrl.toString(),
       iconPath: iconPath,
       themeColor: manifest.themeColor,
+      description: manifest.description,
     );
     await File('${dir.path}/app.json').writeAsString(const JsonEncoder.withIndent('  ').convert(app.toJson()));
     await _writeDesktopFile(app, manifest.description);
@@ -203,8 +233,10 @@ class AppStore extends ChangeNotifier {
   }
 
   Future<void> uninstall(InstalledApp app) async {
-    final launcher = desktopFile(app.slug);
-    if (launcher.existsSync()) await launcher.delete();
+    // Launchers from before app ids were webby-app-<slug>.desktop.
+    for (final launcher in [desktopFile(app.slug), File('${applicationsDir.path}/webby-app-${app.slug}.desktop')]) {
+      if (launcher.existsSync()) await launcher.delete();
+    }
     final dir = Directory('${appsDir.path}/${app.slug}');
     if (dir.existsSync()) await dir.delete(recursive: true);
     _refreshDesktopDatabase();
@@ -213,7 +245,13 @@ class AppStore extends ChangeNotifier {
 
   /// The launcher for [app] (Desktop Entry spec 1.5).
   String desktopEntry(InstalledApp app, [String description = '']) {
-    final exec = [...launchCommand, '--app=${app.startUrl}'].map(_quoteExecArg).join(' ');
+    final command = launchCommand;
+    final exec = [
+      'env',
+      for (final e in windowEnvironment(app).entries) '${e.key}=${e.value}',
+      ...(command.first == 'env' ? command.skip(1) : command),
+      '--app=${app.startUrl}',
+    ].map(_quoteExecArg).join(' ');
     return [
       '[Desktop Entry]',
       'Type=Application',
@@ -225,7 +263,7 @@ class AppStore extends ChangeNotifier {
       'Terminal=false',
       'Categories=Network;WebApps;',
       'StartupNotify=true',
-      'StartupWMClass=dev.webby.webby',
+      'StartupWMClass=${appIdFor(app.slug)}',
       'X-Webby-App-Id=${_escape(app.id)}',
       '',
     ].join('\n');
@@ -240,7 +278,18 @@ class AppStore extends ChangeNotifier {
       await Process.run('chmod', ['755', tmp.path]);
     } catch (_) {}
     await tmp.rename(file.path);
+    final old = File('${applicationsDir.path}/webby-app-${app.slug}.desktop');
+    if (old.existsSync()) await old.delete();
     _refreshDesktopDatabase();
+  }
+
+  /// Rewrites every installed app's launcher, so launchers follow webby's install path and launcher format.
+  Future<void> refreshLaunchers() async {
+    for (final app in apps) {
+      try {
+        await _writeDesktopFile(app, app.description);
+      } catch (_) {}
+    }
   }
 
   void _refreshDesktopDatabase() {

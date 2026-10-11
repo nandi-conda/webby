@@ -136,8 +136,10 @@ and import/export of the `bookmarks.html` format other browsers use. They are st
 
 Web apps (PWAs): when a page links a web app manifest (`<link rel="manifest">`), an install button shows in the
 address bar. Installing saves the app under `${XDG_DATA_HOME:-~/.local/share}/webby/apps/<app>/` (its icon converted
-to PNG, or kept as SVG) and writes a `webby-app-<app>.desktop` launcher to `${XDG_DATA_HOME}/applications/`, so it
-shows in the desktop's app menu. The launcher runs `webby --app=<start_url>`: a window with just the page, no
+to PNG, or kept as SVG) and writes a `dev.webby.WebApp-<app>.desktop` launcher to `${XDG_DATA_HOME}/applications/`,
+so it shows in the desktop's app menu. The launcher sets `WEBBY_APP_ID`, `WEBBY_APP_NAME` and `WEBBY_APP_ICON`, which
+the Linux runner (`conda/webby/app_id.inc`, `window_icon.inc`) turns into the window's application id (Wayland app id
+and X11 WM_CLASS), title and icon, so the app gets its own name, icon and dock entry. The launcher runs `webby --app=<start_url>`: a window with just the page, no
 toolbar; pages outside the manifest's `scope` get a thin strip with their host and an "Open in Webby" button. On an
 installed app's page the button opens the app or uninstalls it. Code: `app/lib/src/pwa/`.
 Service workers don't run: Ladybird (at `LADYBIRD_COMMIT`) accepts `navigator.serviceWorker.register()` but never
@@ -148,5 +150,4 @@ RequestServer answers every fetch from Ladybird's HTTP disk cache only, expired 
 opened before still load (as they were last time; anything not cached fails at once). A cloud icon in the address
 bar, or a strip in an app window, shows it. `WEBBY_OFFLINE=1` forces it on, `WEBBY_OFFLINE=0` off. Site logic in a
 worker (custom offline pages, background sync, push) doesn't run. Apps' localStorage/IndexedDB is shared with the
-browser profile. All app windows share
-webby's window class, so docks group them under webby's icon.
+browser profile.

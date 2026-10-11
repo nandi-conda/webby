@@ -14,6 +14,7 @@ import 'src/passkey_dialog.dart';
 import 'src/passwords/password_bar.dart';
 import 'src/passwords/password_manager.dart';
 import 'src/passwords/vault_page.dart';
+import 'src/pwa/app_store.dart';
 import 'src/pwa/app_window.dart';
 import 'src/pwa/install_dialog.dart';
 import 'src/pwa/offline.dart';
@@ -25,6 +26,7 @@ void main(List<String> args) {
   // `--app=<url>` opens an installed web app in its own window (what the app launchers run).
   final app = args.where((a) => a.startsWith('--app=')).map((a) => a.substring(6)).firstOrNull;
   final urls = args.where((a) => !a.startsWith('--')).toList();
+  if (app == null) AppStore.instance.refreshLaunchers().ignore();
   runApp(WebbyApp(initialUrl: app ?? (urls.isNotEmpty ? urls.first : 'https://ladybird.org'), appMode: app != null));
 }
 
