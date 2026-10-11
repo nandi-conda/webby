@@ -4,11 +4,15 @@ import 'package:flutter/material.dart';
 import 'bookmark_dialog.dart';
 import 'bookmark_store.dart';
 
-/// The row of bookmarks under the toolbar: links open on click, folders open a menu, right-click edits.
+/// The row of bookmarks under the toolbar: links open on click (in a new tab on middle-click), folders open a menu,
+/// right-click offers open in new tab, edit and delete.
 class BookmarkBar extends StatelessWidget {
-  const BookmarkBar({super.key, required this.onOpen, this.store});
+  const BookmarkBar({super.key, required this.onOpen, this.onOpenInNewTab, this.store});
 
   final void Function(String url) onOpen;
+
+  /// Opens a URL in a new tab; without it the new-tab entries aren't offered and middle-click opens in place.
+  final void Function(String url)? onOpenInNewTab;
   final BookmarkStore? store;
 
   @override
@@ -40,7 +44,7 @@ class BookmarkBar extends StatelessWidget {
               : ListView(
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                  children: [for (final node in items) _BarItem(node: node, store: bookmarks, onOpen: onOpen)],
+                  children: [for (final node in items) _BarItem(node: node, store: bookmarks, onOpen: onOpen, onOpenInNewTab: onOpenInNewTab)],
                 ),
         );
       },
@@ -49,11 +53,12 @@ class BookmarkBar extends StatelessWidget {
 }
 
 class _BarItem extends StatelessWidget {
-  const _BarItem({required this.node, required this.store, required this.onOpen});
+  const _BarItem({required this.node, required this.store, required this.onOpen, this.onOpenInNewTab});
 
   final Bookmark node;
   final BookmarkStore store;
   final void Function(String url) onOpen;
+  final void Function(String url)? onOpenInNewTab;
 
   /// Links in [folder] and its subfolders, each subfolder's links labelled with its path.
   List<KitMenuEntry> _folderEntries(Bookmark folder, [String path = '']) {
@@ -77,13 +82,35 @@ class _BarItem extends StatelessWidget {
     final c = KitTheme.of(context);
     // Right-click menu around the button; folders also open their own menu on a left click.
     return KitMenu(
-      items: () => [
-        KitMenuItem('Edit…', onSelected: () => editBookmark(context, node, store: store)),
-        KitMenuItem('Delete', danger: true, onSelected: () => store.remove(node)),
-      ],
+      items: () {
+        final newTab = onOpenInNewTab;
+        final links = node.descendants.where((n) => !n.isFolder).toList();
+        return [
+          if (newTab != null && !node.isFolder) ...[
+            KitMenuItem('Open in new tab', onSelected: () => newTab(node.url!)),
+            const KitMenuDivider(),
+          ],
+          if (newTab != null && node.isFolder && links.isNotEmpty) ...[
+            KitMenuItem(
+              links.length == 1 ? 'Open in new tab' : 'Open all ${links.length} in new tabs',
+              onSelected: () {
+                // Each new tab goes right after the current one, so add them last first to keep the folder order.
+                for (final link in links.reversed) {
+                  newTab(link.url!);
+                }
+              },
+            ),
+            const KitMenuDivider(),
+          ],
+          KitMenuItem('Edit…', onSelected: () => editBookmark(context, node, store: store)),
+          KitMenuItem('Delete', danger: true, onSelected: () => store.remove(node)),
+        ];
+      },
       builder: (context, toggleContext, _) {
         Widget chip(VoidCallback onPressed, {bool open = false}) => GestureDetector(
           onSecondaryTap: toggleContext,
+          // Middle-click opens a link in a new tab, as in other browsers.
+          onTertiaryTapUp: node.isFolder ? null : (_) => (onOpenInNewTab ?? onOpen)(node.url!),
           child: Pressable(
             onPressed: onPressed,
             builder: (context, s) => Container(

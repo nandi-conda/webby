@@ -513,7 +513,7 @@ class _BrowserPageState extends State<BrowserPage> {
                   ? LinearProgressIndicator(minHeight: 2, color: c.accent, backgroundColor: c.border)
                   : Align(alignment: Alignment.topCenter, child: Container(height: 1, color: c.border)),
             ),
-            BookmarkBar(onOpen: _go),
+            BookmarkBar(onOpen: _go, onOpenInNewTab: _openInBackgroundTab),
             PasswordBar(key: ObjectKey(tab), agent: tab.passwords),
             Expanded(
               child: Stack(

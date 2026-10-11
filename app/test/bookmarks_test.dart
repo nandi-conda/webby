@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:webby/src/bookmarks/bookmark_bar.dart';
@@ -160,6 +161,42 @@ void main() {
       await tester.tap(find.text('Remove'));
       await tester.pumpAndSettle();
       expect(store.bar.children, isEmpty);
+    });
+
+    testWidgets('bar opens bookmarks in new tabs from the right-click menu and middle-click', (tester) async {
+      final store = BookmarkStore(file);
+      store.add(title: 'Ladybird', url: 'https://ladybird.org/');
+      final folder = store.addFolder('Docs', parent: store.bar);
+      store.add(title: 'Dart', url: 'https://dart.dev/', parent: folder);
+      store.add(title: 'Flutter', url: 'https://flutter.dev/', parent: folder);
+      final opened = <String>[];
+      final newTabs = <String>[];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: BookmarkBar(store: store, onOpen: opened.add, onOpenInNewTab: newTabs.add),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Ladybird'), buttons: kSecondaryButton);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Open in new tab'));
+      await tester.pumpAndSettle();
+      expect(newTabs, ['https://ladybird.org/']);
+
+      await tester.tap(find.text('Ladybird'), buttons: kMiddleMouseButton);
+      await tester.pumpAndSettle();
+      expect(newTabs, ['https://ladybird.org/', 'https://ladybird.org/']);
+      expect(opened, isEmpty);
+
+      // A folder offers all its links; they're added last first so the tabs end up in folder order.
+      newTabs.clear();
+      await tester.tap(find.text('Docs'), buttons: kSecondaryButton);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Open all 2 in new tabs'));
+      await tester.pumpAndSettle();
+      expect(newTabs, ['https://flutter.dev/', 'https://dart.dev/']);
     });
 
     testWidgets('manager browses folders, deletes and opens', (tester) async {
