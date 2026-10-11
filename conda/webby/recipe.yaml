@@ -19,7 +19,7 @@ source:
     target_directory: flutter
 
 build:
-  number: 0
+  number: 1
   skip:
     - not linux64
   dynamic_linking:
