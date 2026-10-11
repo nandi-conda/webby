@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -5,6 +7,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../ui.dart';
 import '../password_manager.dart';
+import 'qr_scan_page.dart';
 import 'sync_crypto.dart';
 import 'sync_store.dart';
 import 'vault_sync.dart';
@@ -258,6 +261,14 @@ class _SetupDialogState extends State<_SetupDialog> {
     } catch (_) {}
   }
 
+  Future<void> _scan() async {
+    final text = await Navigator.of(context).push<String>(MaterialPageRoute(builder: (_) => const QrScanPage()));
+    if (text == null || !mounted) return;
+    _code.text = text.trim();
+    setState(() => _error = null);
+    _codeChanged(_code.text);
+  }
+
   void _submit() {
     var code = '';
     if (widget.join) {
@@ -314,6 +325,11 @@ class _SetupDialogState extends State<_SetupDialog> {
                 onChanged: _codeChanged,
                 onSubmitted: (_) => _submit(),
               ),
+            ),
+          if (widget.join && Platform.isAndroid)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: KitButton('Scan QR code', icon: Icons.qr_code_scanner, onPressed: _scan),
             ),
           LabeledField(
             label: 'Store the encrypted copy on',
