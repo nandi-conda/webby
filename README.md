@@ -18,6 +18,20 @@ read the latest frame as BGRA pixels plus the page's URL, title, loading state a
 The Flutter app (`app/`) pumps Ladybird's event loop from the Dart thread, turns each new frame into a `ui.Image`,
 and forwards pointer and keyboard events.
 
+## Install (pixi global)
+
+On Linux x86_64 with glibc 2.43+, install the browser and its engine from
+[prefix.dev/nandi-testing](https://prefix.dev/channels/nandi-testing) and run it:
+
+```sh
+pixi global install -c https://prefix.dev/nandi-testing -c conda-forge webby
+webby https://example.com
+```
+
+The `webby` package (recipe `conda/webby`) is a release build of `app/` that depends on `webby-ladybird`; its
+launcher sets `WEBBY_LADYBIRD_PREFIX` to that package unless you've set it. `scripts/publish_conda.sh webby`
+rebuilds and uploads it.
+
 ## Quick start (pixi)
 
 With [pixi](https://pixi.sh) installed, one command fetches everything and runs the browser:

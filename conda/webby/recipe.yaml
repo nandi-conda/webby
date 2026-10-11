@@ -1,0 +1,81 @@
+# conda package of the webby browser itself: a release build of app/ (the Flutter UI) plus a `webby` launcher.
+# The Ladybird engine comes from the webby-ladybird package; the launcher points the app at it.
+# Install: pixi global install -c https://prefix.dev/nandi-testing -c conda-forge webby
+# Build + upload: scripts/publish_conda.sh webby (needs PREFIX_API_KEY; downloads the Flutter SDK while building).
+context:
+  version: "2026.10.11"
+  flutter_version: "3.35.5"
+
+package:
+  name: webby
+  version: ${{ version }}
+
+source:
+  - path: ../../app
+    target_directory: app
+  # Flutter isn't on conda-forge, so the SDK is a build-time source.
+  - url: https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${{ flutter_version }}-stable.tar.xz
+    sha256: 8eead69e5d84131fcfbb2cfd44164c00e9a04df725f24672ea234c6bd136353d
+    target_directory: flutter
+
+build:
+  number: 0
+  skip:
+    - not linux64
+  dynamic_linking:
+    # $ORIGIN/lib is the Flutter bundle's own (libflutter_linux_gtk.so, libapp.so); lib/ is GTK and friends.
+    # libflutter_linux_gtk.so ships without an rpath, so it gets lib/ too.
+    rpaths:
+      - lib/
+      - lib/webby/lib/
+    overlinking_behavior: ignore
+    overdepending_behavior: ignore
+  script: build.sh
+
+requirements:
+  build:
+    - clang >=19
+    - clangxx >=19
+    - lld
+    - sysroot_linux-64 >=2.28
+    - cmake >=3.30
+    - ninja
+    - pkg-config
+    - git
+    - curl
+    - xz
+    - unzip
+    - tar
+    - which
+    # rattler-build relinks the Flutter bundle with it.
+    - patchelf
+  host:
+    - gtk3
+    - glib
+    - epoxy
+    - fontconfig
+    - expat
+    - zlib
+  run:
+    - webby-ladybird >=2026.10.11
+    - gtk3
+    - epoxy
+    - fontconfig
+    - fonts-conda-ecosystem
+    # The runner is built with the env's clang against conda-forge's libstdc++.
+    - libstdcxx
+    - libgcc
+
+tests:
+  - package_contents:
+      files:
+        - bin/webby
+        - lib/webby/webby
+        - lib/webby/lib/libapp.so
+        - lib/webby/lib/libflutter_linux_gtk.so
+        - lib/webby/data/icudtl.dat
+
+about:
+  homepage: https://gitlab.latha.org/nandi/webby
+  summary: A web browser with a Flutter UI on Ladybird's LibWeb and LibJS
+  license: BSD-2-Clause
