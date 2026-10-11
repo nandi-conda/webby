@@ -10,6 +10,8 @@ dependencies:
   flutter:
     sdk: flutter
   ffi: ^2.2.0
+  webby_texture:
+    path: webby_texture
 
 dev_dependencies:
   flutter_lints: ^5.0.0

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'src/frame_bench.dart';
 import 'src/web_view.dart';
 
 void main(List<String> args) {
