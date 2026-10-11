@@ -69,7 +69,9 @@ class BrowserPage extends StatefulWidget {
 
 /// One tab: its own Ladybird view, password agent and keyboard focus.
 class _BrowserTab {
-  _BrowserTab(String url) : controller = WebbyController(initialUrl: url) {
+  _BrowserTab(String url) : this.withController(WebbyController(initialUrl: url));
+
+  _BrowserTab.withController(this.controller) {
     passwords = PasswordAgent(controller);
     pwa = PwaAgent(controller);
   }
@@ -129,9 +131,16 @@ class _BrowserPageState extends State<BrowserPage> {
     }
   }
 
-  _BrowserTab _addTab(String url, {int? at}) {
-    final tab = _BrowserTab(url);
+  _BrowserTab _addTab(String url, {int? at}) => _insertTab(_BrowserTab(url), at: at);
+
+  _BrowserTab _insertTab(_BrowserTab tab, {int? at}) {
     tab.controller.addListener(() => _onPageChanged(tab));
+    // Links with target=_blank and window.open() open a tab next to their opener and switch to it.
+    tab.controller.onNewView = (controller) {
+      final index = _tabs.indexOf(tab);
+      final opened = _insertTab(_BrowserTab.withController(controller), at: index < 0 ? null : index + 1);
+      _selectTab(_tabs.indexOf(opened));
+    };
     _tabs.insert(at ?? _tabs.length, tab);
     return tab;
   }
@@ -248,6 +257,11 @@ class _BrowserPageState extends State<BrowserPage> {
   void _onPageChanged(_BrowserTab tab) {
     if (!_tabs.contains(tab)) return;
     final controller = tab.controller;
+    if (controller.closeRequested) {
+      // window.close() from the page; let the notification finish before the controller goes away.
+      scheduleMicrotask(() => _closeTab(_tabs.indexOf(tab)));
+      return;
+    }
     // Don't clobber what the user is typing.
     if (tab == _tab && controller.url != _shownUrl && !_addressFocus.hasFocus) {
       _shownUrl = controller.url;

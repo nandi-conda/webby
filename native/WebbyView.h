@@ -50,6 +50,12 @@ public:
     static NonnullOwnPtr<View> create(Core::AnonymousBuffer theme, Web::DevicePixelSize size, double device_pixel_ratio);
     virtual ~View() override;
 
+    // A view the page opened (target=_blank, window.open()) waiting for the UI to show it as a tab, oldest first;
+    // the caller owns it. Null when there is none. See webby_view_take_new_view() in webby_ffi.h.
+    OwnPtr<View> take_new_view();
+    // Whether the page asked to close its view (window.close()).
+    bool close_requested() const { return m_close_requested; }
+
     void resize(Web::DevicePixelSize, double device_pixel_ratio);
 
     u64 frame_serial() const { return m_frame_serial; }
@@ -79,6 +85,11 @@ public:
 private:
     View(Core::AnonymousBuffer theme, Web::DevicePixelSize size);
 
+    // HeadlessWebView would keep these as invisible child views that live (with their WebContent process) until the
+    // page closes them; queue them for the UI instead.
+    virtual ViewImplementation* create_view_for_new_tab_or_window(WebView::IsPrivate) override;
+    View& queue_new_view(NonnullOwnPtr<View>);
+
     void copy_front_bitmap();
     void state_changed() { ++m_state_serial; }
 
@@ -105,6 +116,9 @@ private:
     };
     Optional<PendingWebAuthn> m_pending_webauthn;
     ByteString m_webauthn_prompt;
+
+    Vector<NonnullOwnPtr<View>> m_new_views;
+    bool m_close_requested { false };
 
     ByteString m_message_prefix;
     Vector<ByteString> m_messages;

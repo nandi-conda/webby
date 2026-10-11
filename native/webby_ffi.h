@@ -58,6 +58,15 @@ WEBBY_API void webby_view_set_color_scheme(WebbyView*, int scheme);
  * producing frames. The last frame stays readable. */
 WEBBY_API void webby_view_set_visible(WebbyView*, int visible);
 
+/* Views the page opened (links with target=_blank, window.open()). Each one
+ * is a full view with its own page; the UI should show it as a new tab.
+ * webby_view_take_new_view() returns the oldest waiting one (the caller owns
+ * it and frees it with webby_view_destroy) or NULL; state_serial() changes when
+ * one arrives. It is sized like its opener until the UI resizes it.
+ * webby_view_close_requested() is 1 once the page called window.close(). */
+WEBBY_API WebbyView* webby_view_take_new_view(WebbyView*);
+WEBBY_API int webby_view_close_requested(WebbyView*);
+
 /* Frame access. frame_serial() increments every time a new frame is copied.
  * The pointer stays valid until the next webby_pump() call. */
 WEBBY_API uint64_t webby_view_frame_serial(WebbyView*);

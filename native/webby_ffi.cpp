@@ -133,6 +133,19 @@ void webby_view_set_visible(WebbyView* handle, int visible)
     handle->view->set_system_visibility_state(visible ? Web::HTML::VisibilityState::Visible : Web::HTML::VisibilityState::Hidden);
 }
 
+WebbyView* webby_view_take_new_view(WebbyView* handle)
+{
+    auto view = handle->view->take_new_view();
+    if (!view)
+        return nullptr;
+    return new WebbyView { view.release_nonnull() };
+}
+
+int webby_view_close_requested(WebbyView* handle)
+{
+    return handle->view->close_requested() ? 1 : 0;
+}
+
 void webby_view_reload(WebbyView* handle)
 {
     handle->view->reload();

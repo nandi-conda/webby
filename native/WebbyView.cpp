@@ -57,6 +57,19 @@ View::View(Core::AnonymousBuffer theme, Web::DevicePixelSize size)
         copy_front_bitmap();
     };
 
+    // window.open() with an opener: the new view displays the traversable the page's WebContent already made.
+    on_new_web_view = [this](auto, auto, WebView::CanonicalTraversable& traversable) {
+        auto view = adopt_own(*new View(m_theme, m_viewport_size));
+        view->m_device_pixel_ratio = m_device_pixel_ratio;
+        view->initialize_tab(Web::HTML::VisibilityState::Visible, traversable);
+        return queue_new_view(move(view)).handle();
+    };
+
+    on_close = [this] {
+        m_close_requested = true;
+        state_changed();
+    };
+
     on_url_change = [this](URL::URL const& url) {
         m_url_string = ByteString::formatted("{}", url);
         state_changed();
@@ -125,6 +138,25 @@ View::View(Core::AnonymousBuffer theme, Web::DevicePixelSize size)
         if (headless_prompt)
             headless_prompt(message, default_);
     };
+}
+
+WebView::ViewImplementation* View::create_view_for_new_tab_or_window(WebView::IsPrivate)
+{
+    return &queue_new_view(View::create(m_theme, m_viewport_size, m_device_pixel_ratio));
+}
+
+View& View::queue_new_view(NonnullOwnPtr<View> view)
+{
+    m_new_views.append(move(view));
+    state_changed();
+    return *m_new_views.last();
+}
+
+OwnPtr<View> View::take_new_view()
+{
+    if (m_new_views.is_empty())
+        return {};
+    return m_new_views.take_first();
 }
 
 ByteString const& View::take_message()

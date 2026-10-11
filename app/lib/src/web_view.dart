@@ -26,12 +26,32 @@ import 'passwords/native.dart';
 /// WEBBY_TEXTURE=0, each frame is copied into Dart and decoded into an image instead.
 class WebbyController extends ChangeNotifier {
   WebbyController({String initialUrl = 'https://ladybird.org', bool? useTexture}) : _pendingUrl = initialUrl {
+    _start(useTexture);
+  }
+
+  /// Takes over a view the page opened (see [onNewView]); it is already loading.
+  WebbyController.adopt(ViewPtr view, {bool? useTexture}) : _pendingUrl = null {
+    _start(useTexture);
+    _view = view;
+    _applyMessagePrefix();
+    _applyVisible();
+    _colorScheme = PageColorScheme.follow(_bindings, () => _view);
+  }
+
+  void _start(bool? useTexture) {
     _bindings = WebbyBindings.open();
     _useTexture = useTexture ?? Platform.environment['WEBBY_TEXTURE'] != '0';
     if (_useTexture) _createTexture();
     // Pump Ladybird's event loop from the Dart thread; all FFI calls stay on this thread.
     _pumpTimer = Timer.periodic(const Duration(milliseconds: 4), (_) => _pump());
   }
+
+  /// Called with each view the page opens (a target=_blank link, window.open()); the receiver owns the controller.
+  /// Without a listener such views are closed at once rather than left running unseen.
+  void Function(WebbyController controller)? onNewView;
+
+  /// Set once the page called window.close().
+  bool closeRequested = false;
 
   late final WebbyBindings _bindings;
   late final Timer _pumpTimer;
@@ -179,6 +199,21 @@ class WebbyController extends ChangeNotifier {
 
   static bool _visibleLooked = false;
   static void Function(ViewPtr, int)? _setVisible;
+  static ViewPtr Function(ViewPtr)? _takeNewView;
+  static int Function(ViewPtr)? _closeRequested;
+
+  void _takeNewViews() {
+    final take = _takeNewView;
+    if (take == null) return;
+    for (var view = take(_view); view != nullptr; view = take(_view)) {
+      final listener = onNewView;
+      if (listener == null) {
+        _bindings.viewDestroy(view);
+      } else {
+        listener(WebbyController.adopt(view));
+      }
+    }
+  }
 
   void _applyVisible() {
     if (_view == nullptr) return;
@@ -190,6 +225,11 @@ class WebbyController extends ChangeNotifier {
         _setVisible = lib.lookupFunction<Void Function(ViewPtr, Int32), void Function(ViewPtr, int)>(
           'webby_view_set_visible',
         );
+      }
+      if (lib.providesSymbol('webby_view_take_new_view')) {
+        _takeNewView = lib.lookupFunction<ViewPtr Function(ViewPtr), ViewPtr Function(ViewPtr)>('webby_view_take_new_view');
+        _closeRequested =
+            lib.lookupFunction<Int32 Function(ViewPtr), int Function(ViewPtr)>('webby_view_close_requested');
       }
     }
     _setVisible?.call(_view, _visible ? 1 : 0);
@@ -312,6 +352,9 @@ class WebbyController extends ChangeNotifier {
         _webauthnPromptJson = prompt;
         webauthnPrompt = prompt.isEmpty ? null : jsonDecode(prompt) as Map<String, Object?>;
       }
+      closeRequested = (_closeRequested?.call(_view) ?? 0) != 0;
+      _takeNewViews();
+      if (_disposed) return;
       notifyListeners();
     }
 
