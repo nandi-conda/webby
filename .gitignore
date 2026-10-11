@@ -1,4 +1,5 @@
 third_party/
+.pixi/
 app/linux/
 app/.metadata
 app/pubspec.lock
