@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import '../ui.dart';
 import 'generator.dart';
 import 'password_manager.dart';
+import 'sync/sync_page.dart';
 import 'vault.dart';
 
 /// Lists, edits and deletes the saved passwords and passkeys.
@@ -204,6 +205,14 @@ class _VaultPageState extends State<VaultPage> {
         return KitPage(
           title: 'Passwords and passkeys',
           actions: [
+            if (vault != null)
+              KitButton(
+                _manager.sync?.enabled == true ? 'Synced' : 'Sync',
+                icon: Icons.sync,
+                tooltip: 'Sync passwords and passkeys with your other devices',
+                onPressed: () => Navigator.of(context)
+                    .push(MaterialPageRoute<void>(builder: (_) => SyncPage(manager: widget.manager))),
+              ),
             if (vault != null) KitButton.primary('Add password', icon: Icons.add, onPressed: () => _edit(vault)),
           ],
           body: vault == null

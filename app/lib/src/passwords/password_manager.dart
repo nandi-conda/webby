@@ -9,6 +9,7 @@ import '../web_view.dart';
 import 'generator.dart';
 import 'native.dart';
 import 'page_script.dart';
+import 'sync/vault_sync.dart';
 import 'vault.dart';
 
 /// Owns the profile's [Vault] and keeps the authenticator's passkeys in it.
@@ -18,6 +19,9 @@ class PasswordManager extends ChangeNotifier {
   static final PasswordManager instance = PasswordManager._();
 
   Vault? vault;
+
+  /// Syncs [vault] with the user's other devices; null until the vault is open.
+  VaultSync? sync;
 
   /// Why the vault couldn't be opened, if it couldn't.
   String? error;
@@ -47,6 +51,7 @@ class PasswordManager extends ChangeNotifier {
       vault = opened;
       opened.addListener(notifyListeners);
       _attachPasskeys(opened);
+      sync = VaultSync(opened, onPasskeysChanged: _passkeysSynced);
     } on VaultUnavailable catch (e) {
       error = e.message;
       debugPrint('webby: $error');
@@ -78,6 +83,19 @@ class PasswordManager extends ChangeNotifier {
     if (serial == _passkeySerial) return;
     _passkeySerial = serial;
     vault.setPasskeys(native.exportPasskeys());
+  }
+
+  /// Hands passkeys that came in from another device to the authenticator, and takes away ones deleted elsewhere.
+  void _passkeysSynced(Set<String> removed) {
+    final native = _native;
+    final vault = this.vault;
+    if (native == null || vault == null || !passkeysInVault) return;
+    for (final id in removed) {
+      native.removePasskey(id);
+    }
+    native.usePasskeyVault(vault.passkeys);
+    // Save whatever the authenticator ends up with on the next tick, in case it kept one the vault lacks.
+    _passkeySerial = -1;
   }
 
   void deletePasskey(String credentialId) {

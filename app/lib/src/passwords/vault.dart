@@ -7,6 +7,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:webby_keyring/webby_keyring.dart';
 
+import 'sync/sync_doc.dart';
+import 'sync/sync_store.dart';
+
 /// A saved site password.
 class SavedPassword {
   SavedPassword({
@@ -91,6 +94,30 @@ class Vault extends ChangeNotifier {
       if (origin is String) _neverSave.add(origin);
     }
     _passkeys = (contents['passkeys'] as List<Object?>? ?? const []).whereType<Map<String, Object?>>().toList();
+    final neverSaveAt = contents['neverSaveAt'];
+    if (neverSaveAt is Map<String, Object?>) {
+      for (final entry in neverSaveAt.entries) {
+        if (entry.value is int) _neverSaveAt[entry.key] = entry.value as int;
+      }
+    }
+    final deleted = contents['deleted'];
+    if (deleted is Map<String, Object?>) {
+      for (final section in _deleted.keys) {
+        final times = deleted[section];
+        if (times is! Map<String, Object?>) continue;
+        for (final entry in times.entries) {
+          if (entry.value is int) _deleted[section]![entry.key] = entry.value as int;
+        }
+      }
+    }
+    final sync = contents['sync'];
+    if (sync is Map<String, Object?>) {
+      try {
+        _sync = SyncSettings.fromJson(sync);
+      } catch (error) {
+        debugPrint('webby: ignoring damaged sync settings: $error');
+      }
+    }
   }
 
   static final _cipher = AesGcm.with256bits();
@@ -105,6 +132,13 @@ class Vault extends ChangeNotifier {
   final Set<String> _neverSave = {};
   List<Map<String, Object?>> _passkeys = [];
   Future<void> _saving = Future.value();
+
+  /// When each never-save site was added (seconds), for sync.
+  final Map<String, int> _neverSaveAt = {};
+
+  /// When things were deleted (seconds), by section and key, so the deletions reach other devices.
+  final Map<String, Map<String, int>> _deleted = {'passwords': {}, 'passkeys': {}, 'neverSave': {}};
+  SyncSettings? _sync;
 
   List<SavedPassword> get passwords => List.unmodifiable(_passwords);
   List<Map<String, Object?>> get passkeys => List.unmodifiable(_passkeys);
@@ -249,7 +283,10 @@ class Vault extends ChangeNotifier {
         'version': 1,
         'passwords': [for (final password in _passwords) password.toJson()],
         'neverSave': _neverSave.toList()..sort(),
+        'neverSaveAt': _neverSaveAt,
         'passkeys': _passkeys,
+        'deleted': _deleted,
+        if (_sync != null) 'sync': _sync!.toJson(),
       }));
       final box = await _cipher.encrypt(clear, secretKey: _key, aad: utf8.encode(_aad));
       final envelope = jsonEncode({
@@ -313,21 +350,106 @@ class Vault extends ChangeNotifier {
 
   void deletePassword(SavedPassword entry) {
     _passwords.removeWhere((p) => p.id == entry.id);
+    _deleted['passwords']![entry.id] = _now();
     _changed();
   }
 
   bool isNeverSave(String origin) => _neverSave.contains(origin);
 
   void setNeverSave(String origin, bool never) {
-    if (never ? _neverSave.add(origin) : _neverSave.remove(origin)) _changed();
+    if (!(never ? _neverSave.add(origin) : _neverSave.remove(origin))) return;
+    if (never) {
+      _neverSaveAt[origin] = _now();
+      _deleted['neverSave']!.remove(origin);
+    } else {
+      _neverSaveAt.remove(origin);
+      _deleted['neverSave']![origin] = _now();
+    }
+    _changed();
   }
 
   List<String> get neverSaveOrigins => _neverSave.toList()..sort();
 
   /// Replaces the stored passkeys with the authenticator's current list (see `webby_passkeys_export`).
   Future<void> setPasskeys(List<Map<String, Object?>> passkeys) {
+    final kept = {for (final passkey in passkeys) passkey['credentialId']};
+    for (final old in _passkeys) {
+      final id = old['credentialId'];
+      if (id is String && !kept.contains(id)) _deleted['passkeys']![id] = _now();
+    }
+    for (final id in kept) {
+      _deleted['passkeys']!.remove(id);
+    }
     _passkeys = passkeys;
     notifyListeners();
     return _save();
+  }
+
+  /// How sync is set up on this device, or null when it's off.
+  SyncSettings? get syncSettings => _sync;
+
+  Future<void> setSyncSettings(SyncSettings? settings) {
+    _sync = settings;
+    notifyListeners();
+    return _save();
+  }
+
+  /// The vault's contents in their synced form (see [SyncDoc]).
+  SyncDoc toSyncDoc() {
+    Map<String, Object?> tombstone(int at, [String? id]) => {if (id != null) 'id': id, 'updatedAt': at, 'deleted': true};
+    return SyncDoc(
+      passwords: {
+        for (final entry in _deleted['passwords']!.entries) entry.key: tombstone(entry.value, entry.key),
+        for (final password in _passwords) password.id: password.toJson(),
+      },
+      passkeys: {
+        for (final entry in _deleted['passkeys']!.entries) entry.key: tombstone(entry.value),
+        for (final passkey in _passkeys)
+          if (passkey['credentialId'] is String)
+            passkey['credentialId'] as String: {...passkey, 'updatedAt': passkey['createdAt'] as int? ?? 0},
+      },
+      neverSave: {
+        for (final entry in _deleted['neverSave']!.entries) entry.key: tombstone(entry.value),
+        for (final origin in _neverSave) origin: {'updatedAt': _neverSaveAt[origin] ?? 0},
+      },
+    );
+  }
+
+  /// Replaces the contents with a merged [SyncDoc]. Returns whether the passkeys changed, so the caller can hand
+  /// them to the authenticator.
+  bool applySyncDoc(SyncDoc doc) {
+    final passkeysBefore = {for (final passkey in _passkeys) passkey['credentialId']};
+    _passwords
+      ..clear()
+      ..addAll([
+        for (final record in doc.passwords.values)
+          if (!isDeleted(record) && record['id'] is String && record['origin'] is String) SavedPassword.fromJson(record),
+      ]);
+    _neverSave
+      ..clear()
+      ..addAll([
+        for (final entry in doc.neverSave.entries)
+          if (!isDeleted(entry.value)) entry.key,
+      ]);
+    _neverSaveAt
+      ..clear()
+      ..addAll({for (final origin in _neverSave) origin: updatedAtOf(doc.neverSave[origin]!)});
+    _passkeys = [
+      for (final record in doc.passkeys.values)
+        if (!isDeleted(record) && record['credentialId'] is String) {...record}..remove('updatedAt'),
+    ];
+    for (final (section, records) in [
+      ('passwords', doc.passwords),
+      ('passkeys', doc.passkeys),
+      ('neverSave', doc.neverSave),
+    ]) {
+      _deleted[section] = {
+        for (final entry in records.entries)
+          if (isDeleted(entry.value)) entry.key: updatedAtOf(entry.value),
+      };
+    }
+    _changed();
+    final passkeysAfter = {for (final passkey in _passkeys) passkey['credentialId']};
+    return passkeysBefore.length != passkeysAfter.length || !passkeysBefore.containsAll(passkeysAfter);
   }
 }
