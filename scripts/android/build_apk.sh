@@ -24,6 +24,8 @@ JNI="$MAIN/jniLibs/$ANDROID_ABI"
 rm -rf "$MAIN/jniLibs"
 mkdir -p "$JNI"
 for library in "$PREFIX"/lib/*.so; do
+    # vcpkg's Vulkan validation layer is a debugging aid, not something the app loads.
+    case "$(basename "$library")" in libVkLayer_*) continue ;; esac
     "$STRIP" --strip-unneeded -o "$JNI/$(basename "$library")" "$library"
 done
 for helper in WebContent RequestServer ImageDecoder Compositor MediaServer WebWorker; do
