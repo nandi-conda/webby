@@ -123,6 +123,10 @@ View::View(Core::AnonymousBuffer theme, Web::DevicePixelSize size)
         handle_webauthn_request(page, request_id, request);
     };
 
+    on_input_method_state_change = [this] {
+        state_changed();
+    };
+
     // Messages from the browser's page scripts arrive as prompt() calls; everything else keeps HeadlessWebView's
     // handling.
     on_request_prompt = [this, headless_prompt = move(on_request_prompt)](Utf16String const& message, Utf16String const& default_) {
@@ -163,6 +167,19 @@ ByteString const& View::take_message()
 {
     m_current_message = m_messages.is_empty() ? ByteString {} : m_messages.take_first();
     return m_current_message;
+}
+
+ByteString const& View::input_method_state_json()
+{
+    auto const& state = input_method_state();
+    JsonObject object;
+    object.set("enabled"sv, state.is_enabled);
+    object.set("before"sv, state.text_before_cursor.to_utf8());
+    object.set("after"sv, state.text_after_cursor.to_utf8());
+    object.set("cursor"sv, state.cursor_position);
+    object.set("anchor"sv, state.anchor_position);
+    m_input_method_state_json = object.serialized().to_byte_string();
+    return m_input_method_state_json;
 }
 
 View::~View()

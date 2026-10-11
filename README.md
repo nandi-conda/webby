@@ -99,6 +99,24 @@ Two things to know:
 To publish a new runtime, bump the version or build number in `conda/webby-ladybird/recipe.yaml` and run
 `scripts/publish_conda.sh`.
 
+## Android
+
+An APK for arm64 phones on Android 11 or newer is attached to the `webby-android-*` GitHub Releases: download it on the
+phone, allow installs from your browser or file manager, and open it.
+
+To build one (on a Linux x86-64 host with ~150 GB free):
+
+```sh
+scripts/android/setup_toolchain.sh             # Android SDK + NDK, Rust's Android target, Flutter (in /build/android-tools)
+LADYBIRD_DIR=/path/to/ladybird scripts/android/build_ladybird.sh   # cross-compiles Ladybird and libwebby.so
+LADYBIRD_DIR=/path/to/ladybird scripts/android/build_apk.sh release
+```
+
+The helper processes (WebContent, RequestServer, ...) are plain executables shipped as `lib<Name>.so` in the APK and
+run from the app's native library directory; `LadybirdRuntime.kt` unpacks Ladybird's resources and points it at them.
+Patches 0005 to 0009 make Ladybird's Android build work. Not there yet on Android: the GPU texture path (frames go
+through images) and a keystore for the password vault's key (it is a file in the app's private storage).
+
 ## Status
 
 Minimal vertical slice: one tab, URL/search bar, back/forward/reload/stop, mouse, wheel and keyboard input, link

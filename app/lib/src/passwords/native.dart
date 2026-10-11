@@ -31,7 +31,7 @@ class PasswordNative {
 
   /// The bindings for the libwebby.so that [bindings] loaded.
   static PasswordNative of(WebbyBindings bindings) =>
-      _instance ??= PasswordNative._(DynamicLibrary.open('${bindings.prefix}/lib/libwebby.so'));
+      _instance ??= PasswordNative._(bindings.library);
 
   final void Function(ViewPtr, Pointer<Utf8>)? setMessagePrefix;
   final Pointer<Utf8> Function(ViewPtr)? nextMessage;

@@ -82,6 +82,9 @@ public:
     // The oldest queued message, removed from the queue (empty when there is none). Valid until the next call.
     ByteString const& take_message();
 
+    // The focused text field's state for an on-screen keyboard, as JSON (see webby_view_ime_state() in webby_ffi.h).
+    ByteString const& input_method_state_json();
+
 private:
     View(Core::AnonymousBuffer theme, Web::DevicePixelSize size);
 
@@ -123,6 +126,8 @@ private:
     ByteString m_message_prefix;
     Vector<ByteString> m_messages;
     ByteString m_current_message;
+
+    ByteString m_input_method_state_json;
 };
 
 }

@@ -6,6 +6,7 @@
 
 #include <AK/JsonValue.h>
 #include <AK/LexicalPath.h>
+#include <AK/Utf16String.h>
 #include <AK/Vector.h>
 #include <LibCore/EventLoop.h>
 #include <LibGfx/SystemTheme.h>
@@ -218,6 +219,19 @@ void webby_clipboard_set_text(char const* text)
     auto string = String::from_utf8(StringView { text, strlen(text) });
     if (!string.is_error())
         s_application->set_clipboard_from_system(string.release_value());
+}
+
+char const* webby_view_ime_state(WebbyView* handle) { return handle->view->input_method_state_json().characters(); }
+
+void webby_view_ime_commit(WebbyView* handle, char const* text, int replacement_start, int replacement_length)
+{
+    auto string = Utf16String::from_utf8_with_replacement_character(StringView { text, strlen(text) });
+    handle->view->commit_text_from_input_method(string, replacement_start, replacement_length);
+}
+
+void webby_view_ime_set_marked(WebbyView* handle, char const* text)
+{
+    handle->view->set_marked_text_from_input_method(Utf16String::from_utf8_with_replacement_character(StringView { text, strlen(text) }));
 }
 
 static Webby::VaultCredentialStore* s_vault_store;

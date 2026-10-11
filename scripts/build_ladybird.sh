@@ -30,8 +30,10 @@ if [ "$(git rev-parse -q --verify HEAD || true)" != "$LADYBIRD_COMMIT" ]; then
 fi
 
 # Our Ladybird patches: 0001 teaches UI/ about the Flutter frontend, 0002 adds Web Authentication (passkeys), 0003
-# adds RequestServer's offline (cache-only) mode, 0004 lets image/media documents load the resource they show despite its CSP. When the
-# patch set changes, the tree goes back to the pinned commit first so every patch applies to pristine sources.
+# adds RequestServer's offline (cache-only) mode, 0004 lets image/media documents load the resource they show despite
+# its CSP, 0005 to 0009 get the Android build working (plain helper executables, HarfBuzz/FreeType for Skia,
+# bit-rotted Android code). When the patch set changes, the tree goes back to the pinned commit first so every patch
+# applies to pristine sources.
 PATCHES_STAMP="$(cat "$ROOT"/patches/*.patch | sha256sum | cut -d' ' -f1)"
 if [ "$(cat .git/webby-patches 2>/dev/null || true)" != "$PATCHES_STAMP" ]; then
     git reset -q --hard HEAD
@@ -48,6 +50,11 @@ export CC CXX
 python3 Meta/ladybird.py vcpkg --preset Release
 export VCPKG_ROOT="$LADYBIRD_DIR/Build/vcpkg-release"
 export PATH="$PATH:$VCPKG_ROOT"
+
+# scripts/android/build_ladybird.sh reuses the checkout, patches and vcpkg tool, then configures its own build.
+if [ -n "${WEBBY_PREPARE_ONLY:-}" ]; then
+    exit 0
+fi
 
 if [ ! -f Build/release/build.ninja ]; then
     cmake --preset Release -S . -B Build/release \

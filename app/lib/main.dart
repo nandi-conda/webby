@@ -5,6 +5,7 @@ import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'src/android.dart';
 import 'src/bindings.dart';
 import 'src/bookmarks/bookmark_bar.dart';
 import 'src/bookmarks/bookmark_dialog.dart';
@@ -25,12 +26,19 @@ import 'src/pwa/pwa_agent.dart';
 import 'src/tab_strip.dart';
 import 'src/web_view.dart';
 
-void main(List<String> args) {
+Future<void> main(List<String> args) async {
   // `--app=<url>` opens an installed web app in its own window (what the app launchers run).
   final app = args.where((a) => a.startsWith('--app=')).map((a) => a.substring(6)).firstOrNull;
   final urls = args.where((a) => !a.startsWith('--')).toList();
-  if (app == null) AppStore.instance.refreshLaunchers().ignore();
-  runApp(WebbyApp(initialUrl: app ?? (urls.isNotEmpty ? urls.first : 'https://ladybird.org'), appMode: app != null));
+  var initialUrl = app ?? (urls.isNotEmpty ? urls.first : 'https://ladybird.org');
+  if (Platform.isAndroid) {
+    WidgetsFlutterBinding.ensureInitialized();
+    await AndroidHost.prepare();
+    initialUrl = await AndroidHost.initialUrl() ?? initialUrl;
+  }
+  // Desktop launchers for installed web apps; Android has none.
+  if (app == null && !Platform.isAndroid) AppStore.instance.refreshLaunchers().ignore();
+  runApp(WebbyApp(initialUrl: initialUrl, appMode: app != null));
 }
 
 class WebbyApp extends StatelessWidget {
@@ -126,6 +134,7 @@ class _BrowserPageState extends State<BrowserPage> {
       maybeStartBench(tab.controller);
       BookmarkStore.instance.addListener(_onBookmarksChanged);
       _discardTimer = Timer.periodic(const Duration(minutes: 1), (_) => _discardIdleTabs());
+      if (Platform.isAndroid) AndroidHost.onOpenUrl(_go);
     } catch (error) {
       _startupError = error;
     }
@@ -416,11 +425,18 @@ class _BrowserPageState extends State<BrowserPage> {
 
     final controller = tab.controller;
     final bookmarked = BookmarkStore.instance.bookmarkFor(controller.url) != null;
-    return CallbackShortcuts(
+    // The system back button/gesture goes back in the page's history first.
+    return PopScope(
+      canPop: !controller.canGoBack,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) controller.goBack();
+      },
+      child: CallbackShortcuts(
       bindings: {for (final entry in _shortcuts.entries) entry.key: () => _runShortcut(entry.value)},
       child: Material(
         color: c.background,
-        child: Column(
+        child: SafeArea(
+          child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             TabStrip(
@@ -559,6 +575,8 @@ class _BrowserPageState extends State<BrowserPage> {
             ),
           ],
         ),
+        ),
+      ),
       ),
     );
   }

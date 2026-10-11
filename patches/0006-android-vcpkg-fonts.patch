@@ -1,0 +1,23 @@
+diff --git a/vcpkg.json b/vcpkg.json
+index 574dba01..c231cce8 100644
+--- a/vcpkg.json
++++ b/vcpkg.json
+@@ -59,7 +59,7 @@
+     },
+     {
+       "name": "harfbuzz",
+-      "platform": "linux | bsd | windows",
++      "platform": "linux | bsd | windows | android",
+       "features": [
+         "freetype",
+         "icu"
+@@ -221,6 +221,9 @@
+       "platform": "android",
+       "default-features": false,
+       "features": [
++        "freetype",
++        "harfbuzz",
++        "icu",
+         "vulkan"
+       ]
+     },

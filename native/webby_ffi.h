@@ -118,6 +118,19 @@ WEBBY_API uint64_t webby_clipboard_serial(void);
 WEBBY_API char const* webby_clipboard_text(void);
 WEBBY_API void webby_clipboard_set_text(char const* text);
 
+/* On-screen keyboards. webby_view_ime_state() describes the focused text field
+ * as JSON (it changes together with state_serial(); valid until the next call):
+ *   { "enabled": bool, "before": text before the caret, "after": text after it,
+ *     "cursor": n, "anchor": n }
+ * "enabled" is false when nothing editable has focus. webby_view_ime_commit()
+ * inserts `text` at the caret, first replacing replacement_length UTF-16 units
+ * that start replacement_start units from the caret (negative: before it).
+ * webby_view_ime_set_marked() shows `text` as the composition in progress (""
+ * ends it). */
+WEBBY_API char const* webby_view_ime_state(WebbyView*);
+WEBBY_API void webby_view_ime_commit(WebbyView*, char const* text, int replacement_start, int replacement_length);
+WEBBY_API void webby_view_ime_set_marked(WebbyView*, char const* text);
+
 /* Passkey storage for the password manager's vault. By default passkeys live in
  * the file named above. webby_passkeys_use_vault() switches to an in-memory
  * store seeded with `json` (an array as webby_passkeys_export() returns) plus
