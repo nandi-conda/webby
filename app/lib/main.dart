@@ -8,6 +8,7 @@ import 'src/bookmarks/bookmark_dialog.dart';
 import 'src/bookmarks/bookmark_store.dart';
 import 'src/bookmarks/bookmarks_page.dart';
 import 'src/frame_bench.dart';
+import 'src/omnibox.dart';
 import 'src/passkey_dialog.dart';
 import 'src/passwords/password_bar.dart';
 import 'src/passwords/password_manager.dart';
@@ -193,18 +194,21 @@ class _BrowserPageState extends State<BrowserPage> {
                   ),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: KitTextField(
+                    child: Omnibox(
                       controller: _address,
                       focusNode: _addressFocus,
+                      url: controller.url,
                       onSubmitted: _go,
-                      hint: 'Search or enter address',
-                      prefixIcon: Icons.public,
-                      trailing: KitIconButton.compact(
-                        bookmarked ? Icons.star : Icons.star_border,
-                        tooltip: bookmarked ? 'Edit bookmark (Ctrl+D)' : 'Bookmark this page (Ctrl+D)',
-                        color: bookmarked ? c.accent : null,
-                        onPressed: controller.url.isEmpty ? null : _bookmarkPage,
-                      ),
+                      trailing: [
+                        KitIconButton(
+                          bookmarked ? Icons.star : Icons.star_border,
+                          tooltip: bookmarked ? 'Edit bookmark (Ctrl+D)' : 'Bookmark this page (Ctrl+D)',
+                          color: bookmarked ? c.accent : null,
+                          size: 16,
+                          extent: 26,
+                          onPressed: controller.url.isEmpty ? null : _bookmarkPage,
+                        ),
+                      ],
                     ),
                   ),
                   const SizedBox(width: 6),

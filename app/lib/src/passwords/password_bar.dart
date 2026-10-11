@@ -36,6 +36,17 @@ class PasswordBar extends StatelessWidget {
                 KitButton.primary(offer.existing != null ? 'Update' : 'Save', onPressed: () => agent.save(offer)),
               ],
             ),
+          GenerateOffer() => (
+              Text.rich(TextSpan(children: [
+                const TextSpan(text: 'Use a strong password  '),
+                TextSpan(text: offer.password, style: bold.copyWith(fontFamily: 'monospace')),
+              ])),
+              [
+                KitIconButton(Icons.refresh, tooltip: 'Another one', onPressed: () => agent.regenerate(offer)),
+                KitButton('No thanks', onPressed: agent.dismiss),
+                KitButton.primary('Use password', onPressed: () => agent.useGenerated(offer)),
+              ],
+            ),
           FillOffer() => (
               Text.rich(TextSpan(children: [
                 const TextSpan(text: 'Fill a saved password for '),

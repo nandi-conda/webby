@@ -144,7 +144,8 @@ void main() {
       await tester.tap(find.text('star'));
       await tester.pumpAndSettle();
       expect(find.text('Bookmark added'), findsOneWidget);
-      await tester.enterText(find.widgetWithText(TextField, 'Name'), 'LB');
+      // The first field is the name.
+      await tester.enterText(find.byType(TextField).first, 'LB');
       await tester.tap(find.text('Done'));
       await tester.pumpAndSettle();
 
@@ -191,7 +192,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('https://flutter.dev/'), findsOneWidget);
 
-      await tester.tap(find.byTooltip('Delete').first);
+      await tester.tap(find.byIcon(Icons.delete_outline).first);
       await tester.pumpAndSettle();
       expect(store.bookmarkFor('https://dart.dev/'), isNull);
 
