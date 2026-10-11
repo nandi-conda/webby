@@ -10,7 +10,8 @@ package:
   version: ${{ version }}
 
 source:
-  url: https://gitlab.latha.org/api/v4/projects/4/packages/generic/webby-prebuilt/${{ version }}/webby-prebuilt-linux-x64.tar.zst
+  # GitHub Release made by .github/workflows/prebuilt-release.yml
+  url: https://github.com/nandi-conda/webby/releases/download/webby-prebuilt-${{ version }}/webby-prebuilt-linux-x64.tar.zst
   sha256: f0fca6e80fbebd403ed59dfed4aa12c60aff9167e3b75df3dc464cedb73dadf9
 
 build:
@@ -43,6 +44,6 @@ tests:
         - lib/webby-ladybird/libexec/RequestServer
 
 about:
-  homepage: https://gitlab.latha.org/nandi/webby
+  homepage: https://github.com/nandi-conda/webby
   summary: Ladybird's LibWeb/LibJS engine as libwebby.so plus its helper processes, for the webby Flutter browser
   license: BSD-2-Clause
