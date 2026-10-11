@@ -156,8 +156,16 @@ class WebbyController extends ChangeNotifier {
     }
   }
 
+  // Ladybird has one event loop for every view; with several tabs, one pump per tick is enough.
+  static final _pumpClock = Stopwatch()..start();
+  static int _lastPumpMicros = -1000000;
+
   void _pump() {
-    _bindings.pump();
+    final now = _pumpClock.elapsedMicroseconds;
+    if (now - _lastPumpMicros >= 3000) {
+      _lastPumpMicros = now;
+      _bindings.pump();
+    }
     if (_view == nullptr) return;
 
     final stateSerial = _bindings.stateSerial(_view);

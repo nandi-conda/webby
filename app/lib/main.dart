@@ -13,6 +13,7 @@ import 'src/passkey_dialog.dart';
 import 'src/passwords/password_bar.dart';
 import 'src/passwords/password_manager.dart';
 import 'src/passwords/vault_page.dart';
+import 'src/tab_strip.dart';
 import 'src/web_view.dart';
 
 void main(List<String> args) {
@@ -48,44 +49,137 @@ class BrowserPage extends StatefulWidget {
   State<BrowserPage> createState() => _BrowserPageState();
 }
 
+/// One tab: its own Ladybird view, password agent and keyboard focus.
+class _BrowserTab {
+  _BrowserTab(String url) : controller = WebbyController(initialUrl: url) {
+    passwords = PasswordAgent(controller);
+  }
+
+  final WebbyController controller;
+  late final PasswordAgent passwords;
+  final focus = FocusNode(debugLabel: 'page');
+  Map<String, Object?>? shownPasskeyPrompt;
+
+  void dispose() {
+    passwords.dispose();
+    controller.dispose();
+    focus.dispose();
+  }
+}
+
+const _blankUrl = 'about:blank';
+
 class _BrowserPageState extends State<BrowserPage> {
-  WebbyController? _controller;
-  PasswordAgent? _passwords;
+  final _tabs = <_BrowserTab>[];
+  int _active = 0;
+  /// URLs of closed tabs, most recent last, for Ctrl+Shift+T.
+  final _closedUrls = <String>[];
   Object? _startupError;
   final _address = TextEditingController();
   final _addressFocus = FocusNode(debugLabel: 'address');
-  final _pageFocus = FocusNode(debugLabel: 'page');
   String _shownUrl = '';
-  Map<String, Object?>? _shownPasskeyPrompt;
+
+  _BrowserTab? get _tab => _tabs.isEmpty ? null : _tabs[_active];
+  WebbyController? get _controller => _tab?.controller;
 
   @override
   void initState() {
     super.initState();
     try {
-      _controller = WebbyController(initialUrl: widget.initialUrl)..addListener(_onPageChanged);
+      final tab = _addTab(widget.initialUrl);
       _address.text = widget.initialUrl;
-      _passwords = PasswordAgent(_controller!);
       PasswordManager.instance.start(WebbyBindings.open());
-      maybeStartBench(_controller!);
+      maybeStartBench(tab.controller);
       BookmarkStore.instance.addListener(_onBookmarksChanged);
     } catch (error) {
       _startupError = error;
     }
   }
 
-  void _onPageChanged() {
-    final controller = _controller!;
+  _BrowserTab _addTab(String url, {int? at}) {
+    final tab = _BrowserTab(url);
+    tab.controller.addListener(() => _onPageChanged(tab));
+    _tabs.insert(at ?? _tabs.length, tab);
+    return tab;
+  }
+
+  void _newTab([String url = _blankUrl]) {
+    if (_tabs.isEmpty) return;
+    final tab = _addTab(url, at: _active + 1);
+    _selectTab(_tabs.indexOf(tab));
+  }
+
+  void _closeTab(int index) {
+    if (index < 0 || index >= _tabs.length) return;
+    final tab = _tabs[index];
+    final url = tab.controller.url;
+    if (url.isNotEmpty && url != _blankUrl) _closedUrls.add(url);
+    // Closing the last tab leaves a blank one rather than an empty window.
+    if (_tabs.length == 1) _addTab(_blankUrl);
+    _tabs.removeAt(index);
+    if (_active > index || _active >= _tabs.length) _active = (_active - 1).clamp(0, _tabs.length - 1);
+    tab.dispose();
+    _selectTab(_active, force: true);
+  }
+
+  /// Opens [url] in a new tab next to the current one without switching to it, like a middle-clicked link.
+  void _openInBackgroundTab(String url) {
+    if (_tabs.isEmpty) return;
+    setState(() => _addTab(url, at: _active + 1));
+  }
+
+  void _reopenClosedTab() {
+    if (_closedUrls.isNotEmpty) _newTab(_closedUrls.removeLast());
+  }
+
+  void _selectTab(int index, {bool force = false}) {
+    if (index < 0 || index >= _tabs.length || (index == _active && !force)) return;
+    setState(() => _active = index);
+    final tab = _tabs[index];
+    final url = tab.controller.url;
+    _shownUrl = url;
+    _address.text = url == _blankUrl ? '' : url;
+    final blank = url.isEmpty || url == _blankUrl;
+    // A new tab starts in the address bar; otherwise the page gets the keys.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _tab != tab) return;
+      if (blank) {
+        _addressFocus.requestFocus();
+        _address.selection = TextSelection(baseOffset: 0, extentOffset: _address.text.length);
+      } else {
+        tab.focus.requestFocus();
+      }
+    });
+    _showPasskeyPrompt(tab);
+  }
+
+  void _cycleTab(int delta) => _selectTab((_active + delta) % _tabs.length);
+
+  void _onPageChanged(_BrowserTab tab) {
+    if (!_tabs.contains(tab)) return;
+    final controller = tab.controller;
     // Don't clobber what the user is typing.
-    if (controller.url != _shownUrl && !_addressFocus.hasFocus) {
+    if (tab == _tab && controller.url != _shownUrl && !_addressFocus.hasFocus) {
       _shownUrl = controller.url;
-      _address.text = controller.url;
+      _address.text = controller.url == _blankUrl ? '' : controller.url;
     }
     final passkeyPrompt = controller.webauthnPrompt;
-    if (passkeyPrompt != null && !identical(passkeyPrompt, _shownPasskeyPrompt)) {
-      _shownPasskeyPrompt = passkeyPrompt;
-      showPasskeyDialog(context, controller, passkeyPrompt);
+    if (passkeyPrompt != null && !identical(passkeyPrompt, tab.shownPasskeyPrompt)) {
+      // A site in a background tab asking for a passkey brings its tab forward.
+      if (tab == _tab) {
+        _showPasskeyPrompt(tab);
+      } else {
+        _selectTab(_tabs.indexOf(tab));
+      }
     }
     setState(() {});
+  }
+
+  void _showPasskeyPrompt(_BrowserTab tab) {
+    final prompt = tab.controller.webauthnPrompt;
+    if (prompt == null || identical(prompt, tab.shownPasskeyPrompt)) return;
+    tab.shownPasskeyPrompt = prompt;
+    showPasskeyDialog(context, tab.controller, prompt);
   }
 
   void _onBookmarksChanged() => setState(() {});
@@ -107,6 +201,34 @@ class _BrowserPageState extends State<BrowserPage> {
     SingleActivator(LogicalKeyboardKey.keyD, control: true): 'bookmark',
     SingleActivator(LogicalKeyboardKey.keyB, control: true, shift: true): 'bar',
     SingleActivator(LogicalKeyboardKey.keyO, control: true, shift: true): 'manager',
+    SingleActivator(LogicalKeyboardKey.keyT, control: true): 'newTab',
+    SingleActivator(LogicalKeyboardKey.keyT, control: true, shift: true): 'reopenTab',
+    SingleActivator(LogicalKeyboardKey.keyW, control: true): 'closeTab',
+    SingleActivator(LogicalKeyboardKey.tab, control: true): 'nextTab',
+    SingleActivator(LogicalKeyboardKey.tab, control: true, shift: true): 'previousTab',
+    SingleActivator(LogicalKeyboardKey.pageDown, control: true): 'nextTab',
+    SingleActivator(LogicalKeyboardKey.pageUp, control: true): 'previousTab',
+    SingleActivator(LogicalKeyboardKey.digit1, control: true): 'tab1',
+    SingleActivator(LogicalKeyboardKey.digit2, control: true): 'tab2',
+    SingleActivator(LogicalKeyboardKey.digit3, control: true): 'tab3',
+    SingleActivator(LogicalKeyboardKey.digit4, control: true): 'tab4',
+    SingleActivator(LogicalKeyboardKey.digit5, control: true): 'tab5',
+    SingleActivator(LogicalKeyboardKey.digit6, control: true): 'tab6',
+    SingleActivator(LogicalKeyboardKey.digit7, control: true): 'tab7',
+    SingleActivator(LogicalKeyboardKey.digit8, control: true): 'tab8',
+    SingleActivator(LogicalKeyboardKey.digit9, control: true): 'lastTab',
+  };
+
+  static final _tabDigits = {
+    LogicalKeyboardKey.digit1,
+    LogicalKeyboardKey.digit2,
+    LogicalKeyboardKey.digit3,
+    LogicalKeyboardKey.digit4,
+    LogicalKeyboardKey.digit5,
+    LogicalKeyboardKey.digit6,
+    LogicalKeyboardKey.digit7,
+    LogicalKeyboardKey.digit8,
+    LogicalKeyboardKey.digit9,
   };
 
   /// Whether [event] is one of [_shortcuts]' keys (down, repeat or up), so the page doesn't get it.
@@ -114,7 +236,14 @@ class _BrowserPageState extends State<BrowserPage> {
     final keyboard = HardwareKeyboard.instance;
     if (!keyboard.isControlPressed || keyboard.isAltPressed || keyboard.isMetaPressed) return false;
     final key = event.logicalKey;
-    if (key == LogicalKeyboardKey.keyD) return !keyboard.isShiftPressed;
+    if (key == LogicalKeyboardKey.keyT || key == LogicalKeyboardKey.tab) return true;
+    if (key == LogicalKeyboardKey.keyD ||
+        key == LogicalKeyboardKey.keyW ||
+        key == LogicalKeyboardKey.pageUp ||
+        key == LogicalKeyboardKey.pageDown ||
+        _tabDigits.contains(key)) {
+      return !keyboard.isShiftPressed;
+    }
     return keyboard.isShiftPressed && (key == LogicalKeyboardKey.keyB || key == LogicalKeyboardKey.keyO);
   }
 
@@ -126,32 +255,47 @@ class _BrowserPageState extends State<BrowserPage> {
         _toggleBookmarkBar();
       case 'manager':
         _openBookmarks();
+      case 'newTab':
+        _newTab();
+      case 'reopenTab':
+        _reopenClosedTab();
+      case 'closeTab':
+        _closeTab(_active);
+      case 'nextTab':
+        _cycleTab(1);
+      case 'previousTab':
+        _cycleTab(-1);
+      case 'lastTab':
+        _selectTab(_tabs.length - 1);
+      default:
+        if (name.startsWith('tab')) _selectTab(int.parse(name.substring(3)) - 1);
     }
   }
 
   void _go(String input) {
     final text = input.trim();
-    if (text.isEmpty) return;
-    _controller?.load(text);
-    _pageFocus.requestFocus();
+    final tab = _tab;
+    if (text.isEmpty || tab == null) return;
+    tab.controller.load(text);
+    tab.focus.requestFocus();
   }
 
   @override
   void dispose() {
     BookmarkStore.instance.removeListener(_onBookmarksChanged);
-    _passwords?.dispose();
-    _controller?.dispose();
+    for (final tab in _tabs) {
+      tab.dispose();
+    }
     _address.dispose();
     _addressFocus.dispose();
-    _pageFocus.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final c = KitTheme.of(context);
-    final controller = _controller;
-    if (controller == null) {
+    final tab = _tab;
+    if (tab == null) {
       return Material(
         color: c.background,
         child: Center(
@@ -164,6 +308,7 @@ class _BrowserPageState extends State<BrowserPage> {
       );
     }
 
+    final controller = tab.controller;
     final bookmarked = BookmarkStore.instance.bookmarkFor(controller.url) != null;
     return CallbackShortcuts(
       bindings: {for (final entry in _shortcuts.entries) entry.key: () => _runShortcut(entry.value)},
@@ -172,6 +317,16 @@ class _BrowserPageState extends State<BrowserPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            TabStrip(
+              tabs: [
+                for (final t in _tabs)
+                  TabLabel(title: tabTitle(t.controller.title, t.controller.url), loading: t.controller.isLoading),
+              ],
+              active: _active,
+              onSelect: _selectTab,
+              onClose: _closeTab,
+              onNew: _newTab,
+            ),
             Container(
               color: c.surface,
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
@@ -244,12 +399,26 @@ class _BrowserPageState extends State<BrowserPage> {
                   : Align(alignment: Alignment.topCenter, child: Container(height: 1, color: c.border)),
             ),
             BookmarkBar(onOpen: _go),
-            if (_passwords != null) PasswordBar(agent: _passwords!),
+            PasswordBar(key: ObjectKey(tab), agent: tab.passwords),
             Expanded(
               child: Stack(
                 children: [
+                  // Every tab's view stays laid out (so its Ladybird view keeps its size); only the active one shows.
                   Positioned.fill(
-                    child: WebbyView(controller: controller, focusNode: _pageFocus, isBrowserShortcut: _isBrowserShortcut),
+                    child: IndexedStack(
+                      index: _active,
+                      sizing: StackFit.expand,
+                      children: [
+                        for (final t in _tabs)
+                          WebbyView(
+                            key: ObjectKey(t),
+                            controller: t.controller,
+                            focusNode: t.focus,
+                            isBrowserShortcut: _isBrowserShortcut,
+                            onOpenInNewTab: _openInBackgroundTab,
+                          ),
+                      ],
+                    ),
                   ),
                   if (controller.hoveredLink.isNotEmpty)
                     Positioned(
