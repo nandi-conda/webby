@@ -103,9 +103,23 @@ Minimal vertical slice: one tab, URL/search bar, back/forward/reload/stop, mouse
 hover status, cursors, HiDPI. Frames are copied through the CPU (Ladybird's CPU painting mode) and uploaded
 with `decodeImageFromPixels`; a Flutter texture would be the next step for speed.
 
+Passwords and passkeys share one encrypted vault per profile (`$WEBBY_PROFILE`, default `default`):
+`${XDG_DATA_HOME:-~/.local/share}/webby/profiles/<profile>/vault.json`, AES-256-GCM with a random key kept in the
+desktop keyring (Secret Service via libsecret: GNOME Keyring, KWallet, KeePassXC). With no keyring the key goes in
+`vault.key` next to the vault (mode 0600) and the vault screen says so; `WEBBY_VAULT_KEYRING=0` forces that. The key
+button in the toolbar opens the vault screen: search, show/copy, add, edit and delete passwords, delete passkeys, and
+re-allow sites marked "never save".
+
+Passwords: a small script in each page (`app/lib/src/passwords/page_script.dart`) reports logins to the app through
+`prompt()` calls the view swallows (`webby_view_set_message_prefix`). After a form submit, Enter or a click on a sign-in
+button, a bar offers Save / Not now / Never for this site (or Update when the password changed). On a page with a
+login form, one saved account is filled in straight away; with several, the bar offers a choice. Passwords are only
+offered on the exact origin they were saved on, and only in the top-level page (not iframes).
+
 Passkeys: `navigator.credentials.create()` / `.get()` with `publicKey` work against a software authenticator in
-the shim (`native/Authenticator.cpp`): ES256 keys, "none" attestation, stored per profile in
-`${XDG_DATA_HOME:-~/.local/share}/webby/passkeys.json` (mode 0600, override with `WEBBY_PASSKEYS_FILE`). Every
-ceremony is confirmed in a Flutter dialog. The keys are not hardware-backed or encrypted at rest, the dialog click is
-the only user verification even though the authenticator reports UV, and conditional (autofill) mediation is not
-supported yet.
+the shim (`native/Authenticator.cpp`): ES256 keys, "none" attestation. They live in the vault: at startup the app
+hands them to libwebby (`webby_passkeys_use_vault`) and saves new ones as soon as they're created. An older
+plaintext `${XDG_DATA_HOME:-~/.local/share}/webby/passkeys.json` (or `WEBBY_PASSKEYS_FILE`) is moved into the vault
+and deleted; on a runtime without vault support passkeys stay in that file. Every ceremony is confirmed in a Flutter
+dialog. The keys are not hardware-backed, the dialog click is the only user verification even though the
+authenticator reports UV, and conditional (autofill) mediation is not supported yet.

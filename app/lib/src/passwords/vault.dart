@@ -78,7 +78,7 @@ String? originOf(String url) {
 ///
 /// On disk it is `${XDG_DATA_HOME:-~/.local/share}/webby/profiles/<profile>/vault.json` (or $WEBBY_VAULT_FILE): a
 /// JSON envelope around the AES-256-GCM encrypted contents. The 256-bit key is random and kept in the desktop
-/// keyring under {application: webby, profile: <profile>}; without a keyring it goes in `vault.key` beside the vault.
+/// keyring under `{application: webby, profile: <profile>}`; without a keyring it goes in `vault.key` beside the vault.
 ///
 /// Passkeys are owned by the authenticator in libwebby (see `webby_passkeys_*` in webby_ffi.h); the vault keeps the
 /// JSON it hands over in [passkeys] and gives it back at startup.
