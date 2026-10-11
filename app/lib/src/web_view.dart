@@ -1,19 +1,36 @@
 import 'dart:async';
 import 'dart:ffi' hide Size;
+import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:ffi/ffi.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:webby_texture/webby_texture.dart';
 
 import 'bindings.dart';
+import 'frame_bench.dart';
 import 'keys.dart';
 
-/// Drives one Ladybird view: pumps the event loop, turns presented frames into images and exposes page state.
+/// Drives one Ladybird view: pumps the event loop, hands presented frames to Flutter and exposes page state.
+///
+/// Frames go into an external texture (native memory straight to the engine). Where that isn't available, or with
+/// WEBBY_TEXTURE=0, each frame is copied into Dart and decoded into an image instead.
 class WebbyController extends ChangeNotifier {
-  WebbyController({String initialUrl = 'https://ladybird.org'}) : _pendingUrl = initialUrl {
+  WebbyController({String initialUrl = 'https://ladybird.org', bool? useTexture}) : _pendingUrl = initialUrl {
     _bindings = WebbyBindings.open();
+    if (useTexture ?? Platform.environment['WEBBY_TEXTURE'] != '0') {
+      _texturePending = true;
+      WebbyTexture.create().then((texture) {
+        _texturePending = false;
+        if (_disposed) {
+          texture?.dispose();
+        } else {
+          _texture = texture;
+        }
+      });
+    }
     // Pump Ladybird's event loop from the Dart thread; all FFI calls stay on this thread.
     _pumpTimer = Timer.periodic(const Duration(milliseconds: 4), (_) => _pump());
   }
@@ -22,9 +39,12 @@ class WebbyController extends ChangeNotifier {
   late final Timer _pumpTimer;
   ViewPtr _view = nullptr;
   String? _pendingUrl;
+  bool _disposed = false;
 
   int _frameSerial = 0;
   int _stateSerial = -1;
+  WebbyTexture? _texture;
+  bool _texturePending = false;
   bool _decoding = false;
   ui.Image? _image;
 
@@ -36,7 +56,15 @@ class WebbyController extends ChangeNotifier {
   bool canGoForward = false;
   int cursor = 0;
 
+  /// Size in device pixels of the frame on screen (0 before the first one).
+  int frameWidth = 0;
+  int frameHeight = 0;
+  final FrameStats stats = FrameStats();
+
   ui.Image? get image => _image;
+
+  /// The texture to show once it has a frame; null when frames come as [image]s.
+  int? get textureId => frameWidth > 0 ? _texture?.id : null;
   bool get isAttached => _view != nullptr;
 
   /// Creates the native view the first time the widget knows its size, then keeps it in sync.
@@ -108,27 +136,55 @@ class WebbyController extends ChangeNotifier {
       notifyListeners();
     }
 
+    // Until we know whether there's a texture, leave frames unread; the latest one goes wherever it ends up.
+    if (_texturePending) return;
     final frameSerial = _bindings.frameSerial(_view);
-    if (frameSerial != _frameSerial && !_decoding) {
-      _frameSerial = frameSerial;
-      final width = _bindings.frameWidth(_view);
-      final height = _bindings.frameHeight(_view);
-      if (width <= 0 || height <= 0) return;
-      // Copy now: the native buffer may be rewritten by the next pump while the image decodes.
-      final pixels = Uint8List.fromList(_bindings.framePixels(_view).asTypedList(width * height * 4));
-      _decoding = true;
-      ui.decodeImageFromPixels(pixels, width, height, ui.PixelFormat.bgra8888, (image) {
-        _decoding = false;
-        _image?.dispose();
-        _image = image;
+    final texture = _texture;
+    if (frameSerial == _frameSerial || (texture == null && _decoding)) return;
+    _frameSerial = frameSerial;
+    final width = _bindings.frameWidth(_view);
+    final height = _bindings.frameHeight(_view);
+    if (width <= 0 || height <= 0) return;
+    final clock = Stopwatch()..start();
+
+    if (texture != null) {
+      // The plugin copies the frame into the texture before returning, so the native buffer can change after this.
+      texture.push(_bindings.framePixels(_view), width, height);
+      stats.add(clock.elapsedMicroseconds, 0);
+      // The texture repaints itself; the widget only needs rebuilding when the frame size changes.
+      if (width != frameWidth || height != frameHeight) {
+        frameWidth = width;
+        frameHeight = height;
         notifyListeners();
-      });
+      }
+      return;
     }
+
+    // Copy now: the native buffer may be rewritten by the next pump while the image decodes.
+    final pixels = Uint8List.fromList(_bindings.framePixels(_view).asTypedList(width * height * 4));
+    final copyMicros = clock.elapsedMicroseconds;
+    _decoding = true;
+    ui.decodeImageFromPixels(pixels, width, height, ui.PixelFormat.bgra8888, (image) {
+      _decoding = false;
+      stats.add(copyMicros, clock.elapsedMicroseconds);
+      if (_disposed) {
+        image.dispose();
+        return;
+      }
+      _image?.dispose();
+      _image = image;
+      frameWidth = width;
+      frameHeight = height;
+      notifyListeners();
+    });
   }
 
   @override
   void dispose() {
+    _disposed = true;
     _pumpTimer.cancel();
+    _texture?.dispose();
+    _texture = null;
     if (_view != nullptr) {
       _bindings.viewDestroy(_view);
       _view = nullptr;
@@ -267,6 +323,31 @@ class _WebbyViewState extends State<WebbyView> {
     super.dispose();
   }
 
+  Widget _page() {
+    final controller = widget.controller;
+    final textureId = controller.textureId;
+    if (textureId != null) {
+      // One device pixel per texel: size the texture to the frame rather than stretching it while a resize is in
+      // flight.
+      return Align(
+        alignment: Alignment.topLeft,
+        child: SizedBox(
+          width: controller.frameWidth / _ratio,
+          height: controller.frameHeight / _ratio,
+          child: Texture(textureId: textureId, filterQuality: FilterQuality.none),
+        ),
+      );
+    }
+    if (controller.image == null) return const SizedBox.shrink();
+    return RawImage(
+      image: controller.image,
+      alignment: Alignment.topLeft,
+      fit: BoxFit.none,
+      scale: _ratio,
+      filterQuality: FilterQuality.none,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, constraints) {
@@ -289,17 +370,7 @@ class _WebbyViewState extends State<WebbyView> {
               onPointerPanZoomUpdate: _onPanZoomUpdate,
               child: ColoredBox(
                 color: Colors.white,
-                child: SizedBox.expand(
-                  child: widget.controller.image == null
-                      ? const SizedBox.shrink()
-                      : RawImage(
-                          image: widget.controller.image,
-                          alignment: Alignment.topLeft,
-                          fit: BoxFit.none,
-                          scale: _ratio,
-                          filterQuality: FilterQuality.none,
-                        ),
-                ),
+                child: SizedBox.expand(child: _page()),
               ),
             ),
           ),

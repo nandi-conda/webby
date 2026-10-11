@@ -46,6 +46,7 @@ class _BrowserPageState extends State<BrowserPage> {
     try {
       _controller = WebbyController(initialUrl: widget.initialUrl)..addListener(_onPageChanged);
       _address.text = widget.initialUrl;
+      maybeStartBench(_controller!);
     } catch (error) {
       _startupError = error;
     }
