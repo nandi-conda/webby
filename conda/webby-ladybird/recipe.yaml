@@ -1,0 +1,48 @@
+# conda package of the prebuilt Ladybird runtime (libwebby.so, LibWeb/LibJS and friends, helper processes, share/Lagom).
+# It's a self-contained prefix under $PREFIX/lib/webby-ladybird so its bundled vcpkg libraries (ICU, Skia, ffmpeg…)
+# never shadow conda-forge's; activation sets WEBBY_LADYBIRD_PREFIX to it.
+# Build + upload: scripts/publish_conda.sh (uploads to prefix.dev channel nandi-testing; needs PREFIX_API_KEY).
+context:
+  version: "2026.10.10"
+
+package:
+  name: webby-ladybird
+  version: ${{ version }}
+
+source:
+  url: https://gitlab.latha.org/api/v4/projects/4/packages/generic/webby-prebuilt/${{ version }}/webby-prebuilt-linux-x64.tar.zst
+  sha256: 0e823e68514a2e1a6fc3c13abafd7a666589f9e05ffc92d8167fb0916e653419
+
+build:
+  number: 0
+  skip:
+    - not linux64
+  # Prebuilt binaries with relative ($ORIGIN) RPATHs: copy them as-is.
+  prefix_detection:
+    ignore: true
+  dynamic_linking:
+    binary_relocation: false
+    overdepending_behavior: ignore
+    overlinking_behavior: ignore
+  script:
+    - mkdir -p $PREFIX/lib/webby-ladybird $PREFIX/etc/conda/activate.d $PREFIX/etc/conda/deactivate.d
+    - cp -a lib libexec share $PREFIX/lib/webby-ladybird/
+    - cp $RECIPE_DIR/activate.sh $PREFIX/etc/conda/activate.d/webby-ladybird.sh
+    - cp $RECIPE_DIR/deactivate.sh $PREFIX/etc/conda/deactivate.d/webby-ladybird.sh
+
+requirements:
+  run:
+    # Built on Ubuntu 26.04.
+    - __glibc >=2.43
+
+tests:
+  - package_contents:
+      files:
+        - lib/webby-ladybird/lib/libwebby.so
+        - lib/webby-ladybird/libexec/WebContent
+        - lib/webby-ladybird/libexec/RequestServer
+
+about:
+  homepage: https://gitlab.latha.org/nandi/webby
+  summary: Ladybird's LibWeb/LibJS engine as libwebby.so plus its helper processes, for the webby Flutter browser
+  license: BSD-2-Clause
