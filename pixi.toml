@@ -18,6 +18,8 @@ gtk3 = "*"
 glib = "*"
 epoxy = "*"
 fontconfig = "*"
+# Guarantees Ladybird has serif, sans and monospace fonts even where the system has none set up for fontconfig.
+font-ttf-dejavu = "*"
 expat = "*"
 zlib = "*"
 # Used by the Flutter tool and scripts/pixi_fetch.sh.
