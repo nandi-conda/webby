@@ -10,6 +10,8 @@
 ///
 /// createImageBitmap of a Flutter WebGL OffscreenCanvas: answered with transferToImageBitmap, so a Flutter frame
 /// reaches the screen in the rendering update that drew it rather than the one after.
+///
+/// Flutter's CanvasKit multi-surface rasterizer turned on by default, so it renders into on-page WebGL canvases.
 const pageCompatScript = r'''
 (() => {
   if (window.__webbyCompat) return;
@@ -74,6 +76,21 @@ const pageCompatScript = r'''
       }
       return createImageBitmap.apply(this, arguments);
     };
+  }
+
+  // Better still, Flutter can skip the offscreen canvas and draw straight into on-page WebGL canvases, as it does on
+  // Safari and Firefox: no read back of every frame into WebContent and no copy into a 2D canvas, so a scroll reaches
+  // the screen sooner. Flutter reads canvasKitForceMultiSurfaceRasterizer off the plain configuration object it gets
+  // from _flutter.loader.load() (an empty one when the page passes none), so a default on Object.prototype turns it
+  // on unless the page sets it itself.
+  if (!('canvasKitForceMultiSurfaceRasterizer' in Object.prototype)) {
+    Object.defineProperty(Object.prototype, 'canvasKitForceMultiSurfaceRasterizer', {
+      get() { return true; },
+      set(value) {
+        Object.defineProperty(this, 'canvasKitForceMultiSurfaceRasterizer', { value, writable: true, enumerable: true, configurable: true });
+      },
+      configurable: true,
+    });
   }
 })();
 ''';
