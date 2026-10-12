@@ -52,6 +52,12 @@ int webby_init(char const* prefix)
     if (s_application)
         return 0;
 
+    // Ladybird has mimalloc purge freed memory with MADV_FREE, which Linux keeps counting as resident until it runs
+    // short: a busy page's WebContent then holds on to hundreds of MB it no longer uses. Decommit (MADV_DONTNEED)
+    // instead, in the helper processes this starts (patches/0016 lets the variable through); a value already in the
+    // environment wins.
+    setenv("MIMALLOC_PURGE_DECOMMITS", "1", 0);
+
     // Helper processes are found relative to the "binary" directory: <prefix>/bin -> <prefix>/libexec.
     auto binary_directory = LexicalPath::join(StringView { prefix, strlen(prefix) }, "bin"sv).string();
 
