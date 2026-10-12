@@ -28,9 +28,11 @@ for library in "$PREFIX"/lib/*.so; do
     case "$(basename "$library")" in libVkLayer_*) continue ;; esac
     "$STRIP" --strip-unneeded -o "$JNI/$(basename "$library")" "$library"
 done
-for helper in WebContent RequestServer ImageDecoder Compositor MediaServer WebWorker; do
+for helper in WebContent RequestServer ImageDecoder Compositor MediaServer WebWorker WasmCompiler; do
     "$STRIP" --strip-unneeded -o "$JNI/lib$helper.so" "$PREFIX/libexec/$helper"
 done
+# WasmCompiler runs this to turn WebAssembly into machine code (LadybirdRuntime.kt points LADYBIRD_CRANELIFT_COMPILER at it).
+"$STRIP" --strip-unneeded -o "$JNI/libcranelift-compiler.so" "$PREFIX/bin/cranelift-compiler"
 
 # Ladybird's resources, unpacked on first start.
 ASSETS="$MAIN/assets"

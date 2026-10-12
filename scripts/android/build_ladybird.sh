@@ -37,9 +37,6 @@ cd "$LADYBIRD_DIR"
 # Ladybird links statically on Android, and several of its Rust static libraries each carry their own copy of shared
 # crates (regex, ICU glue); the copies are the same code, so the linker may keep the first one it sees.
 LINK_FLAGS="-Wl,--allow-multiple-definition"
-# cranelift-compiler is a Rust executable, so cargo links it itself and needs the NDK's clang for that.
-CARGO_LINKER_VAR="CARGO_TARGET_$(echo "$RUST_TRIPLE" | tr 'a-z-' 'A-Z_')_LINKER"
-export "$CARGO_LINKER_VAR=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/$RUST_TRIPLE$ANDROID_API-clang"
 if [ ! -f "$BUILD_DIR/build.ninja" ] || ! grep -q -- "$LINK_FLAGS" "$BUILD_DIR/CMakeCache.txt" \
     || ! grep -q '^ENABLE_CRANELIFT_JIT:BOOL=ON' "$BUILD_DIR/CMakeCache.txt"; then
     # VCPKG_TARGET_ANDROID makes Ladybird chain vcpkg's toolchain with the NDK's (UI/Android/vcpkg_android.cmake).
