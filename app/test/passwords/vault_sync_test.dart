@@ -10,6 +10,7 @@ import 'package:webby/src/passwords/sync/vault_sync.dart';
 import 'package:webby/src/passwords/vault.dart';
 import 'package:webby/src/summary_cache.dart';
 import 'package:webby/src/tabs/device_tabs.dart';
+import 'package:webby/src/tabs/sessions.dart';
 
 // Needs a running sync-server and a throwaway vault:
 //   WEBBY_VAULT_KEYRING=0 WEBBY_VAULT_FILE=/tmp/v/vault.json WEBBY_SYNC_TEST_SERVER=http://127.0.0.1:8080 flutter test
@@ -30,10 +31,13 @@ void main() {
       ..setTabs([const DeviceTab('Ladybird', 'https://ladybird.org/')]);
     final summaries = SummaryCache(File('${bookmarksDir.path}/summaries.json'))
       ..store('https://ladybird.org/', const CachedSummary(title: 'Ladybird', url: 'https://ladybird.org/', text: '- browser', at: 1));
+    final sessions = SessionStore(File('${bookmarksDir.path}/sessions.json'))
+      ..save([const DeviceTab('Ladybird', 'https://ladybird.org/')], name: 'Desk');
     await vault.setSecret('deepseek-api-key', 'sk-never-synced');
     var removedPasskeys = <String>{};
     final sync = VaultSync(vault,
-        onPasskeysChanged: (removed) => removedPasskeys = removed, bookmarks: bookmarks, tabs: tabs, summaries: summaries);
+        onPasskeysChanged: (removed) => removedPasskeys = removed, bookmarks: bookmarks, tabs: tabs, summaries: summaries,
+        sessions: sessions);
     final settings = SyncSettings(code: SyncKey.generate().code, server: server!);
     await sync.enable(settings);
     expect(sync.error, isNull);
@@ -45,6 +49,8 @@ void main() {
     expect(serverSummaries.doc.summaries['https://ladybird.org/']!['text'], '- browser');
     expect(serverSummaries.doc.toJson().toString() + (await syncOnce(settings, SyncDoc())).doc.toJson().toString(),
         isNot(contains('sk-never-synced')));
+    final serverSessions = await syncOnce(settings, SyncDoc(), blob: SyncBlob.sessions);
+    expect(serverSessions.doc.sessions.values.single['name'], 'Desk');
     final serverTabs = await syncOnce(settings, SyncDoc(), blob: SyncBlob.tabs);
     expect(serverTabs.doc.devices[tabs.deviceId]!['tabs'], [
       {'title': 'Ladybird', 'url': 'https://ladybird.org/'}
@@ -97,7 +103,21 @@ void main() {
           }
         }),
         blob: SyncBlob.summaries);
+    final phoneSessions = SyncDoc.fromJson(serverSessions.doc.toJson());
+    phoneSessions.sessions.values.single['name'] = 'Renamed on phone';
+    phoneSessions.sessions.values.single['updatedAt'] = now;
+    phoneSessions.sessions['phone-s'] = {
+      'name': 'Phone',
+      'savedAt': now,
+      'active': 0,
+      'tabs': [
+        {'title': 'News', 'url': 'https://news.example/'}
+      ],
+      'updatedAt': now,
+    };
+    await syncOnce(settings, phoneSessions, blob: SyncBlob.sessions);
     await sync.syncNow();
+    expect([for (final s in sessions.sessions) s.name], ['Phone', 'Renamed on phone']);
     expect(summaries.lookup('https://news.example/')!.questions.single.answer, 'them');
     expect(summaries.lookup('https://ladybird.org/')!.text, '- browser');
     expect(bookmarks.other.children!.single.title, 'Phone');
@@ -122,6 +142,7 @@ void main() {
     expect(await settings.store(await settings.key.derive(), blob: SyncBlob.bookmarks).read(), isNull);
     expect(await settings.store(await settings.key.derive(), blob: SyncBlob.tabs).read(), isNull);
     expect(await settings.store(await settings.key.derive(), blob: SyncBlob.summaries).read(), isNull);
+    expect(await settings.store(await settings.key.derive(), blob: SyncBlob.sessions).read(), isNull);
     expect(tabs.devices, isEmpty);
     sync.dispose();
     bookmarksDir.deleteSync(recursive: true);

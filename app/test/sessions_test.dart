@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:webby/src/passwords/sync/sync_doc.dart';
 import 'package:webby/src/site_icon.dart';
 import 'package:webby/src/tabs/device_tabs.dart';
 import 'package:webby/src/tabs/sessions.dart';
@@ -160,5 +161,46 @@ void main() {
     await tester.pumpAndSettle();
     expect(result, (QuitChoice.save, 'Evening'));
     expect(store.askOnQuit, isFalse);
+  });
+  test('sessions sync: two devices merge saves, renames and deletes', () {
+    final desk = SessionStore(File('${temp.path}/desk/sessions.json'));
+    final phone = SessionStore(File('${temp.path}/phone/sessions.json'));
+    final work = desk.save(tabs, name: 'Work', active: 3, now: DateTime(2026, 1, 1))!;
+    final old = desk.save(tabs, name: 'Old', now: DateTime(2026, 1, 2))!;
+    phone.save(const [DeviceTab('News', 'https://news.example/')], name: 'Reading', now: DateTime(2026, 1, 3));
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+    void sync() {
+      final merged = mergeDocs(desk.toSyncDoc(), phone.toSyncDoc(), now: now);
+      desk.applySyncDoc(merged);
+      phone.applySyncDoc(merged);
+    }
+
+    sync();
+    expect([for (final s in phone.sessions) s.name], ['Reading', 'Old', 'Work']);
+    expect(phone.sessions.last.active, 1);
+    expect(desk.applySyncDoc(mergeDocs(desk.toSyncDoc(), phone.toSyncDoc(), now: now)), isFalse);
+
+    // The phone renames Work, the desk deletes Old: both reach the other device and survive a reload.
+    phone.rename(phone.sessions.firstWhere((s) => s.id == work.id), 'Work stuff');
+    desk.delete(old);
+    sync();
+    expect([for (final s in desk.sessions) s.name], ['Reading', 'Work stuff']);
+    expect(identical(desk.sessions.last, work), isTrue, reason: 'updated in place so Undo still finds it');
+    expect([for (final s in SessionStore(File('${temp.path}/phone/sessions.json')).sessions) s.name],
+        ['Reading', 'Work stuff']);
+    expect(isDeleted(SessionStore(File('${temp.path}/phone/sessions.json')).toSyncDoc().sessions[old.id]!), isTrue);
+
+    // Undo of the delete wins over the tombstone; removing a tab syncs too.
+    desk.restoreDeleted(old);
+    desk.removeTab(work, 0);
+    sync();
+    expect([for (final s in phone.sessions) s.name], ['Reading', 'Old', 'Work stuff']);
+    expect(phone.sessions.last.tabs.single.url, 'https://example.com/');
+    expect(phone.sessions.last.active, 0);
+
+    phone.deleteAll();
+    sync();
+    expect(desk.sessions, isEmpty);
   });
 }

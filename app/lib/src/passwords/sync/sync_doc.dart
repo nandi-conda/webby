@@ -16,7 +16,8 @@ const summaryLimit = 300;
 ///
 /// Bookmarks travel in their own blob (see [SyncKeys.bookmarksBlobId]), so webby versions that predate bookmark
 /// sync never see them and can't drop them; in that blob only [bookmarks] is used. Open tabs are the same, in a third
-/// blob holding only [devices], and page summaries in a fourth holding only [summaries].
+/// blob holding only [devices], page summaries in a fourth holding only [summaries], and saved sessions in a fifth
+/// holding only [sessions].
 ///
 /// Each record is a JSON map with an `updatedAt` (seconds since the epoch). A deleted item stays as a tombstone
 /// `{updatedAt, deleted: true}` (passwords also keep `id`) until [tombstoneLifetime] has passed.
@@ -28,7 +29,9 @@ class SyncDoc {
     Map<String, Map<String, Object?>>? bookmarks,
     Map<String, Map<String, Object?>>? devices,
     Map<String, Map<String, Object?>>? summaries,
+    Map<String, Map<String, Object?>>? sessions,
   })  : summaries = summaries ?? {},
+        sessions = sessions ?? {},
         passwords = passwords ?? {},
         passkeys = passkeys ?? {},
         neverSave = neverSave ?? {},
@@ -51,7 +54,8 @@ class SyncDoc {
         neverSave: section('neverSave'),
         bookmarks: section('bookmarks'),
         devices: section('devices'),
-        summaries: section('summaries'));
+        summaries: section('summaries'),
+        sessions: section('sessions'));
   }
 
   final Map<String, Map<String, Object?>> passwords;
@@ -73,6 +77,10 @@ class SyncDoc {
   /// recently changed are kept.
   final Map<String, Map<String, Object?>> summaries;
 
+  /// Saved tab sessions by id: `{name, savedAt, active, tabs: [{title, url}], updatedAt}`. A rename or a tab taken
+  /// out rewrites the whole record, and the newest version wins.
+  final Map<String, Map<String, Object?>> sessions;
+
   Map<String, Object?> toJson() => {
         'version': 1,
         'passwords': _sorted(passwords),
@@ -81,6 +89,7 @@ class SyncDoc {
         if (bookmarks.isNotEmpty) 'bookmarks': _sorted(bookmarks),
         if (devices.isNotEmpty) 'devices': _sorted(devices),
         if (summaries.isNotEmpty) 'summaries': _sorted(summaries),
+        if (sessions.isNotEmpty) 'sessions': _sorted(sessions),
       };
 
   /// A stable encoding: equal documents encode to equal strings.
@@ -167,6 +176,7 @@ SyncDoc mergeDocs(SyncDoc a, SyncDoc b, {required int now}) {
     devices: _mergeSection(a.devices, b.devices, expireBefore)
       ..removeWhere((_, record) => !isDeleted(record) && updatedAtOf(record) < now - deviceLifetime.inSeconds),
     summaries: _trimSummaries(_mergeSection(a.summaries, b.summaries, expireBefore)),
+    sessions: _mergeSection(a.sessions, b.sessions, expireBefore),
   );
 }
 

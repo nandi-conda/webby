@@ -2,15 +2,19 @@
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
 import '../incognito.dart';
+import '../passwords/sync/sync_doc.dart';
 import 'device_tabs.dart';
 
 /// A saved set of tabs.
 class SavedSession {
-  SavedSession({required this.id, required this.name, required this.savedAt, required this.tabs, this.active = 0});
+  SavedSession(
+      {required this.id, required this.name, required this.savedAt, required this.tabs, this.active = 0, int? updatedAt})
+      : updatedAt = updatedAt ?? savedAt;
 
   static SavedSession? fromJson(Object? json) {
     if (json is! Map<String, Object?>) return null;
@@ -21,12 +25,14 @@ class SavedSession {
     ];
     if (tabs.isEmpty) return null;
     final active = json['active'] as int? ?? 0;
+    final updatedAt = json['updatedAt'];
     return SavedSession(
       id: id,
       name: json['name'] as String? ?? '',
       savedAt: json['savedAt'] as int? ?? 0,
       tabs: tabs,
       active: active.clamp(0, tabs.length - 1),
+      updatedAt: updatedAt is num ? updatedAt.toInt() : null,
     );
   }
 
@@ -38,7 +44,10 @@ class SavedSession {
   final List<DeviceTab> tabs;
 
   /// The tab that was in front, which comes back in front.
-  final int active;
+  int active;
+
+  /// When this session last changed (seconds since the epoch), so sync keeps the newest version.
+  int updatedAt;
 
   Map<String, Object?> toJson() => {
     'id': id,
@@ -46,6 +55,7 @@ class SavedSession {
     'savedAt': savedAt,
     'active': active,
     'tabs': [for (final tab in tabs) tab.toJson()],
+    'updatedAt': updatedAt,
   };
 }
 
@@ -54,7 +64,7 @@ bool isSessionUrl(String url) => url.isNotEmpty && url != 'about:blank';
 
 /// The profile's saved sessions, in
 /// `${XDG_DATA_HOME:-~/.local/share}/webby/profiles/<WEBBY_PROFILE|default>/sessions.json` (or $WEBBY_SESSIONS_FILE).
-/// Incognito windows never save one.
+/// Incognito windows never save one. Sessions sync between devices (see [toSyncDoc]); [askOnQuit] stays on this one.
 class SessionStore extends ChangeNotifier {
   SessionStore(this.file) {
     _load();
@@ -77,6 +87,9 @@ class SessionStore extends ChangeNotifier {
 
   final File file;
   final List<SavedSession> _sessions = [];
+
+  /// When sessions were deleted (seconds), by id, so the deletion reaches other devices.
+  final Map<String, int> _deleted = {};
   bool _askOnQuit = true;
   int _idCounter = 0;
 
@@ -104,6 +117,9 @@ class SessionStore extends ChangeNotifier {
         if (session != null) _sessions.add(session);
       }
       _sessions.sort((a, b) => b.savedAt.compareTo(a.savedAt));
+      for (final entry in (json['deleted'] as Map<String, Object?>? ?? const {}).entries) {
+        if (entry.value is num) _deleted[entry.key] = (entry.value as num).toInt();
+      }
     } catch (error) {
       // Keep the unreadable file for the user rather than overwriting it on the next save.
       final aside = '${file.path}.corrupt-${DateTime.now().millisecondsSinceEpoch}';
@@ -112,6 +128,7 @@ class SessionStore extends ChangeNotifier {
       } catch (_) {}
       loadError = 'Could not read ${file.path} ($error); it was moved to $aside.';
       _sessions.clear();
+      _deleted.clear();
     }
   }
 
@@ -119,10 +136,13 @@ class SessionStore extends ChangeNotifier {
     if (Incognito.active) return;
     final directory = file.parent;
     if (!directory.existsSync()) directory.createSync(recursive: true);
+    final expireBefore = _seconds() - tombstoneLifetime.inSeconds;
+    _deleted.removeWhere((_, at) => at < expireBefore);
     final contents = const JsonEncoder.withIndent('  ').convert({
       'version': 1,
       'askOnQuit': _askOnQuit,
       'sessions': [for (final session in _sessions) session.toJson()],
+      if (_deleted.isNotEmpty) 'deleted': _deleted,
     });
     final temp = File('${file.path}.tmp');
     temp.writeAsStringSync(contents, flush: true);
@@ -132,6 +152,58 @@ class SessionStore extends ChangeNotifier {
   void _changed() {
     _save();
     notifyListeners();
+  }
+
+  static int _seconds() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+  /// Marks [session] as changed now (and later than any version of it seen before).
+  void _touch(SavedSession session) => session.updatedAt = max(_seconds(), session.updatedAt + 1);
+
+  void _tombstone(SavedSession session) => _deleted[session.id] = max(_seconds(), session.updatedAt + 1);
+
+  bool _has(SavedSession session) => _sessions.any((s) => s.id == session.id);
+
+  /// The sessions in their synced form: one record per session, plus tombstones for deleted ones.
+  SyncDoc toSyncDoc() => SyncDoc(sessions: {
+    for (final entry in _deleted.entries) entry.key: {'updatedAt': entry.value, 'deleted': true},
+    for (final session in _sessions) session.id: session.toJson()..remove('id'),
+  });
+
+  /// Replaces the sessions with a merged [SyncDoc]. Sessions already shown are updated in place, so an Undo still
+  /// finds them. Returns whether anything changed.
+  bool applySyncDoc(SyncDoc doc) {
+    if (toSyncDoc() == SyncDoc(sessions: doc.sessions)) return false;
+    final byId = {for (final session in _sessions) session.id: session};
+    final next = <SavedSession>[];
+    for (final entry in doc.sessions.entries) {
+      if (isDeleted(entry.value)) continue;
+      final incoming = SavedSession.fromJson({...entry.value, 'id': entry.key});
+      if (incoming == null) continue;
+      final existing = byId[entry.key];
+      if (existing == null || existing.savedAt != incoming.savedAt) {
+        next.add(incoming);
+        continue;
+      }
+      existing
+        ..name = incoming.name
+        ..active = incoming.active
+        ..updatedAt = incoming.updatedAt
+        ..tabs.clear()
+        ..tabs.addAll(incoming.tabs);
+      next.add(existing);
+    }
+    _sessions
+      ..clear()
+      ..addAll(next)
+      ..sort((a, b) => b.savedAt.compareTo(a.savedAt));
+    _deleted
+      ..clear()
+      ..addAll({
+        for (final entry in doc.sessions.entries)
+          if (isDeleted(entry.value)) entry.key: updatedAtOf(entry.value),
+      });
+    _changed();
+    return true;
   }
 
   /// Saves [tabs] (blank ones left out) as a session called [name], or a name from the date when it's empty.
@@ -164,6 +236,7 @@ class SessionStore extends ChangeNotifier {
     final trimmed = name.trim();
     if (trimmed.isEmpty || trimmed == session.name || !_sessions.contains(session)) return;
     session.name = trimmed;
+    _touch(session);
     _changed();
   }
 
@@ -171,7 +244,12 @@ class SessionStore extends ChangeNotifier {
   DeviceTab? removeTab(SavedSession session, int index) {
     if (!_sessions.contains(session) || index < 0 || index >= session.tabs.length) return null;
     final tab = session.tabs.removeAt(index);
-    if (session.tabs.isEmpty) _sessions.remove(session);
+    if (session.tabs.isEmpty) {
+      _sessions.remove(session);
+      _tombstone(session);
+    } else {
+      _touch(session);
+    }
     _changed();
     return tab;
   }
@@ -179,20 +257,25 @@ class SessionStore extends ChangeNotifier {
   /// Puts [tab] back at [index] in [session] (undo), bringing the session back if it had gone.
   void restoreTab(SavedSession session, DeviceTab tab, int index) {
     session.tabs.insert(index.clamp(0, session.tabs.length), tab);
-    if (!_sessions.contains(session)) {
+    if (!_has(session)) {
       restoreDeleted(session);
     } else {
+      _touch(session);
       _changed();
     }
   }
 
   void delete(SavedSession session) {
-    if (_sessions.remove(session)) _changed();
+    if (!_sessions.remove(session)) return;
+    _tombstone(session);
+    _changed();
   }
 
   /// Puts back a session that was just deleted (undo).
   void restoreDeleted(SavedSession session) {
-    if (_sessions.contains(session)) return;
+    if (_has(session)) return;
+    session.updatedAt = max(session.updatedAt, _deleted.remove(session.id) ?? 0);
+    _touch(session);
     _sessions
       ..add(session)
       ..sort((a, b) => b.savedAt.compareTo(a.savedAt));
@@ -201,6 +284,7 @@ class SessionStore extends ChangeNotifier {
 
   void deleteAll() {
     if (_sessions.isEmpty) return;
+    _sessions.forEach(_tombstone);
     _sessions.clear();
     _changed();
   }
