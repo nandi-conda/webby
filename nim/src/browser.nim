@@ -78,6 +78,11 @@ var
   tabMenuHooks*: seq[proc (t: Tab, menu: Widget)]  ## right-click on a tab: append items to the GtkMenu
   pageContextMenuHook*: proc (t: Tab, info: JsonNode, event: GEvent) ## replaces the built-in page menu if set
 
+  # Device-only secrets kept in the password vault (e.g. the DeepSeek key), set by the passwords feature.
+  # nil until it installs; getSecret returns "" when there is none.
+  getSecret*: proc (name: string): string
+  setSecret*: proc (name, value: string)
+
   # Requests from pages. nil = declined by the core.
   webauthnHandler*: proc (t: Tab, request: JsonNode)
   filePickerHandler*: proc (t: Tab, request: JsonNode)
