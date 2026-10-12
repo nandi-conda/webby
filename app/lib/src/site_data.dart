@@ -8,6 +8,7 @@ import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart';
 
 import 'bindings.dart';
+import 'history/history_store.dart';
 import 'ui.dart';
 
 class SiteData {
@@ -74,7 +75,7 @@ Future<bool> showClearBrowsingData(BuildContext context, SiteData data) async {
   var range = Duration.zero;
   var cookies = true;
   var cached = true;
-  var history = false;
+  var history = true;
 
   final cleared = await showWebbyDialog<bool>(context, (dialogContext) {
     return StatefulBuilder(builder: (context, setState) {
@@ -110,7 +111,7 @@ Future<bool> showClearBrowsingData(BuildContext context, SiteData data) async {
             const SizedBox(height: 8),
             option('Cookies and other site data', 'Signs you out of most sites.', cookies, (v) => cookies = v),
             option('Cached images and files', 'Pages may load more slowly next time.', cached, (v) => cached = v),
-            option('Browsing history', 'Pages the engine remembers visiting.', history, (v) => history = v),
+            option('Browsing history', 'Clears the pages on the History page and in address bar suggestions.', history, (v) => history = v),
           ],
         ),
         actions: [
@@ -118,10 +119,12 @@ Future<bool> showClearBrowsingData(BuildContext context, SiteData data) async {
           KitButton.primary('Clear data', onPressed: !(cookies || cached || history)
               ? null
               : () {
+                  final since = range == Duration.zero ? null : DateTime.now().subtract(range);
                   data.clearBrowsingData(
                     (cookies ? SiteData.siteData : 0) | (cached ? SiteData.cache : 0) | (history ? SiteData.history : 0),
-                    since: range == Duration.zero ? null : DateTime.now().subtract(range),
+                    since: since,
                   );
+                  if (history) HistoryStore.instance.clear(since: since);
                   Navigator.of(dialogContext).pop(true);
                 }),
         ],
