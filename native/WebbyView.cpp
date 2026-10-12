@@ -21,11 +21,14 @@
 
 namespace Webby {
 
-void Application::create_platform_options(WebView::BrowserOptions&, WebView::RequestServerOptions&, WebView::WebContentOptions& web_content_options)
+void Application::create_platform_options(WebView::BrowserOptions& browser_options, WebView::RequestServerOptions&, WebView::WebContentOptions& web_content_options)
 {
     // Frames are read back on the CPU and handed to Flutter as pixels, so WebContent must paint into shared memory
     // bitmaps rather than GPU-only images.
     web_content_options.force_cpu_painting = WebView::ForceCPUPainting::Yes;
+    // Ladybird keeps an idle WebContent process (with its own ImageDecoder) ready for the next tab, about 50 MB
+    // that buys a slightly faster new tab. Start one when a tab needs it instead.
+    browser_options.disable_spare_web_content_process = WebView::DisableSpareWebContentProcess::Yes;
 }
 
 void Application::insert_clipboard_item(Web::Clipboard::SystemClipboardItem item)

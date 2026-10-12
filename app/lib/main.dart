@@ -60,13 +60,19 @@ Future<void> main(List<String> args) async {
   if (app == null && !Incognito.active && !Platform.isAndroid) AppStore.instance.refreshLaunchers().ignore();
   WidgetsFlutterBinding.ensureInitialized();
   PlatformRouteGuard.install();
-  runApp(WebbyApp(initialUrl: initialUrl, launchUrl: launchUrl, appMode: app != null));
+  runApp(WebbyApp(
+    initialUrl: initialUrl,
+    moreUrls: app == null && urls.length > 1 ? urls.sublist(1) : const [],
+    launchUrl: launchUrl,
+    appMode: app != null,
+  ));
 }
 
 class WebbyApp extends StatelessWidget {
-  const WebbyApp({super.key, required this.initialUrl, this.launchUrl, this.appMode = false});
+  const WebbyApp({super.key, required this.initialUrl, this.moreUrls = const [], this.launchUrl, this.appMode = false});
 
   final String initialUrl;
+  final List<String> moreUrls;
   final String? launchUrl;
   final bool appMode;
 
@@ -86,7 +92,7 @@ class WebbyApp extends StatelessWidget {
           debugShowCheckedModeBanner: false,
           theme: KitTheme.material(colors),
           builder: (context, child) => Material(color: colors.background, child: child),
-          home: appMode ? AppWindowPage(startUrl: initialUrl) : BrowserPage(initialUrl: initialUrl, launchUrl: launchUrl),
+          home: appMode ? AppWindowPage(startUrl: initialUrl) : BrowserPage(initialUrl: initialUrl, moreUrls: moreUrls, launchUrl: launchUrl),
         );
       },
     );
@@ -94,9 +100,12 @@ class WebbyApp extends StatelessWidget {
 }
 
 class BrowserPage extends StatefulWidget {
-  const BrowserPage({super.key, required this.initialUrl, this.launchUrl});
+  const BrowserPage({super.key, required this.initialUrl, this.moreUrls = const [], this.launchUrl});
 
   final String initialUrl;
+
+  /// Further addresses from the command line, opened as background tabs after [initialUrl].
+  final List<String> moreUrls;
 
   /// The link the app was opened with on Android, which opens in front of the restored tabs.
   final String? launchUrl;
@@ -139,7 +148,7 @@ class _BrowserTab {
 
 const _blankUrl = 'about:blank';
 
-class _BrowserPageState extends State<BrowserPage> {
+class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
   final _tabs = <_BrowserTab>[];
   int _active = 0;
   /// Closed tabs, most recent last, for Ctrl+Shift+T and the "Recently closed" menus.
@@ -153,10 +162,12 @@ class _BrowserPageState extends State<BrowserPage> {
   AppLifecycleListener? _exitListener;
   bool _askingToQuit = false;
 
-  /// Background tabs hidden this long lose their page (and its WebContent process) until they're shown again.
-  /// WEBBY_DISCARD_MINUTES overrides it; 0 never discards on age (low memory still does).
+  /// Background tabs hidden this long lose their page (and its WebContent process) until they're shown again: 30
+  /// minutes, 5 on Android, where a phone has little RAM to spare. WEBBY_DISCARD_MINUTES overrides it; 0 never
+  /// discards on age (low memory still does).
   static final Duration? _discardAfter = () {
-    final minutes = int.tryParse(Platform.environment['WEBBY_DISCARD_MINUTES'] ?? '') ?? 30;
+    final minutes =
+        int.tryParse(Platform.environment['WEBBY_DISCARD_MINUTES'] ?? '') ?? (Platform.isAndroid ? 5 : 30);
     return minutes > 0 ? Duration(minutes: minutes) : null;
   }();
 
@@ -176,7 +187,11 @@ class _BrowserPageState extends State<BrowserPage> {
       maybeStartBench(tab.controller);
       BookmarkStore.instance.addListener(_onBookmarksChanged);
       _discardTimer = Timer.periodic(const Duration(minutes: 1), (_) => _discardIdleTabs());
-      if (Platform.isAndroid) AndroidHost.onOpenUrl(_openFromOtherApp);
+      if (Platform.isAndroid) {
+        AndroidHost.onOpenUrl(_openFromOtherApp);
+        AndroidHost.onMemoryPressure(_onMemoryPressure);
+      }
+      WidgetsBinding.instance.addObserver(this);
       if (_restoresTabs) _lifecycle = AppLifecycleListener(onHide: () => OpenTabsStore.instance.flush(_sessionTabs(), _active));
       if (!Incognito.active && !Platform.isAndroid) _exitListener = AppLifecycleListener(onExitRequested: _onExitRequested);
     } catch (error) {
@@ -193,6 +208,11 @@ class _BrowserPageState extends State<BrowserPage> {
     final saved = _restoresTabs ? OpenTabsStore.instance.read() : null;
     if (saved == null) {
       _addTab(widget.initialUrl);
+      // More addresses on the command line open as background tabs.
+      for (final url in widget.moreUrls) {
+        _addTab(url).controller.visible = false;
+      }
+      _syncVisibility();
       return;
     }
     // Only the front tab loads now; the others wait until they're selected.
@@ -392,6 +412,13 @@ class _BrowserPageState extends State<BrowserPage> {
   /// Discards background tabs that have been hidden for [_discardAfter], or, when the system is short of memory,
   /// the longest-hidden ones first until it isn't.
   void _discardIdleTabs() {
+    final after = _discardAfter;
+    final low = _lowOnMemory();
+    _discardHiddenTabs((hidden) => (after != null && hidden >= after) || (low && hidden >= const Duration(minutes: 1)));
+  }
+
+  /// Discards the background tabs for which [discard] says yes, given how long each has been hidden.
+  void _discardHiddenTabs(bool Function(Duration hidden) discard) {
     final now = DateTime.now();
     final candidates = _tabs
         .where((t) =>
@@ -403,17 +430,28 @@ class _BrowserPageState extends State<BrowserPage> {
         .toList()
       ..sort((a, b) => a.hiddenSince!.compareTo(b.hiddenSince!));
     var changed = false;
-    final after = _discardAfter;
     for (final t in candidates) {
-      final hidden = now.difference(t.hiddenSince!);
-      if ((after != null && hidden >= after) ||
-          (hidden >= const Duration(minutes: 1) && _lowOnMemory())) {
+      if (discard(now.difference(t.hiddenSince!))) {
         t.controller.discard();
         changed = true;
       }
     }
-    if (changed) setState(() {});
+    if (changed && mounted) setState(() {});
   }
+
+  /// The system is short of memory. [level] is Android's onTrimMemory level (ComponentCallbacks2): 20 means the
+  /// app was just put away, 40 and up that it sits in the background where Android may kill it, 15 that the device
+  /// is critically low while the app runs. Pages collect their garbage; unless the app was only put away, background
+  /// tabs lose their pages too (all of them when it's serious, else those hidden for a minute or more).
+  void _onMemoryPressure(int level) {
+    WebbyController.collectAllGarbage();
+    if (level == 20) return;
+    final everyTab = level >= 40 || level == 15;
+    _discardHiddenTabs((hidden) => everyTab || hidden >= const Duration(minutes: 1));
+  }
+
+  @override
+  void didHaveMemoryPressure() => _onMemoryPressure(15);
 
   /// Whether less than a tenth of RAM is available (Linux /proc/meminfo).
   static bool _lowOnMemory() {
@@ -726,6 +764,7 @@ class _BrowserPageState extends State<BrowserPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _discardTimer?.cancel();
     _exitListener?.dispose();
     _lifecycle?.dispose();
