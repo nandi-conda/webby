@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' show AppExitResponse;
 
 import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart';
@@ -32,6 +33,8 @@ import 'src/site_settings.dart';
 import 'src/tab_strip.dart';
 import 'src/tabs/device_tabs.dart';
 import 'src/tabs/device_tabs_page.dart';
+import 'src/tabs/sessions.dart';
+import 'src/tabs/sessions_page.dart';
 import 'src/web_view.dart';
 
 Future<void> main(List<String> args) async {
@@ -130,6 +133,9 @@ class _BrowserPageState extends State<BrowserPage> {
   final _addressFocus = FocusNode(debugLabel: 'address');
   String _shownUrl = '';
   Timer? _discardTimer;
+  /// Asks to save the tabs as a session when the window is closed (see [_onExitRequested]).
+  AppLifecycleListener? _exitListener;
+  bool _askingToQuit = false;
 
   /// Background tabs hidden this long lose their page (and its WebContent process) until they're shown again.
   /// WEBBY_DISCARD_MINUTES overrides it; 0 never discards on age (low memory still does).
@@ -154,6 +160,7 @@ class _BrowserPageState extends State<BrowserPage> {
       BookmarkStore.instance.addListener(_onBookmarksChanged);
       _discardTimer = Timer.periodic(const Duration(minutes: 1), (_) => _discardIdleTabs());
       if (Platform.isAndroid) AndroidHost.onOpenUrl(_go);
+      if (!Incognito.active && !Platform.isAndroid) _exitListener = AppLifecycleListener(onExitRequested: _onExitRequested);
     } catch (error) {
       _startupError = error;
     }
@@ -224,6 +231,90 @@ class _BrowserPageState extends State<BrowserPage> {
         _newTab(url);
       }
     }
+  }
+
+  /// The open tabs as a session would keep them.
+  List<DeviceTab> _sessionTabs() => [for (final t in _tabs) DeviceTab(t.controller.title, t.controller.url)];
+
+  int get _sessionTabCount => _tabs.where((t) => isSessionUrl(t.controller.url)).length;
+
+  /// Closing the window asks whether to keep its tabs as a session. Incognito windows never save one.
+  Future<AppExitResponse> _onExitRequested() async {
+    final store = SessionStore.instance;
+    final count = _sessionTabCount;
+    if (Incognito.active || !store.askOnQuit || count == 0 || !mounted) return AppExitResponse.exit;
+    // The question is already up; another click on the window's close button doesn't stack a second one.
+    if (_askingToQuit) return AppExitResponse.cancel;
+    _askingToQuit = true;
+    try {
+      final (choice, name) = await askSaveOnQuit(context, tabCount: count, store: store);
+      if (choice == QuitChoice.cancel) return AppExitResponse.cancel;
+      if (choice == QuitChoice.save) store.save(_sessionTabs(), name: name, active: _active);
+      return AppExitResponse.exit;
+    } finally {
+      _askingToQuit = false;
+    }
+  }
+
+  /// Asks for a name and saves the open tabs as a session. Returns whether one was saved.
+  Future<bool> _saveSession({bool closeAll = false}) async {
+    final count = _sessionTabCount;
+    if (Incognito.active) return false;
+    if (count == 0) {
+      showKitToast(context, 'There are no open pages to save');
+      return false;
+    }
+    final name = await askSessionName(
+      context,
+      title: closeAll ? 'Close all tabs and save as session' : 'Save open tabs as session',
+      initial: defaultSessionName(DateTime.now()),
+      action: closeAll ? 'Save and close tabs' : 'Save',
+      message: 'The $count open tab${count == 1 ? '' : 's'} can be restored later from Sessions.',
+    );
+    if (name == null || !mounted) return false;
+    final session = SessionStore.instance.save(_sessionTabs(), name: name, active: _active);
+    if (session == null) return false;
+    if (closeAll) _closeAllTabs();
+    if (mounted) showKitToast(context, 'Saved session "${session.name}"');
+    return true;
+  }
+
+  /// Closes every tab, leaving one blank tab (like closing the last tab).
+  void _closeAllTabs() {
+    final old = List.of(_tabs);
+    _tabs.clear();
+    _active = 0;
+    _addTab(_blankUrl);
+    for (final t in old) {
+      t.dispose();
+    }
+    _selectTab(0, force: true);
+  }
+
+  Future<void> _openSessions() async {
+    final open = await Navigator.of(context).push<SessionOpen>(
+      MaterialPageRoute(builder: (_) => SessionsPage(onSaveOpenTabs: Incognito.active ? null : _saveSession)),
+    );
+    if (open == null || open.urls.isEmpty || !mounted) return;
+    // A blank current tab takes the first page; the rest open in the background and the session's front tab is shown.
+    final blank = _controller?.url.isEmpty != false || _controller?.url == _blankUrl;
+    var at = blank ? _active : _active + 1;
+    _BrowserTab? front;
+    for (final (i, url) in open.urls.indexed) {
+      final _BrowserTab tab;
+      if (i == 0 && blank) {
+        tab = _tab!;
+        tab.controller.load(url);
+      } else {
+        tab = _addTab(url, at: at);
+        tab.controller.visible = false;
+      }
+      at++;
+      if (i == open.active) front = tab;
+    }
+    setState(() {});
+    final index = _tabs.indexOf(front ?? _tab!);
+    _selectTab(index, force: true);
   }
 
   /// Opens [url] in a new tab next to the current one without switching to it, like a middle-clicked link.
@@ -492,6 +583,7 @@ class _BrowserPageState extends State<BrowserPage> {
   @override
   void dispose() {
     _discardTimer?.cancel();
+    _exitListener?.dispose();
     BookmarkStore.instance.removeListener(_onBookmarksChanged);
     OfflineMonitor.instance?.removeListener(_onBookmarksChanged);
     for (final tab in _tabs) {
@@ -623,6 +715,11 @@ class _BrowserPageState extends State<BrowserPage> {
                       if (!Incognito.active) ...[
                         const KitMenuDivider(),
                         KitMenuItem('Tabs from other devices', onSelected: _openDeviceTabs),
+                        const KitMenuDivider(),
+                        KitMenuItem('Sessions', onSelected: _openSessions),
+                        KitMenuItem('Save open tabs as session', onSelected: _saveSession),
+                        KitMenuItem('Close all tabs and save as session',
+                            onSelected: () => _saveSession(closeAll: true)),
                       ],
                       if (!Platform.isAndroid) ...[
                         const KitMenuDivider(),
