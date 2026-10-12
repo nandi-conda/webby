@@ -84,6 +84,33 @@ void main() {
     expect(SummaryCache(file).lookup('k10'), isNotNull);
   });
 
+  test('follow-up questions carry the page, summary and earlier answers', () {
+    final body = questionRequest(
+      page: page,
+      title: 'Example',
+      url: 'https://example.com/',
+      summary: '- sum',
+      questions: [(question: 'q1', answer: 'a1')],
+      question: 'q2',
+    );
+    final messages = (body['messages'] as List).cast<Map<String, Object?>>();
+    expect(messages.map((m) => m['role']), ['system', 'user', 'assistant', 'user', 'assistant', 'user']);
+    expect(messages[1]['content'], contains('Some readable text'));
+    expect(messages[2]['content'], '- sum');
+    expect(messages.last['content'], 'q2');
+    final noPage = questionRequest(page: null, title: 'T', url: 'u', summary: 's', questions: const [], question: 'q');
+    expect((noPage['messages'] as List)[1]['content'], contains('go by your summary'));
+  });
+
+  test('saved summaries keep their questions', () {
+    final dir = Directory.systemTemp.createTempSync('webby-summaries');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final file = File('${dir.path}/summaries.json');
+    SummaryCache(file).store('k', const CachedSummary(
+        title: 't', url: 'u', text: 's', at: 1, questions: [(question: 'why?', answer: 'because')]));
+    expect(SummaryCache(file).lookup('k')!.questions.single, (question: 'why?', answer: 'because'));
+  });
+
   test('page script carries the prefix and request id', () {
     final script = pageTextScript('\u0001p:', 'abc');
     expect(script, contains('"\\u0001p:"'));

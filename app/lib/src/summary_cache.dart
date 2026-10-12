@@ -7,7 +7,14 @@ import 'incognito.dart';
 
 /// A summary kept so it can be read again without asking DeepSeek a second time.
 class CachedSummary {
-  const CachedSummary({required this.title, required this.url, required this.text, required this.at, this.selection = false});
+  const CachedSummary({
+    required this.title,
+    required this.url,
+    required this.text,
+    required this.at,
+    this.selection = false,
+    this.questions = const [],
+  });
 
   factory CachedSummary.fromJson(Map<String, Object?> json) => CachedSummary(
     title: json['title'] as String? ?? '',
@@ -15,6 +22,11 @@ class CachedSummary {
     text: json['text'] as String? ?? '',
     at: json['at'] as int? ?? 0,
     selection: json['selection'] == true,
+    questions: [
+      for (final entry in json['questions'] as List<Object?>? ?? const [])
+        if (entry is Map<String, Object?> && entry['q'] is String && entry['a'] is String)
+          (question: entry['q'] as String, answer: entry['a'] as String),
+    ],
   );
 
   final String title;
@@ -25,7 +37,17 @@ class CachedSummary {
   final int at;
   final bool selection;
 
-  Map<String, Object?> toJson() => {'title': title, 'url': url, 'text': text, 'at': at, if (selection) 'selection': true};
+  /// Follow-up questions asked about the page, with their answers, oldest first.
+  final List<({String question, String answer})> questions;
+
+  Map<String, Object?> toJson() => {
+    'title': title,
+    'url': url,
+    'text': text,
+    'at': at,
+    if (selection) 'selection': true,
+    if (questions.isNotEmpty) 'questions': [for (final qa in questions) {'q': qa.question, 'a': qa.answer}],
+  };
 }
 
 /// Summaries by page (and by selection), newest last, in `profiles/<profile>/summaries.json`. Incognito windows keep

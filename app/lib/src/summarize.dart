@@ -145,8 +145,49 @@ Map<String, Object?> summaryRequest(PageText page, {String model = 'deepseek-cha
   ],
 };
 
+/// The system prompt for follow-up questions about a summarized page.
+const _questionPrompt = 'You answer questions about a web page the user is reading, in a browser\'s side panel. Use '
+    'the page text and your earlier summary. Answer in the language of the question, concisely, in markdown (bullet '
+    'lists, **bold**, `code`; no tables or images). If the page doesn\'t say, say so before adding what you know.';
+
+/// The request body for a follow-up [question] about [page] (null when its text couldn't be read), given the
+/// [summary] and the earlier [questions] and answers.
+Map<String, Object?> questionRequest({
+  required PageText? page,
+  required String title,
+  required String url,
+  required String summary,
+  required List<({String question, String answer})> questions,
+  required String question,
+  String model = 'deepseek-chat',
+}) => {
+  'model': model,
+  'stream': true,
+  'temperature': 0.3,
+  'messages': [
+    {'role': 'system', 'content': _questionPrompt},
+    {
+      'role': 'user',
+      'content': page == null
+          ? 'The page "$title" ($url). Its text isn\'t available any more; go by your summary.'
+          : '${page.selection ? 'Text selected on' : 'The page'} "${page.title.isEmpty ? title : page.title}" '
+              '(${page.url}):\n\n${page.text}',
+    },
+    {'role': 'assistant', 'content': summary},
+    for (final qa in questions) ...[
+      {'role': 'user', 'content': qa.question},
+      {'role': 'assistant', 'content': qa.answer},
+    ],
+    {'role': 'user', 'content': question},
+  ],
+};
+
 /// Streams the summary of [page] from DeepSeek, piece by piece. [apiKey] goes only in the Authorization header.
-Stream<String> streamSummary(String apiKey, PageText page,
+Stream<String> streamSummary(String apiKey, PageText page, {Uri? endpoint, HttpClient Function()? client}) =>
+    streamChat(apiKey, summaryRequest(page), endpoint: endpoint, client: client);
+
+/// Streams the reply to a chat completions [body] (with "stream": true) from DeepSeek, piece by piece.
+Stream<String> streamChat(String apiKey, Map<String, Object?> body,
     {Uri? endpoint, HttpClient Function()? client}) async* {
   final http = (client ?? HttpClient.new)()..connectionTimeout = const Duration(seconds: 15);
   try {
@@ -154,7 +195,7 @@ Stream<String> streamSummary(String apiKey, PageText page,
     request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $apiKey');
     request.headers.contentType = ContentType.json;
     request.headers.set(HttpHeaders.acceptHeader, 'text/event-stream');
-    request.add(utf8.encode(jsonEncode(summaryRequest(page))));
+    request.add(utf8.encode(jsonEncode(body)));
     final response = await request.close().timeout(const Duration(seconds: 60));
     if (response.statusCode != 200) {
       final body = await utf8.decodeStream(response).timeout(const Duration(seconds: 15), onTimeout: () => '');
@@ -220,18 +261,34 @@ class SummaryJob extends ChangeNotifier {
 
   /// When the summary shown was made, if it came from the cache.
   DateTime? savedAt;
+
+  /// Follow-up questions about the page, oldest first.
+  final List<SummaryQuestion> questions = [];
+
+  /// Whether a follow-up answer is coming in.
+  bool get answering => questions.isNotEmpty && questions.last.running;
+
   int _generation = 0;
+  String? _key;
+  PageText? _page;
+  DateTime? _madeAt;
 
   /// Shows the saved summary of the current page, if there is one. Returns whether there was.
   bool showSaved() {
-    final saved = SummaryCache.instance.lookup(SummaryCache.keyFor(controller.url));
+    final key = SummaryCache.keyFor(controller.url);
+    final saved = SummaryCache.instance.lookup(key);
     if (saved == null) return false;
-    _show(saved);
+    _page = null;
+    _show(key, saved);
     return true;
   }
 
-  void _show(CachedSummary saved) {
+  void _show(String key, CachedSummary saved) {
     _generation++;
+    _key = key;
+    questions
+      ..clear()
+      ..addAll([for (final qa in saved.questions) SummaryQuestion(qa.question)..answer = qa.answer]);
     open = true;
     running = false;
     error = null;
@@ -240,6 +297,7 @@ class SummaryJob extends ChangeNotifier {
     text = saved.text;
     selection = saved.selection;
     savedAt = DateTime.fromMillisecondsSinceEpoch(saved.at);
+    _madeAt = savedAt;
     notifyListeners();
   }
 
@@ -254,16 +312,22 @@ class SummaryJob extends ChangeNotifier {
     title = controller.title;
     url = controller.url;
     savedAt = null;
+    questions.clear();
+    _key = null;
+    _page = null;
+    _madeAt = null;
     notifyListeners();
     try {
       final page = await readPageText(controller);
       if (generation != _generation) return;
       final key = SummaryCache.keyFor(page.url, selection: page.selection ? page.text : null);
       final saved = fresh ? null : SummaryCache.instance.lookup(key);
+      _page = page;
       if (saved != null) {
-        _show(saved);
+        _show(key, saved);
         return;
       }
+      _key = key;
       title = page.title.isEmpty ? controller.title : page.title;
       url = page.url;
       selection = page.selection;
@@ -275,13 +339,7 @@ class SummaryJob extends ChangeNotifier {
         notifyListeners();
       }
       if (text.trim().isEmpty) throw SummaryError('DeepSeek sent back an empty summary.');
-      SummaryCache.instance.store(key, CachedSummary(
-        title: title,
-        url: url,
-        text: text,
-        at: DateTime.now().millisecondsSinceEpoch,
-        selection: selection,
-      ));
+      _save(DateTime.now());
     } on SummaryError catch (e) {
       if (generation == _generation) error = e.message;
     } catch (e) {
@@ -292,12 +350,86 @@ class SummaryJob extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _save(DateTime at) {
+    final key = _key;
+    if (key == null || text.trim().isEmpty) return;
+    _madeAt ??= at;
+    SummaryCache.instance.store(key, CachedSummary(
+      title: title,
+      url: url,
+      text: text,
+      at: _madeAt!.millisecondsSinceEpoch,
+      selection: selection,
+      questions: [
+        for (final qa in questions)
+          if (!qa.running && qa.error == null && qa.answer.trim().isNotEmpty) (question: qa.question, answer: qa.answer),
+      ],
+    ));
+  }
+
+  /// Asks DeepSeek a follow-up [question] about the page, with the page text, the summary and the earlier questions
+  /// as context. The answer streams into the last of [questions] and is saved with the summary.
+  Future<void> ask(String apiKey, String question) async {
+    question = question.trim();
+    if (question.isEmpty || running || answering || text.trim().isEmpty) return;
+    final generation = _generation;
+    final earlier = [
+      for (final qa in questions)
+        if (qa.error == null && qa.answer.trim().isNotEmpty) (question: qa.question, answer: qa.answer),
+    ];
+    final entry = SummaryQuestion(question)..running = true;
+    questions.add(entry);
+    notifyListeners();
+    try {
+      // A saved summary has no page text with it: read the page again if the tab still shows it.
+      if (_page == null && !selection && SummaryCache.keyFor(controller.url) == SummaryCache.keyFor(url)) {
+        try {
+          _page = await readPageText(controller);
+        } on SummaryError {
+          // Go by the summary alone.
+        }
+        if (generation != _generation) return;
+      }
+      final body = questionRequest(
+          page: _page, title: title, url: url, summary: text, questions: earlier, question: question);
+      await for (final piece in streamChat(apiKey, body)) {
+        if (generation != _generation) return;
+        entry.answer += piece;
+        notifyListeners();
+      }
+      if (entry.answer.trim().isEmpty) throw SummaryError('DeepSeek sent back an empty answer.');
+    } on SummaryError catch (e) {
+      entry.error = e.message;
+    } catch (e) {
+      entry.error = 'Asking failed: $e';
+    }
+    if (generation != _generation) return;
+    entry.running = false;
+    if (entry.error == null) _save(DateTime.now());
+    notifyListeners();
+  }
+
   void close() {
     _generation++;
+    if (questions.isNotEmpty && questions.last.running) {
+      questions.last
+        ..running = false
+        ..error ??= 'Stopped.';
+    }
     open = false;
     running = false;
     notifyListeners();
   }
+}
+
+/// A follow-up question about a summarized page and its answer.
+class SummaryQuestion {
+  SummaryQuestion(this.question);
+
+  final String question;
+  String answer = '';
+  String? error;
+  bool running = false;
 }
 
 /// The stored DeepSeek API key, or null.
@@ -439,21 +571,50 @@ class SummaryLayout extends StatelessWidget {
   }
 }
 
-class _SummaryPanel extends StatelessWidget {
+class _SummaryPanel extends StatefulWidget {
   const _SummaryPanel({required this.job, required this.wide});
 
   final SummaryJob job;
   final bool wide;
 
   @override
+  State<_SummaryPanel> createState() => _SummaryPanelState();
+}
+
+class _SummaryPanelState extends State<_SummaryPanel> {
+  final _question = TextEditingController();
+  final _scroll = ScrollController();
+
+  SummaryJob get job => widget.job;
+
+  @override
+  void dispose() {
+    _question.dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _ask() {
+    final key = deepSeekApiKey();
+    final question = _question.text.trim();
+    if (key == null || question.isEmpty || job.running || job.answering) return;
+    _question.clear();
+    job.ask(key, question);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scroll.hasClients) _scroll.jumpTo(_scroll.position.maxScrollExtent);
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     final c = KitTheme.of(context);
     final key = deepSeekApiKey();
+    final canAsk = key != null && job.text.trim().isNotEmpty && !job.running && job.error == null;
     return Material(
       color: c.surface,
       child: Container(
         decoration: BoxDecoration(
-          border: wide ? Border(left: BorderSide(color: c.border)) : Border(top: BorderSide(color: c.border)),
+          border: widget.wide ? Border(left: BorderSide(color: c.border)) : Border(top: BorderSide(color: c.border)),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -467,7 +628,8 @@ class _SummaryPanel extends StatelessWidget {
                   Icon(Icons.summarize_outlined, size: 16, color: c.textDim),
                   const SizedBox(width: 8),
                   Expanded(child: Text(job.selection ? 'Summary of selection' : 'Summary', style: KitText.body(context))),
-                  if (job.running) const Padding(padding: EdgeInsets.symmetric(horizontal: 6), child: KitSpinner(size: 14)),
+                  if (job.running || job.answering)
+                    const Padding(padding: EdgeInsets.symmetric(horizontal: 6), child: KitSpinner(size: 14)),
                   KitIconButton(
                     Icons.copy,
                     tooltip: 'Copy summary',
@@ -483,7 +645,7 @@ class _SummaryPanel extends StatelessWidget {
                     Icons.refresh,
                     tooltip: 'Summarize again',
                     size: 16,
-                    onPressed: job.running || key == null ? null : () => job.start(key, fresh: true),
+                    onPressed: job.running || job.answering || key == null ? null : () => job.start(key, fresh: true),
                   ),
                   KitIconButton(Icons.close, tooltip: 'Close', size: 16, onPressed: job.close),
                 ],
@@ -491,25 +653,58 @@ class _SummaryPanel extends StatelessWidget {
             ),
             Expanded(
               child: SingleChildScrollView(
+                controller: _scroll,
                 padding: const EdgeInsets.all(14),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    if (job.title.isNotEmpty)
-                      Text(job.title, style: KitText.body(context).copyWith(fontWeight: FontWeight.w600)),
-                    if (job.url.isNotEmpty)
-                      Text(job.url, maxLines: 1, overflow: TextOverflow.ellipsis, style: KitText.small(context, color: c.textDim)),
-                    if (job.savedAt != null)
-                      Text('Saved summary from ${_when(job.savedAt!)}. Summarize again for a new one.',
-                          style: KitText.small(context, color: c.textDim)),
-                    const SizedBox(height: 12),
-                    if (job.error != null)
-                      Text(job.error!, style: KitText.body(context).copyWith(color: c.danger))
-                    else if (job.text.isEmpty && job.running)
-                      Text('Reading the page…', style: KitText.dim(context))
-                    else
-                      SelectionArea(child: MarkdownView(job.text.trim())),
-                  ],
+                child: SelectionArea(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (job.title.isNotEmpty)
+                        Text(job.title, style: KitText.body(context).copyWith(fontWeight: FontWeight.w600)),
+                      if (job.url.isNotEmpty)
+                        Text(job.url, maxLines: 1, overflow: TextOverflow.ellipsis, style: KitText.small(context, color: c.textDim)),
+                      if (job.savedAt != null && !job.running)
+                        Text('Saved summary from ${_when(job.savedAt!)}. Summarize again for a new one.',
+                            style: KitText.small(context, color: c.textDim)),
+                      const SizedBox(height: 12),
+                      if (job.error != null)
+                        Text(job.error!, style: KitText.body(context).copyWith(color: c.danger))
+                      else if (job.text.isEmpty && job.running)
+                        Text('Reading the page…', style: KitText.dim(context))
+                      else
+                        MarkdownView(job.text.trim()),
+                      for (final qa in job.questions) ...[
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                          decoration: BoxDecoration(color: c.hover, borderRadius: BorderRadius.circular(kitRadius)),
+                          child: Text(qa.question, style: KitText.body(context).copyWith(fontWeight: FontWeight.w600)),
+                        ),
+                        const SizedBox(height: 8),
+                        if (qa.answer.trim().isNotEmpty) MarkdownView(qa.answer.trim()),
+                        if (qa.answer.trim().isEmpty && qa.running) Text('Thinking…', style: KitText.dim(context)),
+                        if (qa.error != null)
+                          Text(qa.error!, style: KitText.body(context).copyWith(color: c.danger)),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(border: Border(top: BorderSide(color: c.border))),
+              child: KitTextField(
+                controller: _question,
+                hint: 'Ask about this page',
+                enabled: canAsk,
+                onSubmitted: (_) => _ask(),
+                trailing: KitIconButton(
+                  Icons.send,
+                  tooltip: 'Ask',
+                  size: 16,
+                  extent: 26,
+                  onPressed: canAsk && !job.answering ? _ask : null,
                 ),
               ),
             ),
