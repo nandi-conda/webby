@@ -31,6 +31,9 @@ import 'site_permissions.dart';
 /// WEBBY_TEXTURE=0, each frame is copied into Dart and decoded into an image instead.
 class WebbyController extends ChangeNotifier {
   WebbyController({String initialUrl = 'https://ladybird.org', bool? useTexture}) : _pendingUrl = initialUrl {
+    // Shown (address bar, tab title) until the page reports its own, so a tab opened on a link isn't taken for a
+    // blank new tab.
+    url = initialUrl;
     _start(useTexture);
   }
 
