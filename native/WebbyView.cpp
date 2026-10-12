@@ -226,7 +226,74 @@ View::View(Core::AnonymousBuffer theme, Web::DevicePixelSize size)
         }
         if (headless_prompt)
             headless_prompt(message, default_);
+        show_dialog(DialogType::Prompt, message, default_);
     };
+
+    // HeadlessWebView only notes a dialog for WebDriver; show it in the UI too, or the page waits forever.
+    on_request_alert = [this, headless_alert = move(on_request_alert)](Utf16String const& message) {
+        if (headless_alert)
+            headless_alert(message);
+        show_dialog(DialogType::Alert, message);
+    };
+
+    // getUserMedia() asks through a confirm dialog with this text (patches/0011).
+    on_request_confirm = [this, headless_confirm = move(on_request_confirm)](Utf16String const& message) {
+        static constexpr auto microphone_request = "\x01webby-permission:microphone"sv;
+        if (message.to_utf8().bytes_as_string_view() == microphone_request) {
+            ask_permission("microphone"sv, [this](bool granted) { confirm_closed(granted); });
+            return;
+        }
+        if (headless_confirm)
+            headless_confirm(message);
+        show_dialog(DialogType::Confirm, message);
+    };
+}
+
+void View::show_dialog(DialogType type, Utf16String const& message, Utf16String const& default_)
+{
+    m_dialog_type = type;
+    JsonObject dialog;
+    dialog.set("id"sv, ++m_dialog_id);
+    dialog.set("type"sv, type == DialogType::Alert ? "alert"sv : type == DialogType::Confirm ? "confirm"sv : "prompt"sv);
+    dialog.set("message"sv, message.to_utf8());
+    if (type == DialogType::Prompt)
+        dialog.set("default"sv, default_.to_utf8());
+    m_dialog_json = dialog.serialized().to_byte_string();
+    state_changed();
+}
+
+void View::respond_to_dialog(u64 id, bool accepted, Optional<Utf16String> text)
+{
+    if (id != m_dialog_id || m_dialog_type == DialogType::None)
+        return;
+    auto type = exchange(m_dialog_type, DialogType::None);
+    m_dialog_json = {};
+    state_changed();
+    switch (type) {
+    case DialogType::Alert:
+        alert_closed();
+        break;
+    case DialogType::Confirm:
+        confirm_closed(accepted);
+        break;
+    case DialogType::Prompt:
+        prompt_closed(accepted ? move(text) : Optional<Utf16String> {});
+        break;
+    case DialogType::None:
+        break;
+    }
+}
+
+void View::ask_permission(StringView permission, Function<void(bool granted)> answer, RefPtr<WebView::WebContentPage> page, u64 request_id, bool is_watch)
+{
+    auto origin = url().origin();
+    // Opaque origins (data:, sandboxed pages) have no site to remember an answer for.
+    if (origin.is_opaque()) {
+        answer(false);
+        return;
+    }
+    m_pending_permissions.append({ ++m_next_permission_id, ByteString(permission), origin.serialize().to_byte_string(), move(page), request_id, is_watch, move(answer) });
+    update_permission_request();
 }
 
 void View::install_permission_checks()
@@ -238,18 +305,22 @@ void View::install_permission_checks()
 
     // Ladybird lets every secure page use the location (the engine-wide switch aside); like other browsers, ask the
     // user per site first. The UI remembers the answers.
-    auto ask = [this](WebView::WebContentPage& page, u64 request_id, bool is_watch) {
-        auto origin = url().origin();
-        // Opaque origins (data:, sandboxed pages) have no site to remember an answer for.
-        if (origin.is_opaque()) {
-            page.async_geolocation_position_response(request_id, {}, to_underlying(Web::Geolocation::GeolocationPositionErrorCode::PermissionDenied));
-            return;
-        }
-        m_pending_permissions.append({ ++m_next_permission_id, ByteString("geolocation"sv), origin.serialize().to_byte_string(), page, request_id, is_watch });
-        update_permission_request();
+    auto ask_geolocation = [this](WebView::WebContentPage& page, u64 request_id, bool is_watch) {
+        ask_permission("geolocation"sv, [this, page = NonnullRefPtr<WebView::WebContentPage>(page), request_id, is_watch](bool granted) {
+            if (!page->is_open())
+                return;
+            if (!granted) {
+                page->async_geolocation_position_response(request_id, {}, to_underlying(Web::Geolocation::GeolocationPositionErrorCode::PermissionDenied));
+                return;
+            }
+            auto& handler = is_watch ? m_start_geolocation_position_watch : m_request_geolocation_position;
+            if (handler)
+                handler(*page, request_id);
+        },
+            page, request_id, is_watch);
     };
-    on_request_geolocation_position = [ask](WebView::WebContentPage& page, u64 request_id) { ask(page, request_id, false); };
-    on_start_geolocation_position_watch = [ask](WebView::WebContentPage& page, u64 request_id) { ask(page, request_id, true); };
+    on_request_geolocation_position = [ask_geolocation](WebView::WebContentPage& page, u64 request_id) { ask_geolocation(page, request_id, false); };
+    on_start_geolocation_position_watch = [ask_geolocation](WebView::WebContentPage& page, u64 request_id) { ask_geolocation(page, request_id, true); };
 
     auto withdraw = [this](WebView::WebContentPage& page, u64 request_id, bool is_watch) {
         auto removed = m_pending_permissions.remove_all_matching([&](auto const& pending) {
@@ -269,11 +340,12 @@ void View::install_permission_checks()
         if (!withdraw(page, request_id, true) && m_stop_geolocation_position_watch)
             m_stop_geolocation_position_watch(page, request_id);
     };
+
 }
 
 void View::update_permission_request()
 {
-    m_pending_permissions.remove_all_matching([](auto const& pending) { return !pending.page->is_open(); });
+    m_pending_permissions.remove_all_matching([](auto const& pending) { return pending.page && !pending.page->is_open(); });
 
     ByteString json;
     if (!m_pending_permissions.is_empty()) {
@@ -307,17 +379,8 @@ void View::respond_to_permission(u64 id, bool granted)
     });
     update_permission_request();
 
-    for (auto& pending : answered) {
-        if (!pending.page->is_open())
-            continue;
-        if (!granted) {
-            pending.page->async_geolocation_position_response(pending.request_id, {}, to_underlying(Web::Geolocation::GeolocationPositionErrorCode::PermissionDenied));
-            continue;
-        }
-        auto& handler = pending.is_watch ? m_start_geolocation_position_watch : m_request_geolocation_position;
-        if (handler)
-            handler(*pending.page, pending.request_id);
-    }
+    for (auto& pending : answered)
+        pending.answer(granted);
 }
 
 WebView::ViewImplementation* View::create_view_for_new_tab_or_window(WebView::IsPrivate)
@@ -381,11 +444,12 @@ ByteString const& View::input_method_state_json()
 
 View::~View()
 {
-    for (auto& pending : m_pending_permissions) {
-        if (pending.page->is_open())
+    // Say no to anything still waiting, without letting the answers reach back into this view.
+    auto pending_permissions = move(m_pending_permissions);
+    for (auto& pending : pending_permissions) {
+        if (pending.page && pending.page->is_open())
             pending.page->async_geolocation_position_response(pending.request_id, {}, to_underlying(Web::Geolocation::GeolocationPositionErrorCode::PermissionDenied));
     }
-    m_pending_permissions.clear();
     respond_to_file_picker({});
     respond_to_webauthn(false, -1);
 }

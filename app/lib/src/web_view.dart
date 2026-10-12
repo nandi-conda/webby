@@ -21,6 +21,7 @@ import 'geolocation.dart';
 import 'frame_bench.dart';
 import 'keys.dart';
 import 'page_compat.dart';
+import 'page_dialogs.dart';
 import 'passwords/native.dart';
 import 'site_permissions.dart';
 
@@ -110,6 +111,17 @@ class WebbyController extends ChangeNotifier {
   late final PageFilePicker? _filePicker = PageFilePicker.of(_bindings);
   late final PagePermissions? _permissions = PagePermissions.of(_bindings)?..allowedThisTime = _allowedThisTime;
   late final LocationBridge? _location = LocationBridge.of(_bindings);
+  late final PageDialogs? _dialogs = PageDialogs.of(_bindings);
+
+  /// The page's alert(), confirm() or prompt() waiting for the user, or null.
+  PageDialog? get dialog => _dialogs?.current;
+
+  /// Answers [dialog] with that id: OK or Cancel, and for a prompt what the user typed.
+  void respondToDialog(int id, {required bool accepted, String? text}) {
+    final dialogs = _dialogs;
+    if (dialogs == null) return;
+    _ifAttached((v) => dialogs.respond(v, id, accepted: accepted, text: text));
+  }
 
   /// A site's request for a permission (such as the location) waiting for the user, or null. Requests the user
   /// already answered for the site are answered without showing up here.
@@ -206,6 +218,7 @@ class WebbyController extends ChangeNotifier {
     webauthnPrompt = null;
     _webauthnPromptJson = '';
     _permissions?.reset();
+    _dialogs?.reset();
     _freeFrames();
     notifyListeners();
   }
@@ -441,6 +454,7 @@ class WebbyController extends ChangeNotifier {
       }
       _filePicker?.check(_view, () => _view);
       _permissions?.check(_view);
+      _dialogs?.check(_view);
       closeRequested = (_closeRequested?.call(_view) ?? 0) != 0;
       _takeNewViews();
       if (_disposed) return;

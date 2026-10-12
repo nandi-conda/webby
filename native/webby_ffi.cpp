@@ -262,6 +262,16 @@ void webby_clipboard_set_text(char const* text)
         s_application->set_clipboard_from_system(string.release_value());
 }
 
+char const* webby_view_dialog(WebbyView* handle) { return handle->view->dialog().characters(); }
+
+void webby_view_dialog_respond(WebbyView* handle, uint64_t id, int accepted, char const* text)
+{
+    Optional<Utf16String> response;
+    if (text)
+        response = Utf16String::from_utf8_with_replacement_character(StringView { text, strlen(text) });
+    handle->view->respond_to_dialog(id, accepted != 0, move(response));
+}
+
 void webby_clear_site_data(char const* url)
 {
     if (!s_application)

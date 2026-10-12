@@ -19,6 +19,7 @@ import 'src/history/history_store.dart';
 import 'src/incognito.dart';
 import 'src/notifications.dart';
 import 'src/omnibox.dart';
+import 'src/page_dialogs.dart';
 import 'src/passkey_dialog.dart';
 import 'src/passwords/password_bar.dart';
 import 'src/passwords/password_manager.dart';
@@ -106,6 +107,7 @@ class _BrowserTab {
   NotificationAgent? notifications;
   final focus = FocusNode(debugLabel: 'page');
   Map<String, Object?>? shownPasskeyPrompt;
+  PageDialog? shownDialog;
   /// When the tab last went into the background (null while it is the active tab).
   DateTime? hiddenSince;
   /// The page address last recorded in the history for this tab, and its visit (null when it isn't recorded).
@@ -403,6 +405,7 @@ class _BrowserPageState extends State<BrowserPage> {
       }
     });
     _showPasskeyPrompt(tab);
+    _showPageDialog(tab);
   }
 
   void _cycleTab(int delta) => _selectTab((_active + delta) % _tabs.length);
@@ -422,6 +425,7 @@ class _BrowserPageState extends State<BrowserPage> {
       _shownUrl = controller.url;
       _address.text = controller.url == _blankUrl ? '' : controller.url;
     }
+    _showPageDialog(tab);
     final passkeyPrompt = controller.webauthnPrompt;
     if (passkeyPrompt != null && !identical(passkeyPrompt, tab.shownPasskeyPrompt)) {
       // A site in a background tab asking for a passkey brings its tab forward.
@@ -450,6 +454,14 @@ class _BrowserPageState extends State<BrowserPage> {
   Future<void> _openHistory() async {
     final url = await Navigator.of(context).push<String>(MaterialPageRoute(builder: (_) => const HistoryPage()));
     if (url != null) _go(url);
+  }
+
+  /// A page's alert/confirm/prompt shows while its tab is the active one, like Chrome's.
+  void _showPageDialog(_BrowserTab tab) {
+    final dialog = tab.controller.dialog;
+    if (dialog == null || tab != _tab || identical(dialog, tab.shownDialog)) return;
+    tab.shownDialog = dialog;
+    showPageDialog(context, tab.controller, dialog);
   }
 
   void _showPasskeyPrompt(_BrowserTab tab) {

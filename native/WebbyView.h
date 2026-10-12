@@ -93,6 +93,11 @@ public:
     // Answers the request with that id, and any others waiting from the same site for the same permission.
     void respond_to_permission(u64 id, bool granted);
 
+    // A page's alert(), confirm() or prompt() waiting for the user, as JSON for the UI (empty when there is none).
+    // See webby_view_dialog() in webby_ffi.h.
+    ByteString const& dialog() const { return m_dialog_json; }
+    void respond_to_dialog(u64 id, bool accepted, Optional<Utf16String> text);
+
     // prompt() calls whose text starts with this prefix are messages from the browser's own page scripts: they're
     // answered at once and queued here instead of being shown. See webby_view_set_message_prefix() in webby_ffi.h.
     void set_message_prefix(ByteString prefix) { m_message_prefix = move(prefix); }
@@ -146,10 +151,13 @@ private:
         u64 id { 0 };
         ByteString permission;
         ByteString origin;
-        NonnullRefPtr<WebView::WebContentPage> page;
+        // Geolocation requests, so a cancelled one can be withdrawn; null for others.
+        RefPtr<WebView::WebContentPage> page;
         u64 request_id { 0 };
         bool is_watch { false };
+        Function<void(bool granted)> answer;
     };
+    void ask_permission(StringView permission, Function<void(bool granted)> answer, RefPtr<WebView::WebContentPage> = {}, u64 request_id = 0, bool is_watch = false);
     Vector<PendingPermission> m_pending_permissions;
     u64 m_next_permission_id { 0 };
     ByteString m_permission_request_json;
@@ -157,6 +165,17 @@ private:
     Function<void(WebView::WebContentPage&, u64)> m_cancel_geolocation_position_request;
     Function<void(WebView::WebContentPage&, u64)> m_start_geolocation_position_watch;
     Function<void(WebView::WebContentPage&, u64)> m_stop_geolocation_position_watch;
+
+    enum class DialogType : u8 {
+        None,
+        Alert,
+        Confirm,
+        Prompt,
+    };
+    void show_dialog(DialogType, Utf16String const& message, Utf16String const& default_ = {});
+    DialogType m_dialog_type { DialogType::None };
+    u64 m_dialog_id { 0 };
+    ByteString m_dialog_json;
 
     ByteString m_file_picker_request;
     u64 m_file_picker_id { 0 };

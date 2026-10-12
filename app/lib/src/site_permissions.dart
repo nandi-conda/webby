@@ -29,7 +29,9 @@ class SitePermissionKind {
   static const notifications =
       SitePermissionKind('notifications', 'Notifications', 'Show notifications', Icons.notifications_outlined);
 
-  static const all = [location, notifications];
+  static const microphone = SitePermissionKind('microphone', 'Microphone', 'Use your microphones', Icons.mic_none);
+
+  static const all = [location, microphone, notifications];
 
   static SitePermissionKind? named(String name) => all.where((k) => k.name == name).firstOrNull;
 }

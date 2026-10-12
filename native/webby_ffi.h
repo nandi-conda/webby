@@ -153,6 +153,16 @@ WEBBY_API void webby_geolocation_set_position(double latitude, double longitude,
     double altitude, double altitude_accuracy, double heading, double speed);
 WEBBY_API void webby_geolocation_set_error(int code, char const* message);
 
+/* JavaScript dialogs. A page's alert(), confirm() or prompt() waits until the
+ * UI answers. webby_view_dialog() is "" when none is open, else JSON (it changes
+ * together with state_serial()):
+ *   { "id": n, "type": "alert" | "confirm" | "prompt", "message": "...",
+ *     "default": "..." (prompt only) }
+ * Answer with webby_view_dialog_respond(): accepted = 0 for Cancel (or closing
+ * it); for a prompt, `text` is what the user typed (ignored otherwise). */
+WEBBY_API char const* webby_view_dialog(WebbyView*);
+WEBBY_API void webby_view_dialog_respond(WebbyView*, uint64_t id, int accepted, char const* text);
+
 /* Site data. webby_clear_site_data() deletes the cookies of the site of `url`
  * (its host, parent domains and subdomains, and cookies frames set under it)
  * and its origin's localStorage, IndexedDB and Cache Storage, and clears the

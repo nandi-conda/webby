@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import '../bindings.dart';
 import '../notifications.dart';
+import '../page_dialogs.dart';
 import '../passkey_dialog.dart';
 import '../passwords/password_bar.dart';
 import '../passwords/password_manager.dart';
@@ -32,6 +33,7 @@ class _AppWindowPageState extends State<AppWindowPage> {
   InstalledApp? _app;
   final _pageFocus = FocusNode(debugLabel: 'page');
   Map<String, Object?>? _shownPasskeyPrompt;
+  PageDialog? _shownDialog;
 
   @override
   void initState() {
@@ -53,6 +55,11 @@ class _AppWindowPageState extends State<AppWindowPage> {
   void _onOffline() => setState(() {});
 
   void _onPageChanged() {
+    final dialog = _controller!.dialog;
+    if (dialog != null && !identical(dialog, _shownDialog)) {
+      _shownDialog = dialog;
+      showPageDialog(context, _controller!, dialog);
+    }
     final passkeyPrompt = _controller!.webauthnPrompt;
     if (passkeyPrompt != null && !identical(passkeyPrompt, _shownPasskeyPrompt)) {
       _shownPasskeyPrompt = passkeyPrompt;
