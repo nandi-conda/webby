@@ -11,26 +11,54 @@ const
   deepSeekKeySecret = "deepseek-api-key"   ## the key's name among the vault's device-only secrets
   maxSummaryInputChars = 40000             ## longer pages are cut before they're sent
 
-# The Flutter app's page script (pageTextScript in summarize.dart), read at compile time so both front ends send
-# the same text. It posts {"type": "pagetext", "id", "selection", "title", "url", "lang", "text"} as a page message.
-const pageTextTemplate = block:
+proc dartScript(name: string): string {.compileTime.} =
+  ## The body of the `String name(...) => '''...''';` script in summarize.dart, with Dart's escapes undone.
   let dart = staticRead("../../../app/lib/src/summarize.dart")
-  const head = "String pageTextScript(String prefix, String id) => '''"
-  let start = dart.find(head) + head.len
-  dart[start ..< dart.find("''';", start)].replace("\\\\", "\\")
+  let head = "String " & name & "("
+  var start = dart.find(head)
+  start = dart.find("=> '''", start) + "=> '''".len
+  let raw = dart[start ..< dart.find("''';", start)]
+  var i = 0
+  while i < raw.len:
+    if raw[i] == '\\' and i + 1 < raw.len:
+      result.add(case raw[i + 1]
+        of 'n': '\n'
+        of 't': '\t'
+        else: raw[i + 1])
+      i += 2
+    else:
+      result.add raw[i]
+      inc i
+
+# The Flutter app's page scripts, read at compile time so both front ends run the same JS. pageTextScript posts
+# {"type": "pagetext", "id", "selection", "title", "url", "lang", "text"} as a page message (headings as "## ...");
+# jumpToTextScript scrolls to the words a summary's [§](#words) link cites and flashes them.
+const pageTextTemplate = dartScript("pageTextScript")
+const jumpTemplate = dartScript("jumpToTextScript")
 
 proc pageTextScript(prefix, id: string): string =
   pageTextTemplate.multiReplace(("${jsonEncode(prefix)}", $(%prefix)), ("${jsonEncode(id)}", $(%id)),
     ("$maxSummaryInputChars", $maxSummaryInputChars))
 
-const summaryPrompt = "You summarize web pages for a browser's summary panel. Reply in the language of the page. " &
-  "Start with one or two sentences saying what the page is about, then give the key points as a short markdown " &
-  "bullet list. Use markdown: **bold** for key names and figures, `code` for code, and a short ### heading only " &
-  "when the page covers clearly separate topics. No tables, images or links."
+proc jumpToTextScript(words: string): string = jumpTemplate.replace("${jsonEncode(words)}", $(%words))
+
+# How the model links points to the part of the page they come from (the same text as summarize.dart).
+const sourceLinkRule = "End each bullet with a source link to the part of the page it comes from, written " &
+  "[§](#words), where words are 3 to 8 consecutive words copied exactly from the page text; a section heading " &
+  "(marked ## in the text) is best. Copy them character for character in the page's own language, even when it " &
+  "isn't English, without parentheses or brackets. No other links."
+
+const summaryPrompt = "You summarize web pages for a browser's summary panel. This needs to be in English: write the " &
+  "summary in English whatever the language of the page. Start with one or two sentences saying what the " &
+  "page is about, then give the key points as a short markdown bullet list. Use markdown: **bold** for key " &
+  "names and figures, `code` for code, and a short ### heading only when the page covers clearly separate " &
+  "topics. No tables or images. " & sourceLinkRule
 
 const questionPrompt = "You answer questions about a web page the user is reading, in a browser's side panel. Use " &
-  "the page text and your earlier summary. Answer in the language of the question, concisely, in markdown (bullet " &
-  "lists, **bold**, `code`; no tables or images). If the page doesn't say, say so before adding what you know."
+  "the page text and your earlier summary. This needs to be in English: answer in English, concisely, in markdown " &
+  "(bullet lists, **bold**, `code`; no tables or images). If the page doesn't say, say so before adding what you " &
+  "know. Where a point comes from the page, you may end it with a source link written [§](#words), where words " &
+  "are 3 to 8 consecutive words copied exactly from the page text, in its own language."
 
 type
   PageText = object
@@ -342,6 +370,13 @@ proc ask(job: Job, key, text: string) =
       send())
   else: send()
 
+proc jumpTo(job: Job, words: string): bool =
+  ## Scrolls the page to the part a source link points at; false when the tab shows another page by now.
+  if summaryKey(job.tab.url) != summaryKey(job.url): return false
+  job.tab.runJs(jumpToTextScript(words))
+  wake()
+  true
+
 proc close(job: Job) =
   job.stopChat()
   inc job.generation
@@ -357,6 +392,22 @@ proc close(job: Job) =
 const panelCss = markdownCss & """
 .webby-summary-question { background-color: alpha(currentColor, 0.07); border-radius: 6px; padding: 7px 10px; }
 """
+
+proc withoutSourceLinks(text: string): string =
+  ## `text` without its ` [§](#words)` links (for Copy).
+  var i = 0
+  while i < text.len:
+    var start = i
+    if text[i] == ' ' and text.continuesWith("[§](#", i + 1): start = i + 1
+    if text.continuesWith("[§](#", start):
+      var j = start + "[§](#".len
+      while j < text.len and text[j] notin {')', '\n'}: inc j
+      if j < text.len and text[j] == ')':
+        i = j + 1
+        continue
+    result.add text[i]
+    inc i
+  result = result.strip
 
 proc dim(text: string): string = "<small>" & escapeMarkup(text) & "</small>"
 proc danger(text: string): string = "<span foreground=\"#d0393e\">" & escapeMarkup(text) & "</span>"
@@ -454,7 +505,7 @@ proc showPanel(job: Job) =
       render())
   panel.copyButton = iconButton("edit-copy-symbolic", "Copy summary", proc () =
     if panelJob != nil and panelJob.text.len > 0:
-      gtk_clipboard_set_text(systemClipboard(), panelJob.text.strip.cstring, -1))
+      gtk_clipboard_set_text(systemClipboard(), withoutSourceLinks(panelJob.text).cstring, -1))
   panel.spinner = gtk_spinner_new()
   gtk_box_pack_end(bar, panel.redoButton, 0, 0, 0)
   gtk_box_pack_end(bar, panel.copyButton, 0, 0, 0)
@@ -494,9 +545,6 @@ proc showPanel(job: Job) =
     panelJob = nil
     panel = Panel()
     if not switchingPanel and shown != nil: shown.close())
-  # showSidePanel's show_all skips the panel itself (it is no_show_all), so show it here.
-  for child in children(sidePanel): gtk_widget_show_all(child)
-  gtk_widget_show(sidePanel)
   panelJob = job
   render()
 
@@ -541,7 +589,10 @@ proc install*() =
   pageMessageHooks.add onPageMessage
   windowHooks.add proc () =
     loadCss(panelCss)
-    linkHandler = proc (url: string) = discard openTab(url)
+    linkHandler = proc (url: string) =
+      if not url.startsWith(anchorPrefix): discard openTab(url)
+      elif panelJob != nil and not panelJob.jumpTo(url[anchorPrefix.len .. ^1]):
+        alert("Go back to the summarized page to jump to that part.")
     discard addToolbarButton("format-justify-left-symbolic", "Summarize this page", toggleSummary)
     if children(moreMenu).len > 0: addMenuSeparator()
     addMenuItem("Summarize this page", summarizePage)

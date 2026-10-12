@@ -2,6 +2,7 @@
 ## half-written text so a streaming answer can be shown as it comes, and inline markup as Pango markup on GtkLabels.
 
 import std/strutils
+from std/unicode import validateUtf8
 import ../../browser
 
 type
@@ -126,6 +127,39 @@ proc emphasisEnd(text: string, start: int, mark: char): int =
     inc j
   -1
 
+const anchorPrefix* = "webby-anchor:"  ## the href an anchor link gets in a label; the rest is the page words
+
+proc anchorWords*(target: string): string =
+  ## The page words an anchor link (`[§](#words)`) points at, with URL escapes and stray quotes undone.
+  var i = 0
+  while i < target.len:
+    if target[i] == '%':
+      # A run of %XX escapes, decoded together (multi-byte UTF-8); kept as it is if it isn't valid UTF-8.
+      var j = i
+      var bytes = ""
+      while j + 2 < target.len and target[j] == '%' and target[j + 1] in HexDigits and target[j + 2] in HexDigits:
+        bytes.add chr(parseHexInt(target[j + 1 .. j + 2]))
+        j += 3
+      if bytes.len > 0 and validateUtf8(bytes) < 0:
+        result.add bytes
+        i = j
+        continue
+      if bytes.len > 0:
+        result.add target[i ..< j]
+        i = j
+        continue
+    result.add target[i]
+    inc i
+  const quotes = ["\"", "“", "”", "‘", "’"]
+  var changed = true
+  while changed:
+    changed = false
+    result = result.strip
+    for q in quotes:
+      if result.startsWith(q): (result = result[q.len .. ^1]; changed = true)
+      if result.endsWith(q): (result = result[0 ..< result.len - q.len]; changed = true)
+  result = result.splitWhitespace.join(" ")
+
 const codeSpan = "<span font_family=\"monospace\" background=\"#808080\" bgalpha=\"22%\">"
 
 proc inlineMarkup*(text: string): string =
@@ -167,9 +201,18 @@ proc inlineMarkup*(text: string): string =
       let mid = text.find("](", i + 1)
       if mid > i + 1 and ']' notin text[i + 1 ..< mid]:
         var j = mid + 2
-        while j < text.len and text[j] != ')' and text[j] notin Whitespace: inc j
+        while j < text.len and text[j] notin {')', '\n'}: inc j
         if j < text.len and text[j] == ')' and j > mid + 2:
-          emit "<a href=\"" & escapeMarkup(text[mid + 2 ..< j]) & "\">" & escapeMarkup(text[i + 1 ..< mid]) & "</a>"
+          let target = text[mid + 2 ..< j].strip
+          let label = escapeMarkup(text[i + 1 ..< mid])
+          if not target.startsWith("#"):
+            emit "<a href=\"" & escapeMarkup(target) & "\">" & label & "</a>"
+          else:
+            # An anchor into the page: [§](#words) jumps to the words (see anchorPrefix).
+            let words = anchorWords(target[1 .. ^1])
+            if words.len == 0: emit "<u>" & label & "</u>"
+            else: emit "<a href=\"" & escapeMarkup(anchorPrefix & words) & "\" title=\"" &
+              escapeMarkup("Go to “" & words & "”") & "\">" & label & "</a>"
           i = j + 1
           continue
     plain.add c
