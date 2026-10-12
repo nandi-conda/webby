@@ -348,10 +348,15 @@ class _TabLinkState extends State<_TabLink> {
         padding: const EdgeInsets.symmetric(vertical: 1),
         child: Row(
           children: [
-            // Faint until the row is hovered, like OneTab; always there for touch.
-            Opacity(
-              opacity: _hover ? 1 : 0.45,
-              child: KitIconButton(Icons.close, size: 14, tooltip: 'Remove from session', onPressed: widget.onRemove),
+            // Faint until the row is hovered, like OneTab; always there for touch. A colour rather than Opacity: an
+            // Opacity per row is an offscreen layer each, redrawn with every page frame, and made the sidebar's
+            // lower part flicker on desktop while pages loaded.
+            KitIconButton(
+              Icons.close,
+              size: 14,
+              color: _hover ? c.text : c.border,
+              tooltip: 'Remove from session',
+              onPressed: widget.onRemove,
             ),
             const SizedBox(width: 4),
             SiteIcon(tab.url),
