@@ -29,9 +29,10 @@ TOML
 pixi lock --manifest-path "$WORK/pixi.toml"
 
 # Every package URL in the lock file that isn't already from our channel.
-grep -oE 'https?://[^ "]+\.(conda|tar\.bz2)' "$WORK/pixi.lock" | grep -v "/$CHANNEL/" | sort -u > "$WORK/urls"
+grep -oE 'https?://[^ "]+\.(conda|tar\.bz2)' "$WORK/pixi.lock" | { grep -v "/$CHANNEL/" || true; } | sort -u > "$WORK/urls"
 sed 's|/[^/]*/[^/]*$||' "$WORK/urls" | sort | uniq -c
-echo "$(wc -l < "$WORK/urls") conda-forge packages in webby's closure"
+echo "$(wc -l < "$WORK/urls") packages in webby's closure aren't in $CHANNEL yet"
+[ -s "$WORK/urls" ] || exit 0
 mkdir "$WORK/pkgs"
 (cd "$WORK/pkgs" && xargs -n1 -P8 curl -fsSLO --retry 3 < "$WORK/urls")
 
