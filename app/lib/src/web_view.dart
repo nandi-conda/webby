@@ -49,7 +49,8 @@ class WebbyController extends ChangeNotifier {
     _useTexture = useTexture ?? (!Platform.isAndroid && Platform.environment['WEBBY_TEXTURE'] != '0');
     if (_useTexture) _createTexture();
     // Pump Ladybird's event loop from the Dart thread; all FFI calls stay on this thread.
-    _pumpTimer = Timer.periodic(const Duration(milliseconds: 4), (_) => _pump());
+    _live.add(this);
+    _wake();
   }
 
   /// Called with each view the page opens (a target=_blank link, window.open()); the receiver owns the controller.
@@ -60,7 +61,6 @@ class WebbyController extends ChangeNotifier {
   bool closeRequested = false;
 
   late final WebbyBindings _bindings;
-  late final Timer _pumpTimer;
   late final bool _useTexture;
   ViewPtr _view = nullptr;
   // The last size given to setViewport, so a discarded view can be recreated at that size.
@@ -83,6 +83,10 @@ class WebbyController extends ChangeNotifier {
   String url = '';
   String title = '';
   String hoveredLink = '';
+
+  /// Whether the page's pointer was last put there by a tap rather than a mouse; [hoveredLink] then only says what
+  /// was tapped last, so there is no link preview to show.
+  bool pointerIsTouch = false;
   bool isLoading = false;
   bool canGoBack = false;
   bool canGoForward = false;
@@ -195,6 +199,7 @@ class WebbyController extends ChangeNotifier {
       _releaseFrames ??= Timer(_frameGrace, _freeFrames);
     }
     _applyVisible();
+    _wake();
   }
 
   /// How long a hidden view keeps its texture, so quickly flipping between tabs doesn't flash.
@@ -302,6 +307,7 @@ class WebbyController extends ChangeNotifier {
       return;
     }
     _bindings.resize(_view, width, height, devicePixelRatio);
+    _wake();
   }
 
   void _attach(int width, int height, double devicePixelRatio) {
@@ -322,6 +328,7 @@ class WebbyController extends ChangeNotifier {
       return;
     }
     _withString(input, (s) => _bindings.load(_view, s));
+    _wake();
   }
 
   void goBack() => _ifAttached(_bindings.goBack);
@@ -401,7 +408,10 @@ class WebbyController extends ChangeNotifier {
   }
 
   void _ifAttached(void Function(ViewPtr) action) {
-    if (_view != nullptr) action(_view);
+    if (_view != nullptr) {
+      action(_view);
+      _wake();
+    }
   }
 
   void _withString(String value, void Function(Pointer<Utf8>) action) {
@@ -413,27 +423,69 @@ class WebbyController extends ChangeNotifier {
     }
   }
 
-  // Ladybird has one event loop for every view; with several tabs, one pump per tick is enough.
+  // Ladybird has one event loop for every view, pumped by one timer for all tabs. It ticks every 4 ms while anything
+  // is happening (events, frames, loading, input) and backs off to [_idleTick] once things go quiet, so an idle
+  // browser doesn't wake the CPU 250 times a second per tab. Any call into a view ([_ifAttached]) speeds it up again.
   static final _pumpClock = Stopwatch()..start();
-  static int _lastPumpMicros = -1000000;
+  static final Set<WebbyController> _live = {};
+  static Timer? _pumpTimer;
+  static Duration _pumpDelay = Duration.zero;
+  static int _quietTicks = 0;
+  static WebbyBindings? _pumpBindings;
+  static const _busyTick = Duration(milliseconds: 4);
+  static const _idleTick = Duration(milliseconds: 100);
+
+  /// Back to fast ticking now, e.g. after input was sent to a page.
+  static void _wake() {
+    _quietTicks = 0;
+    if (_pumpTimer != null && _pumpDelay <= _busyTick) return;
+    _pumpTimer?.cancel();
+    _schedulePump(_busyTick);
+  }
+
+  static void _schedulePump(Duration delay) {
+    _pumpDelay = delay;
+    _pumpTimer = Timer(delay, _pumpAll);
+  }
+
+  static void _pumpAll() {
+    _pumpTimer = null;
+    if (_live.isEmpty) return;
+    final bindings = _pumpBindings ??= _live.first._bindings;
+    var busy = bindings.pump() > 0;
+    final first = _live.first;
+    first._clipboard.pushPageCopies();
+    first._location?.poll();
+    for (final controller in _live.toList()) {
+      if (_live.contains(controller) && controller._pump()) busy = true;
+    }
+    if (_live.isEmpty) return;
+    _quietTicks = busy ? 0 : _quietTicks + 1;
+    // About a quarter second of quiet at full speed, then progressively slower.
+    final delay = _quietTicks < 60
+        ? _busyTick
+        : _quietTicks < 80
+        ? const Duration(milliseconds: 16)
+        : _quietTicks < 100
+        ? const Duration(milliseconds: 50)
+        : _idleTick;
+    if (_pumpTimer == null) _schedulePump(delay);
+  }
 
   void _runPageCompat() {
     _lastCompatMicros = _pumpClock.elapsedMicroseconds;
     runJavaScript(pageCompatScript);
   }
 
-  void _pump() {
+  /// Picks up what changed in this view since the last tick; returns whether anything did (or still is).
+  bool _pump() {
     final now = _pumpClock.elapsedMicroseconds;
-    if (now - _lastPumpMicros >= 3000) {
-      _lastPumpMicros = now;
-      _bindings.pump();
-      _clipboard.pushPageCopies();
-      _location?.poll();
-    }
-    if (_view == nullptr) return;
+    if (_view == nullptr) return false;
+    var busy = isLoading || _decoding;
 
     final stateSerial = _bindings.stateSerial(_view);
     if (stateSerial != _stateSerial) {
+      busy = true;
       _stateSerial = stateSerial;
       final previous = (url, title, isLoading);
       url = _bindings.url(_view).toDartString();
@@ -457,7 +509,7 @@ class WebbyController extends ChangeNotifier {
       _dialogs?.check(_view);
       closeRequested = (_closeRequested?.call(_view) ?? 0) != 0;
       _takeNewViews();
-      if (_disposed) return;
+      if (_disposed) return true;
       final imeState = _bindings.imeState;
       if (imeState != null) {
         final json = imeState(_view).toDartString();
@@ -480,19 +532,20 @@ class WebbyController extends ChangeNotifier {
     if (nextMessage != null && _messagePrefix.isNotEmpty) {
       for (var message = nextMessage(_view).toDartString(); message.isNotEmpty; message = nextMessage(_view).toDartString()) {
         _pageMessages.add(message);
+        busy = true;
       }
     }
 
     // Until we know whether there's a texture, leave frames unread; the latest one goes wherever it ends up. Hidden
     // views aren't drawn, so their frames stay in Ladybird until they're shown.
-    if (_texturePending || !_visible) return;
+    if (_texturePending || !_visible) return busy;
     final frameSerial = _bindings.frameSerial(_view);
     final texture = _texture;
-    if (frameSerial == _frameSerial || (texture == null && _decoding)) return;
+    if (frameSerial == _frameSerial || (texture == null && _decoding)) return busy;
     _frameSerial = frameSerial;
     final width = _bindings.frameWidth(_view);
     final height = _bindings.frameHeight(_view);
-    if (width <= 0 || height <= 0) return;
+    if (width <= 0 || height <= 0) return true;
     final clock = Stopwatch()..start();
 
     if (texture != null) {
@@ -505,7 +558,7 @@ class WebbyController extends ChangeNotifier {
         frameHeight = height;
         notifyListeners();
       }
-      return;
+      return true;
     }
 
     // Copy now: the native buffer may be rewritten by the next pump while the image decodes.
@@ -525,6 +578,7 @@ class WebbyController extends ChangeNotifier {
       frameHeight = height;
       notifyListeners();
     });
+    return true;
   }
 
   @override
@@ -534,7 +588,11 @@ class WebbyController extends ChangeNotifier {
       completer.complete(false);
     }
     _asks.clear();
-    _pumpTimer.cancel();
+    _live.remove(this);
+    if (_live.isEmpty) {
+      _pumpTimer?.cancel();
+      _pumpTimer = null;
+    }
     _releaseFrames?.cancel();
     PageColorScheme.unfollow(_colorScheme);
     _texture?.dispose();
@@ -780,6 +838,7 @@ class _WebbyViewState extends State<WebbyView> with TextInputClient {
       return;
     }
     _lastButtons = _ladybirdButtons(event.buttons);
+    widget.controller.pointerIsTouch = false;
     widget.controller.mouseEvent(2, _toDevice(event.localPosition),
         buttons: _lastButtons, modifiers: _modifiers);
   }
@@ -810,9 +869,10 @@ class _WebbyViewState extends State<WebbyView> with TextInputClient {
       _startFling(event.localPosition, _touchVelocity?.getVelocity().pixelsPerSecond ?? Offset.zero);
       return;
     }
-    // A tap: click where the finger went down.
+    // A tap: click where the finger went down. The page's pointer stays there afterwards, so it isn't a hover.
     final position = _toDevice(_touchStart);
     final controller = widget.controller;
+    controller.pointerIsTouch = true;
     controller.mouseEvent(2, position);
     controller.mouseEvent(0, position, button: 1, buttons: 1, clickCount: 1);
     controller.mouseEvent(1, position, button: 1, clickCount: 1);
@@ -824,9 +884,24 @@ class _WebbyViewState extends State<WebbyView> with TextInputClient {
     if (event.pointer == _touchPointer) _touchPointer = null;
   }
 
-  /// Scrolls by [delta] logical pixels, as a trackpad would.
-  void _scrollBy(Offset position, Offset delta) =>
-      widget.controller.wheelEvent(_toDevice(position), _toDevice(delta), precise: true);
+  /// Scrolls by [delta] logical pixels, as a trackpad would. Moves are gathered up and sent once per frame: touch
+  /// screens report moves faster than the display refreshes, and each scroll the page handles itself (an inner scroll
+  /// box) costs WebContent's main thread a layout and paint.
+  void _scrollBy(Offset position, Offset delta) {
+    _scrollPosition = position;
+    final scheduled = _scrollDelta != Offset.zero;
+    _scrollDelta += delta;
+    if (scheduled || _scrollDelta == Offset.zero) return;
+    WidgetsBinding.instance.scheduleFrameCallback((_) {
+      final delta = _scrollDelta;
+      _scrollDelta = Offset.zero;
+      if (!mounted || delta == Offset.zero) return;
+      widget.controller.wheelEvent(_toDevice(_scrollPosition), _toDevice(delta), precise: true);
+    });
+  }
+
+  Offset _scrollPosition = Offset.zero;
+  Offset _scrollDelta = Offset.zero;
 
   void _startFling(Offset position, Offset velocity) {
     if (velocity.distance < 200) return;

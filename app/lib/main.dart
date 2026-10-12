@@ -876,7 +876,7 @@ class _BrowserPageState extends State<BrowserPage> {
                   if (Incognito.active && (controller.url.isEmpty || controller.url == _blankUrl))
                     const Positioned.fill(child: IncognitoNewTab()),
                   PermissionBubble(key: ObjectKey(tab), controller: controller),
-                  if (controller.hoveredLink.isNotEmpty)
+                  if (controller.hoveredLink.isNotEmpty && !controller.pointerIsTouch)
                     Positioned(
                       left: 0,
                       bottom: 0,
