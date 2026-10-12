@@ -201,6 +201,71 @@ void main() {
       expect(newTabs, ['https://flutter.dev/', 'https://dart.dev/']);
     });
 
+    testWidgets('bar items drag to reorder and drop into folders', (tester) async {
+      final store = BookmarkStore(file);
+      store.add(title: 'Ladybird', url: 'https://ladybird.org/');
+      store.add(title: 'Example', url: 'https://example.com/');
+      final folder = store.addFolder('Docs', parent: store.bar);
+      final opened = <String>[];
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.linux),
+          home: Scaffold(body: BookmarkBar(store: store, onOpen: opened.add)),
+        ),
+      );
+      List<String> bar() => [for (final n in store.bar.children!) n.title];
+
+      Future<void> drag(String title, Offset to) async {
+        final gesture = await tester.startGesture(tester.getCenter(find.text(title)));
+        await tester.pump();
+        await gesture.moveBy(const Offset(20, 0));
+        await tester.pump();
+        await gesture.moveTo(to);
+        await tester.pump();
+        await gesture.up();
+        await tester.pumpAndSettle();
+      }
+
+      // Onto the right edge of Example: after it.
+      await drag('Ladybird', tester.getTopRight(find.text('Example')) + const Offset(4, 5));
+      expect(bar(), ['Example', 'Ladybird', 'Docs']);
+      // Onto the left edge of Example: before it.
+      await drag('Docs', tester.getTopLeft(find.text('Example')) + const Offset(-20, 5));
+      expect(bar(), ['Docs', 'Example', 'Ladybird']);
+      // Onto the middle of a folder: into it.
+      await drag('Ladybird', tester.getCenter(find.text('Docs')));
+      expect(bar(), ['Docs', 'Example']);
+      expect(folder.children!.single.title, 'Ladybird');
+      // Dropped on itself: stays put. A plain click still opens.
+      await drag('Example', tester.getCenter(find.text('Example')));
+      expect(bar(), ['Docs', 'Example']);
+      expect(opened, isEmpty);
+      await tester.tap(find.text('Example'));
+      expect(opened, ['https://example.com/']);
+
+      // The new order is saved with positions, so it reloads (and syncs) in that order.
+      expect([for (final n in BookmarkStore(file).bar.children!) n.title], ['Docs', 'Example']);
+    });
+
+    testWidgets('on a touch screen bar items drag after a long press', (tester) async {
+      final store = BookmarkStore(file);
+      store.add(title: 'Ladybird', url: 'https://ladybird.org/');
+      store.add(title: 'Example', url: 'https://example.com/');
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.android),
+          home: Scaffold(body: BookmarkBar(store: store, onOpen: (_) {})),
+        ),
+      );
+      final gesture = await tester.startGesture(tester.getCenter(find.text('Ladybird')));
+      await tester.pump(const Duration(milliseconds: 600));
+      await gesture.moveTo(tester.getTopRight(find.text('Example')) + const Offset(4, 5));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect([for (final n in store.bar.children!) n.title], ['Example', 'Ladybird']);
+    });
+
     testWidgets('bar grows with a large system font so labels are not clipped', (tester) async {
       final store = BookmarkStore(file);
       store.add(title: 'Ladybird', url: 'https://ladybird.org/');

@@ -5,7 +5,8 @@ import 'bookmark_dialog.dart';
 import 'bookmark_store.dart';
 
 /// The row of bookmarks under the toolbar: links open on click (in a new tab on middle-click), folders open a menu,
-/// right-click offers open in new tab, edit and delete.
+/// right-click offers open in new tab, edit and delete. Items drag to reorder (long-press first on touch screens), and
+/// dropping onto the middle of a folder moves the item into it.
 class BookmarkBar extends StatelessWidget {
   const BookmarkBar({super.key, required this.onOpen, this.onOpenInNewTab, this.store});
 
@@ -29,9 +30,8 @@ class BookmarkBar extends StatelessWidget {
         final height = MediaQuery.textScalerOf(context).scale(20) + 10;
         // Phones and narrow windows get a shorter hint that fits on one line; Ctrl+D means nothing on a touch screen.
         final platform = Theme.of(context).platform;
-        final compact = platform == TargetPlatform.android ||
-            platform == TargetPlatform.iOS ||
-            MediaQuery.sizeOf(context).width < 600;
+        final touch = platform == TargetPlatform.android || platform == TargetPlatform.iOS;
+        final compact = touch || MediaQuery.sizeOf(context).width < 600;
         return Container(
           // The empty-state hint may wrap on a narrow screen, so it gets a minimum height instead of a fixed one.
           height: items.isEmpty ? null : height,
@@ -53,11 +53,144 @@ class BookmarkBar extends StatelessWidget {
                     ),
                   ),
                 )
-              : ListView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                  children: [for (final node in items) _BarItem(node: node, store: bookmarks, onOpen: onOpen, onOpenInNewTab: onOpenInNewTab)],
+              // Dropping past the last item (on the bar's empty end) moves it to the end.
+              : DragTarget<Bookmark>(
+                  onWillAcceptWithDetails: (d) => identical(bookmarks.parentOf(d.data), bookmarks.bar),
+                  onAcceptWithDetails: (d) => bookmarks.reorder(bookmarks.bar, items.indexOf(d.data), items.length),
+                  builder: (context, _, _) => ListView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                    children: [
+                      for (final node in items)
+                        _DragItem(
+                          key: ValueKey(node.id),
+                          node: node,
+                          store: bookmarks,
+                          touch: touch,
+                          child: _BarItem(node: node, store: bookmarks, onOpen: onOpen, onOpenInNewTab: onOpenInNewTab),
+                        ),
+                    ],
+                  ),
                 ),
+        );
+      },
+    );
+  }
+}
+
+/// Where a dragged bookmark would land relative to the item under the pointer.
+enum _Drop { before, after, into }
+
+/// Makes a bar item draggable and a drop target: the left or right half places the dragged item before or after it,
+/// the middle half of a folder moves it into the folder.
+class _DragItem extends StatefulWidget {
+  const _DragItem({super.key, required this.node, required this.store, required this.touch, required this.child});
+
+  final Bookmark node;
+  final BookmarkStore store;
+  final bool touch;
+  final Widget child;
+
+  @override
+  State<_DragItem> createState() => _DragItemState();
+}
+
+class _DragItemState extends State<_DragItem> {
+  _Drop? _drop;
+
+  _Drop _dropAt(Offset global) {
+    final box = context.findRenderObject()! as RenderBox;
+    final x = box.globalToLocal(global).dx / box.size.width;
+    if (widget.node.isFolder && x > 0.25 && x < 0.75) return _Drop.into;
+    return x < 0.5 ? _Drop.before : _Drop.after;
+  }
+
+  void _accept(Bookmark dragged, Offset global) {
+    // Dropping an item on itself leaves it where it was (the bar's own target would otherwise move it to the end).
+    if (identical(dragged, widget.node)) return;
+    final store = widget.store;
+    final drop = _dropAt(global);
+    if (drop == _Drop.into) {
+      store.update(dragged, parent: widget.node);
+      return;
+    }
+    final siblings = store.bar.children!;
+    final from = siblings.indexOf(dragged);
+    final to = siblings.indexOf(widget.node) + (drop == _Drop.after ? 1 : 0);
+    if (from < 0) {
+      store.update(dragged, parent: store.bar);
+      final moved = siblings.indexOf(dragged);
+      if (moved >= 0) store.reorder(store.bar, moved, to);
+    } else {
+      store.reorder(store.bar, from, to);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = KitTheme.of(context);
+    final node = widget.node;
+    final feedback = Material(
+      type: MaterialType.transparency,
+      child: Container(
+        height: 26,
+        constraints: const BoxConstraints(maxWidth: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        decoration: BoxDecoration(
+          color: c.surface,
+          borderRadius: BorderRadius.circular(kitRadius),
+          border: Border.all(color: c.border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(node.isFolder ? Icons.folder_outlined : Icons.public, size: 14, color: c.textDim),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(node.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: DefaultTextStyle.of(context).style),
+            ),
+          ],
+        ),
+      ),
+    );
+    final dimmed = Opacity(opacity: 0.4, child: widget.child);
+    final draggable = widget.touch
+        ? LongPressDraggable<Bookmark>(
+            data: node,
+            dragAnchorStrategy: pointerDragAnchorStrategy,
+            feedback: feedback,
+            childWhenDragging: dimmed,
+            child: widget.child,
+          )
+        : Draggable<Bookmark>(
+            data: node,
+            dragAnchorStrategy: pointerDragAnchorStrategy,
+            feedback: feedback,
+            childWhenDragging: dimmed,
+            child: widget.child,
+          );
+    return DragTarget<Bookmark>(
+      onMove: (d) {
+        final drop = _dropAt(d.offset);
+        if (drop != _drop) setState(() => _drop = drop);
+      },
+      onLeave: (_) => setState(() => _drop = null),
+      onAcceptWithDetails: (d) {
+        setState(() => _drop = null);
+        _accept(d.data, d.offset);
+      },
+      builder: (context, candidates, _) {
+        final drop = candidates.any((b) => !identical(b, node)) ? _drop : null;
+        final edge = BorderSide(color: c.focus, width: 2);
+        return Container(
+          decoration: BoxDecoration(
+            color: drop == _Drop.into ? c.hover : null,
+            border: Border(
+              left: drop == _Drop.before ? edge : const BorderSide(width: 2, color: Color(0x00000000)),
+              right: drop == _Drop.after ? edge : const BorderSide(width: 2, color: Color(0x00000000)),
+            ),
+          ),
+          child: draggable,
         );
       },
     );
