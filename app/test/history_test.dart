@@ -151,12 +151,13 @@ void main() {
       now -= Duration.millisecondsPerDay;
       store.record('https://example.com/', 'Example');
       String? opened;
+      final newTabs = <String>[];
       await tester.pumpWidget(
         MaterialApp(
           home: Builder(
             builder: (context) => TextButton(
               onPressed: () async => opened = await Navigator.of(context)
-                  .push<String>(MaterialPageRoute(builder: (_) => HistoryPage(store: store))),
+                  .push<String>(MaterialPageRoute(builder: (_) => HistoryPage(store: store, onOpenInNewTab: newTabs.add))),
               child: const Text('open'),
             ),
           ),
@@ -172,6 +173,17 @@ void main() {
       expect(find.text('Ladybird'), findsNothing);
       await tester.enterText(find.byType(TextField), '');
       await tester.pump();
+
+      // Middle-click and the right-click menu open a background tab and stay on the page.
+      await tester.tap(find.text('Example'), buttons: kMiddleMouseButton);
+      await tester.pump();
+      expect(newTabs, ['https://example.com/']);
+      await tester.tap(find.text('Ladybird'), buttons: kSecondaryMouseButton);
+      await tester.pump();
+      await tester.tap(find.text('Open in new tab'));
+      await tester.pump(const Duration(seconds: 5));
+      expect(newTabs, ['https://example.com/', 'https://ladybird.org/']);
+      expect(find.text('Open in new tab'), findsNothing);
 
       // The remove button shows on hover.
       final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);

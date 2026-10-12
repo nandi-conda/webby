@@ -50,11 +50,13 @@ List<List<List<HistoryEntry>>> groupHistory(Iterable<HistoryEntry> visits) {
 /// The history page (Ctrl+H): every visit, newest first and grouped by day, with search, deleting single visits and
 /// clearing the history.
 ///
-/// Pops with a URL when the user opens a page from here.
+/// Pops with a URL when the user opens a page from here (the browser opens it in a new tab). Middle-click or the
+/// row's right-click menu opens one in a background tab and stays here.
 class HistoryPage extends StatefulWidget {
-  const HistoryPage({super.key, this.store});
+  const HistoryPage({super.key, this.store, this.onOpenInNewTab});
 
   final HistoryStore? store;
+  final ValueChanged<String>? onOpenInNewTab;
 
   @override
   State<HistoryPage> createState() => _HistoryPageState();
@@ -120,6 +122,12 @@ class _HistoryPageState extends State<HistoryPage> {
                             entry: group.first,
                             repeats: group.length,
                             onOpen: () => Navigator.pop(context, group.first.url),
+                            onOpenInNewTab: widget.onOpenInNewTab == null
+                                ? null
+                                : () {
+                                    widget.onOpenInNewTab!(group.first.url);
+                                    showKitToast(context, 'Opened in a new tab');
+                                  },
                             onRemove: () => _store.remove(group),
                           ),
                       ],
@@ -220,7 +228,13 @@ Future<bool> showClearHistoryDialog(BuildContext context, {HistoryStore? store})
 /// One row of the history page: time, page title and site in fixed columns, and a remove button at the right that
 /// shows while the row is hovered (always on phones, which can't hover).
 class _HistoryRow extends StatefulWidget {
-  const _HistoryRow({required this.entry, required this.repeats, required this.onOpen, required this.onRemove});
+  const _HistoryRow({
+    required this.entry,
+    required this.repeats,
+    required this.onOpen,
+    required this.onRemove,
+    this.onOpenInNewTab,
+  });
 
   final HistoryEntry entry;
 
@@ -228,6 +242,7 @@ class _HistoryRow extends StatefulWidget {
   final int repeats;
   final VoidCallback onOpen;
   final VoidCallback onRemove;
+  final VoidCallback? onOpenInNewTab;
 
   @override
   State<_HistoryRow> createState() => _HistoryRowState();
@@ -244,13 +259,14 @@ class _HistoryRowState extends State<_HistoryRow> {
     final site = host.startsWith('www.') ? host.substring(4) : host;
     final dim = KitText.dim(context, small: true);
     final showRemove = _hovered || Platform.isAndroid || Platform.isIOS;
-    return MouseRegion(
+    final row = MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: widget.onOpen,
+        onTertiaryTapUp: widget.onOpenInNewTab == null ? null : (_) => widget.onOpenInNewTab!(),
         child: Container(
           height: 40,
           color: _hovered ? c.hover : null,
@@ -285,6 +301,16 @@ class _HistoryRowState extends State<_HistoryRow> {
           ),
         ),
       ),
+    );
+    final newTab = widget.onOpenInNewTab;
+    if (newTab == null) return row;
+    return KitMenu(
+      minWidth: 200,
+      items: () => [
+        KitMenuItem('Open in new tab', onSelected: newTab),
+        KitMenuItem('Remove from history', onSelected: widget.onRemove),
+      ],
+      builder: (context, toggle, open) => GestureDetector(onSecondaryTap: toggle, child: row),
     );
   }
 }

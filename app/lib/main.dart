@@ -452,8 +452,16 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   Future<void> _openHistory() async {
-    final url = await Navigator.of(context).push<String>(MaterialPageRoute(builder: (_) => const HistoryPage()));
-    if (url != null) _go(url);
+    final url = await Navigator.of(context)
+        .push<String>(MaterialPageRoute(builder: (_) => HistoryPage(onOpenInNewTab: _openInBackgroundTab)));
+    if (url == null || !mounted) return;
+    // History opens pages in a new tab, reusing a blank one.
+    final blank = _controller?.url.isEmpty != false || _controller?.url == _blankUrl;
+    if (blank) {
+      _go(url);
+    } else {
+      _newTab(url);
+    }
   }
 
   /// A page's alert/confirm/prompt shows while its tab is the active one, like Chrome's.
