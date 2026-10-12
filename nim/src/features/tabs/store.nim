@@ -24,7 +24,6 @@ const tombstoneLifetime* = 180 * 24 * 3600  ## seconds a deletion is remembered 
 var
   sessionList: seq[SavedSession]   # newest first
   deleted: seq[(string, int)]      # tombstones: id, when (seconds)
-  askOnQuitFlag = true
   idCounter = 0
   loaded = false
   sessionLoadError*: string        ## why sessions.json couldn't be read (it was set aside), or ""
@@ -83,8 +82,6 @@ proc load() =
   try:
     let j = parseJson(readFile(path))
     if j.kind != JObject: raise newException(ValueError, "not a JSON object")
-    let a = j{"askOnQuit"}
-    askOnQuitFlag = if a != nil and a.kind == JBool: a.getBool else: true
     for e in j{"sessions"}.getElems:
       let s = sessionFromJson(e)
       if s != nil: sessionList.add s
@@ -107,7 +104,7 @@ proc save() =
   for d in deleted:
     if d[1] >= expireBefore: kept.add d
   deleted = kept
-  let j = %*{"version": 1, "askOnQuit": askOnQuitFlag, "sessions": newJArray()}
+  let j = %*{"version": 1, "sessions": newJArray()}
   for s in sessionList: j["sessions"].add s.toJson
   if deleted.len > 0:
     let d = newJObject()
@@ -124,17 +121,6 @@ proc sessions*(): seq[SavedSession] =
   ## Newest first.
   load()
   sessionList
-
-proc askOnQuit*(): bool =
-  ## Whether closing the window asks to save its tabs as a session.
-  load()
-  askOnQuitFlag
-
-proc setAskOnQuit*(value: bool) =
-  load()
-  if value == askOnQuitFlag: return
-  askOnQuitFlag = value
-  changed()
 
 proc touch(s: SavedSession) = s.updatedAt = max(nowSeconds(), s.updatedAt + 1)
 

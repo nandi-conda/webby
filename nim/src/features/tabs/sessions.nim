@@ -2,7 +2,7 @@
 ## and "Close all tabs and save as session". The store is store.nim. Incognito windows have none of it.
 
 import ../../browser
-import store, common, strip
+import store, common
 
 var
   panelShowing = false
@@ -215,18 +215,13 @@ proc fillPanel(box: Widget) =
   gtk_container_set_border_width(body, 8)
   if list.len == 0:
     gtk_box_pack_start(body, dimLabel("No saved sessions. Save your open tabs with the + above, with \"Close all " &
-      "tabs and save as session\", or when you close the window."), 0, 0, 8)
+      "tabs and save as session\". Closing the window saves its tabs here too."), 0, 0, 8)
   else:
     var total = 0
     for s in list: total += s.tabs.len
     gtk_box_pack_start(body, dimLabel("Total: " & plural(total, "tab") & " in " & plural(list.len, "session"),
       small = true), 0, 0, 2)
   for s in list: gtk_box_pack_start(body, sessionGroup(s), 0, 0, 0)
-  let ask = gtk_check_button_new_with_label("Ask to save open tabs when closing the window")
-  gtk_toggle_button_set_active(ask, askOnQuit().gboolean)
-  connectAction(ask, "toggled", proc () = setAskOnQuit(gtk_toggle_button_get_active(ask) != 0))
-  gtk_widget_set_margin_top(ask, 14)
-  gtk_box_pack_start(body, ask, 0, 0, 0)
   gtk_container_add(scroller, body)
   gtk_box_pack_start(box, scroller, 1, 1, 0)
 
@@ -251,46 +246,13 @@ proc toggleSessionsPanel*() =
 # ---------------------------------------------------------------------------------------------------------------
 # Quitting
 
-proc askSaveOnQuit(): bool =
-  ## Closing the window asks whether to keep its tabs as a session. false = Cancel (stay open).
+proc saveOnQuit(): bool =
+  ## Closing the window keeps its tabs as a session, without asking. Incognito and app windows never save one, and
+  ## a window with only blank tabs saves nothing (saveSession skips those).
+  if incognito or appUrl.len > 0: return true
   let list = if tabs.len > 0: openTabsAsSession() else: lastTabs
   let active = if tabs.len > 0: activeIndex else: lastActive
-  let count = sessionTabCount(list)
-  if incognito or appUrl.len > 0 or not askOnQuit() or count == 0: return true
-  let d = gtk_dialog_new_with_buttons("Save open tabs as a session?", window, GTK_DIALOG_MODAL,
-    "_Cancel", GTK_RESPONSE_CANCEL, "Don't save", GTK_RESPONSE_NO, "Save and close", GTK_RESPONSE_OK, nil)
-  gtk_dialog_set_default_response(d, GTK_RESPONSE_OK)
-  let box = gtk_dialog_get_content_area(d)
-  gtk_container_set_border_width(box, 12)
-  let m = gtk_label_new(cstring("You can restore the " & plural(count, "tab") & " later from Sessions."))
-  gtk_label_set_xalign(m, 0)
-  gtk_box_pack_start(box, m, 0, 0, 4)
-  let n = gtk_label_new("Name")
-  gtk_label_set_xalign(n, 0)
-  gtk_box_pack_start(box, n, 0, 0, 2)
-  let e = gtk_entry_new()
-  gtk_entry_set_text(e, defaultSessionName().cstring)
-  gtk_entry_set_activates_default(e, 1)
-  gtk_box_pack_start(box, e, 0, 0, 2)
-  let dontAsk = gtk_check_button_new_with_label("Don't ask again")
-  gtk_box_pack_start(box, dontAsk, 0, 0, 4)
-  gtk_widget_show_all(d)
-  let r = gtk_dialog_run(d)
-  let name = $gtk_entry_get_text(e)
-  let stop = gtk_toggle_button_get_active(dontAsk) != 0
-  gtk_widget_destroy(d)
-  # Closing the dialog or Escape keeps the window open.
-  if r != GTK_RESPONSE_OK and r != GTK_RESPONSE_NO:
-    # Closing the last tab closed the window; staying open brings that tab back.
-    if tabs.len == 0:
-      for t in lastTabs:
-        if closedTabs.len > 0 and closedTabs[^1].url == t.url: discard closedTabs.pop
-        discard openTab(t.url, focus = false)
-      if tabs.len == 0: discard openTab("")
-      activateTab(clamp(lastActive, 0, tabs.high))
-    return false
-  if stop: setAskOnQuit(false)
-  if r == GTK_RESPONSE_OK: discard saveSession(list, name, active)
+  discard saveSession(list, "", active)
   true
 
 proc install*() =
@@ -299,7 +261,7 @@ proc install*() =
     if not incognito and tabs.len == 1 and tabs[0] == t:
       lastTabs = openTabsAsSession()
       lastActive = 0
-  quitHooks.add askSaveOnQuit
+  quitHooks.add saveOnQuit
   sessionListeners.add rebuildPanel
   windowHooks.add proc () =
     if appUrl.len > 0 or incognito: return

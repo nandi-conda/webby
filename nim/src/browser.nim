@@ -71,7 +71,7 @@ var
   navigationHooks*: seq[proc (t: Tab)]            ## a page finished loading (url + title final)
   pageMessageHooks*: seq[proc (t: Tab, msg: string): bool]  ## true = handled
   pageScriptHooks*: seq[proc (t: Tab): string]    ## JS run with the compat shims on every page
-  quitHooks*: seq[proc (): bool]                  ## false cancels quitting (e.g. a "save tabs?" prompt said Cancel)
+  quitHooks*: seq[proc (): bool]                  ## false cancels quitting
   shutdownHooks*: seq[proc ()]                    ## quitting for real
   tabStripHooks*: seq[proc ()]                    ## tabs added, removed, moved or pinned
   suggestionProviders*: seq[proc (text: string): seq[Suggestion]]
