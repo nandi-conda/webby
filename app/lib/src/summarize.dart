@@ -80,7 +80,7 @@ String pageTextScript(String prefix, String id) => '''
 /// JavaScript that scrolls the page to the place a summary's source link quotes ([words]) and flashes it. Matching
 /// is by words, ignoring case, accents, punctuation and markup, so small slips in the quote still land: the whole
 /// quote first (a heading, then any text), then the longest run of its words found on the page, then the heading
-/// sharing the most words with it. Matches inside hidden parts prefer visible ones; closed <details> are opened.
+/// sharing the most words with it. Matches inside hidden parts prefer visible ones; closed `<details>` are opened.
 String jumpToTextScript(String words) => r'''
 (() => {
   const QUOTE = ''' + jsonEncode(words) + r''';
