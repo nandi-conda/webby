@@ -80,16 +80,30 @@ class _TabStripState extends State<TabStrip> {
   Widget build(BuildContext context) {
     final c = KitTheme.of(context);
     final newTab = KitIconButton.compact(Icons.add, tooltip: 'New tab (Ctrl+T)', onPressed: widget.onNew);
+    // Double-clicking the strip's empty space opens a new tab. Only the empty space listens, so a tab's own
+    // clicks aren't held back waiting to see whether a second click follows.
+    final empty = GestureDetector(behavior: HitTestBehavior.opaque, onDoubleTap: widget.onNew);
     final Widget strip;
     if (widget.vertical) {
       strip = Container(
         width: TabStrip.verticalWidth,
         decoration: BoxDecoration(color: c.background, border: Border(right: BorderSide(color: c.border))),
-        child: ListView(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          children: [
-            for (var i = 0; i < widget.tabs.length; i++) SizedBox(height: 32, child: _tab(i)),
-            Align(alignment: Alignment.centerLeft, child: Padding(padding: const EdgeInsets.only(left: 6), child: newTab)),
+        child: CustomScrollView(
+          slivers: [
+            SliverPadding(
+              padding: const EdgeInsets.only(top: 4),
+              sliver: SliverList.list(
+                children: [
+                  for (var i = 0; i < widget.tabs.length; i++) SizedBox(height: 32, child: _tab(i)),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Padding(padding: const EdgeInsets.only(left: 6), child: newTab),
+                  ),
+                ],
+              ),
+            ),
+            // The space under the list, down to the bottom.
+            SliverFillRemaining(hasScrollBody: false, child: empty),
           ],
         ),
       );
@@ -98,15 +112,21 @@ class _TabStripState extends State<TabStrip> {
         height: 34,
         padding: const EdgeInsets.only(left: 4, top: 4),
         decoration: BoxDecoration(color: c.background, border: Border(bottom: BorderSide(color: c.border))),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        // The empty space sits behind the row, so it takes whatever the tabs and the button don't cover.
+        child: Stack(
           children: [
-            for (var i = 0; i < widget.tabs.length; i++)
-              Flexible(
-                child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 220), child: _tab(i)),
-              ),
-            Center(child: newTab),
-            const Spacer(),
+            Positioned.fill(child: empty),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (var i = 0; i < widget.tabs.length; i++)
+                  Flexible(
+                    child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 220), child: _tab(i)),
+                  ),
+                Center(child: newTab),
+                const Spacer(),
+              ],
+            ),
           ],
         ),
       );

@@ -93,4 +93,38 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.getSize(find.byType(TabStrip)).width, TabStrip.verticalWidth);
   });
+
+  testWidgets('double-clicking empty strip space opens a new tab', (tester) async {
+    for (final vertical in [false, true]) {
+      var opened = 0;
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 800,
+            height: 400,
+            child: Flex(
+              direction: vertical ? Axis.horizontal : Axis.vertical,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TabStrip(
+                  tabs: const [TabLabel(title: 'One')],
+                  active: 0,
+                  vertical: vertical,
+                  onSelect: (_) {},
+                  onClose: (_) {},
+                  onNew: () => opened++,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ));
+      final at = vertical ? const Offset(100, 350) : const Offset(700, 15);
+      await tester.tapAt(at);
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tapAt(at);
+      await tester.pumpAndSettle();
+      expect(opened, 1, reason: vertical ? 'vertical' : 'horizontal');
+    }
+  });
 }
