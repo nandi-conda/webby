@@ -15,6 +15,8 @@ namespace Webby {
 // what it wants (wanted()) and the UI, which reads the system's location service (GeoClue, Android), hands positions
 // and errors back. See webby_geolocation_*() in webby_ffi.h.
 class GeolocationProvider final : public Core::GeolocationProvider {
+    AK_ALLOC_WITH_KMALLOC;
+
 public:
     // Makes Ladybird use this provider. Call before the application is created, so its settings see one is available.
     static void install();

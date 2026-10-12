@@ -15,7 +15,7 @@ void GeolocationProvider::install()
 {
     Core::GeolocationProvider::set_provider_functions(
         []() -> ErrorOr<NonnullOwnPtr<Core::GeolocationProvider>> {
-            return adopt_nonnull_own_or_enomem<Core::GeolocationProvider>(new (nothrow) GeolocationProvider);
+            return TRY(adopt_nonnull_own_or_enomem(new (nothrow) GeolocationProvider));
         },
         [] { return true; });
 }
