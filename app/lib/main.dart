@@ -69,8 +69,10 @@ class WebbyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // flatkit colours: the KDE colour scheme on Plasma, otherwise light or dark with the desktop.
+    // flatkit's neutral greys with a blue accent, light or dark with the desktop. The KDE colour
+    // scheme stays off: Breeze's blue-grey with Plasma's (often wallpaper-picked) accent looked off.
     return KitSystemTheme(
+      followKde: false,
       builder: (context, systemColors) {
         // Incognito windows always use their own dark colours.
         final colors = Incognito.active ? Incognito.colors : systemColors;
