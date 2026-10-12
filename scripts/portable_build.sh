@@ -6,7 +6,7 @@
 set -x
 mkdir -p /build/logs
 exec > >(tee -a /build/logs/build.log) 2>&1
-export DEBIAN_FRONTEND=noninteractive
+export DEBIAN_FRONTEND=noninteractive HOME=/root
 if [ ! -x /usr/lib/llvm-21/bin/clang ]; then
     apt-get update -qq
     apt-get install -y -qq ca-certificates curl wget gnupg software-properties-common lsb-release git python3 \
