@@ -13,7 +13,10 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
 mkdir -p "$STAGE/lib" "$STAGE/libexec" "$STAGE/share"
-find "$BUILD/lib" -maxdepth 1 -name '*.so*' \( -type f -o -type l \) -exec cp -a {} "$STAGE/lib/" \;
+# Ladybird's own libraries, then the vcpkg-built ones they link against (ICU, Skia, ffmpeg, curl…).
+for dir in "$BUILD/lib" "$BUILD/vcpkg_installed/x64-linux-dynamic/lib"; do
+    find "$dir" -maxdepth 1 -name '*.so*' \( -type f -o -type l \) -exec cp -an {} "$STAGE/lib/" \;
+done
 cp -a "$BUILD/libexec/." "$STAGE/libexec/"
 cp -a "$BUILD/share/Lagom" "$STAGE/share/"
 
