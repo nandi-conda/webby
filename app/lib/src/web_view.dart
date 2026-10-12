@@ -61,7 +61,28 @@ class WebbyController extends ChangeNotifier {
     if (_useTexture) _createTexture();
     // Pump Ladybird's event loop from the Dart thread; all FFI calls stay on this thread.
     _live.add(this);
+    _startTrace();
     _wake();
+  }
+
+  // WEBBY_TRACE=1: every 5 s, print how often the pump ran and what each view did, to find what keeps the CPU busy.
+  static Timer? _trace;
+  static int _pumps = 0;
+  static int _dartFrames = 0;
+  static void _startTrace() {
+    if (_trace != null || Platform.environment['WEBBY_TRACE'] != '1') return;
+    WidgetsBinding.instance.addPersistentFrameCallback((_) => _dartFrames++);
+    final pushed = <WebbyController, int>{};
+    _trace = Timer.periodic(const Duration(seconds: 5), (_) {
+      final views = _live.map((c) {
+        final frames = c.stats.frames - (pushed[c] ?? 0);
+        pushed[c] = c.stats.frames;
+        return '${c._visible ? 'shown' : 'hidden'}${c.isLoading ? ' loading' : ''} frames=$frames';
+      });
+      stderr.writeln('webby-trace pumps=$_pumps dartFrames=$_dartFrames delay=${_pumpDelay.inMilliseconds}ms '
+          '[${views.join('; ')}]');
+      _pumps = _dartFrames = 0;
+    });
   }
 
   /// Called with each view the page opens (a target=_blank link, window.open()); the receiver owns the controller.
@@ -493,6 +514,7 @@ class WebbyController extends ChangeNotifier {
 
   static void _pumpAll() {
     _pumpTimer = null;
+    _pumps++;
     if (_live.isEmpty) return;
     final bindings = _pumpBindings ??= _live.first._bindings;
     var busy = bindings.pump() > 0;
