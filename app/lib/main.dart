@@ -30,6 +30,7 @@ import 'src/pwa/install_dialog.dart';
 import 'src/pwa/offline.dart';
 import 'src/pwa/pwa_agent.dart';
 import 'src/route_guard.dart';
+import 'src/side_panel.dart';
 import 'src/site_data.dart';
 import 'src/site_settings.dart';
 import 'src/summarize.dart';
@@ -320,9 +321,10 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     });
   }
 
-  Future<void> _openDeviceTabs() async {
-    final urls = await Navigator.of(context).push<List<String>>(MaterialPageRoute(builder: (_) => const DeviceTabsPage()));
-    if (urls == null || urls.isEmpty || !mounted) return;
+  void _openDeviceTabs() => _showPanel(_Panel.deviceTabs);
+
+  void _openDeviceTabUrls(List<String> urls) {
+    if (urls.isEmpty) return;
     // Like opening a bookmark: reuse a blank tab, otherwise open new ones.
     final blank = _controller?.url.isEmpty != false || _controller?.url == _blankUrl;
     for (final (i, url) in urls.indexed) {
@@ -392,19 +394,52 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     _selectTab(_active, force: true);
   }
 
-  /// Whether the sessions sidebar is showing.
-  bool _sessionsOpen = false;
+  /// The sidebar that's showing, if any. The toolbar buttons open their screens here rather than over the page.
+  _Panel? _panel;
 
-  void _toggleSessions() => setState(() => _sessionsOpen = !_sessionsOpen);
+  void _showPanel(_Panel panel) => setState(() => _panel = panel);
 
-  /// The sessions sidebar: beside the page on wide windows, under it on narrow ones (phones).
-  Widget _sessionsPanel({required bool wide}) => SessionsPanel(
-    wide: wide,
-    onOpen: _restoreSession,
-    onClose: _toggleSessions,
-    onSaveOpenTabs: _saveSession,
-    onCloseAllAndSave: () => _saveSession(closeAll: true),
-  );
+  void _togglePanel(_Panel panel) => setState(() => _panel = _panel == panel ? null : panel);
+
+  void _closePanel() => setState(() => _panel = null);
+
+  /// The sidebar: beside the page on wide windows, under it on narrow ones (phones).
+  Widget _sidePanel(_Panel panel, {required bool wide}) => switch (panel) {
+    _Panel.sessions => SessionsPanel(
+      wide: wide,
+      onOpen: _restoreSession,
+      onClose: _closePanel,
+      onSaveOpenTabs: _saveSession,
+      onCloseAllAndSave: () => _saveSession(closeAll: true),
+    ),
+    _Panel.bookmarks => SidePanel(
+      key: const ValueKey(_Panel.bookmarks),
+      wide: wide,
+      page: (_) => const BookmarksPage(),
+      onClose: _closePanel,
+      onResult: (url) => _go(url as String),
+    ),
+    _Panel.history => SidePanel(
+      key: const ValueKey(_Panel.history),
+      wide: wide,
+      page: (_) => HistoryPage(onOpenInNewTab: _openInBackgroundTab),
+      onClose: _closePanel,
+      onResult: (url) => _openHistoryUrl(url as String),
+    ),
+    _Panel.deviceTabs => SidePanel(
+      key: const ValueKey(_Panel.deviceTabs),
+      wide: wide,
+      page: (_) => const DeviceTabsPage(),
+      onClose: _closePanel,
+      onResult: (urls) => _openDeviceTabUrls((urls as List).cast<String>()),
+    ),
+    _Panel.passwords => SidePanel(
+      key: const ValueKey(_Panel.passwords),
+      wide: wide,
+      page: (_) => const VaultPage(),
+      onClose: _closePanel,
+    ),
+  };
 
   /// Opens a saved session's tabs next to the current one.
   void _restoreSession(SessionOpen open) {
@@ -650,10 +685,9 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _openHistory() async {
-    final url = await Navigator.of(context)
-        .push<String>(MaterialPageRoute(builder: (_) => HistoryPage(onOpenInNewTab: _openInBackgroundTab)));
-    if (url == null || !mounted) return;
+  void _openHistory() => _showPanel(_Panel.history);
+
+  void _openHistoryUrl(String url) {
     // History opens pages in a new tab, reusing a blank one.
     final blank = _controller?.url.isEmpty != false || _controller?.url == _blankUrl;
     if (blank) {
@@ -686,10 +720,7 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     bookmarkPage(context, url: controller.url, title: controller.title);
   }
 
-  Future<void> _openBookmarks() async {
-    final url = await Navigator.of(context).push<String>(MaterialPageRoute(builder: (_) => const BookmarksPage()));
-    if (url != null) _go(url);
-  }
+  void _openBookmarks() => _showPanel(_Panel.bookmarks);
 
   Future<void> _clearBrowsingData() async {
     final data = SiteData.of(WebbyBindings.open());
@@ -848,8 +879,9 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     // Android's screen is too narrow for a tab list beside the page.
     final vertical = TabLayout.instance.vertical && !Platform.isAndroid;
     final size = MediaQuery.sizeOf(context);
-    final sessionsOpen = _sessionsOpen && !Incognito.active;
-    final sessionsWide = size.width >= 720;
+    // Incognito windows have no sessions, synced tabs or password vault.
+    final panel = Incognito.active && _privatePanels.contains(_panel) ? null : _panel;
+    final panelWide = size.width >= 720;
     final tabStrip = TabStrip(
       tabs: [
         for (final t in _tabs)
@@ -943,6 +975,42 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
                     ),
                   ),
                   const SizedBox(width: 6),
+                  // The buttons below each toggle a sidebar.
+                  KitIconButton(
+                    panel == _Panel.bookmarks ? Icons.bookmarks : Icons.bookmarks_outlined,
+                    tooltip: 'Bookmarks (Ctrl+Shift+O)',
+                    onPressed: () => _togglePanel(_Panel.bookmarks),
+                  ),
+                  // Sessions: save the open tabs and restore saved sets.
+                  if (!Incognito.active)
+                    KitIconButton(
+                      panel == _Panel.sessions ? Icons.layers : Icons.layers_outlined,
+                      tooltip: 'Sessions',
+                      onPressed: () => _togglePanel(_Panel.sessions),
+                    ),
+                  // Summarize: its sidebar belongs to the tab.
+                  ListenableBuilder(
+                    listenable: SummaryJob.of(controller),
+                    builder: (context, _) {
+                      final job = SummaryJob.of(controller);
+                      return KitIconButton(
+                        job.open ? Icons.summarize : Icons.summarize_outlined,
+                        tooltip: 'Summarize this page',
+                        onPressed: job.open
+                            ? job.close
+                            : controller.url.isEmpty
+                            ? null
+                            : () => summarizePage(context, controller),
+                      );
+                    },
+                  ),
+                  // The vault belongs to the normal windows; incognito ones only fill from it.
+                  if (!Incognito.active)
+                    KitIconButton(
+                      panel == _Panel.passwords ? Icons.key : Icons.key_outlined,
+                      tooltip: 'Passwords and passkeys',
+                      onPressed: () => _togglePanel(_Panel.passwords),
+                    ),
                   KitMenu(
                     minWidth: 260,
                     items: () => [
@@ -973,29 +1041,8 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
                       const KitMenuDivider(),
                       KitMenuItem('Clear browsing data…', shortcut: 'Ctrl+Shift+Del', onSelected: _clearBrowsingData),
                     ],
-                    builder: (context, toggle, open) =>
-                        KitIconButton(Icons.bookmarks_outlined, tooltip: 'Bookmarks', onPressed: toggle),
+                    builder: (context, toggle, open) => KitIconButton(Icons.more_vert, tooltip: 'More', onPressed: toggle),
                   ),
-                  // Sessions: a sidebar to save the open tabs and restore saved sets.
-                  if (!Incognito.active)
-                    KitIconButton(
-                      _sessionsOpen ? Icons.layers : Icons.layers_outlined,
-                      tooltip: 'Sessions',
-                      onPressed: _toggleSessions,
-                    ),
-                  KitIconButton(
-                    Icons.summarize_outlined,
-                    tooltip: 'Summarize this page',
-                    onPressed: controller.url.isEmpty ? null : () => summarizePage(context, controller),
-                  ),
-                  // The vault belongs to the normal windows; incognito ones only fill from it.
-                  if (!Incognito.active)
-                    KitIconButton(
-                      Icons.key,
-                      tooltip: 'Passwords and passkeys',
-                      onPressed: () =>
-                          Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const VaultPage())),
-                    ),
                 ],
               ),
             ),
@@ -1067,12 +1114,13 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
               ),
               ),
             ),
-            // The sessions sidebar sits under the page on narrow windows.
-            if (sessionsOpen && !sessionsWide) SizedBox(height: size.height * 0.5, child: _sessionsPanel(wide: false)),
+            // The sidebar sits under the page on narrow windows.
+            if (panel != null && !panelWide) SizedBox(height: size.height * 0.5, child: _sidePanel(panel, wide: false)),
               ],
               ),
               ),
-              if (sessionsOpen && sessionsWide) SizedBox(width: 360, child: _sessionsPanel(wide: true)),
+              if (panel != null && panelWide)
+                SizedBox(width: panel == _Panel.sessions ? 360 : 400, child: _sidePanel(panel, wide: true)),
               ],
               ),
             ),
@@ -1085,3 +1133,9 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     );
   }
 }
+
+/// The sidebars the toolbar opens.
+enum _Panel { sessions, bookmarks, history, deviceTabs, passwords }
+
+/// Sidebars an incognito window doesn't have.
+const _privatePanels = {_Panel.sessions, _Panel.deviceTabs, _Panel.passwords};

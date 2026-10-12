@@ -107,8 +107,9 @@ class _BookmarksPageState extends State<BookmarksPage> {
     }
   }
 
-  Widget _folderTree() {
+  Widget _folderTree({bool shrinkWrap = false}) {
     return ListView(
+      shrinkWrap: shrinkWrap,
       padding: const EdgeInsets.symmetric(vertical: 6),
       children: [
         for (final (folder, depth) in _store.folders)
@@ -214,23 +215,31 @@ class _BookmarksPageState extends State<BookmarksPage> {
         // The open folder may have been deleted from another screen.
         if (_store.find(_folder.id) == null) _folder = _store.bar;
         final c = KitTheme.of(context);
+        // In a sidebar or on a phone the search goes under the header and the folders above the bookmarks.
+        return LayoutBuilder(builder: (context, constraints) {
+        final narrow = constraints.maxWidth < 640;
+        final search = KitTextField(
+          controller: _search,
+          hint: 'Search bookmarks',
+          prefixIcon: Icons.search,
+          onChanged: (_) => setState(() {}),
+        );
         return KitPage(
           title: 'Bookmarks',
           actions: [
-            SizedBox(
-              width: 260,
-              child: KitTextField(
-                controller: _search,
-                hint: 'Search bookmarks',
-                prefixIcon: Icons.search,
-                onChanged: (_) => setState(() {}),
+            if (!narrow) SizedBox(width: 260, child: search),
+            if (narrow)
+              KitIconButton(
+                Icons.create_new_folder_outlined,
+                tooltip: 'New folder',
+                onPressed: () => newBookmarkFolder(context, _folder, store: _store),
+              )
+            else
+              KitButton(
+                'New folder',
+                icon: Icons.create_new_folder_outlined,
+                onPressed: () => newBookmarkFolder(context, _folder, store: _store),
               ),
-            ),
-            KitButton(
-              'New folder',
-              icon: Icons.create_new_folder_outlined,
-              onPressed: () => newBookmarkFolder(context, _folder, store: _store),
-            ),
             KitMenu(
               minWidth: 220,
               items: () => [
@@ -250,19 +259,30 @@ class _BookmarksPageState extends State<BookmarksPage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               if (_store.loadError != null) KitBanner(message: _store.loadError!, danger: true),
-              Expanded(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Container(width: 240, color: c.surface, child: _folderTree()),
-                    const KitVerticalDivider(),
-                    Expanded(child: _contents()),
-                  ],
+              if (narrow) ...[
+                Padding(padding: const EdgeInsets.all(8), child: search),
+                Container(
+                  constraints: BoxConstraints(maxHeight: constraints.maxHeight * 0.3),
+                  color: c.surface,
+                  child: _folderTree(shrinkWrap: true),
                 ),
-              ),
+                const KitDivider(),
+                Expanded(child: _contents()),
+              ] else
+                Expanded(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Container(width: 240, color: c.surface, child: _folderTree()),
+                      const KitVerticalDivider(),
+                      Expanded(child: _contents()),
+                    ],
+                  ),
+                ),
             ],
           ),
         );
+        });
       },
     );
   }
