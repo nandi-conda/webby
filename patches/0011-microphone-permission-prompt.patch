@@ -1,8 +1,16 @@
 diff --git a/Libraries/LibWeb/MediaCapture/MediaDevices.cpp b/Libraries/LibWeb/MediaCapture/MediaDevices.cpp
-index 693abc561c..15ac66de85 100644
+index 693abc56..8e9c4a3d 100644
 --- a/Libraries/LibWeb/MediaCapture/MediaDevices.cpp
 +++ b/Libraries/LibWeb/MediaCapture/MediaDevices.cpp
-@@ -472,6 +472,14 @@ void MediaDevices::queue_get_user_media_task(GC::Ref<WebIDL::Promise> promise, O
+@@ -25,6 +25,7 @@
+ #include <LibWeb/MediaCapture/MediaDevices.h>
+ #include <LibWeb/MediaCapture/MediaStream.h>
+ #include <LibWeb/MediaCapture/MediaStreamTrack.h>
++#include <LibWeb/Page/Page.h>
+ #include <LibWeb/PermissionsAPI/Permissions.h>
+ #include <LibWeb/Platform/EventLoopPlugin.h>
+ #include <LibWeb/WebIDL/CallbackType.h>
+@@ -472,6 +473,14 @@ void MediaDevices::queue_get_user_media_task(GC::Ref<WebIDL::Promise> promise, O
          //        a prompt state into a persisted denied state without a user decision.
          if (HTML::Window::in_test_mode() && microphone_permission_result == PermissionsAPI::PermissionState::Prompt)
              microphone_permission_result = PermissionsAPI::request_permission(microphone_permission);
@@ -10,7 +18,7 @@ index 693abc561c..15ac66de85 100644
 +        //                 answers from the site's saved setting) and closes it with the answer. The answer is not
 +        //                 kept here, so a changed site setting applies to the next request.
 +        else if (microphone_permission_result == PermissionsAPI::PermissionState::Prompt) {
-+            auto& window = as<HTML::Window>(realm.global_object());
++            auto& window = *media_devices->m_window;
 +            if (!window.page().did_request_confirm("\x01webby-permission:microphone"_utf16))
 +                microphone_permission_result = PermissionsAPI::PermissionState::Denied;
 +        }
