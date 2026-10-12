@@ -44,7 +44,7 @@ void main() {
     expect(store.sessions, hasLength(1));
   });
 
-  test('rename, delete, undo, delete all and the ask-on-quit setting persist', () {
+  test('rename, delete, undo and delete all persist', () {
     final store = SessionStore(file());
     final a = store.save(tabs, name: 'a', now: DateTime(2026, 1, 1))!;
     final b = store.save(tabs, name: 'b', now: DateTime(2026, 1, 2))!;
@@ -54,11 +54,9 @@ void main() {
     expect([for (final s in SessionStore(file()).sessions) s.name], ['renamed']);
     store.restoreDeleted(b);
     expect([for (final s in SessionStore(file()).sessions) s.name], ['b', 'renamed']);
-    store.askOnQuit = false;
     store.deleteAll();
     final reloaded = SessionStore(file());
     expect(reloaded.sessions, isEmpty);
-    expect(reloaded.askOnQuit, isFalse);
   });
 
   test('a corrupt file is set aside', () {
@@ -143,25 +141,6 @@ void main() {
     expect(closed, isFalse);
   });
 
-  testWidgets('quit prompt returns the choice and can stop asking', (tester) async {
-    final store = SessionStore(file());
-    (QuitChoice, String)? result;
-    await tester.pumpWidget(app(Builder(
-      builder: (context) => KitButton('quit', onPressed: () async {
-        result = await askSaveOnQuit(context, tabCount: 2, store: store);
-      }),
-    )));
-    await tester.tap(find.text('quit'));
-    await tester.pumpAndSettle();
-    expect(find.text('Save open tabs as a session?'), findsOneWidget);
-    await tester.enterText(find.byType(EditableText), 'Evening');
-    await tester.tap(find.text('Don\'t ask again'));
-    await tester.pump();
-    await tester.tap(find.text('Save and close'));
-    await tester.pumpAndSettle();
-    expect(result, (QuitChoice.save, 'Evening'));
-    expect(store.askOnQuit, isFalse);
-  });
   test('sessions sync: two devices merge saves, renames and deletes', () {
     final desk = SessionStore(File('${temp.path}/desk/sessions.json'));
     final phone = SessionStore(File('${temp.path}/phone/sessions.json'));

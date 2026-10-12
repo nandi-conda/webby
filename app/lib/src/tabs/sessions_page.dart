@@ -180,14 +180,6 @@ class _SessionsPanelState extends State<SessionsPanel> {
                           onOpenTab: (tab) => widget.onOpen((urls: [tab.url], active: 0)),
                           onRemoveTab: (index) => _removeTab(session, index),
                         ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(12, 14, 12, 0),
-                        child: KitCheckbox(
-                          value: _store.askOnQuit,
-                          label: 'Ask to save open tabs when closing the window',
-                          onChanged: (value) => _store.askOnQuit = value,
-                        ),
-                      ),
                     ],
                   ),
                 ),
@@ -449,57 +441,4 @@ Future<String?> askSessionName(
   );
   field.dispose();
   return name;
-}
-
-/// What to do with the open tabs when the window closes.
-enum QuitChoice { save, discard, cancel }
-
-/// Asks whether to save the [tabCount] open tabs as a session before the window closes.
-/// Returns the choice and the session name; ticking "Don't ask again" turns [SessionStore.askOnQuit] off.
-Future<(QuitChoice, String)> askSaveOnQuit(BuildContext context, {required int tabCount, SessionStore? store}) async {
-  final sessions = store ?? SessionStore.instance;
-  final initial = defaultSessionName(DateTime.now());
-  final field = TextEditingController(text: initial)
-    ..selection = TextSelection(baseOffset: 0, extentOffset: initial.length);
-  var dontAsk = false;
-  final choice = await showWebbyDialog<QuitChoice>(
-    context,
-    (context) => StatefulBuilder(
-      builder: (context, setState) => KitDialog(
-        title: 'Save open tabs as a session?',
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text('You can restore the $tabCount tab${tabCount == 1 ? '' : 's'} later from Sessions.'),
-            const SizedBox(height: 12),
-            LabeledField(
-              label: 'Name',
-              child: KitTextField(
-                controller: field,
-                autofocus: true,
-                onSubmitted: (_) => Navigator.pop(context, QuitChoice.save),
-              ),
-            ),
-            KitCheckbox(
-              value: dontAsk,
-              label: 'Don\'t ask again',
-              onChanged: (value) => setState(() => dontAsk = value),
-            ),
-          ],
-        ),
-        actions: [
-          KitButton('Cancel', onPressed: () => Navigator.pop(context, QuitChoice.cancel)),
-          KitButton('Don\'t save', onPressed: () => Navigator.pop(context, QuitChoice.discard)),
-          KitButton.primary('Save and close', onPressed: () => Navigator.pop(context, QuitChoice.save)),
-        ],
-      ),
-    ),
-  );
-  final name = field.text;
-  field.dispose();
-  // Clicking outside or Escape keeps the window open.
-  final result = choice ?? QuitChoice.cancel;
-  if (dontAsk && result != QuitChoice.cancel) sessions.askOnQuit = false;
-  return (result, name);
 }
