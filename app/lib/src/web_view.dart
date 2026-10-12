@@ -69,9 +69,17 @@ class WebbyController extends ChangeNotifier {
   static Timer? _trace;
   static int _pumps = 0;
   static int _dartFrames = 0;
+  static int _nativeMicros = 0, _viewMicros = 0, _maxTickMicros = 0, _buildMicros = 0, _maxBuildMicros = 0;
   static void _startTrace() {
     if (_trace != null || Platform.environment['WEBBY_TRACE'] != '1') return;
     WidgetsBinding.instance.addPersistentFrameCallback((_) => _dartFrames++);
+    WidgetsBinding.instance.addTimingsCallback((timings) {
+      for (final t in timings) {
+        final build = t.buildDuration.inMicroseconds;
+        _buildMicros += build;
+        if (build > _maxBuildMicros) _maxBuildMicros = build;
+      }
+    });
     final pushed = <WebbyController, int>{};
     _trace = Timer.periodic(const Duration(seconds: 5), (_) {
       final views = _live.map((c) {
@@ -80,8 +88,9 @@ class WebbyController extends ChangeNotifier {
         return '${c._visible ? 'shown' : 'hidden'}${c.isLoading ? ' loading' : ''} frames=$frames';
       });
       stderr.writeln('webby-trace pumps=$_pumps dartFrames=$_dartFrames delay=${_pumpDelay.inMilliseconds}ms '
-          '[${views.join('; ')}]');
-      _pumps = _dartFrames = 0;
+          'nativeMs=${_nativeMicros ~/ 1000} viewMs=${_viewMicros ~/ 1000} maxTickMs=${(_maxTickMicros / 1000).toStringAsFixed(1)} '
+          'buildMs=${_buildMicros ~/ 1000} maxBuildMs=${(_maxBuildMicros / 1000).toStringAsFixed(1)} [${views.join('; ')}]');
+      _pumps = _dartFrames = _nativeMicros = _viewMicros = _maxTickMicros = _buildMicros = _maxBuildMicros = 0;
       // What the shown pages are animating.
       for (final c in _live.where((c) => c._visible && c._messagePrefix.isNotEmpty)) {
         if (!_traced.contains(c)) {
@@ -544,13 +553,21 @@ class WebbyController extends ChangeNotifier {
     _pumps++;
     if (_live.isEmpty) return;
     final bindings = _pumpBindings ??= _live.first._bindings;
+    final tickStart = _pumpClock.elapsedMicroseconds;
     final events = bindings.pump() > 0;
+    final nativeEnd = _pumpClock.elapsedMicroseconds;
     var busy = false;
     final first = _live.first;
     first._clipboard.pushPageCopies();
     first._location?.poll();
     for (final controller in _live.toList()) {
       if (_live.contains(controller) && controller._pump()) busy = true;
+    }
+    if (_trace != null) {
+      final end = _pumpClock.elapsedMicroseconds;
+      _nativeMicros += nativeEnd - tickStart;
+      _viewMicros += end - nativeEnd;
+      if (end - tickStart > _maxTickMicros) _maxTickMicros = end - tickStart;
     }
     if (_live.isEmpty) return;
     // Events alone (an animation presenting unchanged frames, a page's timers) get a short 4 ms burst after a slower
