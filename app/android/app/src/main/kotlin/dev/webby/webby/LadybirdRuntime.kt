@@ -17,7 +17,7 @@ import java.util.zip.ZipInputStream
  * Ladybird looks for .lagom in $XDG_CONFIG_HOME (WebView::platform_init), and the helpers inherit the environment.
  */
 object LadybirdRuntime {
-    private val helpers = listOf("WebContent", "RequestServer", "ImageDecoder", "Compositor", "MediaServer", "WebWorker")
+    private val helpers = listOf("WebContent", "RequestServer", "ImageDecoder", "Compositor", "MediaServer", "WebWorker", "WasmCompiler")
 
     private fun prefix(context: Context) = File(context.filesDir, "ladybird")
 
@@ -35,6 +35,9 @@ object LadybirdRuntime {
         // The helper processes are started with exec, outside the app's linker namespace; this is where any shared
         // library they need is.
         Os.setenv("LD_LIBRARY_PATH", context.applicationInfo.nativeLibraryDir, true)
+        // WasmCompiler looks for cranelift-compiler next to its own executable, which resolves to the native library
+        // directory where the file is named libcranelift-compiler.so, so it is named here instead.
+        Os.setenv("LADYBIRD_CRANELIFT_COMPILER", File(context.applicationInfo.nativeLibraryDir, "libcranelift-compiler.so").path, true)
         // Read by webby_init() (native/webby_ffi.cpp) as extra Ladybird arguments.
         Os.setenv("WEBBY_LADYBIRD_ARGS", "--certificate ${File(prefix, "cacert.pem").path}", true)
     }
