@@ -12,7 +12,11 @@
 #include <LibWebCommon/Geolocation/GeolocationPositionErrorCode.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/SharedImageBuffer.h>
+#include <LibWebCommon/StorageAPI/StorageEndpoint.h>
+#include <LibWebView/BrowsingSession.h>
+#include <LibWebView/CookieJar.h>
 #include <LibWebView/Menu.h>
+#include <LibWebView/StorageJar.h>
 #include <WebbyView.h>
 
 namespace Webby {
@@ -37,6 +41,53 @@ void Application::set_clipboard_from_system(String text)
     if (clipboard_text().to_utf8() == text)
         return;
     WebView::Application::set_clipboard_text(move(text));
+}
+
+// Whether a cookie for `domain` belongs to the site of `host`: the host itself, its parent domains (cookies such as
+// ".google.com" that maps.google.com uses) and its subdomains.
+static bool cookie_domain_matches(StringView domain, StringView host)
+{
+    auto is_suffix = [](StringView name, StringView suffix) {
+        return name.length() > suffix.length() && name.ends_with(suffix, CaseSensitivity::CaseInsensitive)
+            && name[name.length() - suffix.length() - 1] == '.';
+    };
+    if (domain.starts_with('.'))
+        domain = domain.substring_view(1);
+    if (domain.equals_ignoring_ascii_case(host))
+        return true;
+    // A bare TLD ("com") is never a site of its own.
+    if (is_suffix(host, domain) && domain.contains('.'))
+        return true;
+    return is_suffix(domain, host);
+}
+
+void Application::clear_site_data(URL::Origin const& origin)
+{
+    if (origin.is_opaque())
+        return;
+    auto host = origin.host().serialize().to_byte_string();
+    auto origin_string = origin.serialize();
+
+    auto clear = [&](WebView::BrowsingSession& session) {
+        for (auto const& cookie : session.cookie_jar->get_all_cookies()) {
+            auto domain = cookie.domain.bytes_as_string_view();
+            // Cookies a third-party frame set under this site's top level go too.
+            auto partition = cookie.partition_key.to_utf8();
+            bool partitioned_here = !cookie.partition_key.is_empty() && partition.bytes_as_string_view().ends_with(host, CaseSensitivity::CaseInsensitive);
+            if (!cookie_domain_matches(domain, host) && !partitioned_here)
+                continue;
+            session.cookie_jar->delete_cookie({ cookie.name, cookie.domain, cookie.path, cookie.partition_key });
+        }
+        for (auto endpoint : { Web::StorageAPI::StorageEndpointType::LocalStorage, Web::StorageAPI::StorageEndpointType::IndexedDB, Web::StorageAPI::StorageEndpointType::Caches })
+            session.storage_jar->clear_storage_key(endpoint, origin_string);
+    };
+    clear(default_session());
+
+    WebView::ViewImplementation::for_each_view([&](WebView::ViewImplementation& view) {
+        if (view.url().origin().is_same_origin(origin))
+            view.clear_session_storage();
+        return IterationDecision::Continue;
+    });
 }
 
 static int cursor_to_int(Gfx::Cursor const& cursor)

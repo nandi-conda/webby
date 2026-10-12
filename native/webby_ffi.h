@@ -153,6 +153,21 @@ WEBBY_API void webby_geolocation_set_position(double latitude, double longitude,
     double altitude, double altitude_accuracy, double heading, double speed);
 WEBBY_API void webby_geolocation_set_error(int code, char const* message);
 
+/* Site data. webby_clear_site_data() deletes the cookies of the site of `url`
+ * (its host, parent domains and subdomains, and cookies frames set under it)
+ * and its origin's localStorage, IndexedDB and Cache Storage, and clears the
+ * sessionStorage of views showing that origin. Reload such pages after it.
+ * webby_clear_browsing_data() clears what `what` names (flags below) that was
+ * used since `since_ms` (Unix time in milliseconds; 0 for all time); it
+ * finishes in the background. */
+enum {
+    WEBBY_BROWSING_DATA_CACHE = 1,
+    WEBBY_BROWSING_DATA_SITE_DATA = 2,
+    WEBBY_BROWSING_DATA_HISTORY = 4,
+};
+WEBBY_API void webby_clear_site_data(char const* url);
+WEBBY_API void webby_clear_browsing_data(int64_t since_ms, int what);
+
 /* Clipboard. Ladybird keeps its own clipboard: Ctrl+C / Ctrl+X in a page and
  * navigator.clipboard.write*() put text there, Ctrl+V and
  * navigator.clipboard.read*() take it from there. webby_clipboard_serial()

@@ -25,6 +25,7 @@ import 'src/pwa/app_window.dart';
 import 'src/pwa/install_dialog.dart';
 import 'src/pwa/offline.dart';
 import 'src/pwa/pwa_agent.dart';
+import 'src/site_data.dart';
 import 'src/site_settings.dart';
 import 'src/tab_strip.dart';
 import 'src/tabs/device_tabs.dart';
@@ -356,6 +357,15 @@ class _BrowserPageState extends State<BrowserPage> {
     if (url != null) _go(url);
   }
 
+  Future<void> _clearBrowsingData() async {
+    final data = SiteData.of(WebbyBindings.open());
+    if (data == null) {
+      showKitToast(context, 'This Ladybird runtime is too old to clear browsing data');
+      return;
+    }
+    if (await showClearBrowsingData(context, data) && mounted) showKitToast(context, 'Browsing data cleared');
+  }
+
   void _toggleBookmarkBar() => BookmarkStore.instance.showBar = !BookmarkStore.instance.showBar;
 
   static const _shortcuts = <ShortcutActivator, String>{
@@ -365,6 +375,7 @@ class _BrowserPageState extends State<BrowserPage> {
     SingleActivator(LogicalKeyboardKey.keyT, control: true): 'newTab',
     SingleActivator(LogicalKeyboardKey.keyT, control: true, shift: true): 'reopenTab',
     SingleActivator(LogicalKeyboardKey.keyN, control: true, shift: true): 'incognito',
+    SingleActivator(LogicalKeyboardKey.delete, control: true, shift: true): 'clearData',
     SingleActivator(LogicalKeyboardKey.keyW, control: true): 'closeTab',
     SingleActivator(LogicalKeyboardKey.tab, control: true): 'nextTab',
     SingleActivator(LogicalKeyboardKey.tab, control: true, shift: true): 'previousTab',
@@ -407,7 +418,10 @@ class _BrowserPageState extends State<BrowserPage> {
       return !keyboard.isShiftPressed;
     }
     return keyboard.isShiftPressed &&
-        (key == LogicalKeyboardKey.keyB || key == LogicalKeyboardKey.keyO || key == LogicalKeyboardKey.keyN);
+        (key == LogicalKeyboardKey.keyB ||
+            key == LogicalKeyboardKey.keyO ||
+            key == LogicalKeyboardKey.keyN ||
+            key == LogicalKeyboardKey.delete);
   }
 
   void _runShortcut(String name) {
@@ -424,6 +438,8 @@ class _BrowserPageState extends State<BrowserPage> {
         _reopenClosedTab();
       case 'incognito':
         _openIncognito();
+      case 'clearData':
+        _clearBrowsingData();
       case 'closeTab':
         _closeTab(_active);
       case 'nextTab':
@@ -579,6 +595,8 @@ class _BrowserPageState extends State<BrowserPage> {
                         const KitMenuDivider(),
                         KitMenuItem('New incognito window', shortcut: 'Ctrl+Shift+N', onSelected: _openIncognito),
                       ],
+                      const KitMenuDivider(),
+                      KitMenuItem('Clear browsing data…', shortcut: 'Ctrl+Shift+Del', onSelected: _clearBrowsingData),
                     ],
                     builder: (context, toggle, open) =>
                         KitIconButton(Icons.bookmarks_outlined, tooltip: 'Bookmarks', onPressed: toggle),

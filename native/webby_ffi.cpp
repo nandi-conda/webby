@@ -14,6 +14,7 @@
 #include <LibWebCommon/CSS/PreferredColorScheme.h>
 #include <LibWebCommon/Page/InputEvent.h>
 #include <LibRequests/RequestControlClient.h>
+#include <LibURL/Parser.h>
 #include <LibWebView/Application.h>
 #include <LibWebView/Menu.h>
 #include <LibWebView/Utilities.h>
@@ -257,6 +258,28 @@ void webby_clipboard_set_text(char const* text)
     auto string = String::from_utf8(StringView { text, strlen(text) });
     if (!string.is_error())
         s_application->set_clipboard_from_system(string.release_value());
+}
+
+void webby_clear_site_data(char const* url)
+{
+    if (!s_application)
+        return;
+    auto parsed = URL::Parser::basic_parse(StringView { url, strlen(url) });
+    if (parsed.has_value())
+        s_application->clear_site_data(parsed->origin());
+}
+
+void webby_clear_browsing_data(int64_t since_ms, int what)
+{
+    if (!s_application)
+        return;
+    using Delete = WebView::Application::ClearBrowsingDataOptions::Delete;
+    WebView::Application::ClearBrowsingDataOptions options;
+    options.since = UnixDateTime::from_milliseconds_since_epoch(since_ms);
+    options.delete_cached_files = (what & WEBBY_BROWSING_DATA_CACHE) ? Delete::Yes : Delete::No;
+    options.delete_history = (what & WEBBY_BROWSING_DATA_HISTORY) ? Delete::Yes : Delete::No;
+    options.delete_site_data = (what & WEBBY_BROWSING_DATA_SITE_DATA) ? Delete::Yes : Delete::No;
+    (void)s_application->clear_browsing_data(options);
 }
 
 char const* webby_view_permission_request(WebbyView* handle) { return handle->view->permission_request().characters(); }

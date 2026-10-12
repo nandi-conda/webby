@@ -41,6 +41,9 @@ public:
     void set_clipboard_from_system(String);
     u64 clipboard_serial() const { return m_clipboard_serial; }
 
+    // A site's cookies and stored data (see webby_clear_site_data() in webby_ffi.h).
+    void clear_site_data(URL::Origin const&);
+
 private:
     u64 m_clipboard_serial { 0 };
 };

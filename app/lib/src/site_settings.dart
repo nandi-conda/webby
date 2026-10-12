@@ -1,6 +1,8 @@
 import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart';
 
+import 'bindings.dart';
+import 'site_data.dart';
 import 'site_permissions.dart';
 import 'ui.dart';
 import 'web_view.dart';
@@ -148,6 +150,24 @@ Future<void> showSiteSettings(BuildContext context, WebbyController controller) 
                       ],
                     ),
                   ),
+                if (SiteData.of(WebbyBindings.open()) case final data?) ...[
+                  const SizedBox(height: 12),
+                  const KitDivider(),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Icon(Icons.cookie_outlined, size: 18, color: c.textDim),
+                      const SizedBox(width: 10),
+                      const Expanded(child: Text('Cookies and site data')),
+                      KitButton('Delete', onPressed: () async {
+                        if (!await confirmClearSiteData(context, siteName(origin))) return;
+                        data.clearSite(url);
+                        controller.reload();
+                        if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+                      }),
+                    ],
+                  ),
+                ],
                 if (!secure) ...[
                   const SizedBox(height: 6),
                   Text('Pages that aren\'t secure can\'t use these.', style: KitText.dim(context, small: true)),
