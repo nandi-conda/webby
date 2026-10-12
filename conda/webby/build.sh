@@ -31,8 +31,11 @@ if ! grep -q WEBBY_APP_ID "$runner"; then
 fi
 [ "$(grep -c webby_app_id "$runner")" -ge 4 ]
 # Hide the windows as soon as the app quits instead of when the process finally exits; see fast_close.inc.
-grep -q gtk_window_list_toplevels "$runner" ||
+grep -q gtk_window_list_toplevels "$runner" || {
   sed -i "/Perform any actions required at application shutdown./r $RECIPE_DIR/fast_close.inc" "$runner"
+  sed -i '0,/^#include "my_application.h"/s//&\n\n#include <unistd.h>/' "$runner"
+}
+grep -q "include <unistd.h>" "$runner"
 grep -q gtk_window_list_toplevels "$runner"
 flutter build linux --release
 

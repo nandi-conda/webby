@@ -30,7 +30,9 @@ struct WebbyView {
     NonnullOwnPtr<Webby::View> view;
 };
 
-static OwnPtr<Webby::Application> s_application;
+// Deliberately leaked: destroying it from exit()'s static destructors runs after the event loop is gone, and
+// ~Process -> did_lose_process -> deferred_invoke then VERIFY-crashes (SIGILL core dump on every quit).
+static Webby::Application* s_application;
 static Optional<Core::AnonymousBuffer> s_theme;
 
 static Web::DevicePixelSize to_device_size(int width, int height)
@@ -79,7 +81,7 @@ int webby_init(char const* prefix)
         warnln("webby: Unable to create application: {}", application.error());
         return -1;
     }
-    s_application = application.release_value();
+    s_application = application.release_value().leak_ptr();
     if (!WebView::Application::settings().geolocation_enabled())
         WebView::Application::settings().set_geolocation_enabled(true);
 
