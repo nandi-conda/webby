@@ -14,6 +14,7 @@ import 'src/bookmarks/bookmarks_page.dart';
 import 'src/color_scheme.dart';
 import 'src/frame_bench.dart';
 import 'src/incognito.dart';
+import 'src/notifications.dart';
 import 'src/omnibox.dart';
 import 'src/passkey_dialog.dart';
 import 'src/passwords/password_bar.dart';
@@ -95,6 +96,8 @@ class _BrowserTab {
   final WebbyController controller;
   late final PasswordAgent passwords;
   late final PwaAgent pwa;
+  /// Set when the tab joins the window, which its notifications bring forward.
+  NotificationAgent? notifications;
   final focus = FocusNode(debugLabel: 'page');
   Map<String, Object?>? shownPasskeyPrompt;
   /// When the tab last went into the background (null while it is the active tab).
@@ -103,6 +106,7 @@ class _BrowserTab {
   void dispose() {
     passwords.dispose();
     pwa.dispose();
+    notifications?.dispose();
     controller.dispose();
     focus.dispose();
   }
@@ -153,6 +157,9 @@ class _BrowserPageState extends State<BrowserPage> {
 
   _BrowserTab _insertTab(_BrowserTab tab, {int? at}) {
     tab.controller.addListener(() => _onPageChanged(tab));
+    tab.notifications = NotificationAgent(tab.controller, onClick: () {
+      if (mounted && _tabs.contains(tab)) _selectTab(_tabs.indexOf(tab));
+    });
     // Links with target=_blank and window.open() open a tab next to their opener and switch to it.
     tab.controller.onNewView = (controller) {
       final index = _tabs.indexOf(tab);

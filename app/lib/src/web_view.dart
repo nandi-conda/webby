@@ -108,12 +108,37 @@ class WebbyController extends ChangeNotifier {
   late final PasswordNative _passwordNative = PasswordNative.of(_bindings);
   late final ClipboardBridge _clipboard = ClipboardBridge.of(_bindings);
   late final PageFilePicker? _filePicker = PageFilePicker.of(_bindings);
-  late final PagePermissions? _permissions = PagePermissions.of(_bindings);
+  late final PagePermissions? _permissions = PagePermissions.of(_bindings)?..allowedThisTime = _allowedThisTime;
   late final LocationBridge? _location = LocationBridge.of(_bindings);
 
   /// A site's request for a permission (such as the location) waiting for the user, or null. Requests the user
   /// already answered for the site are answered without showing up here.
-  PermissionRequest? get permissionRequest => _permissions?.request;
+  PermissionRequest? get permissionRequest => _permissions?.request ?? _asks.firstOrNull?.$1;
+
+  /// "Allow this time" answers, by "origin permission"; they last as long as the tab.
+  final Set<String> _allowedThisTime = {};
+
+  /// Requests from the browser's own page scripts (see [askPermission]), oldest first.
+  final List<(PermissionRequest, Completer<bool>)> _asks = [];
+  int _askIds = 0;
+
+  /// What [origin] may do with [permission] in this tab: a remembered answer, or allow after "Allow this time".
+  PermissionSetting permissionFor(String origin, String permission) => _allowedThisTime.contains('$origin $permission')
+      ? PermissionSetting.allow
+      : SitePermissionStore.instance.get(origin, permission);
+
+  /// Asks the user, like the engine's own requests, whether [origin] may use [permission] (for features the
+  /// browser's page scripts provide, such as notifications). Completes at once when the site was answered before.
+  Future<bool> askPermission(String origin, String permission) {
+    final setting = permissionFor(origin, permission);
+    if (setting != PermissionSetting.ask) return Future.value(setting == PermissionSetting.allow);
+    final waiting = _asks.where((a) => a.$1.origin == origin && a.$1.permission == permission).firstOrNull;
+    if (waiting != null) return waiting.$2.future;
+    final completer = Completer<bool>();
+    _asks.add((PermissionRequest(id: --_askIds, permission: permission, origin: origin), completer));
+    notifyListeners();
+    return completer.future;
+  }
   // Set while a paste waits for the system clipboard; key events that come meanwhile queue up behind it.
   Future<void>? _pendingPaste;
   String _messagePrefix = _randomPrefix();
@@ -305,14 +330,26 @@ class WebbyController extends ChangeNotifier {
   /// Answers [permissionRequest]. [remember] keeps the answer for the site; an allow without it lasts for this tab.
   void answerPermission({required bool allow, required bool remember}) {
     final permissions = _permissions;
-    if (permissions == null) return;
-    _ifAttached((v) => permissions.answer(v, allow: allow, remember: remember));
-    permissions.request = null;
+    if (permissions != null && permissions.request != null) {
+      _ifAttached((v) => permissions.answer(v, allow: allow, remember: remember));
+      permissions.request = null;
+      notifyListeners();
+      return;
+    }
+    if (_asks.isEmpty) return;
+    final (request, completer) = _asks.removeAt(0);
+    if (remember) {
+      SitePermissionStore.instance
+          .set(request.origin, request.permission, allow ? PermissionSetting.allow : PermissionSetting.block);
+    } else if (allow) {
+      _allowedThisTime.add('${request.origin} ${request.permission}');
+    }
+    completer.complete(allow);
     notifyListeners();
   }
 
   /// Forgets this tab's "allow this time" answers for [origin].
-  void forgetPermissions(String origin) => _permissions?.forgetThisTime(origin);
+  void forgetPermissions(String origin) => _allowedThisTime.removeWhere((key) => key.startsWith('$origin '));
 
   void mouseEvent(int type, Offset position, {int button = 0, int buttons = 0, int modifiers = 0, int clickCount = 0}) =>
       _ifAttached((v) => _bindings.mouseEvent(
@@ -479,6 +516,10 @@ class WebbyController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    for (final (_, completer) in _asks) {
+      completer.complete(false);
+    }
+    _asks.clear();
     _pumpTimer.cancel();
     _releaseFrames?.cancel();
     PageColorScheme.unfollow(_colorScheme);

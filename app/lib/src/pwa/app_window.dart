@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../bindings.dart';
+import '../notifications.dart';
 import '../passkey_dialog.dart';
 import '../passwords/password_bar.dart';
 import '../passwords/password_manager.dart';
@@ -26,6 +27,7 @@ class AppWindowPage extends StatefulWidget {
 class _AppWindowPageState extends State<AppWindowPage> {
   WebbyController? _controller;
   PasswordAgent? _passwords;
+  NotificationAgent? _notifications;
   Object? _startupError;
   InstalledApp? _app;
   final _pageFocus = FocusNode(debugLabel: 'page');
@@ -39,6 +41,7 @@ class _AppWindowPageState extends State<AppWindowPage> {
     try {
       _controller = WebbyController(initialUrl: widget.startUrl)..addListener(_onPageChanged);
       _passwords = PasswordAgent(_controller!);
+      _notifications = NotificationAgent(_controller!);
       PasswordManager.instance.start(WebbyBindings.open());
       OfflineMonitor.start(WebbyBindings.open())?.addListener(_onOffline);
     } catch (error) {
@@ -79,6 +82,7 @@ class _AppWindowPageState extends State<AppWindowPage> {
   void dispose() {
     OfflineMonitor.instance?.removeListener(_onOffline);
     _passwords?.dispose();
+    _notifications?.dispose();
     _controller?.dispose();
     _pageFocus.dispose();
     super.dispose();

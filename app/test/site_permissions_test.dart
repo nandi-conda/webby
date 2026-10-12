@@ -56,6 +56,7 @@ void main() {
   test('requests wait for the user unless the site was answered', () {
     final queue = FakeQueue();
     final permissions = PagePermissions.withFunctions(queue.request, queue.respond);
+    final thisTime = permissions.allowedThisTime;
     final view = Pointer<Void>.fromAddress(1);
 
     queue.requests.add({'id': 1, 'permission': 'geolocation', 'origin': 'https://a.example'});
@@ -72,6 +73,7 @@ void main() {
     permissions.check(view);
     expect(queue.answers.last, (3, true));
     expect(SitePermissionStore.instance.get('https://a.example', 'geolocation'), PermissionSetting.ask);
+    expect(thisTime, {'https://a.example geolocation'});
 
     // Unknown permissions are refused outright.
     queue.requests.add({'id': 4, 'permission': 'midi', 'origin': 'https://a.example'});

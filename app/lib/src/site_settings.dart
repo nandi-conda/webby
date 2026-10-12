@@ -78,7 +78,7 @@ class PermissionBubble extends StatelessWidget {
                 children: [
                   choice('Allow while visiting the site', allow: true, remember: true),
                   choice('Allow this time', allow: true, remember: false),
-                  choice('Never allow', allow: false, remember: false),
+                  choice('Never allow', allow: false, remember: true),
                 ],
               ),
             ),

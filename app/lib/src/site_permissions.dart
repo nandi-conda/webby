@@ -26,7 +26,10 @@ class SitePermissionKind {
 
   static const location = SitePermissionKind('geolocation', 'Location', 'Know your location', Icons.location_on_outlined);
 
-  static const all = [location];
+  static const notifications =
+      SitePermissionKind('notifications', 'Notifications', 'Show notifications', Icons.notifications_outlined);
+
+  static const all = [location, notifications];
 
   static SitePermissionKind? named(String name) => all.where((k) => k.name == name).firstOrNull;
 }
@@ -154,8 +157,8 @@ class PagePermissions {
   PermissionRequest? request;
   String _json = '';
 
-  /// "Allow this time" answers, by "origin permission"; they last as long as the tab.
-  final Set<String> _allowedThisTime = {};
+  /// "Allow this time" answers, by "origin permission"; they last as long as the tab. The tab shares its set.
+  Set<String> allowedThisTime = {};
 
   /// Call when the view's state changes. Returns whether [request] changed.
   bool check(ViewPtr view) {
@@ -166,7 +169,7 @@ class PagePermissions {
       request = null;
       if (json.isEmpty) break;
       final parsed = PermissionRequest.fromJson(jsonDecode(json) as Map<String, Object?>);
-      final setting = _allowedThisTime.contains('${parsed.origin} ${parsed.permission}')
+      final setting = allowedThisTime.contains('${parsed.origin} ${parsed.permission}')
           ? PermissionSetting.allow
           : SitePermissionStore.instance.get(parsed.origin, parsed.permission);
       // Permissions this browser doesn't know how to ask about are refused.
@@ -187,13 +190,10 @@ class PagePermissions {
       SitePermissionStore.instance
           .set(pending.origin, pending.permission, allow ? PermissionSetting.allow : PermissionSetting.block);
     } else if (allow) {
-      _allowedThisTime.add('${pending.origin} ${pending.permission}');
+      allowedThisTime.add('${pending.origin} ${pending.permission}');
     }
     _respond(view, pending.id, allow ? 1 : 0);
   }
-
-  /// Forgets "this time" grants for [origin] (after its settings were reset).
-  void forgetThisTime(String origin) => _allowedThisTime.removeWhere((key) => key.startsWith('$origin '));
 
   /// A recreated view (a discarded tab coming back) starts with nothing waiting.
   void reset() {

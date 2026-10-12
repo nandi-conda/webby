@@ -3,6 +3,8 @@
     <!-- Sites asking for navigator.geolocation (after the user allowed the site). -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <!-- Sites' notifications (Notification API), after the user allowed the site. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:label="Webby"
         android:name="${applicationName}"
