@@ -133,6 +133,8 @@ class _BrowserTab {
   PageDialog? shownDialog;
   /// When the tab last went into the background (null while it is the active tab).
   DateTime? hiddenSince;
+  /// Pinned tabs sit small at the start of the strip, survive "Close other tabs" and come back at the next start.
+  bool pinned = false;
   /// The page address last recorded in the history for this tab, and its visit (null when it isn't recorded).
   String recordedUrl = '';
   HistoryEntry? visit;
@@ -192,7 +194,10 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
         AndroidHost.onMemoryPressure(_onMemoryPressure);
       }
       WidgetsBinding.instance.addObserver(this);
-      if (_restoresTabs) _lifecycle = AppLifecycleListener(onHide: () => OpenTabsStore.instance.flush(_sessionTabs(), _active));
+      if (_restoresTabs) {
+        _lifecycle = AppLifecycleListener(
+            onHide: () => OpenTabsStore.instance.flush(_sessionTabs(), _active, pinned: _pinnedCount));
+      }
       if (!Incognito.active && !Platform.isAndroid) _exitListener = AppLifecycleListener(onExitRequested: _onExitRequested);
     } catch (error) {
       _startupError = error;
@@ -207,6 +212,12 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
   void _openStartTabs() {
     final saved = _restoresTabs ? OpenTabsStore.instance.read() : null;
     if (saved == null) {
+      // Desktop doesn't keep the open tabs, but pinned ones come back (unloaded until selected), ahead of the start page.
+      final pinned = _restoresTabs || Incognito.active ? null : OpenTabsStore.pinned.read();
+      for (final tab in pinned?.tabs ?? const <DeviceTab>[]) {
+        _insertTab(_BrowserTab.withController(WebbyController.unloaded(tab.url, title: tab.title))..pinned = true);
+      }
+      _active = _tabs.length;
       _addTab(widget.initialUrl);
       // More addresses on the command line open as background tabs.
       for (final url in widget.moreUrls) {
@@ -216,8 +227,8 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
       return;
     }
     // Only the front tab loads now; the others wait until they're selected.
-    for (final tab in saved.tabs) {
-      _insertTab(_BrowserTab.withController(WebbyController.unloaded(tab.url, title: tab.title)));
+    for (final (i, tab) in saved.tabs.indexed) {
+      _insertTab(_BrowserTab.withController(WebbyController.unloaded(tab.url, title: tab.title))..pinned = i < saved.pinned);
     }
     _active = saved.active;
     final launch = widget.launchUrl;
@@ -241,9 +252,25 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
       final opened = _insertTab(_BrowserTab.withController(controller), at: index < 0 ? null : index + 1);
       _selectTab(_tabs.indexOf(opened));
     };
-    _tabs.insert(at ?? _tabs.length, tab);
+    // Pinned tabs stay together at the start; an unpinned tab opened among them goes just after them.
+    final pinnedCount = _pinnedCount;
+    final index = at ?? _tabs.length;
+    _tabs.insert(tab.pinned ? index.clamp(0, pinnedCount) : index.clamp(pinnedCount, _tabs.length), tab);
     _publishTabs();
     return tab;
+  }
+
+  int get _pinnedCount => _tabs.takeWhile((t) => t.pinned).length;
+
+  /// Pins tab [index] (moving it to the end of the pinned tabs) or unpins it (moving it just after them).
+  void _togglePinned(int index) {
+    if (index < 0 || index >= _tabs.length) return;
+    final active = _tab;
+    final tab = _tabs.removeAt(index);
+    tab.pinned = !tab.pinned;
+    _tabs.insert(_pinnedCount, tab);
+    setState(() => _active = _tabs.indexOf(active!));
+    _publishTabs();
   }
 
   void _newTab([String url = _blankUrl]) {
@@ -274,7 +301,15 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
   void _publishTabs() {
     if (Incognito.active) return;
     DeviceTabs.instance.setTabs([for (final t in _tabs) DeviceTab(t.controller.title, t.controller.url)]);
-    if (_restoresTabs) OpenTabsStore.instance.save(_sessionTabs(), _active);
+    if (_restoresTabs) OpenTabsStore.instance.save(_sessionTabs(), _active, pinned: _pinnedCount);
+    _savePinnedTabs();
+  }
+
+  /// Desktop keeps the pinned tabs for the next start (Android keeps them with the other open tabs).
+  void _savePinnedTabs() {
+    if (_restoresTabs || Incognito.active) return;
+    final pinned = [for (final t in _tabs.where((t) => t.pinned)) DeviceTab(t.controller.title, t.controller.url)];
+    OpenTabsStore.pinned.save(pinned, 0, pinned: pinned.length);
   }
 
   /// Opens a new incognito window (a separate process; desktop only).
@@ -345,16 +380,16 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     return true;
   }
 
-  /// Closes every tab, leaving one blank tab (like closing the last tab).
+  /// Closes every tab but the pinned ones, leaving one blank tab after them (like closing the last tab).
   void _closeAllTabs() {
-    final old = List.of(_tabs);
-    _tabs.clear();
-    _active = 0;
+    final old = _tabs.where((t) => !t.pinned).toList();
+    _tabs.removeWhere(old.contains);
+    _active = _tabs.length;
     _addTab(_blankUrl);
     for (final t in old) {
       t.dispose();
     }
-    _selectTab(0, force: true);
+    _selectTab(_active, force: true);
   }
 
   Future<void> _openSessions() async {
@@ -380,7 +415,8 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
         tab = _addTab(url, at: at);
         tab.controller.visible = false;
       }
-      at++;
+      // Pinned tabs may have pushed it further along.
+      at = _tabs.indexOf(tab) + 1;
       if (i == open.active) front = tab;
     }
     setState(() {});
@@ -423,6 +459,7 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     final candidates = _tabs
         .where((t) =>
             t != _tab &&
+            !t.pinned &&
             t.hiddenSince != null &&
             !t.controller.isDiscarded &&
             t.controller.isAttached &&
@@ -500,7 +537,7 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     if (index < 0 || index >= _tabs.length) return;
     final keep = _tabs[index];
     for (var i = _tabs.length - 1; i >= 0; i--) {
-      if (_tabs[i] != keep && (!toTheRight || i > index)) _closeTab(i);
+      if (_tabs[i] != keep && !_tabs[i].pinned && (!toTheRight || i > index)) _closeTab(i);
     }
     _selectTab(_tabs.indexOf(keep), force: true);
   }
@@ -514,11 +551,15 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
         const KitMenuDivider(),
         KitMenuItem('Reload', onSelected: () => _tabs[index].controller.reload()),
         KitMenuItem('Duplicate', onSelected: () => _duplicateTab(index)),
+        KitMenuItem(_tabs[index].pinned ? 'Unpin tab' : 'Pin tab', onSelected: () => _togglePinned(index)),
         const KitMenuDivider(),
         KitMenuItem('Close', shortcut: index == _active ? 'Ctrl+W' : null, onSelected: () => _closeTab(index)),
-        KitMenuItem('Close other tabs', onSelected: _tabs.length > 1 ? () => _closeOtherTabs(index) : null),
+        KitMenuItem('Close other tabs',
+            onSelected: _tabs.indexed.any((e) => e.$1 != index && !e.$2.pinned) ? () => _closeOtherTabs(index) : null),
         KitMenuItem(layout.vertical ? 'Close tabs below' : 'Close tabs to the right',
-            onSelected: index < _tabs.length - 1 ? () => _closeOtherTabs(index, toTheRight: true) : null),
+            onSelected: _tabs.skip(index + 1).any((t) => !t.pinned)
+                ? () => _closeOtherTabs(index, toTheRight: true)
+                : null),
       ],
       const KitMenuDivider(),
       KitMenuItem('Reopen closed tab', shortcut: 'Ctrl+Shift+T',
@@ -539,7 +580,7 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     if (index < 0 || index >= _tabs.length || (index == _active && !force)) return;
     setState(() => _active = index);
     _syncVisibility();
-    if (_restoresTabs) OpenTabsStore.instance.save(_sessionTabs(), _active);
+    if (_restoresTabs) OpenTabsStore.instance.save(_sessionTabs(), _active, pinned: _pinnedCount);
     final tab = _tabs[index];
     final url = tab.controller.url;
     _shownUrl = url;
@@ -802,7 +843,12 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     final tabStrip = TabStrip(
       tabs: [
         for (final t in _tabs)
-          TabLabel(title: tabTitle(t.controller.title, t.controller.url), loading: t.controller.isLoading),
+          TabLabel(
+            title: tabTitle(t.controller.title, t.controller.url),
+            loading: t.controller.isLoading,
+            pinned: t.pinned,
+            url: t.controller.url,
+          ),
       ],
       active: _active,
       vertical: vertical,

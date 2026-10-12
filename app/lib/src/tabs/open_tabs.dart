@@ -21,6 +21,12 @@ class OpenTabsStore {
 
   static OpenTabsStore get instance => _instance ??= OpenTabsStore(defaultFile());
 
+  static OpenTabsStore? _pinned;
+
+  /// Desktop's pinned tabs, which open again at the next start, in pinned_tabs.json next to open_tabs.json.
+  static OpenTabsStore get pinned =>
+      _pinned ??= OpenTabsStore(File('${SessionStore.defaultFile().parent.path}/pinned_tabs.json'));
+
   static File defaultFile() {
     final override = Platform.environment['WEBBY_OPEN_TABS_FILE'];
     if (override != null && override.isNotEmpty) return File(override);
@@ -31,8 +37,9 @@ class OpenTabsStore {
   Timer? _pending;
   String _written = '';
 
-  /// The tabs last saved, with the index of the front one, or null when there are none.
-  ({List<DeviceTab> tabs, int active})? read() {
+  /// The tabs last saved, with the index of the front one and how many at the start are pinned, or null when there
+  /// are none.
+  ({List<DeviceTab> tabs, int active, int pinned})? read() {
     try {
       final json = jsonDecode(file.readAsStringSync()) as Map<String, Object?>;
       final tabs = [
@@ -41,38 +48,43 @@ class OpenTabsStore {
       ];
       if (tabs.isEmpty) return null;
       final active = (json['active'] as int? ?? 0).clamp(0, tabs.length - 1);
-      return (tabs: tabs, active: active);
+      final pinned = (json['pinned'] as int? ?? 0).clamp(0, tabs.length);
+      return (tabs: tabs, active: active, pinned: pinned);
     } catch (_) {
       return null;
     }
   }
 
   /// Saves [tabs] a moment later, so a burst of page changes is written once.
-  void save(List<DeviceTab> tabs, int active) {
+  void save(List<DeviceTab> tabs, int active, {int pinned = 0}) {
     if (Incognito.active) return;
     _pending?.cancel();
-    _pending = Timer(const Duration(seconds: 1), () => _write(tabs, active));
+    _pending = Timer(const Duration(seconds: 1), () => _write(tabs, active, pinned));
   }
 
   /// Writes what [save] is holding back now (e.g. as the app goes into the background).
-  void flush(List<DeviceTab> tabs, int active) {
+  void flush(List<DeviceTab> tabs, int active, {int pinned = 0}) {
     if (Incognito.active) return;
     _pending?.cancel();
     _pending = null;
-    _write(tabs, active);
+    _write(tabs, active, pinned);
   }
 
-  void _write(List<DeviceTab> tabs, int active) {
+  /// [pinned] counts the pinned tabs at the start of [tabs].
+  void _write(List<DeviceTab> tabs, int active, int pinned) {
     final kept = <DeviceTab>[];
     var front = 0;
+    var keptPinned = 0;
     for (final (i, tab) in tabs.indexed) {
       if (!isSessionUrl(tab.url)) continue;
       if (i <= active) front = kept.length;
+      if (i < pinned) keptPinned++;
       kept.add(tab);
     }
     final contents = jsonEncode({
       'version': 1,
       'active': front,
+      'pinned': keptPinned,
       'tabs': [for (final tab in kept) tab.toJson()],
     });
     if (contents == _written) return;

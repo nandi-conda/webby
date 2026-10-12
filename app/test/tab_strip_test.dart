@@ -164,4 +164,46 @@ void main() {
     expect(find.text('Tab 5'), findsOneWidget);
     expect(tester.getRect(find.text('Tab 5')).right, lessThanOrEqualTo(400 - 36));
   });
+
+  testWidgets('pinned tabs are small, show the site letter and have no close button', (tester) async {
+    for (final vertical in [false, true]) {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 800,
+              height: 400,
+              child: Flex(
+                direction: vertical ? Axis.horizontal : Axis.vertical,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TabStrip(
+                    tabs: const [
+                      TabLabel(title: 'Mail', url: 'https://www.mail.example/', pinned: true),
+                      TabLabel(title: 'One'),
+                    ],
+                    active: 1,
+                    vertical: vertical,
+                    onSelect: (_) {},
+                    onClose: (_) {},
+                    onNew: () {},
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(find.text('M'), findsOneWidget);
+      expect(find.text('Mail'), findsNothing);
+      expect(find.text('One'), findsOneWidget);
+      expect(find.byIcon(Icons.close), findsOneWidget);
+    }
+  });
+
+  test('tabInitial uses the site, else the title', () {
+    expect(tabInitial('Mail', 'https://www.mail.example/'), 'M');
+    expect(tabInitial('docs', 'about:blank'), 'D');
+    expect(tabInitial('', ''), '');
+  });
 }

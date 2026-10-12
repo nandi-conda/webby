@@ -4,10 +4,21 @@ import 'package:flutter/material.dart';
 
 /// What the tab strip shows for one tab.
 class TabLabel {
-  const TabLabel({required this.title, this.loading = false});
+  const TabLabel({required this.title, this.loading = false, this.pinned = false, this.url = ''});
 
   final String title;
   final bool loading;
+  /// A pinned tab is drawn small, without its title or close button. Pinned tabs come first in the list.
+  final bool pinned;
+  /// The page address, whose site's first letter marks a pinned tab.
+  final String url;
+}
+
+/// The letter a pinned tab shows: the first of the site's name (without "www."), else of the title.
+String tabInitial(String title, String url) {
+  final host = Uri.tryParse(url)?.host.replaceFirst(RegExp(r'^www\.'), '') ?? '';
+  final text = host.isNotEmpty ? host : title.trim();
+  return text.isEmpty ? '' : text.substring(0, 1).toUpperCase();
 }
 
 /// The text for a tab: the page title, else the URL without its scheme, else "New tab".
@@ -50,6 +61,7 @@ class TabStrip extends StatefulWidget {
 class _TabStripState extends State<TabStrip> {
   static const _minTabWidth = 120.0;
   static const _newTabWidth = 36.0;
+  static const _pinnedWidth = 40.0;
   final _scroll = ScrollController();
   int _scrolledTo = -1;
 
@@ -60,7 +72,8 @@ class _TabStripState extends State<TabStrip> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scroll.hasClients) return;
       final position = _scroll.position;
-      final start = widget.active * _minTabWidth;
+      final start = (widget.active - _pinnedCount) * _minTabWidth;
+      if (start < 0) return;
       final end = start + _minTabWidth;
       double? target;
       if (start < position.pixels) {
@@ -101,6 +114,9 @@ class _TabStripState extends State<TabStrip> {
     });
   }
 
+  /// How many tabs at the start of the list are pinned.
+  int get _pinnedCount => widget.tabs.takeWhile((t) => t.pinned).length;
+
   Widget _tab(int i) => _Tab(
         label: widget.tabs[i],
         selected: i == widget.active,
@@ -117,6 +133,7 @@ class _TabStripState extends State<TabStrip> {
     // Double-clicking the strip's empty space opens a new tab. Only the empty space listens, so a tab's own
     // clicks aren't held back waiting to see whether a second click follows.
     final empty = GestureDetector(behavior: HitTestBehavior.opaque, onDoubleTap: widget.onNew);
+    final pinned = _pinnedCount;
     final Widget strip;
     if (widget.vertical) {
       strip = Container(
@@ -128,7 +145,19 @@ class _TabStripState extends State<TabStrip> {
               padding: const EdgeInsets.only(top: 4),
               sliver: SliverList.list(
                 children: [
-                  for (var i = 0; i < widget.tabs.length; i++) SizedBox(height: 32, child: _tab(i)),
+                  // Pinned tabs sit in rows of small tiles above the others.
+                  if (pinned > 0)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 4, right: 4, bottom: 4),
+                      child: Wrap(
+                        spacing: 2,
+                        runSpacing: 2,
+                        children: [
+                          for (var i = 0; i < pinned; i++) SizedBox(width: _pinnedWidth, height: 32, child: _tab(i)),
+                        ],
+                      ),
+                    ),
+                  for (var i = pinned; i < widget.tabs.length; i++) SizedBox(height: 32, child: _tab(i)),
                   Align(
                     alignment: Alignment.centerLeft,
                     child: Padding(padding: const EdgeInsets.only(left: 6), child: newTab),
@@ -149,9 +178,10 @@ class _TabStripState extends State<TabStrip> {
         // The empty space sits behind the row, so it takes whatever the tabs and the button don't cover.
         child: LayoutBuilder(builder: (context, constraints) {
           // Tabs share the width down to [_minTabWidth]; past that (a phone with a handful of tabs) they keep that
-          // width and the row scrolls, with the new-tab button staying at the end.
-          final count = widget.tabs.length;
-          final room = constraints.maxWidth - _newTabWidth;
+          // width and the row scrolls, with the new-tab button staying at the end. Pinned tabs stay put at the start.
+          final count = widget.tabs.length - pinned;
+          final room = constraints.maxWidth - _newTabWidth - pinned * _pinnedWidth;
+          final pinnedTabs = [for (var i = 0; i < pinned; i++) SizedBox(width: _pinnedWidth, child: _tab(i))];
           if (count * _minTabWidth <= room) {
             _scrolledTo = -1;
             return Stack(
@@ -160,7 +190,8 @@ class _TabStripState extends State<TabStrip> {
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    for (var i = 0; i < count; i++)
+                    ...pinnedTabs,
+                    for (var i = pinned; i < widget.tabs.length; i++)
                       Flexible(
                         child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 220), child: _tab(i)),
                       ),
@@ -175,13 +206,14 @@ class _TabStripState extends State<TabStrip> {
           return Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              ...pinnedTabs,
               Expanded(
                 child: ListView.builder(
                   controller: _scroll,
                   scrollDirection: Axis.horizontal,
                   itemExtent: _minTabWidth,
                   itemCount: count,
-                  itemBuilder: (context, i) => _tab(i),
+                  itemBuilder: (context, i) => _tab(pinned + i),
                 ),
               ),
               SizedBox(width: _newTabWidth, child: Center(child: newTab)),
@@ -243,6 +275,25 @@ class _Tab extends StatelessWidget {
     onMenu(box?.globalToLocal(global) ?? local);
   }
 
+  /// The site's letter in a small square, or the globe when there's no letter.
+  Widget _initialBadge(KitColors c) {
+    final letter = tabInitial(label.title, label.url);
+    if (letter.isEmpty) return Icon(Icons.public, size: 14, color: c.textDim);
+    return Container(
+      width: 18,
+      height: 18,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: selected ? c.accent : c.border,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        letter,
+        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: selected ? c.background : c.text, height: 1),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = KitTheme.of(context);
@@ -258,7 +309,7 @@ class _Tab extends StatelessWidget {
         child: Pressable(
           onPressed: onSelect,
           builder: (context, s) => Container(
-            padding: const EdgeInsets.only(left: 10, right: 3),
+            padding: label.pinned ? EdgeInsets.zero : const EdgeInsets.only(left: 10, right: 3),
             decoration: BoxDecoration(
               color: selected ? c.surface : (s.pressed ? c.pressed : (s.hovered ? c.hover : null)),
               // The selected tab is square with an accent line on top (on the left when vertical); Flutter can't
@@ -275,7 +326,9 @@ class _Tab extends StatelessWidget {
                       ? const BorderRadius.horizontal(right: Radius.circular(kitRadius))
                       : const BorderRadius.vertical(top: Radius.circular(kitRadius))),
             ),
-            child: Row(
+            child: label.pinned
+                ? Center(child: label.loading ? const KitSpinner(size: 12) : _initialBadge(c))
+                : Row(
               children: [
                 label.loading ? const KitSpinner(size: 12) : Icon(Icons.public, size: 14, color: c.textDim),
                 const SizedBox(width: 8),
