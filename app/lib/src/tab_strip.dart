@@ -48,6 +48,39 @@ class TabStrip extends StatefulWidget {
 }
 
 class _TabStripState extends State<TabStrip> {
+  static const _minTabWidth = 120.0;
+  static const _newTabWidth = 36.0;
+  final _scroll = ScrollController();
+  int _scrolledTo = -1;
+
+  /// Brings the active tab into view in a scrolling strip when it changes (a new tab, a link opened from elsewhere).
+  void _scrollToActive() {
+    if (_scrolledTo == widget.active) return;
+    _scrolledTo = widget.active;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      final position = _scroll.position;
+      final start = widget.active * _minTabWidth;
+      final end = start + _minTabWidth;
+      double? target;
+      if (start < position.pixels) {
+        target = start;
+      } else if (end > position.pixels + position.viewportDimension) {
+        target = end - position.viewportDimension;
+      }
+      if (target != null) {
+        _scroll.animateTo(target.clamp(0, position.maxScrollExtent),
+            duration: const Duration(milliseconds: 150), curve: Curves.easeOut);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
   /// Where the menu opens (the right-click point) and which tab it's for.
   Offset _menuAt = Offset.zero;
   int? _menuTab;
@@ -114,22 +147,47 @@ class _TabStripState extends State<TabStrip> {
         padding: const EdgeInsets.only(left: 4, top: 4),
         decoration: BoxDecoration(color: c.background, border: Border(bottom: BorderSide(color: c.border))),
         // The empty space sits behind the row, so it takes whatever the tabs and the button don't cover.
-        child: Stack(
-          children: [
-            Positioned.fill(child: empty),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+        child: LayoutBuilder(builder: (context, constraints) {
+          // Tabs share the width down to [_minTabWidth]; past that (a phone with a handful of tabs) they keep that
+          // width and the row scrolls, with the new-tab button staying at the end.
+          final count = widget.tabs.length;
+          final room = constraints.maxWidth - _newTabWidth;
+          if (count * _minTabWidth <= room) {
+            _scrolledTo = -1;
+            return Stack(
               children: [
-                for (var i = 0; i < widget.tabs.length; i++)
-                  Flexible(
-                    child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 220), child: _tab(i)),
-                  ),
-                Center(child: newTab),
-                const Spacer(),
+                Positioned.fill(child: empty),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (var i = 0; i < count; i++)
+                      Flexible(
+                        child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 220), child: _tab(i)),
+                      ),
+                    Center(child: newTab),
+                    const Spacer(),
+                  ],
+                ),
               ],
-            ),
-          ],
-        ),
+            );
+          }
+          _scrollToActive();
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: ListView.builder(
+                  controller: _scroll,
+                  scrollDirection: Axis.horizontal,
+                  itemExtent: _minTabWidth,
+                  itemCount: count,
+                  itemBuilder: (context, i) => _tab(i),
+                ),
+              ),
+              SizedBox(width: _newTabWidth, child: Center(child: newTab)),
+            ],
+          );
+        }),
       );
     }
     final items = widget.menuItems;

@@ -135,4 +135,33 @@ void main() {
       expect(opened, 1, reason: vertical ? 'vertical' : 'horizontal');
     }
   });
+
+  testWidgets('on a narrow screen many tabs keep readable widths and scroll to the active one', (tester) async {
+    Widget strip(int active) => MaterialApp(
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 400,
+                child: TabStrip(
+                  tabs: [for (var i = 0; i < 6; i++) TabLabel(title: 'Tab $i')],
+                  active: active,
+                  onSelect: (_) {},
+                  onClose: (_) {},
+                  onNew: () {},
+                ),
+              ),
+            ),
+          ),
+        );
+    await tester.pumpWidget(strip(0));
+    expect(tester.getSize(find.ancestor(of: find.text('Tab 0'), matching: find.byType(KitTooltip))).width, 120);
+    expect(find.byIcon(Icons.add), findsOneWidget);
+    expect(find.text('Tab 5'), findsNothing);
+
+    await tester.pumpWidget(strip(5));
+    await tester.pumpAndSettle();
+    expect(find.text('Tab 5'), findsOneWidget);
+    expect(tester.getRect(find.text('Tab 5')).right, lessThanOrEqualTo(400 - 36));
+  });
 }
