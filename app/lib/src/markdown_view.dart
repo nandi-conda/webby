@@ -155,16 +155,21 @@ List<InlineSpan> markdownSpans(String text, TextStyle base,
         spans.add(WidgetSpan(
           alignment: PlaceholderAlignment.baseline,
           baseline: TextBaseline.alphabetic,
-          child: Tooltip(
-            message: 'Go to “$words”',
+          // Kept out of the panel's text selection, whose I-beam would otherwise win over the hand cursor, and
+          // padded so the small § is easy to hit.
+          child: SelectionContainer.disabled(
             child: MouseRegion(
               cursor: SystemMouseCursors.click,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () => onAnchor(words),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 2),
-                  child: Text(match[7]!, style: base.merge(style).copyWith(decoration: TextDecoration.none)),
+              opaque: true,
+              child: Tooltip(
+                message: 'Go to “$words”',
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => onAnchor(words),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                    child: Text(match[7]!, style: base.merge(style).copyWith(decoration: TextDecoration.none)),
+                  ),
                 ),
               ),
             ),

@@ -1,5 +1,7 @@
 import 'package:flatkit/flatkit.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:webby/src/markdown_view.dart';
 
@@ -41,11 +43,16 @@ void main() {
     await tester.pumpWidget(MaterialApp(
       home: KitTheme(
         colors: KitColors.light,
-        child: Material(child: MarkdownView('- Point [§](#The Early Years%20of “X”)', onAnchor: jumps.add)),
+        child: Material(child: SelectionArea(child: MarkdownView('- Point [§](#The Early Years%20of “X”)', onAnchor: jumps.add))),
       ),
     ));
     await tester.tap(find.text('§'));
     expect(jumps, ['The Early Years of “X']);
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: tester.getCenter(find.text('§')));
+    await tester.pump();
+    expect(RendererBinding.instance.mouseTracker.debugDeviceActiveCursor(1), SystemMouseCursors.click);
+    await mouse.removePointer();
     const base = TextStyle(fontSize: 14);
     expect(plain(markdownSpans('Point [§](#some words)', base, codeBackground: Colors.grey)), 'Point ');
   });
