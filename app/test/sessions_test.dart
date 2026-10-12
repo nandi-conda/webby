@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:webby/src/site_icon.dart';
 import 'package:webby/src/tabs/device_tabs.dart';
 import 'package:webby/src/tabs/sessions.dart';
 import 'package:webby/src/tabs/sessions_page.dart';
@@ -74,6 +75,7 @@ void main() {
   );
 
   testWidgets('session manager restores, deletes with undo', (tester) async {
+    SiteIcon.fetch = false;
     final store = SessionStore(file());
     store.save(tabs, name: 'Morning', active: 3);
     SessionOpen? opened;
@@ -87,9 +89,12 @@ void main() {
     await tester.tap(find.text('open'));
     await tester.pumpAndSettle();
     expect(find.text('Morning'), findsOneWidget);
-    expect(find.textContaining('2 tabs'), findsOneWidget);
+    expect(find.text('2 tabs'), findsOneWidget);
 
-    await tester.tap(find.byIcon(Icons.delete_outline));
+    expect(find.text('Ladybird'), findsOneWidget);
+    expect(find.textContaining('Created '), findsOneWidget);
+
+    await tester.tap(find.text('Delete'));
     await tester.pump();
     expect(store.sessions, isEmpty);
     expect(find.text('Deleted "Morning"'), findsOneWidget);
@@ -97,10 +102,47 @@ void main() {
     await tester.pump();
     expect(store.sessions, hasLength(1));
 
-    await tester.tap(find.text('Restore'));
+    await tester.tap(find.text('Restore all'));
     await tester.pumpAndSettle();
     expect(opened!.urls, ['https://ladybird.org/', 'https://example.com/']);
     expect(opened!.active, 1);
+  });
+
+  testWidgets('session manager opens and removes single tabs', (tester) async {
+    SiteIcon.fetch = false;
+    final store = SessionStore(file());
+    store.save(tabs, name: 'Morning', active: 3);
+    SessionOpen? opened;
+    await tester.pumpWidget(app(Builder(
+      builder: (context) => KitButton('open', onPressed: () async {
+        opened = await Navigator.of(context).push<SessionOpen>(
+          MaterialPageRoute(builder: (_) => SessionsPage(store: store)),
+        );
+      }),
+    )));
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.close).first);
+    await tester.pump();
+    expect(store.sessions.single.tabs.map((t) => t.url), ['https://example.com/']);
+    expect(find.text('Removed "Ladybird"'), findsOneWidget);
+    await tester.tap(find.text('Undo'));
+    await tester.pump();
+    expect(store.sessions.single.tabs.map((t) => t.url), ['https://ladybird.org/', 'https://example.com/']);
+
+    // Removing the last tab takes the session with it.
+    store.removeTab(store.sessions.single, 0);
+    final last = store.sessions.single;
+    store.removeTab(last, 0);
+    expect(store.sessions, isEmpty);
+    store.restoreTab(last, const DeviceTab('Ladybird', 'https://ladybird.org/'), 0);
+    expect(store.sessions.single.tabs, hasLength(1));
+    await tester.pump();
+
+    await tester.tap(find.text('Ladybird'));
+    await tester.pumpAndSettle();
+    expect(opened!.urls, ['https://ladybird.org/']);
   });
 
   testWidgets('quit prompt returns the choice and can stop asking', (tester) async {

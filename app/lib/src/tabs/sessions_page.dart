@@ -1,6 +1,7 @@
 import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart';
 
+import '../site_icon.dart';
 import '../ui.dart';
 import 'device_tabs.dart';
 import 'device_tabs_page.dart' show seenAgo;
@@ -26,14 +27,20 @@ class SessionsPage extends StatefulWidget {
 
 class _SessionsPageState extends State<SessionsPage> {
   SessionStore get _store => widget.store ?? SessionStore.instance;
-  final _expanded = <SavedSession>{};
 
-  /// The last deleted session, offered back until the next delete or leaving the page.
-  SavedSession? _undo;
+  /// The last delete, offered back until the next one or leaving the page.
+  ({String message, VoidCallback undo})? _undo;
 
   void _delete(SavedSession session) {
     _store.delete(session);
-    setState(() => _undo = session);
+    setState(() => _undo = (message: 'Deleted "${session.name}"', undo: () => _store.restoreDeleted(session)));
+  }
+
+  void _removeTab(SavedSession session, int index) {
+    final tab = _store.removeTab(session, index);
+    if (tab == null) return;
+    final label = tab.title.isEmpty ? tab.url : tab.title;
+    setState(() => _undo = (message: 'Removed "$label"', undo: () => _store.restoreTab(session, tab, index)));
   }
 
   Future<void> _deleteAll() async {
@@ -67,6 +74,7 @@ class _SessionsPageState extends State<SessionsPage> {
       builder: (context, _) {
         final sessions = _store.sessions;
         final undo = _undo;
+        final total = sessions.fold(0, (sum, session) => sum + session.tabs.length);
         return KitPage(
           title: 'Sessions',
           actions: [
@@ -80,47 +88,51 @@ class _SessionsPageState extends State<SessionsPage> {
               if (_store.loadError != null) KitBanner(message: _store.loadError!, danger: true),
               if (undo != null)
                 _UndoStrip(
-                  message: 'Deleted "${undo.name}"',
+                  message: undo.message,
                   onUndo: () {
-                    _store.restoreDeleted(undo);
+                    undo.undo();
                     setState(() => _undo = null);
                   },
                   onDismiss: () => setState(() => _undo = null),
                 ),
               Expanded(
                 child: ListView(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  padding: const EdgeInsets.fromLTRB(0, 16, 0, 20),
                   children: [
                     if (sessions.isEmpty)
                       Padding(
                         padding: const EdgeInsets.all(24),
                         child: Text(
-                          'No saved sessions. Save your open tabs from the bookmarks menu, with "Close all tabs and '
+                          'No saved sessions. Save your open tabs from the Sessions menu, with "Close all tabs and '
                           'save as session", or when you close the window.',
                           style: KitText.dim(context),
                         ),
+                      )
+                    else
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(24, 0, 24, 4),
+                        child: Text(
+                          'Total: $total tab${total == 1 ? '' : 's'} in ${sessions.length} '
+                          'session${sessions.length == 1 ? '' : 's'}',
+                          style: KitText.dim(context),
+                        ),
                       ),
-                    for (final session in sessions) ...[
-                      _SessionRow(
+                    for (final session in sessions)
+                      _SessionGroup(
+                        key: ObjectKey(session),
                         session: session,
-                        expanded: _expanded.contains(session),
-                        onToggle: () => setState(() {
-                          if (!_expanded.remove(session)) _expanded.add(session);
-                        }),
                         onRestore: () => Navigator.pop<SessionOpen>(
                           context,
-                          (urls: [for (final tab in session.tabs) tab.url], active: session.active),
+                          (
+                            urls: [for (final tab in session.tabs) tab.url],
+                            active: session.active.clamp(0, session.tabs.length - 1),
+                          ),
                         ),
                         onRename: () => _rename(session),
                         onDelete: () => _delete(session),
+                        onOpenTab: (tab) => Navigator.pop<SessionOpen>(context, (urls: [tab.url], active: 0)),
+                        onRemoveTab: (index) => _removeTab(session, index),
                       ),
-                      if (_expanded.contains(session))
-                        for (final tab in session.tabs)
-                          _TabRow(
-                            tab: tab,
-                            onOpen: () => Navigator.pop<SessionOpen>(context, (urls: [tab.url], active: 0)),
-                          ),
-                    ],
                     Padding(
                       padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
                       child: KitCheckbox(
@@ -140,63 +152,186 @@ class _SessionsPageState extends State<SessionsPage> {
   }
 }
 
-class _SessionRow extends StatelessWidget {
-  const _SessionRow({
+/// "Created Oct 12, 2026, 14:05": when a session was saved, in full.
+String sessionCreated(int seconds) {
+  final time = DateTime.fromMillisecondsSinceEpoch(seconds * 1000);
+  final name = defaultSessionName(time);
+  final comma = name.indexOf(',');
+  return 'Created ${name.substring(0, comma)}, ${time.year}${name.substring(comma)}';
+}
+
+/// One saved session the way OneTab shows a tab group: its size and date, the actions, then every tab.
+class _SessionGroup extends StatelessWidget {
+  const _SessionGroup({
+    super.key,
     required this.session,
-    required this.expanded,
-    required this.onToggle,
     required this.onRestore,
     required this.onRename,
     required this.onDelete,
+    required this.onOpenTab,
+    required this.onRemoveTab,
   });
 
   final SavedSession session;
-  final bool expanded;
-  final VoidCallback onToggle;
   final VoidCallback onRestore;
   final VoidCallback onRename;
   final VoidCallback onDelete;
+  final ValueChanged<DeviceTab> onOpenTab;
+  final ValueChanged<int> onRemoveTab;
 
   @override
   Widget build(BuildContext context) {
+    final c = KitTheme.of(context);
     final count = session.tabs.length;
-    return KitTile(
-      icon: expanded ? Icons.expand_more : Icons.chevron_right,
-      title: session.name,
-      subtitle: Text('$count tab${count == 1 ? '' : 's'} · saved ${seenAgo(session.savedAt)}'),
-      onTap: onToggle,
-      trailing: [
-        KitButton('Restore', onPressed: onRestore),
-        const SizedBox(width: 4),
-        KitIconButton(Icons.edit_outlined, tooltip: 'Rename', onPressed: onRename),
-        KitIconButton(Icons.delete_outline, tooltip: 'Delete', onPressed: onDelete),
-      ],
+    return Container(
+      margin: const EdgeInsets.only(top: 14),
+      padding: const EdgeInsets.fromLTRB(24, 14, 24, 10),
+      decoration: BoxDecoration(border: Border(top: BorderSide(color: c.border))),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Text(
+                '$count tab${count == 1 ? '' : 's'}',
+                style: KitText.heading(context).copyWith(fontSize: 22, fontWeight: FontWeight.w300, color: c.textDim),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(session.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: KitText.heading(context)),
+                    Text(
+                      '${sessionCreated(session.savedAt)} · ${seenAgo(session.savedAt)}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: KitText.dim(context, small: true),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 18,
+            children: [
+              _LinkButton('Restore all', onTap: onRestore),
+              _LinkButton('Delete', onTap: onDelete),
+              _LinkButton('Rename', onTap: onRename),
+            ],
+          ),
+          const SizedBox(height: 6),
+          for (final (i, tab) in session.tabs.indexed)
+            _TabLink(tab: tab, onOpen: () => onOpenTab(tab), onRemove: () => onRemoveTab(i)),
+        ],
+      ),
     );
   }
 }
 
-class _TabRow extends StatelessWidget {
-  const _TabRow({required this.tab, required this.onOpen});
+/// A plain text action in the accent colour, underlined on hover.
+class _LinkButton extends StatefulWidget {
+  const _LinkButton(this.label, {required this.onTap});
 
-  final DeviceTab tab;
-  final VoidCallback onOpen;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  State<_LinkButton> createState() => _LinkButtonState();
+}
+
+class _LinkButtonState extends State<_LinkButton> {
+  bool _hover = false;
 
   @override
   Widget build(BuildContext context) {
+    final c = KitTheme.of(context);
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Text(
+            widget.label,
+            style: KitText.small(context, color: c.accent).copyWith(
+              decoration: _hover ? TextDecoration.underline : null,
+              decorationColor: c.accent,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A saved tab: remove button, site icon and title. Clicking the title opens it.
+class _TabLink extends StatefulWidget {
+  const _TabLink({required this.tab, required this.onOpen, required this.onRemove});
+
+  final DeviceTab tab;
+  final VoidCallback onOpen;
+  final VoidCallback onRemove;
+
+  @override
+  State<_TabLink> createState() => _TabLinkState();
+}
+
+class _TabLinkState extends State<_TabLink> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = KitTheme.of(context);
+    final tab = widget.tab;
     final uri = Uri.tryParse(tab.url);
     final host = uri == null || uri.host.isEmpty ? tab.url : uri.host;
-    return KitTooltip(
-      message: tab.url,
-      child: KitListRow(
-        onTap: onOpen,
-        height: null,
-        padding: const EdgeInsets.fromLTRB(54, 5, 24, 5),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: Container(
+        color: _hover ? c.hover : null,
+        padding: const EdgeInsets.symmetric(vertical: 1),
+        child: Row(
           children: [
-            Text(tab.title.isEmpty ? host : tab.title, maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: KitText.body(context)),
-            Text(host, maxLines: 1, overflow: TextOverflow.ellipsis, style: KitText.dim(context, small: true)),
+            // Faint until the row is hovered, like OneTab; always there for touch.
+            Opacity(
+              opacity: _hover ? 1 : 0.45,
+              child: KitIconButton(Icons.close, size: 14, tooltip: 'Remove from session', onPressed: widget.onRemove),
+            ),
+            const SizedBox(width: 4),
+            SiteIcon(tab.url),
+            const SizedBox(width: 10),
+            Flexible(
+              child: KitTooltip(
+                message: tab.url,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: widget.onOpen,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 5),
+                      child: Text(
+                        tab.title.isEmpty ? host : tab.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: KitText.body(context).copyWith(
+                          decoration: _hover ? TextDecoration.underline : null,
+                          decorationColor: c.textDim,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
           ],
         ),
       ),
@@ -283,7 +418,7 @@ Future<(QuitChoice, String)> askSaveOnQuit(BuildContext context, {required int t
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('You can restore the $tabCount tab${tabCount == 1 ? '' : 's'} later from Sessions in the bookmarks menu.'),
+            Text('You can restore the $tabCount tab${tabCount == 1 ? '' : 's'} later from the Sessions menu.'),
             const SizedBox(height: 12),
             LabeledField(
               label: 'Name',

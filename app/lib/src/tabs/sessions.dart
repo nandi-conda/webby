@@ -167,6 +167,25 @@ class SessionStore extends ChangeNotifier {
     _changed();
   }
 
+  /// Takes the tab at [index] out of [session] and returns it; the session goes when its last tab does.
+  DeviceTab? removeTab(SavedSession session, int index) {
+    if (!_sessions.contains(session) || index < 0 || index >= session.tabs.length) return null;
+    final tab = session.tabs.removeAt(index);
+    if (session.tabs.isEmpty) _sessions.remove(session);
+    _changed();
+    return tab;
+  }
+
+  /// Puts [tab] back at [index] in [session] (undo), bringing the session back if it had gone.
+  void restoreTab(SavedSession session, DeviceTab tab, int index) {
+    session.tabs.insert(index.clamp(0, session.tabs.length), tab);
+    if (!_sessions.contains(session)) {
+      restoreDeleted(session);
+    } else {
+      _changed();
+    }
+  }
+
   void delete(SavedSession session) {
     if (_sessions.remove(session)) _changed();
   }
