@@ -70,6 +70,8 @@ class WebbyController extends ChangeNotifier {
   static int _pumps = 0;
   static int _dartFrames = 0;
   static int _nativeMicros = 0, _viewMicros = 0, _maxTickMicros = 0, _buildMicros = 0, _maxBuildMicros = 0;
+  // Wheel latency: from the first wheel event sent after the last new frame to the next new frame.
+  static int _wheelSentMicros = 0, _wheelFrames = 0, _wheelMicros = 0, _maxWheelMicros = 0;
   static void _startTrace() {
     if (_trace != null || Platform.environment['WEBBY_TRACE'] != '1') return;
     WidgetsBinding.instance.addPersistentFrameCallback((_) => _dartFrames++);
@@ -89,8 +91,11 @@ class WebbyController extends ChangeNotifier {
       });
       stderr.writeln('webby-trace pumps=$_pumps dartFrames=$_dartFrames delay=${_pumpDelay.inMilliseconds}ms '
           'nativeMs=${_nativeMicros ~/ 1000} viewMs=${_viewMicros ~/ 1000} maxTickMs=${(_maxTickMicros / 1000).toStringAsFixed(1)} '
-          'buildMs=${_buildMicros ~/ 1000} maxBuildMs=${(_maxBuildMicros / 1000).toStringAsFixed(1)} [${views.join('; ')}]');
+          'buildMs=${_buildMicros ~/ 1000} maxBuildMs=${(_maxBuildMicros / 1000).toStringAsFixed(1)} '
+          'wheels=$_wheelFrames wheelMs=${_wheelFrames == 0 ? 0 : (_wheelMicros / _wheelFrames / 1000).toStringAsFixed(1)} '
+          'maxWheelMs=${(_maxWheelMicros / 1000).toStringAsFixed(1)} [${views.join('; ')}]');
       _pumps = _dartFrames = _nativeMicros = _viewMicros = _maxTickMicros = _buildMicros = _maxBuildMicros = 0;
+      _wheelFrames = _wheelMicros = _maxWheelMicros = 0;
       // What the shown pages are animating.
       for (final c in _live.where((c) => c._visible && c._messagePrefix.isNotEmpty)) {
         if (!_traced.contains(c)) {
@@ -475,8 +480,11 @@ class WebbyController extends ChangeNotifier {
       _ifAttached((v) => _bindings.mouseEvent(
           v, type, position.dx.round(), position.dy.round(), button, buttons, modifiers, clickCount));
 
-  void wheelEvent(Offset position, Offset delta, {bool precise = false, int modifiers = 0}) => _ifAttached(
-      (v) => _bindings.wheelEvent(v, position.dx.round(), position.dy.round(), delta.dx, delta.dy, precise ? 1 : 0, modifiers));
+  void wheelEvent(Offset position, Offset delta, {bool precise = false, int modifiers = 0}) {
+    if (_trace != null && _wheelSentMicros == 0) _wheelSentMicros = _pumpClock.elapsedMicroseconds;
+    _ifAttached(
+        (v) => _bindings.wheelEvent(v, position.dx.round(), position.dy.round(), delta.dx, delta.dy, precise ? 1 : 0, modifiers));
+  }
 
   void keyEvent(bool down, int keyCode, int modifiers, int codePoint, bool repeat) {
     void send() => _ifAttached((v) => _bindings.keyEvent(v, down ? 1 : 0, keyCode, modifiers, codePoint, repeat ? 1 : 0));
@@ -663,6 +671,13 @@ class WebbyController extends ChangeNotifier {
     final texture = _texture;
     if (frameSerial == _frameSerial || (texture == null && _decoding)) return busy;
     _frameSerial = frameSerial;
+    if (_wheelSentMicros != 0) {
+      final latency = _pumpClock.elapsedMicroseconds - _wheelSentMicros;
+      _wheelSentMicros = 0;
+      _wheelFrames++;
+      _wheelMicros += latency;
+      if (latency > _maxWheelMicros) _maxWheelMicros = latency;
+    }
     final width = _bindings.frameWidth(_view);
     final height = _bindings.frameHeight(_view);
     if (width <= 0 || height <= 0) return true;

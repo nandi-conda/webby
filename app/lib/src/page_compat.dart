@@ -7,6 +7,9 @@
 /// CanvasKit renderer draws each frame into an offscreen canvas and shows it on the page with
 /// `transferFromImageBitmap`, so every Flutter web app stays blank, and throws "Cannot access property "toString"
 /// on null" from its rasterizer. This stand-in shows the bitmap through the canvas's 2D context instead.
+///
+/// createImageBitmap of a Flutter WebGL OffscreenCanvas: answered with transferToImageBitmap, so a Flutter frame
+/// reaches the screen in the rendering update that drew it rather than the one after.
 const pageCompatScript = r'''
 (() => {
   if (window.__webbyCompat) return;
@@ -46,6 +49,30 @@ const pageCompatScript = r'''
         contexts.set(this, context);
       }
       return context;
+    };
+  }
+
+  // Flutter web's CanvasKit renderer draws each frame into a WebGL OffscreenCanvas and then awaits
+  // createImageBitmap(canvas) before putting it on screen. Ladybird settles that promise in a later task, after the
+  // rendering update that ran the frame, so every frame (a scroll, say) shows up one update late.
+  // transferToImageBitmap hands over the same pixels at once; Flutter clears and redraws the whole canvas before each
+  // bitmap it takes, so moving the pixels out instead of copying them loses nothing.
+  if (typeof OffscreenCanvas !== 'undefined' && typeof window.createImageBitmap === 'function') {
+    const glCanvases = new WeakSet();
+    const getContext = OffscreenCanvas.prototype.getContext;
+    OffscreenCanvas.prototype.getContext = function (type, options) {
+      const context = getContext.apply(this, arguments);
+      if (context && /^webgl2?$/.test(String(type)) && !(options && options.preserveDrawingBuffer)) glCanvases.add(this);
+      return context;
+    };
+    const createImageBitmap = window.createImageBitmap;
+    window.createImageBitmap = function (source) {
+      if (arguments.length === 1 && window._flutter && glCanvases.has(source)) {
+        try {
+          return Promise.resolve(source.transferToImageBitmap());
+        } catch (e) {}
+      }
+      return createImageBitmap.apply(this, arguments);
     };
   }
 })();
