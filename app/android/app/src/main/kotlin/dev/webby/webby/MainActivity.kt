@@ -104,7 +104,7 @@ class MainActivity : FlutterActivity() {
                 NotificationChannel(NOTIFICATION_CHANNEL, "Sites", NotificationManager.IMPORTANCE_DEFAULT)
             )
         }
-        // Tapping it brings the app back (singleTop: onNewIntent) and tells the page.
+        // Tapping it brings the app back (singleTask: onNewIntent) and tells the page.
         val open = Intent(this, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
             .putExtra(EXTRA_NOTIFICATION, id)

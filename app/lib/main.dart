@@ -35,6 +35,7 @@ import 'src/summarize.dart';
 import 'src/tab_strip.dart';
 import 'src/tabs/device_tabs.dart';
 import 'src/tabs/device_tabs_page.dart';
+import 'src/tabs/open_tabs.dart';
 import 'src/tabs/sessions.dart';
 import 'src/tabs/sessions_page.dart';
 import 'src/tabs/tab_layout.dart';
@@ -47,20 +48,23 @@ Future<void> main(List<String> args) async {
   // `--incognito` makes this process an incognito window: its own Ladybird that keeps nothing (see Incognito).
   if (app == null && args.contains(Incognito.flag) && !Platform.isAndroid) Incognito.enable();
   var initialUrl = app ?? (urls.isNotEmpty ? urls.first : (Incognito.active ? 'about:blank' : 'https://ladybird.org'));
+  String? launchUrl;
   if (Platform.isAndroid) {
     WidgetsFlutterBinding.ensureInitialized();
     await AndroidHost.prepare();
-    initialUrl = await AndroidHost.initialUrl() ?? initialUrl;
+    launchUrl = await AndroidHost.initialUrl();
+    initialUrl = launchUrl ?? initialUrl;
   }
   // Desktop launchers for installed web apps; Android has none.
   if (app == null && !Incognito.active && !Platform.isAndroid) AppStore.instance.refreshLaunchers().ignore();
-  runApp(WebbyApp(initialUrl: initialUrl, appMode: app != null));
+  runApp(WebbyApp(initialUrl: initialUrl, launchUrl: launchUrl, appMode: app != null));
 }
 
 class WebbyApp extends StatelessWidget {
-  const WebbyApp({super.key, required this.initialUrl, this.appMode = false});
+  const WebbyApp({super.key, required this.initialUrl, this.launchUrl, this.appMode = false});
 
   final String initialUrl;
+  final String? launchUrl;
   final bool appMode;
 
   @override
@@ -77,7 +81,7 @@ class WebbyApp extends StatelessWidget {
           debugShowCheckedModeBanner: false,
           theme: KitTheme.material(colors),
           builder: (context, child) => Material(color: colors.background, child: child),
-          home: appMode ? AppWindowPage(startUrl: initialUrl) : BrowserPage(initialUrl: initialUrl),
+          home: appMode ? AppWindowPage(startUrl: initialUrl) : BrowserPage(initialUrl: initialUrl, launchUrl: launchUrl),
         );
       },
     );
@@ -85,9 +89,12 @@ class WebbyApp extends StatelessWidget {
 }
 
 class BrowserPage extends StatefulWidget {
-  const BrowserPage({super.key, required this.initialUrl});
+  const BrowserPage({super.key, required this.initialUrl, this.launchUrl});
 
   final String initialUrl;
+
+  /// The link the app was opened with on Android, which opens in front of the restored tabs.
+  final String? launchUrl;
 
   @override
   State<BrowserPage> createState() => _BrowserPageState();
@@ -155,8 +162,9 @@ class _BrowserPageState extends State<BrowserPage> {
   void initState() {
     super.initState();
     try {
-      final tab = _addTab(widget.initialUrl);
-      _address.text = widget.initialUrl;
+      _openStartTabs();
+      final tab = _tab!;
+      _address.text = tab.controller.url.isNotEmpty ? tab.controller.url : widget.initialUrl;
       PasswordManager.instance.start(WebbyBindings.open());
       // Offline mode serves pages from the disk cache, which incognito windows don't have.
       if (!Incognito.active) OfflineMonitor.start(WebbyBindings.open())?.addListener(_onBookmarksChanged);
@@ -164,10 +172,35 @@ class _BrowserPageState extends State<BrowserPage> {
       BookmarkStore.instance.addListener(_onBookmarksChanged);
       _discardTimer = Timer.periodic(const Duration(minutes: 1), (_) => _discardIdleTabs());
       if (Platform.isAndroid) AndroidHost.onOpenUrl(_go);
+      if (_restoresTabs) _lifecycle = AppLifecycleListener(onHide: () => OpenTabsStore.instance.flush(_sessionTabs(), _active));
       if (!Incognito.active && !Platform.isAndroid) _exitListener = AppLifecycleListener(onExitRequested: _onExitRequested);
     } catch (error) {
       _startupError = error;
     }
+  }
+
+  /// Android stops apps whenever it likes (in the background, for updates), so there the open tabs are kept as they
+  /// change and come back at the next start. Desktop asks whether to save them as a session when the window closes.
+  static final bool _restoresTabs = Platform.isAndroid && !Incognito.active;
+  AppLifecycleListener? _lifecycle;
+
+  void _openStartTabs() {
+    final saved = _restoresTabs ? OpenTabsStore.instance.read() : null;
+    if (saved == null) {
+      _addTab(widget.initialUrl);
+      return;
+    }
+    // Only the front tab loads now; the others wait until they're selected.
+    for (final tab in saved.tabs) {
+      _insertTab(_BrowserTab.withController(WebbyController.unloaded(tab.url, title: tab.title)));
+    }
+    _active = saved.active;
+    final launch = widget.launchUrl;
+    if (launch != null) {
+      _addTab(launch);
+      _active = _tabs.length - 1;
+    }
+    _syncVisibility();
   }
 
   _BrowserTab _addTab(String url, {int? at}) => _insertTab(_BrowserTab(url), at: at);
@@ -216,6 +249,7 @@ class _BrowserPageState extends State<BrowserPage> {
   void _publishTabs() {
     if (Incognito.active) return;
     DeviceTabs.instance.setTabs([for (final t in _tabs) DeviceTab(t.controller.title, t.controller.url)]);
+    if (_restoresTabs) OpenTabsStore.instance.save(_sessionTabs(), _active);
   }
 
   /// Opens a new incognito window (a separate process; desktop only).
@@ -457,6 +491,7 @@ class _BrowserPageState extends State<BrowserPage> {
     if (index < 0 || index >= _tabs.length || (index == _active && !force)) return;
     setState(() => _active = index);
     _syncVisibility();
+    if (_restoresTabs) OpenTabsStore.instance.save(_sessionTabs(), _active);
     final tab = _tabs[index];
     final url = tab.controller.url;
     _shownUrl = url;
@@ -672,6 +707,7 @@ class _BrowserPageState extends State<BrowserPage> {
   void dispose() {
     _discardTimer?.cancel();
     _exitListener?.dispose();
+    _lifecycle?.dispose();
     BookmarkStore.instance.removeListener(_onBookmarksChanged);
     OfflineMonitor.instance?.removeListener(_onBookmarksChanged);
     for (final tab in _tabs) {

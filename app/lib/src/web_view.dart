@@ -34,6 +34,14 @@ class WebbyController extends ChangeNotifier {
     _start(useTexture);
   }
 
+  /// A tab that shows [url] and [title] but loads nothing until it is first shown (a restored background tab), so
+  /// reopening many tabs doesn't start a WebContent process for each.
+  WebbyController.unloaded(this.url, {this.title = ''}) : _pendingUrl = url {
+    _visible = false;
+    _discarded = true;
+    _start(null);
+  }
+
   /// Takes over a view the page opened (see [onNewView]); it is already loading.
   WebbyController.adopt(ViewPtr view, {bool? useTexture}) : _pendingUrl = null {
     _start(useTexture);
