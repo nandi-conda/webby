@@ -1,5 +1,14 @@
 import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+/// A page the address bar offers while the user types (from the history).
+class OmniboxSuggestion {
+  const OmniboxSuggestion(this.url, this.title);
+
+  final String url;
+  final String title;
+}
 
 /// The address bar: a borderless rounded pill. While it isn't being edited it shows the page's address the way
 /// Chrome does, the host in full colour and the rest dimmed, without "https://" or "www."; clicking selects the whole
@@ -12,6 +21,7 @@ class Omnibox extends StatefulWidget {
     required this.url,
     required this.onSubmitted,
     this.onSiteSettings,
+    this.suggest,
     this.trailing = const [],
   });
 
@@ -25,6 +35,9 @@ class Omnibox extends StatefulWidget {
   /// The tune icon at the left opens the site's settings (permissions); null leaves it as decoration.
   final VoidCallback? onSiteSettings;
 
+  /// Pages to offer under the pill for what has been typed so far; Up/Down pick one and Enter opens it.
+  final List<OmniboxSuggestion> Function(String input)? suggest;
+
   /// Shown inside the pill at the right, such as the bookmark star.
   final List<Widget> trailing;
 
@@ -34,11 +47,74 @@ class Omnibox extends StatefulWidget {
 
 class _OmniboxState extends State<Omnibox> {
   bool _hovered = false;
+  final _link = LayerLink();
+  final _pill = GlobalKey();
+  final _popup = OverlayPortalController();
+  List<OmniboxSuggestion> _suggestions = const [];
+  int _selected = -1;
+
+  /// The text last seen while editing, so selection changes don't count as typing.
+  String _seenText = '';
 
   @override
   void initState() {
     super.initState();
     widget.focusNode.addListener(_focusChanged);
+    widget.controller.addListener(_textChanged);
+  }
+
+  void _textChanged() {
+    final text = widget.controller.text;
+    if (!widget.focusNode.hasFocus || text == _seenText) return;
+    _seenText = text;
+    final suggest = widget.suggest;
+    final suggestions = suggest == null || text.trim().isEmpty ? const <OmniboxSuggestion>[] : suggest(text);
+    setState(() {
+      _suggestions = suggestions;
+      _selected = -1;
+    });
+    if (suggestions.isEmpty) {
+      _popup.hide();
+    } else {
+      _popup.show();
+    }
+  }
+
+  void _closeSuggestions() {
+    if (_suggestions.isEmpty && !_popup.isShowing) return;
+    _popup.hide();
+    setState(() {
+      _suggestions = const [];
+      _selected = -1;
+    });
+  }
+
+  void _submit(String text) {
+    final picked = _selected >= 0 && _selected < _suggestions.length ? _suggestions[_selected].url : text;
+    _closeSuggestions();
+    widget.onSubmitted(picked);
+  }
+
+  void _open(OmniboxSuggestion suggestion) {
+    _closeSuggestions();
+    widget.onSubmitted(suggestion.url);
+  }
+
+  /// Up/Down move through the suggestions and Esc closes them, before the text field gets the keys.
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (_suggestions.isEmpty || event is KeyUpEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.arrowDown || key == LogicalKeyboardKey.arrowUp) {
+      final step = key == LogicalKeyboardKey.arrowDown ? 1 : -1;
+      // -1 is the typed text itself.
+      setState(() => _selected = (_selected + 1 + step) % (_suggestions.length + 1) - 1);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.escape && event is KeyDownEvent) {
+      _closeSuggestions();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
   }
 
   @override
@@ -48,16 +124,22 @@ class _OmniboxState extends State<Omnibox> {
       old.focusNode.removeListener(_focusChanged);
       widget.focusNode.addListener(_focusChanged);
     }
+    if (old.controller != widget.controller) {
+      old.controller.removeListener(_textChanged);
+      widget.controller.addListener(_textChanged);
+    }
   }
 
   @override
   void dispose() {
     widget.focusNode.removeListener(_focusChanged);
+    widget.controller.removeListener(_textChanged);
     super.dispose();
   }
 
   void _focusChanged() {
     final controller = widget.controller;
+    _seenText = controller.text;
     if (widget.focusNode.hasFocus) {
       // Select everything after the click has placed the caret.
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -65,8 +147,9 @@ class _OmniboxState extends State<Omnibox> {
           controller.selection = TextSelection(baseOffset: 0, extentOffset: controller.text.length);
         }
       });
-    } else if (widget.url.isNotEmpty) {
-      controller.text = widget.url;
+    } else {
+      _closeSuggestions();
+      if (widget.url.isNotEmpty) controller.text = widget.url;
     }
     setState(() {});
   }
@@ -94,7 +177,8 @@ class _OmniboxState extends State<Omnibox> {
     final parts = focused ? null : _split(text);
     final fill = _hovered && !focused ? c.pressed : c.hover;
 
-    return MouseRegion(
+    final pill = MouseRegion(
+      key: _pill,
       cursor: SystemMouseCursors.text,
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
@@ -122,7 +206,7 @@ class _OmniboxState extends State<Omnibox> {
                     TextField(
                       controller: widget.controller,
                       focusNode: widget.focusNode,
-                      onSubmitted: widget.onSubmitted,
+                      onSubmitted: _submit,
                       textInputAction: TextInputAction.go,
                       // An address, not prose: no suggestions, so keyboards don't add a space after each period.
                       keyboardType: TextInputType.url,
@@ -166,6 +250,81 @@ class _OmniboxState extends State<Omnibox> {
               ),
               ...widget.trailing,
             ],
+          ),
+        ),
+      ),
+    );
+    return CompositedTransformTarget(
+      link: _link,
+      child: OverlayPortal(
+        controller: _popup,
+        overlayChildBuilder: _buildSuggestions,
+        child: Focus(canRequestFocus: false, skipTraversal: true, onKeyEvent: _onKey, child: pill),
+      ),
+    );
+  }
+
+  Widget _buildSuggestions(BuildContext context) {
+    final c = KitTheme.of(context);
+    final width = (_pill.currentContext?.findRenderObject() as RenderBox?)?.size.width ?? 400;
+    return Positioned(
+      left: 0,
+      top: 0,
+      child: CompositedTransformFollower(
+        link: _link,
+        targetAnchor: Alignment.bottomLeft,
+        offset: const Offset(0, 4),
+        // Clicking a suggestion isn't a click outside the address bar, so it keeps focus until the page loads.
+        child: TextFieldTapRegion(
+          child: Container(
+            width: width,
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            decoration: BoxDecoration(
+              color: c.surface,
+              border: Border.all(color: c.border),
+              borderRadius: BorderRadius.circular(kitRadius),
+              boxShadow: [BoxShadow(color: c.shadow, blurRadius: 12, offset: const Offset(0, 4))],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final (index, suggestion) in _suggestions.indexed)
+                  MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    onEnter: (_) => setState(() => _selected = index),
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => _open(suggestion),
+                      child: Container(
+                        height: 34,
+                        color: index == _selected ? c.hover : null,
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Row(
+                          children: [
+                            Icon(Icons.history, size: 16, color: c.textDim),
+                            const SizedBox(width: 10),
+                            if (suggestion.title.isNotEmpty) ...[
+                              Flexible(
+                                child: Text(suggestion.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                              ),
+                              Text('  -  ', style: KitText.dim(context)),
+                            ],
+                            Flexible(
+                              child: Text(
+                                suggestion.url,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: KitText.body(context).copyWith(color: c.accent),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       ),

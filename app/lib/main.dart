@@ -13,6 +13,8 @@ import 'src/bookmarks/bookmark_store.dart';
 import 'src/bookmarks/bookmarks_page.dart';
 import 'src/color_scheme.dart';
 import 'src/frame_bench.dart';
+import 'src/history/history_page.dart';
+import 'src/history/history_store.dart';
 import 'src/incognito.dart';
 import 'src/notifications.dart';
 import 'src/omnibox.dart';
@@ -103,6 +105,9 @@ class _BrowserTab {
   Map<String, Object?>? shownPasskeyPrompt;
   /// When the tab last went into the background (null while it is the active tab).
   DateTime? hiddenSince;
+  /// The page address last recorded in the history for this tab, and its visit (null when it isn't recorded).
+  String recordedUrl = '';
+  HistoryEntry? visit;
 
   void dispose() {
     passwords.dispose();
@@ -320,6 +325,7 @@ class _BrowserPageState extends State<BrowserPage> {
       return;
     }
     _publishTabs();
+    _recordHistory(tab);
     // Don't clobber what the user is typing.
     if (tab == _tab && controller.url != _shownUrl && !_addressFocus.hasFocus) {
       _shownUrl = controller.url;
@@ -335,6 +341,24 @@ class _BrowserPageState extends State<BrowserPage> {
       }
     }
     setState(() {});
+  }
+
+  /// Each new page address a tab shows is a visit in the history; its title is filled in when it arrives.
+  void _recordHistory(_BrowserTab tab) {
+    final controller = tab.controller;
+    final url = controller.url;
+    if (url.isEmpty) return;
+    if (url != tab.recordedUrl) {
+      tab.recordedUrl = url;
+      tab.visit = HistoryStore.instance.record(url, controller.title);
+    } else if (tab.visit != null && controller.title.isNotEmpty) {
+      HistoryStore.instance.setTitle(tab.visit!, controller.title);
+    }
+  }
+
+  Future<void> _openHistory() async {
+    final url = await Navigator.of(context).push<String>(MaterialPageRoute(builder: (_) => const HistoryPage()));
+    if (url != null) _go(url);
   }
 
   void _showPasskeyPrompt(_BrowserTab tab) {
@@ -372,6 +396,7 @@ class _BrowserPageState extends State<BrowserPage> {
     SingleActivator(LogicalKeyboardKey.keyD, control: true): 'bookmark',
     SingleActivator(LogicalKeyboardKey.keyB, control: true, shift: true): 'bar',
     SingleActivator(LogicalKeyboardKey.keyO, control: true, shift: true): 'manager',
+    SingleActivator(LogicalKeyboardKey.keyH, control: true): 'history',
     SingleActivator(LogicalKeyboardKey.keyT, control: true): 'newTab',
     SingleActivator(LogicalKeyboardKey.keyT, control: true, shift: true): 'reopenTab',
     SingleActivator(LogicalKeyboardKey.keyN, control: true, shift: true): 'incognito',
@@ -411,6 +436,7 @@ class _BrowserPageState extends State<BrowserPage> {
     final key = event.logicalKey;
     if (key == LogicalKeyboardKey.keyT || key == LogicalKeyboardKey.tab) return true;
     if (key == LogicalKeyboardKey.keyD ||
+        key == LogicalKeyboardKey.keyH ||
         key == LogicalKeyboardKey.keyW ||
         key == LogicalKeyboardKey.pageUp ||
         key == LogicalKeyboardKey.pageDown ||
@@ -432,6 +458,8 @@ class _BrowserPageState extends State<BrowserPage> {
         _toggleBookmarkBar();
       case 'manager':
         _openBookmarks();
+      case 'history':
+        _openHistory();
       case 'newTab':
         _newTab();
       case 'reopenTab':
@@ -548,6 +576,10 @@ class _BrowserPageState extends State<BrowserPage> {
                       focusNode: _addressFocus,
                       url: controller.url,
                       onSubmitted: _go,
+                      suggest: (input) => [
+                        for (final page in HistoryStore.instance.suggest(input))
+                          OmniboxSuggestion(page.url, page.title),
+                      ],
                       onSiteSettings: () => showSiteSettings(context, controller),
                       trailing: [
                         if (OfflineMonitor.instance?.offline ?? false)
@@ -587,6 +619,7 @@ class _BrowserPageState extends State<BrowserPage> {
                       ),
                       const KitMenuDivider(),
                       KitMenuItem('Bookmark manager', shortcut: 'Ctrl+Shift+O', onSelected: _openBookmarks),
+                      KitMenuItem('History', shortcut: 'Ctrl+H', onSelected: _openHistory),
                       if (!Incognito.active) ...[
                         const KitMenuDivider(),
                         KitMenuItem('Tabs from other devices', onSelected: _openDeviceTabs),
