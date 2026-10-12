@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import '../bindings.dart';
 import '../bookmarks/bookmark_store.dart';
 import '../incognito.dart';
+import '../summary_cache.dart';
 import '../tabs/device_tabs.dart';
 import '../web_view.dart';
 import 'generator.dart';
@@ -58,7 +59,8 @@ class PasswordManager extends ChangeNotifier {
       vault = opened;
       opened.addListener(notifyListeners);
       _attachPasskeys(opened);
-      sync = VaultSync(opened, onPasskeysChanged: _passkeysSynced, bookmarks: BookmarkStore.instance, tabs: DeviceTabs.instance);
+      sync = VaultSync(opened, onPasskeysChanged: _passkeysSynced, bookmarks: BookmarkStore.instance, tabs: DeviceTabs.instance,
+          summaries: SummaryCache.instance);
     } on VaultUnavailable catch (e) {
       error = e.message;
       debugPrint('webby: $error');

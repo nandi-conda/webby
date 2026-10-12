@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../bookmarks/bookmark_store.dart';
+import '../../summary_cache.dart';
 import '../../tabs/device_tabs.dart';
 import '../vault.dart';
 import 'sync_crypto.dart';
@@ -16,9 +17,10 @@ int _now() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
 /// each change, every few minutes, and when asked. Bookmarks and this device's open [tabs] use the vault's sync
 /// settings and a blob each.
 class VaultSync extends ChangeNotifier {
-  VaultSync(this.vault, {required this.onPasskeysChanged, this.bookmarks, this.tabs}) {
+  VaultSync(this.vault, {required this.onPasskeysChanged, this.bookmarks, this.tabs, this.summaries}) {
     vault.addListener(_onVaultChanged);
     bookmarks?.addListener(_onBookmarksChanged);
+    summaries?.addListener(_onSummariesChanged);
     tabs?.addListener(_onTabsChanged);
     _periodic = Timer.periodic(const Duration(minutes: 5), (_) => syncNow());
     if (enabled) scheduleMicrotask(syncNow);
@@ -28,6 +30,9 @@ class VaultSync extends ChangeNotifier {
   final BookmarkStore? bookmarks;
   final DeviceTabs? tabs;
 
+  /// Page summaries and the questions asked about them, in a blob of their own.
+  final SummaryCache? summaries;
+
   /// Called after a sync brought in or removed passkeys, with the ids that were removed.
   final void Function(Set<String> removed) onPasskeysChanged;
 
@@ -36,6 +41,7 @@ class VaultSync extends ChangeNotifier {
   Timer? _tabsDebounce;
   SyncDoc? _lastSynced;
   SyncDoc? _lastSyncedBookmarks;
+  SyncDoc? _lastSyncedSummaries;
   bool _running = false;
   bool _again = false;
 
@@ -58,6 +64,13 @@ class VaultSync extends ChangeNotifier {
     _debounce = Timer(const Duration(seconds: 3), syncNow);
   }
 
+  void _onSummariesChanged() {
+    if (!enabled || _running) return;
+    if (_lastSyncedSummaries != null && summaries!.toSyncDoc() == _lastSyncedSummaries) return;
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(seconds: 3), syncNow);
+  }
+
   void _onTabsChanged() {
     if (!enabled || _running || !tabs!.needsPublish) return;
     // Tabs change with every page load; publish once browsing settles rather than on each one.
@@ -70,6 +83,7 @@ class VaultSync extends ChangeNotifier {
     SyncKey.fromCode(settings.code);
     _lastSynced = null;
     _lastSyncedBookmarks = null;
+    _lastSyncedSummaries = null;
     tabs?.reset();
     await vault.setSyncSettings(settings);
     await syncNow();
@@ -84,11 +98,13 @@ class VaultSync extends ChangeNotifier {
       await settings.store(keys).delete();
       await settings.store(keys, blob: SyncBlob.bookmarks).delete();
       await settings.store(keys, blob: SyncBlob.tabs).delete();
+      await settings.store(keys, blob: SyncBlob.summaries).delete();
     }
     _debounce?.cancel();
     _tabsDebounce?.cancel();
     _lastSynced = null;
     _lastSyncedBookmarks = null;
+    _lastSyncedSummaries = null;
     tabs?.reset();
     await vault.setSyncSettings(null);
     notifyListeners();
@@ -121,6 +137,7 @@ class VaultSync extends ChangeNotifier {
       if (merged != outcome.doc) _again = true;
       if (bookmarks != null) await _syncBookmarks(settings, bookmarks!);
       if (tabs != null) await _syncTabs(settings, tabs!);
+      if (summaries != null) await _syncSummaries(settings, summaries!);
     } catch (error) {
       debugPrint('webby: sync failed: $error');
       if (vault.syncSettings?.code == settings.code) {
@@ -145,6 +162,15 @@ class VaultSync extends ChangeNotifier {
     if (merged != outcome.doc) _again = true;
   }
 
+  Future<void> _syncSummaries(SyncSettings settings, SummaryCache summaries) async {
+    final outcome = await syncOnce(settings, summaries.toSyncDoc(), blob: SyncBlob.summaries);
+    if (vault.syncSettings?.code != settings.code) return;
+    final merged = mergeDocs(summaries.toSyncDoc(), outcome.doc, now: _now());
+    _lastSyncedSummaries = outcome.doc;
+    summaries.applySyncDoc(merged);
+    if (merged != outcome.doc) _again = true;
+  }
+
   Future<void> _syncTabs(SyncSettings settings, DeviceTabs tabs) async {
     final outcome = await syncOnce(settings, tabs.toSyncDoc(), blob: SyncBlob.tabs);
     if (vault.syncSettings?.code != settings.code) return;
@@ -156,6 +182,7 @@ class VaultSync extends ChangeNotifier {
   void dispose() {
     vault.removeListener(_onVaultChanged);
     bookmarks?.removeListener(_onBookmarksChanged);
+    summaries?.removeListener(_onSummariesChanged);
     tabs?.removeListener(_onTabsChanged);
     _periodic.cancel();
     _debounce?.cancel();

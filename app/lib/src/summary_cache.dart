@@ -1,9 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
 import 'incognito.dart';
+import 'passwords/sync/sync_doc.dart';
 
 /// A summary kept so it can be read again without asking DeepSeek a second time.
 class CachedSummary {
@@ -14,6 +16,7 @@ class CachedSummary {
     required this.at,
     this.selection = false,
     this.questions = const [],
+    this.updatedAt = 0,
   });
 
   factory CachedSummary.fromJson(Map<String, Object?> json) => CachedSummary(
@@ -22,6 +25,7 @@ class CachedSummary {
     text: json['text'] as String? ?? '',
     at: json['at'] as int? ?? 0,
     selection: json['selection'] == true,
+    updatedAt: (json['updatedAt'] as num?)?.toInt() ?? (json['at'] as num? ?? 0).toInt() ~/ 1000,
     questions: [
       for (final entry in json['questions'] as List<Object?>? ?? const [])
         if (entry is Map<String, Object?> && entry['q'] is String && entry['a'] is String)
@@ -40,6 +44,12 @@ class CachedSummary {
   /// Follow-up questions asked about the page, with their answers, oldest first.
   final List<({String question, String answer})> questions;
 
+  /// When it last changed (made, or a question answered), in seconds since the epoch; the newest copy wins in sync.
+  final int updatedAt;
+
+  CachedSummary withUpdatedAt(int seconds) => CachedSummary(
+      title: title, url: url, text: text, at: at, selection: selection, questions: questions, updatedAt: seconds);
+
   Map<String, Object?> toJson() => {
     'title': title,
     'url': url,
@@ -47,12 +57,13 @@ class CachedSummary {
     'at': at,
     if (selection) 'selection': true,
     if (questions.isNotEmpty) 'questions': [for (final qa in questions) {'q': qa.question, 'a': qa.answer}],
+    'updatedAt': updatedAt,
   };
 }
 
 /// Summaries by page (and by selection), newest last, in `profiles/<profile>/summaries.json`. Incognito windows keep
-/// them in memory only.
-class SummaryCache {
+/// them in memory only. They sync to the other devices in their own blob (see [toSyncDoc]).
+class SummaryCache extends ChangeNotifier {
   SummaryCache(this.file) {
     _load();
   }
@@ -77,6 +88,9 @@ class SummaryCache {
   final File? file;
   final Map<String, CachedSummary> _entries = {};
 
+  /// When summaries were cleared (seconds), by key, so the clearing reaches other devices.
+  final Map<String, int> _deleted = {};
+
   /// The cache key of a page summary: the URL without its #fragment, or for a selection, the URL and the selected text.
   static String keyFor(String url, {String? selection}) {
     final uri = Uri.tryParse(url);
@@ -96,22 +110,62 @@ class SummaryCache {
   CachedSummary? lookup(String key) => _entries[key];
 
   void store(String key, CachedSummary summary) {
-    _entries.remove(key);
-    _entries[key] = summary;
+    final previous = _entries.remove(key)?.updatedAt ?? _deleted[key] ?? 0;
+    _entries[key] = summary.withUpdatedAt(max(_seconds(), previous + 1));
+    _deleted.remove(key);
+    _trim();
+    _save();
+    notifyListeners();
+  }
+
+  static int _seconds() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+  void _trim() {
     while (_entries.length > limit) {
       _entries.remove(_entries.keys.first);
     }
-    _save();
   }
 
   /// Forgets summaries made since [since] (all of them when null), for Clear browsing data.
   void clear({DateTime? since}) {
-    if (since == null) {
-      _entries.clear();
-    } else {
-      _entries.removeWhere((_, s) => s.at >= since.millisecondsSinceEpoch);
+    final now = _seconds();
+    final gone = [
+      for (final entry in _entries.entries)
+        if (since == null || entry.value.at >= since.millisecondsSinceEpoch) entry.key,
+    ];
+    for (final key in gone) {
+      _deleted[key] = max(now, _entries.remove(key)!.updatedAt + 1);
     }
     _save();
+    notifyListeners();
+  }
+
+  /// The summaries in their synced form: one record per key, plus tombstones for cleared ones.
+  SyncDoc toSyncDoc() => SyncDoc(summaries: {
+    for (final entry in _deleted.entries) entry.key: {'updatedAt': entry.value, 'deleted': true},
+    for (final entry in _entries.entries) entry.key: entry.value.toJson(),
+  });
+
+  /// Replaces the summaries with a merged [SyncDoc]. Returns whether anything changed.
+  bool applySyncDoc(SyncDoc doc) {
+    if (toSyncDoc() == SyncDoc(summaries: doc.summaries)) return false;
+    final live = [
+      for (final entry in doc.summaries.entries)
+        if (!isDeleted(entry.value)) (entry.key, CachedSummary.fromJson(entry.value)),
+    ]..sort((a, b) => a.$2.updatedAt.compareTo(b.$2.updatedAt));
+    _entries
+      ..clear()
+      ..addEntries([for (final (key, summary) in live) MapEntry(key, summary)]);
+    _deleted
+      ..clear()
+      ..addAll({
+        for (final entry in doc.summaries.entries)
+          if (isDeleted(entry.value)) entry.key: updatedAtOf(entry.value),
+      });
+    _trim();
+    _save();
+    notifyListeners();
+    return true;
   }
 
   void _load() {
@@ -121,6 +175,9 @@ class SummaryCache {
       final json = jsonDecode(file.readAsStringSync()) as Map<String, Object?>;
       for (final entry in (json['summaries'] as Map<String, Object?>? ?? const {}).entries) {
         if (entry.value is Map<String, Object?>) _entries[entry.key] = CachedSummary.fromJson(entry.value as Map<String, Object?>);
+      }
+      for (final entry in (json['deleted'] as Map<String, Object?>? ?? const {}).entries) {
+        if (entry.value is int) _deleted[entry.key] = entry.value as int;
       }
     } catch (error) {
       debugPrint('webby: ignoring damaged summaries file: $error');
@@ -136,6 +193,7 @@ class SummaryCache {
       temporary.writeAsStringSync(jsonEncode({
         'version': 1,
         'summaries': {for (final entry in _entries.entries) entry.key: entry.value.toJson()},
+        if (_deleted.isNotEmpty) 'deleted': _deleted,
       }));
       temporary.renameSync(file.path);
     } catch (error) {

@@ -9,11 +9,14 @@ const tombstoneLifetime = Duration(days: 180);
 /// How long a device that stopped syncing keeps showing up under "Tabs from other devices".
 const deviceLifetime = Duration(days: 30);
 
+/// How many page summaries sync; the ones changed longest ago drop out.
+const summaryLimit = 300;
+
 /// Everything that syncs: passwords by id, passkeys by credentialId, never-save sites by origin and bookmarks by id.
 ///
 /// Bookmarks travel in their own blob (see [SyncKeys.bookmarksBlobId]), so webby versions that predate bookmark
 /// sync never see them and can't drop them; in that blob only [bookmarks] is used. Open tabs are the same, in a third
-/// blob holding only [devices].
+/// blob holding only [devices], and page summaries in a fourth holding only [summaries].
 ///
 /// Each record is a JSON map with an `updatedAt` (seconds since the epoch). A deleted item stays as a tombstone
 /// `{updatedAt, deleted: true}` (passwords also keep `id`) until [tombstoneLifetime] has passed.
@@ -24,7 +27,9 @@ class SyncDoc {
     Map<String, Map<String, Object?>>? neverSave,
     Map<String, Map<String, Object?>>? bookmarks,
     Map<String, Map<String, Object?>>? devices,
-  })  : passwords = passwords ?? {},
+    Map<String, Map<String, Object?>>? summaries,
+  })  : summaries = summaries ?? {},
+        passwords = passwords ?? {},
         passkeys = passkeys ?? {},
         neverSave = neverSave ?? {},
         bookmarks = bookmarks ?? {},
@@ -45,7 +50,8 @@ class SyncDoc {
         passkeys: section('passkeys'),
         neverSave: section('neverSave'),
         bookmarks: section('bookmarks'),
-        devices: section('devices'));
+        devices: section('devices'),
+        summaries: section('summaries'));
   }
 
   final Map<String, Map<String, Object?>> passwords;
@@ -62,6 +68,11 @@ class SyncDoc {
   /// refreshed for [deviceLifetime] is dropped.
   final Map<String, Map<String, Object?>> devices;
 
+  /// Page summaries by cache key (see SummaryCache.keyFor): `{title, url, text, at, selection?, questions?,
+  /// updatedAt}`. The newest version of a page's summary, with its questions, wins; only the [summaryLimit] most
+  /// recently changed are kept.
+  final Map<String, Map<String, Object?>> summaries;
+
   Map<String, Object?> toJson() => {
         'version': 1,
         'passwords': _sorted(passwords),
@@ -69,6 +80,7 @@ class SyncDoc {
         'neverSave': _sorted(neverSave),
         if (bookmarks.isNotEmpty) 'bookmarks': _sorted(bookmarks),
         if (devices.isNotEmpty) 'devices': _sorted(devices),
+        if (summaries.isNotEmpty) 'summaries': _sorted(summaries),
       };
 
   /// A stable encoding: equal documents encode to equal strings.
@@ -154,7 +166,21 @@ SyncDoc mergeDocs(SyncDoc a, SyncDoc b, {required int now}) {
     bookmarks: _repairBookmarks(_mergeSection(a.bookmarks, b.bookmarks, expireBefore)),
     devices: _mergeSection(a.devices, b.devices, expireBefore)
       ..removeWhere((_, record) => !isDeleted(record) && updatedAtOf(record) < now - deviceLifetime.inSeconds),
+    summaries: _trimSummaries(_mergeSection(a.summaries, b.summaries, expireBefore)),
   );
+}
+
+/// Keeps the [summaryLimit] most recently changed summaries (and the tombstones), the same ones on every device.
+Map<String, Map<String, Object?>> _trimSummaries(Map<String, Map<String, Object?>> records) {
+  final live = records.keys.where((key) => !isDeleted(records[key]!)).toList()
+    ..sort((a, b) {
+      final byTime = updatedAtOf(records[b]!).compareTo(updatedAtOf(records[a]!));
+      return byTime != 0 ? byTime : a.compareTo(b);
+    });
+  for (final key in live.skip(summaryLimit)) {
+    records.remove(key);
+  }
+  return records;
 }
 
 /// The two bookmark roots every device has; they never appear as records.

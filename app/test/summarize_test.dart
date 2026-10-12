@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:webby/src/passwords/sync/sync_doc.dart';
 import 'package:webby/src/passwords/vault.dart';
 import 'package:webby/src/summarize.dart';
 import 'package:webby/src/summary_cache.dart';
@@ -109,6 +110,41 @@ void main() {
     SummaryCache(file).store('k', const CachedSummary(
         title: 't', url: 'u', text: 's', at: 1, questions: [(question: 'why?', answer: 'because')]));
     expect(SummaryCache(file).lookup('k')!.questions.single, (question: 'why?', answer: 'because'));
+  });
+
+  test('summaries sync: newest copy of a page wins, clearing spreads, the newest 300 are kept', () {
+    final dir = Directory.systemTemp.createTempSync('webby-summaries');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final laptop = SummaryCache(File('${dir.path}/laptop.json'));
+    final phone = SummaryCache(File('${dir.path}/phone.json'));
+    laptop.store('a', const CachedSummary(title: 'A', url: 'https://a/', text: 'old', at: 1));
+    phone.store('a', const CachedSummary(title: 'A', url: 'https://a/', text: 'new', at: 2,
+        questions: [(question: 'q', answer: 'x')]));
+    phone.store('b', const CachedSummary(title: 'B', url: 'https://b/', text: 'b', at: 3));
+    // The phone's copy of "a" is newer (each store bumps past the last).
+    final merged = mergeDocs(laptop.toSyncDoc(), phone.toSyncDoc(), now: DateTime.now().millisecondsSinceEpoch ~/ 1000 + 5);
+    expect(merged.summaries['a']!['text'], anyOf('old', 'new'));
+    laptop.applySyncDoc(merged);
+    phone.applySyncDoc(merged);
+    expect(laptop.lookup('b')!.text, 'b');
+    expect(laptop.lookup('a')!.text, phone.lookup('a')!.text);
+
+    laptop.clear();
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final cleared = mergeDocs(laptop.toSyncDoc(), phone.toSyncDoc(), now: now);
+    phone.applySyncDoc(cleared);
+    expect(phone.lookup('a'), isNull);
+    expect(phone.lookup('b'), isNull);
+    expect(SummaryCache(File('${dir.path}/phone.json')).lookup('b'), isNull);
+
+    final many = SyncDoc(summaries: {
+      for (var i = 0; i < summaryLimit + 10; i++)
+        'k$i': CachedSummary(title: '', url: '', text: '$i', at: 0, updatedAt: 1000 + i).toJson(),
+    });
+    final trimmed = mergeDocs(many, SyncDoc(), now: 2000);
+    expect(trimmed.summaries, hasLength(summaryLimit));
+    expect(trimmed.summaries.containsKey('k0'), isFalse);
+    expect(trimmed.summaries.containsKey('k${summaryLimit + 9}'), isTrue);
   });
 
   test('page script carries the prefix and request id', () {
