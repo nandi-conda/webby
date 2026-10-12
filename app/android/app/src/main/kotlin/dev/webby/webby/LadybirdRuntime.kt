@@ -38,6 +38,9 @@ object LadybirdRuntime {
         // WasmCompiler looks for cranelift-compiler next to its own executable, which resolves to the native library
         // directory where the file is named libcranelift-compiler.so, so it is named here instead.
         Os.setenv("LADYBIRD_CRANELIFT_COMPILER", File(context.applicationInfo.nativeLibraryDir, "libcranelift-compiler.so").path, true)
+        // Before Ladybird's allocator starts in this process too: return freed memory to Android at once rather than
+        // with MADV_FREE, which keeps it counted against the app (see webby_init() in native/webby_ffi.cpp).
+        Os.setenv("MIMALLOC_PURGE_DECOMMITS", "1", false)
         // Read by webby_init() (native/webby_ffi.cpp) as extra Ladybird arguments.
         Os.setenv("WEBBY_LADYBIRD_ARGS", "--certificate ${File(prefix, "cacert.pem").path}", true)
     }

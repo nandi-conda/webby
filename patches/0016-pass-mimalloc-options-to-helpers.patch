@@ -1,0 +1,11 @@
+diff --git a/Libraries/LibWebView/Process.cpp b/Libraries/LibWebView/Process.cpp
+--- a/Libraries/LibWebView/Process.cpp
++++ b/Libraries/LibWebView/Process.cpp
+@@ -88,6 +88,7 @@
+         "LIBJS_"sv,
+         "LIBWEB_"sv,
+         "LSAN_"sv,
++        "MIMALLOC_"sv,
+         "RUST_"sv,
+         "TSAN_"sv,
+         "UBSAN_"sv,
