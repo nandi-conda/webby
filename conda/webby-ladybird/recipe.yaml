@@ -15,7 +15,7 @@ source:
   sha256: c9df700ab002ef117a669308bb6254cb8b6ffda03531f5e3f41b8a4521d5d89b
 
 build:
-  number: 0
+  number: 1
   skip:
     - not linux64
   # Prebuilt binaries; the script points their RPATHs at the bundled lib/ ($ORIGIN-relative) and conda leaves them be.
@@ -28,6 +28,10 @@ build:
   script:
     - mkdir -p $PREFIX/lib/webby-ladybird $PREFIX/etc/conda/activate.d $PREFIX/etc/conda/deactivate.d
     - cp -a lib libexec share $PREFIX/lib/webby-ladybird/
+    # No WebAssembly JIT: Ladybird's Cranelift code crashes WebContent ("VERIFICATION FAILED: count <= size()" in
+    # BytecodeInterpreter::call_address, called from JIT code) loading most Flutter web apps. WasmCompiler finds the
+    # compiler only next to WebContent, so without it WebAssembly is interpreted; Flutter apps scroll no slower.
+    - rm -f $PREFIX/lib/webby-ladybird/libexec/cranelift-compiler
     # RUNPATHs: the bundled lib/ first, then the env's lib/ for what the system can't be counted on for (a libstdc++
     # new enough for C++23, libpulse, ncurses), which comes from conda-forge.
     - |
@@ -58,8 +62,6 @@ tests:
         - lib/webby-ladybird/lib/libwebby.so
         - lib/webby-ladybird/libexec/WebContent
         - lib/webby-ladybird/libexec/RequestServer
-        # WebAssembly is interpreted (slowly) without it.
-        - lib/webby-ladybird/libexec/cranelift-compiler
 
 about:
   homepage: https://github.com/nandi-conda/webby
