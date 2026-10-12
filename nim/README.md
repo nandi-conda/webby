@@ -16,6 +16,9 @@ The core is `src/browser.nim` (window, tabs, input, pump, hooks); each feature i
 libcrypto before libwebby, whose own crypto library then fails to load. Features use GIO for HTTP and the runtime's
 libcrypto for cryptography.
 
+`pixi run webby-nim [url]` builds it with the pixi env's Nim and GTK (again only when the sources change) and runs it
+against the webby-ladybird package. By hand:
+
 ```
 nim c -d:release -o:nim/webby nim/webby.nim      # needs Nim and GTK 3 headers (pkg-config gtk+-3.0), glib-networking for HTTPS
 WEBBY_LADYBIRD_PREFIX=<webby-ladybird runtime> nim/webby https://example.com
