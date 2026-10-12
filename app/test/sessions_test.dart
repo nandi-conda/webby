@@ -74,20 +74,17 @@ void main() {
     child: MaterialApp(home: Material(child: child)),
   );
 
-  testWidgets('session manager restores, deletes with undo', (tester) async {
+  testWidgets('sessions panel restores, deletes with undo', (tester) async {
     SiteIcon.fetch = false;
     final store = SessionStore(file());
     store.save(tabs, name: 'Morning', active: 3);
     SessionOpen? opened;
-    await tester.pumpWidget(app(Builder(
-      builder: (context) => KitButton('open', onPressed: () async {
-        opened = await Navigator.of(context).push<SessionOpen>(
-          MaterialPageRoute(builder: (_) => SessionsPage(store: store)),
-        );
-      }),
+    var closed = false;
+    await tester.pumpWidget(app(SessionsPanel(
+      store: store,
+      onOpen: (open) => opened = open,
+      onClose: () => closed = true,
     )));
-    await tester.tap(find.text('open'));
-    await tester.pumpAndSettle();
     expect(find.text('Morning'), findsOneWidget);
     expect(find.text('2 tabs'), findsOneWidget);
 
@@ -106,24 +103,23 @@ void main() {
     await tester.pumpAndSettle();
     expect(opened!.urls, ['https://ladybird.org/', 'https://example.com/']);
     expect(opened!.active, 1);
+    await tester.tap(find.byIcon(Icons.close).first);
+    expect(closed, isTrue);
   });
 
-  testWidgets('session manager opens and removes single tabs', (tester) async {
+  testWidgets('sessions panel opens and removes single tabs', (tester) async {
     SiteIcon.fetch = false;
     final store = SessionStore(file());
     store.save(tabs, name: 'Morning', active: 3);
     SessionOpen? opened;
-    await tester.pumpWidget(app(Builder(
-      builder: (context) => KitButton('open', onPressed: () async {
-        opened = await Navigator.of(context).push<SessionOpen>(
-          MaterialPageRoute(builder: (_) => SessionsPage(store: store)),
-        );
-      }),
+    var closed = false;
+    await tester.pumpWidget(app(SessionsPanel(
+      store: store,
+      onOpen: (open) => opened = open,
+      onClose: () => closed = true,
     )));
-    await tester.tap(find.text('open'));
-    await tester.pumpAndSettle();
 
-    await tester.tap(find.byIcon(Icons.close).first);
+    await tester.tap(find.byIcon(Icons.close).at(1));
     await tester.pump();
     expect(store.sessions.single.tabs.map((t) => t.url), ['https://example.com/']);
     expect(find.text('Removed "Ladybird"'), findsOneWidget);
@@ -143,6 +139,7 @@ void main() {
     await tester.tap(find.text('Ladybird'));
     await tester.pumpAndSettle();
     expect(opened!.urls, ['https://ladybird.org/']);
+    expect(closed, isFalse);
   });
 
   testWidgets('quit prompt returns the choice and can stop asking', (tester) async {

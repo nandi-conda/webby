@@ -392,12 +392,19 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     _selectTab(_active, force: true);
   }
 
-  Future<void> _openSessions() async {
-    final open = await Navigator.of(context).push<SessionOpen>(
-      MaterialPageRoute(builder: (_) => SessionsPage(onSaveOpenTabs: Incognito.active ? null : _saveSession)),
-    );
-    if (open != null && mounted) _restoreSession(open);
-  }
+  /// Whether the sessions sidebar is showing.
+  bool _sessionsOpen = false;
+
+  void _toggleSessions() => setState(() => _sessionsOpen = !_sessionsOpen);
+
+  /// The sessions sidebar: beside the page on wide windows, under it on narrow ones (phones).
+  Widget _sessionsPanel({required bool wide}) => SessionsPanel(
+    wide: wide,
+    onOpen: _restoreSession,
+    onClose: _toggleSessions,
+    onSaveOpenTabs: _saveSession,
+    onCloseAllAndSave: () => _saveSession(closeAll: true),
+  );
 
   /// Opens a saved session's tabs next to the current one.
   void _restoreSession(SessionOpen open) {
@@ -840,6 +847,9 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     final bookmarked = BookmarkStore.instance.bookmarkFor(controller.url) != null;
     // Android's screen is too narrow for a tab list beside the page.
     final vertical = TabLayout.instance.vertical && !Platform.isAndroid;
+    final size = MediaQuery.sizeOf(context);
+    final sessionsOpen = _sessionsOpen && !Incognito.active;
+    final sessionsWide = size.width >= 720;
     final tabStrip = TabStrip(
       tabs: [
         for (final t in _tabs)
@@ -966,30 +976,12 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
                     builder: (context, toggle, open) =>
                         KitIconButton(Icons.bookmarks_outlined, tooltip: 'Bookmarks', onPressed: toggle),
                   ),
-                  // Sessions: save the open tabs, restore a saved set, or manage them.
+                  // Sessions: a sidebar to save the open tabs and restore saved sets.
                   if (!Incognito.active)
-                    KitMenu(
-                      minWidth: 260,
-                      items: () {
-                        final sessions = SessionStore.instance.sessions;
-                        return [
-                          KitMenuItem('Save open tabs as session', onSelected: _saveSession),
-                          KitMenuItem('Close all tabs and save as session',
-                              onSelected: () => _saveSession(closeAll: true)),
-                          if (sessions.isNotEmpty) const KitMenuDivider(),
-                          for (final session in sessions)
-                            KitMenuItem(
-                              '${session.name} (${session.tabs.length} tab${session.tabs.length == 1 ? '' : 's'})',
-                              onSelected: () => _restoreSession(
-                                (urls: [for (final tab in session.tabs) tab.url], active: session.active),
-                              ),
-                            ),
-                          const KitMenuDivider(),
-                          KitMenuItem('Manage sessions…', onSelected: _openSessions),
-                        ];
-                      },
-                      builder: (context, toggle, open) =>
-                          KitIconButton(Icons.layers_outlined, tooltip: 'Sessions', onPressed: toggle),
+                    KitIconButton(
+                      _sessionsOpen ? Icons.layers : Icons.layers_outlined,
+                      tooltip: 'Sessions',
+                      onPressed: _toggleSessions,
                     ),
                   KitIconButton(
                     Icons.summarize_outlined,
@@ -1075,9 +1067,12 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
               ),
               ),
             ),
+            // The sessions sidebar sits under the page on narrow windows.
+            if (sessionsOpen && !sessionsWide) SizedBox(height: size.height * 0.5, child: _sessionsPanel(wide: false)),
               ],
               ),
               ),
+              if (sessionsOpen && sessionsWide) SizedBox(width: 360, child: _sessionsPanel(wide: true)),
               ],
               ),
             ),

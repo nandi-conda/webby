@@ -4,31 +4,49 @@ import 'package:flutter/material.dart';
 import '../site_icon.dart';
 import '../ui.dart';
 import 'device_tabs.dart';
-import 'device_tabs_page.dart' show seenAgo;
 import 'sessions.dart';
 
-/// What the window should open from the sessions page: [urls] in new tabs, with [active] in front.
+/// What the window should open from the sessions panel: [urls] in new tabs, with [active] in front.
 typedef SessionOpen = ({List<String> urls, int active});
 
-/// The session manager: saved sessions to restore, rename or delete.
-///
-/// Pops with a [SessionOpen] when the user restores a session or opens one of its tabs.
-class SessionsPage extends StatefulWidget {
-  const SessionsPage({super.key, this.store, this.onSaveOpenTabs});
+/// The session manager, shown as a sidebar beside the page (a sheet under it on narrow windows): saved sessions in
+/// the style of OneTab, to restore, rename or delete whole or tab by tab.
+class SessionsPanel extends StatefulWidget {
+  const SessionsPanel({
+    super.key,
+    this.store,
+    required this.onOpen,
+    required this.onClose,
+    this.onSaveOpenTabs,
+    this.onCloseAllAndSave,
+    this.wide = true,
+  });
 
   final SessionStore? store;
+
+  /// Opens a whole session, or one of its tabs.
+  final ValueChanged<SessionOpen> onOpen;
+
+  /// Hides the panel.
+  final VoidCallback onClose;
 
   /// Saves the window's open tabs as a new session; null hides the button.
   final VoidCallback? onSaveOpenTabs;
 
+  /// Saves the open tabs and closes them; null hides the button.
+  final VoidCallback? onCloseAllAndSave;
+
+  /// Beside the page (border on the left) rather than under it.
+  final bool wide;
+
   @override
-  State<SessionsPage> createState() => _SessionsPageState();
+  State<SessionsPanel> createState() => _SessionsPanelState();
 }
 
-class _SessionsPageState extends State<SessionsPage> {
+class _SessionsPanelState extends State<SessionsPanel> {
   SessionStore get _store => widget.store ?? SessionStore.instance;
 
-  /// The last delete, offered back until the next one or leaving the page.
+  /// The last delete, offered back until the next one or the panel closing.
   ({String message, VoidCallback undo})? _undo;
 
   void _delete(SavedSession session) {
@@ -69,85 +87,105 @@ class _SessionsPageState extends State<SessionsPage> {
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: _store,
-      builder: (context, _) {
-        final sessions = _store.sessions;
-        final undo = _undo;
-        final total = sessions.fold(0, (sum, session) => sum + session.tabs.length);
-        return KitPage(
-          title: 'Sessions',
-          actions: [
-            if (widget.onSaveOpenTabs != null)
-              KitButton('Save open tabs', icon: Icons.add, onPressed: widget.onSaveOpenTabs),
-            if (sessions.isNotEmpty) KitButton('Delete all', icon: Icons.delete_sweep_outlined, onPressed: _deleteAll),
-          ],
-          body: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (_store.loadError != null) KitBanner(message: _store.loadError!, danger: true),
-              if (undo != null)
-                _UndoStrip(
-                  message: undo.message,
-                  onUndo: () {
-                    undo.undo();
-                    setState(() => _undo = null);
-                  },
-                  onDismiss: () => setState(() => _undo = null),
+    final c = KitTheme.of(context);
+    return Material(
+      color: c.surface,
+      child: Container(
+        decoration: BoxDecoration(
+          border: widget.wide ? Border(left: BorderSide(color: c.border)) : Border(top: BorderSide(color: c.border)),
+        ),
+        child: ListenableBuilder(
+          listenable: _store,
+          builder: (context, _) {
+            final sessions = _store.sessions;
+            final undo = _undo;
+            final total = sessions.fold(0, (sum, session) => sum + session.tabs.length);
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(
+                  height: 40,
+                  padding: const EdgeInsets.only(left: 12, right: 4),
+                  decoration: BoxDecoration(border: Border(bottom: BorderSide(color: c.border))),
+                  child: Row(
+                    children: [
+                      Icon(Icons.layers_outlined, size: 16, color: c.textDim),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text('Sessions', style: KitText.body(context))),
+                      if (widget.onSaveOpenTabs != null)
+                        KitIconButton(Icons.add, tooltip: 'Save open tabs as session', size: 16,
+                            onPressed: widget.onSaveOpenTabs),
+                      if (widget.onCloseAllAndSave != null)
+                        KitIconButton(Icons.move_to_inbox_outlined, tooltip: 'Close all tabs and save as session',
+                            size: 16, onPressed: widget.onCloseAllAndSave),
+                      if (sessions.isNotEmpty)
+                        KitIconButton(Icons.delete_sweep_outlined, tooltip: 'Delete all sessions', size: 16,
+                            onPressed: _deleteAll),
+                      KitIconButton(Icons.close, tooltip: 'Close', size: 16, onPressed: widget.onClose),
+                    ],
+                  ),
                 ),
-              Expanded(
-                child: ListView(
-                  padding: const EdgeInsets.fromLTRB(0, 16, 0, 20),
-                  children: [
-                    if (sessions.isEmpty)
-                      Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: Text(
-                          'No saved sessions. Save your open tabs from the Sessions menu, with "Close all tabs and '
-                          'save as session", or when you close the window.',
-                          style: KitText.dim(context),
-                        ),
-                      )
-                    else
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(24, 0, 24, 4),
-                        child: Text(
-                          'Total: $total tab${total == 1 ? '' : 's'} in ${sessions.length} '
-                          'session${sessions.length == 1 ? '' : 's'}',
-                          style: KitText.dim(context),
-                        ),
-                      ),
-                    for (final session in sessions)
-                      _SessionGroup(
-                        key: ObjectKey(session),
-                        session: session,
-                        onRestore: () => Navigator.pop<SessionOpen>(
-                          context,
-                          (
-                            urls: [for (final tab in session.tabs) tab.url],
-                            active: session.active.clamp(0, session.tabs.length - 1),
+                if (_store.loadError != null) KitBanner(message: _store.loadError!, danger: true),
+                if (undo != null)
+                  _UndoStrip(
+                    message: undo.message,
+                    onUndo: () {
+                      undo.undo();
+                      setState(() => _undo = null);
+                    },
+                    onDismiss: () => setState(() => _undo = null),
+                  ),
+                Expanded(
+                  child: ListView(
+                    padding: const EdgeInsets.fromLTRB(0, 12, 0, 16),
+                    children: [
+                      if (sessions.isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Text(
+                            'No saved sessions. Save your open tabs with the + above, with "Close all tabs and save as '
+                            'session", or when you close the window.',
+                            style: KitText.dim(context),
+                          ),
+                        )
+                      else
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 2),
+                          child: Text(
+                            'Total: $total tab${total == 1 ? '' : 's'} in ${sessions.length} '
+                            'session${sessions.length == 1 ? '' : 's'}',
+                            style: KitText.dim(context, small: true),
                           ),
                         ),
-                        onRename: () => _rename(session),
-                        onDelete: () => _delete(session),
-                        onOpenTab: (tab) => Navigator.pop<SessionOpen>(context, (urls: [tab.url], active: 0)),
-                        onRemoveTab: (index) => _removeTab(session, index),
+                      for (final session in sessions)
+                        _SessionGroup(
+                          key: ObjectKey(session),
+                          session: session,
+                          onRestore: () => widget.onOpen((
+                            urls: [for (final tab in session.tabs) tab.url],
+                            active: session.active.clamp(0, session.tabs.length - 1),
+                          )),
+                          onRename: () => _rename(session),
+                          onDelete: () => _delete(session),
+                          onOpenTab: (tab) => widget.onOpen((urls: [tab.url], active: 0)),
+                          onRemoveTab: (index) => _removeTab(session, index),
+                        ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 14, 12, 0),
+                        child: KitCheckbox(
+                          value: _store.askOnQuit,
+                          label: 'Ask to save open tabs when closing the window',
+                          onChanged: (value) => _store.askOnQuit = value,
+                        ),
                       ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-                      child: KitCheckbox(
-                        value: _store.askOnQuit,
-                        label: 'Ask to save open tabs as a session when closing the window',
-                        onChanged: (value) => _store.askOnQuit = value,
-                      ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-            ],
-          ),
-        );
-      },
+              ],
+            );
+          },
+        ),
+      ),
     );
   }
 }
@@ -184,8 +222,8 @@ class _SessionGroup extends StatelessWidget {
     final c = KitTheme.of(context);
     final count = session.tabs.length;
     return Container(
-      margin: const EdgeInsets.only(top: 14),
-      padding: const EdgeInsets.fromLTRB(24, 14, 24, 10),
+      margin: const EdgeInsets.only(top: 10),
+      padding: const EdgeInsets.fromLTRB(16, 10, 12, 6),
       decoration: BoxDecoration(border: Border(top: BorderSide(color: c.border))),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -195,16 +233,16 @@ class _SessionGroup extends StatelessWidget {
             children: [
               Text(
                 '$count tab${count == 1 ? '' : 's'}',
-                style: KitText.heading(context).copyWith(fontSize: 22, fontWeight: FontWeight.w300, color: c.textDim),
+                style: KitText.heading(context).copyWith(fontSize: 20, fontWeight: FontWeight.w300, color: c.textDim),
               ),
-              const SizedBox(width: 16),
+              const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(session.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: KitText.heading(context)),
                     Text(
-                      '${sessionCreated(session.savedAt)} · ${seenAgo(session.savedAt)}',
+                      sessionCreated(session.savedAt),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: KitText.dim(context, small: true),
@@ -418,7 +456,7 @@ Future<(QuitChoice, String)> askSaveOnQuit(BuildContext context, {required int t
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('You can restore the $tabCount tab${tabCount == 1 ? '' : 's'} later from the Sessions menu.'),
+            Text('You can restore the $tabCount tab${tabCount == 1 ? '' : 's'} later from Sessions.'),
             const SizedBox(height: 12),
             LabeledField(
               label: 'Name',
