@@ -247,7 +247,7 @@ void main() {
       expect([for (final n in BookmarkStore(file).bar.children!) n.title], ['Docs', 'Example']);
     });
 
-    testWidgets('on a touch screen bar items drag after a long press', (tester) async {
+    testWidgets('on a touch screen a long press drags, or opens the menu when let go in place', (tester) async {
       final store = BookmarkStore(file);
       store.add(title: 'Ladybird', url: 'https://ladybird.org/');
       store.add(title: 'Example', url: 'https://example.com/');
@@ -264,6 +264,13 @@ void main() {
       await gesture.up();
       await tester.pumpAndSettle();
       expect([for (final n in store.bar.children!) n.title], ['Example', 'Ladybird']);
+      expect(find.text('Edit…'), findsNothing);
+
+      await tester.longPress(find.text('Ladybird'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete'));
+      await tester.pumpAndSettle();
+      expect([for (final n in store.bar.children!) n.title], ['Example']);
     });
 
     testWidgets('bar grows with a large system font so labels are not clipped', (tester) async {

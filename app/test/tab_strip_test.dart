@@ -87,6 +87,14 @@ void main() {
     await tester.pumpAndSettle();
     expect(opened.last, isNull);
     expect(find.text('Vertical tabs'), findsOneWidget);
+    await tester.tapAt(const Offset(700, 300));
+    await tester.pumpAndSettle();
+
+    // A long press is the touch screen's right-click.
+    await tester.longPress(find.text('One'));
+    await tester.pumpAndSettle();
+    expect(opened.last, 0);
+    expect(find.text('Vertical tabs'), findsOneWidget);
 
     // The vertical list is a fixed-width column.
     await tester.pumpWidget(strip(vertical: true));

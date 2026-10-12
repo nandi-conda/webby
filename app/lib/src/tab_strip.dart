@@ -18,7 +18,8 @@ String tabTitle(String title, String url) {
 }
 
 /// The tabs with close buttons and a "new tab" button: a row across the top, or with [vertical] a list down the
-/// left side. Middle-click closes a tab; right-click opens [menuItems] for that tab, or for no tab (null) on empty space.
+/// left side. Middle-click closes a tab; right-click (long-press on touch screens) opens [menuItems] for that tab, or for
+/// no tab (null) on empty space.
 class TabStrip extends StatefulWidget {
   const TabStrip({
     super.key,
@@ -139,6 +140,7 @@ class _TabStripState extends State<TabStrip> {
         GestureDetector(
           behavior: HitTestBehavior.translucent,
           onSecondaryTapUp: (details) => _openMenu(details.localPosition, null),
+          onLongPressStart: (details) => _openMenu(details.localPosition, null),
           child: strip,
         ),
         Positioned(
@@ -177,6 +179,12 @@ class _Tab extends StatelessWidget {
   /// Right-click, with the point in the strip's coordinates.
   final ValueChanged<Offset> onMenu;
 
+  void _menuAt(BuildContext context, Offset global, Offset local) {
+    final strip = context.findAncestorStateOfType<_TabStripState>()?.context.findRenderObject();
+    final box = strip is RenderBox ? strip : null;
+    onMenu(box?.globalToLocal(global) ?? local);
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = KitTheme.of(context);
@@ -185,11 +193,8 @@ class _Tab extends StatelessWidget {
         if (event.buttons & kMiddleMouseButton != 0) onClose();
       },
       child: GestureDetector(
-        onSecondaryTapUp: (details) {
-          final strip = context.findAncestorStateOfType<_TabStripState>()?.context.findRenderObject();
-          final box = strip is RenderBox ? strip : null;
-          onMenu(box?.globalToLocal(details.globalPosition) ?? details.localPosition);
-        },
+        onSecondaryTapUp: (details) => _menuAt(context, details.globalPosition, details.localPosition),
+        onLongPressStart: (details) => _menuAt(context, details.globalPosition, details.localPosition),
         child: KitTooltip(
         message: label.title,
         child: Pressable(

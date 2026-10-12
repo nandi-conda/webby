@@ -1,12 +1,13 @@
 import 'package:flatkit/flatkit.dart';
+import 'package:flutter/gestures.dart' show kTouchSlop;
 import 'package:flutter/material.dart';
 
 import 'bookmark_dialog.dart';
 import 'bookmark_store.dart';
 
 /// The row of bookmarks under the toolbar: links open on click (in a new tab on middle-click), folders open a menu,
-/// right-click offers open in new tab, edit and delete. Items drag to reorder (long-press first on touch screens), and
-/// dropping onto the middle of a folder moves the item into it.
+/// right-click offers open in new tab, edit and delete. Items drag to reorder, and dropping onto the middle of a folder
+/// moves the item into it. On touch screens a long press starts the drag; letting go without moving opens the menu.
 class BookmarkBar extends StatelessWidget {
   const BookmarkBar({super.key, required this.onOpen, this.onOpenInNewTab, this.store});
 
@@ -67,7 +68,8 @@ class BookmarkBar extends StatelessWidget {
                           node: node,
                           store: bookmarks,
                           touch: touch,
-                          child: _BarItem(node: node, store: bookmarks, onOpen: onOpen, onOpenInNewTab: onOpenInNewTab),
+                          builder: (menu) => _BarItem(
+                              node: node, store: bookmarks, onOpen: onOpen, onOpenInNewTab: onOpenInNewTab, menu: menu),
                         ),
                     ],
                   ),
@@ -84,19 +86,30 @@ enum _Drop { before, after, into }
 /// Makes a bar item draggable and a drop target: the left or right half places the dragged item before or after it,
 /// the middle half of a folder moves it into the folder.
 class _DragItem extends StatefulWidget {
-  const _DragItem({super.key, required this.node, required this.store, required this.touch, required this.child});
+  const _DragItem({super.key, required this.node, required this.store, required this.touch, required this.builder});
 
   final Bookmark node;
   final BookmarkStore store;
   final bool touch;
-  final Widget child;
+
+  /// Builds the item; it puts its right-click menu in the handle so a long press that never moved can open it.
+  final Widget Function(_MenuHandle menu) builder;
 
   @override
   State<_DragItem> createState() => _DragItemState();
 }
 
+/// Lets the drag wrapper open the right-click menu of the item it wraps.
+class _MenuHandle {
+  VoidCallback? open;
+}
+
 class _DragItemState extends State<_DragItem> {
   _Drop? _drop;
+  final _menu = _MenuHandle();
+  // How far the finger has gone since it went down, to tell a long press from a long-press drag.
+  Offset _downAt = Offset.zero;
+  double _moved = 0;
 
   _Drop _dropAt(Offset global) {
     final box = context.findRenderObject()! as RenderBox;
@@ -153,21 +166,40 @@ class _DragItemState extends State<_DragItem> {
         ),
       ),
     );
-    final dimmed = Opacity(opacity: 0.4, child: widget.child);
+    final child = widget.builder(_menu);
+    final dimmed = Opacity(opacity: 0.4, child: child);
     final draggable = widget.touch
-        ? LongPressDraggable<Bookmark>(
-            data: node,
-            dragAnchorStrategy: pointerDragAnchorStrategy,
-            feedback: feedback,
-            childWhenDragging: dimmed,
-            child: widget.child,
+        ? Listener(
+            onPointerDown: (e) {
+              _downAt = e.position;
+              _moved = 0;
+            },
+            onPointerMove: (e) {
+              final d = (e.position - _downAt).distance;
+              if (d > _moved) _moved = d;
+            },
+            child: LongPressDraggable<Bookmark>(
+              data: node,
+              dragAnchorStrategy: pointerDragAnchorStrategy,
+              feedback: feedback,
+              childWhenDragging: dimmed,
+              // Held and let go in place: that's the touch screen's right-click. The item is rebuilt (with a new
+              // menu) as it swaps back in for the dimmed copy, so the menu opens after that frame.
+              onDragEnd: (_) {
+                if (_moved >= kTouchSlop) return;
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) _menu.open?.call();
+                });
+              },
+              child: child,
+            ),
           )
         : Draggable<Bookmark>(
             data: node,
             dragAnchorStrategy: pointerDragAnchorStrategy,
             feedback: feedback,
             childWhenDragging: dimmed,
-            child: widget.child,
+            child: child,
           );
     return DragTarget<Bookmark>(
       onMove: (d) {
@@ -198,12 +230,13 @@ class _DragItemState extends State<_DragItem> {
 }
 
 class _BarItem extends StatelessWidget {
-  const _BarItem({required this.node, required this.store, required this.onOpen, this.onOpenInNewTab});
+  const _BarItem({required this.node, required this.store, required this.onOpen, this.onOpenInNewTab, this.menu});
 
   final Bookmark node;
   final BookmarkStore store;
   final void Function(String url) onOpen;
   final void Function(String url)? onOpenInNewTab;
+  final _MenuHandle? menu;
 
   /// Links in [folder] and its subfolders, each subfolder's links labelled with its path.
   List<KitMenuEntry> _folderEntries(Bookmark folder, [String path = '']) {
@@ -252,6 +285,7 @@ class _BarItem extends StatelessWidget {
         ];
       },
       builder: (context, toggleContext, _) {
+        menu?.open = toggleContext;
         Widget chip(VoidCallback onPressed, {bool open = false}) => GestureDetector(
           onSecondaryTap: toggleContext,
           // Middle-click opens a link in a new tab, as in other browsers.

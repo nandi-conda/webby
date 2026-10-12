@@ -310,7 +310,7 @@ class _HistoryRowState extends State<_HistoryRow> {
         KitMenuItem('Open in new tab', onSelected: newTab),
         KitMenuItem('Remove from history', onSelected: widget.onRemove),
       ],
-      builder: (context, toggle, open) => GestureDetector(onSecondaryTap: toggle, child: row),
+      builder: (context, toggle, open) => GestureDetector(onSecondaryTap: toggle, onLongPress: toggle, child: row),
     );
   }
 }

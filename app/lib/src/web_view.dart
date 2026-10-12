@@ -696,9 +696,12 @@ class _WebbyViewState extends State<WebbyView> with TextInputClient {
   VoidCallback? _toggleMenu;
   bool _menuOpen = false;
 
-  // Touch: a tap clicks, a drag scrolls the page (and flings it on release).
+  // Touch: a tap clicks, a drag scrolls the page (and flings it on release), holding still right-clicks.
   int? _touchPointer;
   Offset _touchStart = Offset.zero;
+  Offset _touchStartGlobal = Offset.zero;
+  Timer? _longPress;
+  bool _touchLongPressed = false;
   Offset _touchLast = Offset.zero;
   bool _touchScrolling = false;
   VelocityTracker? _touchVelocity;
@@ -860,15 +863,21 @@ class _WebbyViewState extends State<WebbyView> with TextInputClient {
     _stopFling();
     _touchPointer = event.pointer;
     _touchStart = _touchLast = event.localPosition;
+    _touchStartGlobal = event.position;
     _touchScrolling = false;
+    _touchLongPressed = false;
+    _longPress?.cancel();
+    _longPress = Timer(kLongPressTimeout, _touchLongPress);
     _touchVelocity = VelocityTracker.withKind(PointerDeviceKind.touch)..addPosition(event.timeStamp, event.localPosition);
   }
 
   void _touchMove(PointerMoveEvent event) {
-    if (event.pointer != _touchPointer) return;
+    // After a long press the menu is open; the finger lifting off it shouldn't scroll the page.
+    if (event.pointer != _touchPointer || _touchLongPressed) return;
     _touchVelocity?.addPosition(event.timeStamp, event.localPosition);
     if (!_touchScrolling && (event.localPosition - _touchStart).distance < kTouchSlop) return;
     _touchScrolling = true;
+    _longPress?.cancel();
     _scrollBy(event.localPosition, _touchLast - event.localPosition);
     _touchLast = event.localPosition;
   }
@@ -876,6 +885,8 @@ class _WebbyViewState extends State<WebbyView> with TextInputClient {
   void _touchUp(PointerUpEvent event) {
     if (event.pointer != _touchPointer) return;
     _touchPointer = null;
+    _longPress?.cancel();
+    if (_touchLongPressed) return;
     if (_touchScrolling) {
       _startFling(event.localPosition, _touchVelocity?.getVelocity().pixelsPerSecond ?? Offset.zero);
       return;
@@ -891,8 +902,26 @@ class _WebbyViewState extends State<WebbyView> with TextInputClient {
     _input?.show();
   }
 
+  /// A finger held still is a right-click there: Ladybird fires the page's contextmenu event (the page sees no touch
+  /// events at all), and the page script's report opens the same menu as on desktop.
+  void _touchLongPress() {
+    if (_touchPointer == null || _touchScrolling) return;
+    _touchLongPressed = true;
+    HapticFeedback.vibrate();
+    final position = _toDevice(_touchStart);
+    final controller = widget.controller;
+    controller.pointerIsTouch = true;
+    _expectContextMenu(_touchStartGlobal);
+    controller.mouseEvent(2, position);
+    controller.mouseEvent(0, position, button: 2, buttons: 2, clickCount: 1);
+    controller.mouseEvent(1, position, button: 2, clickCount: 1);
+  }
+
   void _onPointerCancel(PointerCancelEvent event) {
-    if (event.pointer == _touchPointer) _touchPointer = null;
+    if (event.pointer == _touchPointer) {
+      _touchPointer = null;
+      _longPress?.cancel();
+    }
   }
 
   /// Scrolls by [delta] logical pixels, as a trackpad would. Moves are gathered up and sent once per frame: touch
@@ -1052,6 +1081,7 @@ class _WebbyViewState extends State<WebbyView> with TextInputClient {
     _cancelContextMenu();
     _contextMenu.dispose();
     _stopFling();
+    _longPress?.cancel();
     _revealField?.cancel();
     if (_softKeyboard) {
       widget.controller.removeListener(_syncTextInput);
