@@ -376,7 +376,9 @@ proc showSidePanel*(title: string, content: Widget, width = 360, onClose: proc (
   sidePanelCloseHook = onClose
   gtk_label_set_text(sidePanelTitle, title.cstring)
   gtk_box_pack_start(sidePanelBody, content, 1, 1, 0)
-  gtk_widget_show_all(sidePanel)
+  # The panel is no_show_all (so show_all on the window leaves it hidden): show its parts, then itself.
+  for c in children(sidePanel): gtk_widget_show_all(c)
+  gtk_widget_show(sidePanel)
   let total = gtk_widget_get_allocated_width(pagePane)
   if total > width: gtk_paned_set_position(pagePane, cint(total - width))
 
