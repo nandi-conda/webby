@@ -1,0 +1,73 @@
+diff --git a/Meta/CMake/vcpkg/overlay-ports/angle/cmake-buildsystem/PlatformLinux.cmake b/Meta/CMake/vcpkg/overlay-ports/angle/cmake-buildsystem/PlatformLinux.cmake
+index 4f802d192c..0d93a92073 100644
+--- a/Meta/CMake/vcpkg/overlay-ports/angle/cmake-buildsystem/PlatformLinux.cmake
++++ b/Meta/CMake/vcpkg/overlay-ports/angle/cmake-buildsystem/PlatformLinux.cmake
+@@ -27,4 +27,13 @@ if (USE_ANGLE_EGL OR ENABLE_WEBGL)
+         ANGLE_ENABLE_OPENGL
+     )
+ 
++    # Ladybird: Android builds take this file too (CMakeLists.txt sets is_linux for every UNIX), but ANGLE's
++    # platform.h picks ANGLE_PLATFORM_ANDROID there, whose GLES display is DisplayAndroid.
++    if (ANDROID)
++        list(APPEND ANGLE_SOURCES
++            "src/libANGLE/renderer/gl/egl/android/DisplayAndroid.cpp"
++            "src/libANGLE/renderer/gl/egl/android/NativeBufferImageSiblingAndroid.cpp"
++        )
++    endif()
++
+ endif ()
+diff --git a/Services/Compositor/OpenGLContext.cpp b/Services/Compositor/OpenGLContext.cpp
+index 325022f97d..0395274022 100644
+--- a/Services/Compositor/OpenGLContext.cpp
++++ b/Services/Compositor/OpenGLContext.cpp
+@@ -153,6 +153,9 @@ OwnPtr<OpenGLContext> OpenGLContext::create(RefPtr<Gfx::SkiaBackendContext> skia
+     // FIXME: Share the drawing buffer with Skia's Direct3D 12 device (via an NT shared handle opened on ANGLE's
+     //        Direct3D 11 device) instead of reading it back to the CPU every frame.
+     bool use_cpu_painting_surface = true;
++#    elif defined(AK_OS_ANDROID)
++    // FIXME: Share the drawing buffer through an AHardwareBuffer instead of reading it back to the CPU every frame.
++    bool use_cpu_painting_surface = true;
+ #    else
+     bool use_cpu_painting_surface = false;
+ #    endif
+@@ -177,6 +180,9 @@ OwnPtr<OpenGLContext> OpenGLContext::create(RefPtr<Gfx::SkiaBackendContext> skia
+         EGL_PLATFORM_SURFACELESS_MESA,
+ #    elif defined(AK_OS_WINDOWS)
+         EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE,
++#    elif defined(AK_OS_ANDROID)
++        // ANGLE's GLES backend on top of the system's EGL and GLES driver.
++        EGL_PLATFORM_ANGLE_TYPE_OPENGLES_ANGLE,
+ #    endif
+         EGL_NONE,
+     };
+@@ -571,7 +577,7 @@ void OpenGLContext::allocate_painting_surface_if_needed()
+ #        else
+     (void)allocate_vkimage_painting_surface();
+ #        endif
+-#    elif (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)) || defined(AK_OS_WINDOWS)
++#    elif defined(AK_OS_LINUX) || defined(AK_OS_WINDOWS)
+     allocate_cpu_painting_surface();
+ #    endif
+     VERIFY(m_painting_surface);
+@@ -635,7 +641,7 @@ void OpenGLContext::present()
+ #    elif defined(USE_VULKAN_DMABUF_IMAGES)
+     // FIXME: CPU sync for now, but it would be better to export a fence and have Skia wait for it before reading from the surface
+     glFinish();
+-#    elif (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)) || defined(AK_OS_WINDOWS)
++#    elif defined(AK_OS_LINUX) || defined(AK_OS_WINDOWS)
+     glFinish();
+ #    endif
+ 
+diff --git a/Services/Compositor/OpenGLContext.h b/Services/Compositor/OpenGLContext.h
+index 54bc3ab8a9..e3c50ad64c 100644
+--- a/Services/Compositor/OpenGLContext.h
++++ b/Services/Compositor/OpenGLContext.h
+@@ -19,7 +19,7 @@
+ #    include <LibGfx/SharedImageBuffer.h>
+ #endif
+ 
+-#if defined(AK_OS_MACOS) || (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)) || defined(AK_OS_WINDOWS)
++#if defined(AK_OS_MACOS) || defined(AK_OS_LINUX) || defined(AK_OS_WINDOWS)
+ #    define ENABLE_WEBGL_CPU_PAINTING_SURFACE
+ #endif
+ 
