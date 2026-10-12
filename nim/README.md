@@ -4,12 +4,20 @@ The webby browser without Flutter: a Nim program on GTK 3 that drives the same `
 `native/webby_ffi.h`) and draws each frame straight into a `GtkDrawingArea` with cairo. Ladybird's premultiplied
 BGRA frame is cairo's ARGB32 layout, so the frame is painted in place: no copy, no swizzle, no Flutter engine.
 
-It has tabs, a URL bar, back/forward/reload, the hovered-link line, page dialogs, the clipboard and the Flutter
-app's page shims (read from `app/lib/src/page_compat.dart` at compile time). It has none of the rest (bookmarks,
-passwords, history, sync, sessions, PWAs, Android).
+It has the desktop Flutter app's features, sharing its profile files so either front end can open the same
+profile: bookmarks (bar, manager, HTML import/export), history and omnibox suggestions, the password vault with
+autofill and passkeys, end-to-end encrypted sync (compatible with Flutter devices), tabs from other devices, saved
+sessions, pinned and vertical tabs, tab and page context menus, incognito windows, site permissions and settings,
+file inputs, notifications, geolocation (GeoClue), dark mode, favicons, installable web apps (`--app=`), offline
+mode and Summarize. The Android app stays on Flutter.
+
+The core is `src/browser.nim` (window, tabs, input, pump, hooks); each feature is a module in `src/features/` whose
+`install()` only adds hooks. Build without `-d:ssl` and don't import std/net: Nim's OpenSSL setup loads the system
+libcrypto before libwebby, whose own crypto library then fails to load. Features use GIO for HTTP and the runtime's
+libcrypto for cryptography.
 
 ```
-nim c -d:release -o:nim/webby nim/webby.nim      # needs Nim and GTK 3 headers (pkg-config gtk+-3.0)
+nim c -d:release -o:nim/webby nim/webby.nim      # needs Nim and GTK 3 headers (pkg-config gtk+-3.0), glib-networking for HTTPS
 WEBBY_LADYBIRD_PREFIX=<webby-ladybird runtime> nim/webby https://example.com
 ```
 
@@ -36,3 +44,6 @@ two runs each agreeing within a few percent:
 Scroll latency is the engine's (WebContent paints the frame), so it doesn't move. The UI process's CPU and memory
 do. llvmpipe makes Flutter's GPU raster unusually expensive, so on a real GPU the CPU gap is smaller; the memory gap
 (the Flutter engine, Skia/Impeller, Dart heap) isn't GPU-dependent.
+
+With every feature ported (11k lines of Nim), the same bench gives: wheel scrolling 3% UI CPU, 60 fps animation 8%,
+PSS 90 MB for the UI process and 270-280 MB in total.
