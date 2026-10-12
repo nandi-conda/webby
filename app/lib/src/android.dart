@@ -30,11 +30,13 @@ class AndroidHost {
   }
 
   static void Function(String url)? _openUrl;
+  static void Function(int level)? _memoryPressure;
   static final Map<int, void Function()> _notificationClicks = {};
 
   static void _listen() {
     _channel.setMethodCallHandler((call) async {
       if (call.method == 'openUrl' && call.arguments is String) _openUrl?.call(call.arguments as String);
+      if (call.method == 'memoryPressure' && call.arguments is int) _memoryPressure?.call(call.arguments as int);
       if (call.method == 'notificationClicked' && call.arguments is int) {
         _notificationClicks.remove(call.arguments as int)?.call();
       }
@@ -44,6 +46,13 @@ class AndroidHost {
   /// Calls [open] with each link the app is asked to open while it is running.
   static void onOpenUrl(void Function(String url) open) {
     _openUrl = open;
+    _listen();
+  }
+
+  /// Calls [handle] with Android's onTrimMemory level (ComponentCallbacks2) whenever the system asks the app to
+  /// give back memory.
+  static void onMemoryPressure(void Function(int level) handle) {
+    _memoryPressure = handle;
     _listen();
   }
 

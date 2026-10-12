@@ -158,6 +158,11 @@ void webby_view_set_visible(WebbyView* handle, int visible)
     handle->view->set_system_visibility_state(visible ? Web::HTML::VisibilityState::Visible : Web::HTML::VisibilityState::Hidden);
 }
 
+void webby_view_collect_garbage(WebbyView* handle)
+{
+    handle->view->debug_request("collect-garbage");
+}
+
 WebbyView* webby_view_take_new_view(WebbyView* handle)
 {
     auto view = handle->view->take_new_view();

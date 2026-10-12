@@ -19,7 +19,7 @@ import io.flutter.plugin.common.MethodChannel
 // The "webby/android" channel (lib/src/android.dart): "prepare" unpacks Ladybird before the app starts it,
 // "initialUrl" is the link the app was opened with, and "openUrl" sends links that arrive later. Sites' notifications:
 // "requestNotificationPermission", "showNotification" and "cancelNotification"; a tap comes back as
-// "notificationClicked" with the notification's id.
+// "notificationClicked" with the notification's id. "memoryPressure" passes on onTrimMemory levels.
 //
 // The Flutter engine (and so the Dart app and its tabs) belongs to the process, not to this activity: Back on the last
 // page, or Android dropping the activity, would otherwise end the engine while Ladybird's views and their WebContent
@@ -41,6 +41,19 @@ class MainActivity : FlutterActivity() {
 
     override fun provideFlutterEngine(context: Context): FlutterEngine =
         engine ?: FlutterEngine(context.applicationContext).also { engine = it }
+
+    // Android asking for memory back: the app collects its pages' garbage and drops background tabs' pages (see
+    // _onMemoryPressure in main.dart). Flutter's own memory-pressure signal only covers some of these levels.
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        channel?.invokeMethod("memoryPressure", level)
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        // TRIM_MEMORY_RUNNING_CRITICAL
+        channel?.invokeMethod("memoryPressure", 15)
+    }
 
     // Back on the last page leaves the browser running in the background instead of closing it.
     override fun popSystemNavigator(): Boolean {

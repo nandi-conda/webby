@@ -273,6 +273,33 @@ class WebbyController extends ChangeNotifier {
     _image = null;
     frameWidth = 0;
     frameHeight = 0;
+    // A page that was just put away won't be looked at for a while: give back what its scripts left behind now
+    // rather than whenever it next allocates enough to trigger a collection.
+    collectGarbage();
+  }
+
+  static bool _collectLooked = false;
+  static void Function(ViewPtr)? _collect;
+
+  /// Asks the page's JavaScript heap to collect garbage now (see `webby_view_collect_garbage` in webby_ffi.h).
+  /// Does nothing on runtimes without it.
+  void collectGarbage() {
+    if (_view == nullptr) return;
+    if (!_collectLooked) {
+      _collectLooked = true;
+      final lib = _bindings.library;
+      if (lib.providesSymbol('webby_view_collect_garbage')) {
+        _collect = lib.lookupFunction<Void Function(ViewPtr), void Function(ViewPtr)>('webby_view_collect_garbage');
+      }
+    }
+    _collect?.call(_view);
+  }
+
+  /// [collectGarbage] on every live page, for when the system runs short of memory.
+  static void collectAllGarbage() {
+    for (final controller in _live) {
+      controller.collectGarbage();
+    }
   }
 
   static bool _visibleLooked = false;

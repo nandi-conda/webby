@@ -59,6 +59,11 @@ WEBBY_API void webby_view_set_color_scheme(WebbyView*, int scheme);
  * producing frames. The last frame stays readable. */
 WEBBY_API void webby_view_set_visible(WebbyView*, int visible);
 
+/* Asks the page's JavaScript heap to collect garbage soon (the WebContent
+ * process does it once the current task is done). For pages put away and for
+ * when the system runs short of memory. */
+WEBBY_API void webby_view_collect_garbage(WebbyView*);
+
 /* Views the page opened (links with target=_blank, window.open()). Each one
  * is a full view with its own page; the UI should show it as a new tab.
  * webby_view_take_new_view() returns the oldest waiting one (the caller owns
