@@ -8,3 +8,4 @@ app/build/
 app/.gitignore
 nim/webby
 nim/*.log
+.claude/
