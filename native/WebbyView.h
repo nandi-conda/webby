@@ -84,6 +84,12 @@ public:
     // Hands the page the files at `paths` (none cancels the picker).
     void respond_to_file_picker(Vector<ByteString> const& paths);
 
+    // A site asking to use a permission-gated feature (only "geolocation" so far), as JSON for the UI (empty when
+    // nothing is waiting). See webby_view_permission_request() in webby_ffi.h.
+    ByteString const& permission_request() const { return m_permission_request_json; }
+    // Answers the request with that id, and any others waiting from the same site for the same permission.
+    void respond_to_permission(u64 id, bool granted);
+
     // prompt() calls whose text starts with this prefix are messages from the browser's own page scripts: they're
     // answered at once and queued here instead of being shown. See webby_view_set_message_prefix() in webby_ffi.h.
     void set_message_prefix(ByteString prefix) { m_message_prefix = move(prefix); }
@@ -103,6 +109,11 @@ private:
 
     void copy_front_bitmap();
     void state_changed() { ++m_state_serial; }
+
+    // Puts the site-permission check in front of Ladybird's geolocation handlers. Call after initialize_tab(), which
+    // installs them.
+    void install_permission_checks();
+    void update_permission_request();
 
     void handle_webauthn_request(WebView::WebContentPage&, u64 request_id, String const& request);
 
@@ -127,6 +138,22 @@ private:
     };
     Optional<PendingWebAuthn> m_pending_webauthn;
     ByteString m_webauthn_prompt;
+
+    struct PendingPermission {
+        u64 id { 0 };
+        ByteString permission;
+        ByteString origin;
+        NonnullRefPtr<WebView::WebContentPage> page;
+        u64 request_id { 0 };
+        bool is_watch { false };
+    };
+    Vector<PendingPermission> m_pending_permissions;
+    u64 m_next_permission_id { 0 };
+    ByteString m_permission_request_json;
+    Function<void(WebView::WebContentPage&, u64)> m_request_geolocation_position;
+    Function<void(WebView::WebContentPage&, u64)> m_cancel_geolocation_position_request;
+    Function<void(WebView::WebContentPage&, u64)> m_start_geolocation_position_watch;
+    Function<void(WebView::WebContentPage&, u64)> m_stop_geolocation_position_watch;
 
     ByteString m_file_picker_request;
     u64 m_file_picker_id { 0 };

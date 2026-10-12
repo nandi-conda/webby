@@ -17,6 +17,7 @@
 #include <LibWebView/Application.h>
 #include <LibWebView/Menu.h>
 #include <LibWebView/Utilities.h>
+#include <WebbyGeolocation.h>
 #include <WebbyView.h>
 #include <webby_ffi.h>
 
@@ -68,12 +69,18 @@ int webby_init(char const* prefix)
     argv.append(nullptr);
     Main::Arguments arguments { static_cast<int>(strings.size()), argv.data(), strings.span() };
 
+    // Pages' navigator.geolocation gets positions from the UI; turn on Ladybird's engine-wide switch for it (off by
+    // default), as sites are asked about one by one instead (see View::install_permission_checks()).
+    Webby::GeolocationProvider::install();
+
     auto application = Webby::Application::create(arguments, binary_directory);
     if (application.is_error()) {
         warnln("webby: Unable to create application: {}", application.error());
         return -1;
     }
     s_application = application.release_value();
+    if (!WebView::Application::settings().geolocation_enabled())
+        WebView::Application::settings().set_geolocation_enabled(true);
 
     auto theme_path = LexicalPath::join(WebView::s_ladybird_resource_root, "themes"sv, "Default.ini"sv);
     auto theme = Gfx::load_system_theme(theme_path.string());
@@ -250,6 +257,56 @@ void webby_clipboard_set_text(char const* text)
     auto string = String::from_utf8(StringView { text, strlen(text) });
     if (!string.is_error())
         s_application->set_clipboard_from_system(string.release_value());
+}
+
+char const* webby_view_permission_request(WebbyView* handle) { return handle->view->permission_request().characters(); }
+
+void webby_view_permission_respond(WebbyView* handle, uint64_t id, int granted)
+{
+    handle->view->respond_to_permission(id, granted != 0);
+}
+
+int webby_geolocation_wanted(void)
+{
+    auto* provider = Webby::GeolocationProvider::the();
+    return provider ? provider->wanted() : 0;
+}
+
+static Optional<double> optional_coordinate(double value)
+{
+    if (__builtin_isnan(value))
+        return {};
+    return value;
+}
+
+void webby_geolocation_set_position(double latitude, double longitude, double accuracy, double altitude, double altitude_accuracy, double heading, double speed)
+{
+    auto* provider = Webby::GeolocationProvider::the();
+    if (!provider)
+        return;
+    provider->did_update_position({
+        .latitude = latitude,
+        .longitude = longitude,
+        .accuracy = accuracy,
+        .altitude = optional_coordinate(altitude),
+        .altitude_accuracy = optional_coordinate(altitude_accuracy),
+        .heading = optional_coordinate(heading),
+        .speed = optional_coordinate(speed),
+    });
+}
+
+void webby_geolocation_set_error(int code, char const* message)
+{
+    auto* provider = Webby::GeolocationProvider::the();
+    if (!provider)
+        return;
+    auto type = Core::GeolocationError::Type::PositionUnavailable;
+    if (code == WEBBY_GEOLOCATION_ERROR_PERMISSION_DENIED)
+        type = Core::GeolocationError::Type::PermissionDenied;
+    else if (code == WEBBY_GEOLOCATION_ERROR_TIMEOUT)
+        type = Core::GeolocationError::Type::Timeout;
+    auto text = String::from_utf8(message ? StringView { message, strlen(message) } : ""sv);
+    provider->did_error({ type, text.is_error() ? String {} : text.release_value() });
 }
 
 char const* webby_view_ime_state(WebbyView* handle) { return handle->view->input_method_state_json().characters(); }

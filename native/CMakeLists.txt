@@ -5,6 +5,7 @@ find_package(OpenSSL REQUIRED)
 
 add_library(ladybird SHARED
     Authenticator.cpp
+    WebbyGeolocation.cpp
     WebbyView.cpp
     webby_ffi.cpp
 )

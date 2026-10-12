@@ -17,10 +17,12 @@ import 'clipboard.dart';
 import 'color_scheme.dart';
 import 'context_menu.dart';
 import 'file_picker.dart';
+import 'geolocation.dart';
 import 'frame_bench.dart';
 import 'keys.dart';
 import 'page_compat.dart';
 import 'passwords/native.dart';
+import 'site_permissions.dart';
 
 /// Drives one Ladybird view: pumps the event loop, hands presented frames to Flutter and exposes page state.
 ///
@@ -106,6 +108,12 @@ class WebbyController extends ChangeNotifier {
   late final PasswordNative _passwordNative = PasswordNative.of(_bindings);
   late final ClipboardBridge _clipboard = ClipboardBridge.of(_bindings);
   late final PageFilePicker? _filePicker = PageFilePicker.of(_bindings);
+  late final PagePermissions? _permissions = PagePermissions.of(_bindings);
+  late final LocationBridge? _location = LocationBridge.of(_bindings);
+
+  /// A site's request for a permission (such as the location) waiting for the user, or null. Requests the user
+  /// already answered for the site are answered without showing up here.
+  PermissionRequest? get permissionRequest => _permissions?.request;
   // Set while a paste waits for the system clipboard; key events that come meanwhile queue up behind it.
   Future<void>? _pendingPaste;
   String _messagePrefix = _randomPrefix();
@@ -172,6 +180,7 @@ class WebbyController extends ChangeNotifier {
     isLoading = false;
     webauthnPrompt = null;
     _webauthnPromptJson = '';
+    _permissions?.reset();
     _freeFrames();
     notifyListeners();
   }
@@ -293,6 +302,18 @@ class WebbyController extends ChangeNotifier {
   void respondToWebAuthn({required bool accepted, int accountIndex = -1}) =>
       _ifAttached((v) => _bindings.webauthnRespond(v, accepted ? 1 : 0, accountIndex));
 
+  /// Answers [permissionRequest]. [remember] keeps the answer for the site; an allow without it lasts for this tab.
+  void answerPermission({required bool allow, required bool remember}) {
+    final permissions = _permissions;
+    if (permissions == null) return;
+    _ifAttached((v) => permissions.answer(v, allow: allow, remember: remember));
+    permissions.request = null;
+    notifyListeners();
+  }
+
+  /// Forgets this tab's "allow this time" answers for [origin].
+  void forgetPermissions(String origin) => _permissions?.forgetThisTime(origin);
+
   void mouseEvent(int type, Offset position, {int button = 0, int buttons = 0, int modifiers = 0, int clickCount = 0}) =>
       _ifAttached((v) => _bindings.mouseEvent(
           v, type, position.dx.round(), position.dy.round(), button, buttons, modifiers, clickCount));
@@ -357,6 +378,7 @@ class WebbyController extends ChangeNotifier {
       _lastPumpMicros = now;
       _bindings.pump();
       _clipboard.pushPageCopies();
+      _location?.poll();
     }
     if (_view == nullptr) return;
 
@@ -381,6 +403,7 @@ class WebbyController extends ChangeNotifier {
         webauthnPrompt = prompt.isEmpty ? null : jsonDecode(prompt) as Map<String, Object?>;
       }
       _filePicker?.check(_view, () => _view);
+      _permissions?.check(_view);
       closeRequested = (_closeRequested?.call(_view) ?? 0) != 0;
       _takeNewViews();
       if (_disposed) return;

@@ -9,6 +9,7 @@
 #include <AK/LexicalPath.h>
 #include <LibCore/System.h>
 #include <LibIPC/File.h>
+#include <LibWebCommon/Geolocation/GeolocationPositionErrorCode.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/SharedImageBuffer.h>
 #include <LibWebView/Menu.h>
@@ -50,6 +51,7 @@ NonnullOwnPtr<View> View::create(Core::AnonymousBuffer theme, Web::DevicePixelSi
     auto view = adopt_own(*new View(move(theme), size));
     view->m_device_pixel_ratio = device_pixel_ratio;
     view->initialize_tab(Web::HTML::VisibilityState::Visible);
+    view->install_permission_checks();
     return view;
 }
 
@@ -65,6 +67,7 @@ View::View(Core::AnonymousBuffer theme, Web::DevicePixelSize size)
         auto view = adopt_own(*new View(m_theme, m_viewport_size));
         view->m_device_pixel_ratio = m_device_pixel_ratio;
         view->initialize_tab(Web::HTML::VisibilityState::Visible, traversable);
+        view->install_permission_checks();
         return queue_new_view(move(view)).handle();
     };
 
@@ -175,6 +178,97 @@ View::View(Core::AnonymousBuffer theme, Web::DevicePixelSize size)
     };
 }
 
+void View::install_permission_checks()
+{
+    m_request_geolocation_position = move(on_request_geolocation_position);
+    m_cancel_geolocation_position_request = move(on_cancel_geolocation_position_request);
+    m_start_geolocation_position_watch = move(on_start_geolocation_position_watch);
+    m_stop_geolocation_position_watch = move(on_stop_geolocation_position_watch);
+
+    // Ladybird lets every secure page use the location (the engine-wide switch aside); like other browsers, ask the
+    // user per site first. The UI remembers the answers.
+    auto ask = [this](WebView::WebContentPage& page, u64 request_id, bool is_watch) {
+        auto origin = url().origin();
+        // Opaque origins (data:, sandboxed pages) have no site to remember an answer for.
+        if (origin.is_opaque()) {
+            page.async_geolocation_position_response(request_id, {}, to_underlying(Web::Geolocation::GeolocationPositionErrorCode::PermissionDenied));
+            return;
+        }
+        m_pending_permissions.append({ ++m_next_permission_id, ByteString("geolocation"sv), origin.serialize().to_byte_string(), page, request_id, is_watch });
+        update_permission_request();
+    };
+    on_request_geolocation_position = [ask](WebView::WebContentPage& page, u64 request_id) { ask(page, request_id, false); };
+    on_start_geolocation_position_watch = [ask](WebView::WebContentPage& page, u64 request_id) { ask(page, request_id, true); };
+
+    auto withdraw = [this](WebView::WebContentPage& page, u64 request_id, bool is_watch) {
+        auto removed = m_pending_permissions.remove_all_matching([&](auto const& pending) {
+            return pending.page.ptr() == &page && pending.request_id == request_id && pending.is_watch == is_watch;
+        });
+        if (removed) {
+            update_permission_request();
+            return true;
+        }
+        return false;
+    };
+    on_cancel_geolocation_position_request = [this, withdraw](WebView::WebContentPage& page, u64 request_id) {
+        if (!withdraw(page, request_id, false) && m_cancel_geolocation_position_request)
+            m_cancel_geolocation_position_request(page, request_id);
+    };
+    on_stop_geolocation_position_watch = [this, withdraw](WebView::WebContentPage& page, u64 request_id) {
+        if (!withdraw(page, request_id, true) && m_stop_geolocation_position_watch)
+            m_stop_geolocation_position_watch(page, request_id);
+    };
+}
+
+void View::update_permission_request()
+{
+    m_pending_permissions.remove_all_matching([](auto const& pending) { return !pending.page->is_open(); });
+
+    ByteString json;
+    if (!m_pending_permissions.is_empty()) {
+        auto const& pending = m_pending_permissions.first();
+        JsonObject request;
+        request.set("id"sv, pending.id);
+        request.set("permission"sv, pending.permission.view());
+        request.set("origin"sv, pending.origin.view());
+        json = request.serialized().to_byte_string();
+    }
+    if (json != m_permission_request_json) {
+        m_permission_request_json = move(json);
+        state_changed();
+    }
+}
+
+void View::respond_to_permission(u64 id, bool granted)
+{
+    auto first = m_pending_permissions.find_if([&](auto const& pending) { return pending.id == id; });
+    if (first.is_end())
+        return;
+    auto permission = first->permission;
+    auto origin = first->origin;
+
+    Vector<PendingPermission> answered;
+    m_pending_permissions.remove_all_matching([&](auto& pending) {
+        if (pending.permission != permission || pending.origin != origin)
+            return false;
+        answered.append(move(pending));
+        return true;
+    });
+    update_permission_request();
+
+    for (auto& pending : answered) {
+        if (!pending.page->is_open())
+            continue;
+        if (!granted) {
+            pending.page->async_geolocation_position_response(pending.request_id, {}, to_underlying(Web::Geolocation::GeolocationPositionErrorCode::PermissionDenied));
+            continue;
+        }
+        auto& handler = pending.is_watch ? m_start_geolocation_position_watch : m_request_geolocation_position;
+        if (handler)
+            handler(*pending.page, pending.request_id);
+    }
+}
+
 WebView::ViewImplementation* View::create_view_for_new_tab_or_window(WebView::IsPrivate)
 {
     return &queue_new_view(View::create(m_theme, m_viewport_size, m_device_pixel_ratio));
@@ -236,6 +330,11 @@ ByteString const& View::input_method_state_json()
 
 View::~View()
 {
+    for (auto& pending : m_pending_permissions) {
+        if (pending.page->is_open())
+            pending.page->async_geolocation_position_response(pending.request_id, {}, to_underlying(Web::Geolocation::GeolocationPositionErrorCode::PermissionDenied));
+    }
+    m_pending_permissions.clear();
     respond_to_file_picker({});
     respond_to_webauthn(false, -1);
 }

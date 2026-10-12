@@ -24,6 +24,7 @@ import 'src/pwa/app_window.dart';
 import 'src/pwa/install_dialog.dart';
 import 'src/pwa/offline.dart';
 import 'src/pwa/pwa_agent.dart';
+import 'src/site_settings.dart';
 import 'src/tab_strip.dart';
 import 'src/tabs/device_tabs.dart';
 import 'src/tabs/device_tabs_page.dart';
@@ -524,6 +525,7 @@ class _BrowserPageState extends State<BrowserPage> {
                       focusNode: _addressFocus,
                       url: controller.url,
                       onSubmitted: _go,
+                      onSiteSettings: () => showSiteSettings(context, controller),
                       trailing: [
                         if (OfflineMonitor.instance?.offline ?? false)
                           KitTooltip(
@@ -616,6 +618,7 @@ class _BrowserPageState extends State<BrowserPage> {
                   ),
                   if (Incognito.active && (controller.url.isEmpty || controller.url == _blankUrl))
                     const Positioned.fill(child: IncognitoNewTab()),
+                  PermissionBubble(key: ObjectKey(tab), controller: controller),
                   if (controller.hoveredLink.isNotEmpty)
                     Positioned(
                       left: 0,

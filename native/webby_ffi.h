@@ -120,6 +120,39 @@ WEBBY_API void webby_view_file_picker_respond(WebbyView*, char const* paths_json
 WEBBY_API void webby_view_set_message_prefix(WebbyView*, char const* prefix);
 WEBBY_API char const* webby_view_next_message(WebbyView*);
 
+/* Site permissions. When a site asks for a permission-gated feature (so far
+ * only "geolocation": navigator.geolocation), the view holds the request until
+ * the UI answers. webby_view_permission_request() is "" when nothing is
+ * waiting, else JSON (it changes together with state_serial()):
+ *   { "id": n, "permission": "geolocation", "origin": "https://example.com" }
+ * "origin" is the top-level page's. Answer with webby_view_permission_respond();
+ * the answer also covers every other request waiting from that origin for that
+ * permission. The UI keeps any remembered answers: every request comes here. */
+WEBBY_API char const* webby_view_permission_request(WebbyView*);
+WEBBY_API void webby_view_permission_respond(WebbyView*, uint64_t id, int granted);
+
+/* Location. Ladybird has no location source here; the UI supplies one.
+ * webby_geolocation_wanted() says what pages are waiting for (flags below; 0
+ * when nothing, so the UI can stop its location service). Hand positions to
+ * webby_geolocation_set_position(): latitude and longitude in degrees, accuracy
+ * in metres, the rest NaN when unknown (altitude and its accuracy in metres,
+ * heading in degrees from north, speed in m/s). It answers every one-off
+ * request and updates every watch. webby_geolocation_set_error() fails the
+ * one-off requests and tells watches. */
+enum {
+    WEBBY_GEOLOCATION_REQUESTED = 1,
+    WEBBY_GEOLOCATION_WATCHING = 2,
+};
+enum {
+    WEBBY_GEOLOCATION_ERROR_PERMISSION_DENIED = 1,
+    WEBBY_GEOLOCATION_ERROR_POSITION_UNAVAILABLE = 2,
+    WEBBY_GEOLOCATION_ERROR_TIMEOUT = 3,
+};
+WEBBY_API int webby_geolocation_wanted(void);
+WEBBY_API void webby_geolocation_set_position(double latitude, double longitude, double accuracy,
+    double altitude, double altitude_accuracy, double heading, double speed);
+WEBBY_API void webby_geolocation_set_error(int code, char const* message);
+
 /* Clipboard. Ladybird keeps its own clipboard: Ctrl+C / Ctrl+X in a page and
  * navigator.clipboard.write*() put text there, Ctrl+V and
  * navigator.clipboard.read*() take it from there. webby_clipboard_serial()

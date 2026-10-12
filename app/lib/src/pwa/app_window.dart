@@ -6,6 +6,7 @@ import '../bindings.dart';
 import '../passkey_dialog.dart';
 import '../passwords/password_bar.dart';
 import '../passwords/password_manager.dart';
+import '../site_settings.dart';
 import '../ui.dart';
 import '../web_view.dart';
 import 'app_store.dart';
@@ -157,7 +158,14 @@ class _AppWindowPageState extends State<AppWindowPage> {
             ),
             if (_passwords != null) PasswordBar(agent: _passwords!),
             Expanded(
-              child: WebbyView(controller: controller, focusNode: _pageFocus, isBrowserShortcut: _isAppShortcut),
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: WebbyView(controller: controller, focusNode: _pageFocus, isBrowserShortcut: _isAppShortcut),
+                  ),
+                  PermissionBubble(controller: controller),
+                ],
+              ),
             ),
           ],
         ),

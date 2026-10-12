@@ -11,6 +11,7 @@ class Omnibox extends StatefulWidget {
     required this.focusNode,
     required this.url,
     required this.onSubmitted,
+    this.onSiteSettings,
     this.trailing = const [],
   });
 
@@ -20,6 +21,9 @@ class Omnibox extends StatefulWidget {
   /// The page's address, put back when editing ends without going anywhere.
   final String url;
   final ValueChanged<String> onSubmitted;
+
+  /// The tune icon at the left opens the site's settings (permissions); null leaves it as decoration.
+  final VoidCallback? onSiteSettings;
 
   /// Shown inside the pill at the right, such as the bookmark star.
   final List<Widget> trailing;
@@ -98,12 +102,19 @@ class _OmniboxState extends State<Omnibox> {
         onTap: widget.focusNode.requestFocus,
         child: Container(
           height: 32,
-          padding: const EdgeInsets.only(left: 12, right: 4),
+          padding: const EdgeInsets.only(left: 3, right: 4),
           decoration: BoxDecoration(color: fill, borderRadius: BorderRadius.circular(16)),
           child: Row(
             children: [
-              Icon(Icons.tune, size: 16, color: c.textDim),
-              const SizedBox(width: 10),
+              KitIconButton(
+                Icons.tune,
+                tooltip: 'View site information',
+                size: 16,
+                extent: 26,
+                color: c.textDim,
+                onPressed: widget.onSiteSettings,
+              ),
+              const SizedBox(width: 5),
               Expanded(
                 child: Stack(
                   alignment: Alignment.centerLeft,
