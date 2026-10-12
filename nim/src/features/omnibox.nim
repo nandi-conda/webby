@@ -256,12 +256,15 @@ proc buildPopup() =
 
 proc install*() =
   # Before the core's Esc (close the sidebar), which it still does when there are no suggestions to close.
-  addShortcut(0, 0xff1b, proc () =
+  # Esc that closes nothing goes on to the page.
+  addKeyHandler(0, 0xff1b, proc (): bool =
+    result = true
     if popupShowing(): hidePopup()
     elif sidePanelShowing(): closeSidePanel()
     elif gtk_widget_has_focus(urlEntry) != 0:
       let t = currentTab()
       if t != nil: gtk_entry_set_text(urlEntry, t.url.cstring)
-      gtk_editable_select_region(urlEntry, 0, -1))
+      gtk_editable_select_region(urlEntry, 0, -1)
+    else: result = false)
   suggestionProviders.insert(tabSuggestions, 0)
   windowHooks.add buildPopup

@@ -97,7 +97,7 @@ var
   clipboardSerial: uint64
   cursors: Table[int, pointer]
   lastClick: tuple[time: uint32, x, y: float, button: cuint, count: int]
-  shortcuts: seq[tuple[mods: int, keyval: uint32, action: proc ()]]
+  shortcuts: seq[tuple[mods: int, keyval: uint32, action: proc (): bool]]
   quitting = false
   # WEBBY_TRACE counters
   trace = getEnv("WEBBY_TRACE") == "1"
@@ -358,6 +358,10 @@ proc addMenuSeparator*() = menuSeparator(moreMenu)
 
 proc addShortcut*(mods: int, keyval: uint32, action: proc () {.closure.}) =
   ## A window-wide key (mods are modCtrl etc., keyval a GDK keyval in lower case for letters).
+  shortcuts.add((mods, keyval, proc (): bool = (action(); true)))
+
+proc addKeyHandler*(mods: int, keyval: uint32, action: proc (): bool {.closure.}) =
+  ## Like addShortcut, but the key goes on to the focused widget (the page, the URL bar) when `action` returns false.
   shortcuts.add((mods, keyval, action))
 
 var sidePanelCloseHook: proc ()
@@ -799,8 +803,7 @@ proc onWindowKey(w: Widget, e: GEvent, data: pointer): gboolean {.cdecl.} =
   let mods = modifiers(eventState(e))
   let k = if keyval in 0x41'u32 .. 0x5a'u32: keyval + 0x20 else: keyval
   for s in shortcuts:
-    if s.mods == mods and s.keyval == k:
-      s.action()
+    if s.mods == mods and s.keyval == k and s.action():
       return 1
   0
 
@@ -837,7 +840,9 @@ proc defaultShortcuts() =
   addShortcut(modAlt, 0xff51, goBack)
   addShortcut(modAlt, 0xff53, goForward)
   addShortcut(modCtrl, 0x71, quit)                                               # Ctrl+Q
-  addShortcut(0, 0xff1b, proc () = (if sidePanelShowing(): closeSidePanel()))    # Esc closes the sidebar
+  addKeyHandler(0, 0xff1b, proc (): bool =                                      # Esc closes the sidebar
+    result = sidePanelShowing()
+    if result: closeSidePanel())
 
 const css = """
 .webby-tab { padding: 4px 6px 4px 10px; border-radius: 6px 6px 0 0; }
