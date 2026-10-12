@@ -129,8 +129,8 @@ const _blankUrl = 'about:blank';
 class _BrowserPageState extends State<BrowserPage> {
   final _tabs = <_BrowserTab>[];
   int _active = 0;
-  /// URLs of closed tabs, most recent last, for Ctrl+Shift+T.
-  final _closedUrls = <String>[];
+  /// Closed tabs, most recent last, for Ctrl+Shift+T and the "Recently closed" menus.
+  final _closedTabs = <DeviceTab>[];
   Object? _startupError;
   final _address = TextEditingController();
   final _addressFocus = FocusNode(debugLabel: 'address');
@@ -197,7 +197,10 @@ class _BrowserPageState extends State<BrowserPage> {
     if (index < 0 || index >= _tabs.length) return;
     final tab = _tabs[index];
     final url = tab.controller.url;
-    if (url.isNotEmpty && url != _blankUrl) _closedUrls.add(url);
+    if (url.isNotEmpty && url != _blankUrl) {
+      _closedTabs.add(DeviceTab(tabTitle(tab.controller.title, url), url));
+      if (_closedTabs.length > 25) _closedTabs.removeAt(0);
+    }
     // Closing the last tab leaves a blank one rather than an empty window.
     if (_tabs.length == 1) _addTab(_blankUrl);
     _tabs.removeAt(index);
@@ -383,7 +386,22 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   void _reopenClosedTab() {
-    if (_closedUrls.isNotEmpty) _newTab(_closedUrls.removeLast());
+    if (_closedTabs.isNotEmpty) _newTab(_closedTabs.removeLast().url);
+  }
+
+  /// Menu rows for the last few closed tabs, newest first; picking one reopens it.
+  List<KitMenuEntry> _recentlyClosedItems() {
+    if (_closedTabs.isEmpty) return const [];
+    String short(String title) => title.length > 50 ? '${title.substring(0, 49)}…' : title;
+    return [
+      const KitMenuDivider(),
+      const KitMenuItem('Recently closed', onSelected: null),
+      for (final closed in _closedTabs.reversed.take(10))
+        KitMenuItem('   ${short(closed.title)}', onSelected: () {
+          _closedTabs.remove(closed);
+          _newTab(closed.url);
+        }),
+    ];
   }
 
   /// Opens a copy of tab [index] next to it and switches to it.
@@ -421,7 +439,8 @@ class _BrowserPageState extends State<BrowserPage> {
       ],
       const KitMenuDivider(),
       KitMenuItem('Reopen closed tab', shortcut: 'Ctrl+Shift+T',
-          onSelected: _closedUrls.isEmpty ? null : _reopenClosedTab),
+          onSelected: _closedTabs.isEmpty ? null : _reopenClosedTab),
+      ..._recentlyClosedItems(),
       if (!Platform.isAndroid) ...[
         const KitMenuDivider(),
         KitMenuItem(
@@ -785,6 +804,7 @@ class _BrowserPageState extends State<BrowserPage> {
                       const KitMenuDivider(),
                       KitMenuItem('Bookmark manager', shortcut: 'Ctrl+Shift+O', onSelected: _openBookmarks),
                       KitMenuItem('History', shortcut: 'Ctrl+H', onSelected: _openHistory),
+                      ..._recentlyClosedItems(),
                       if (!Incognito.active) ...[
                         const KitMenuDivider(),
                         KitMenuItem('Tabs from other devices', onSelected: _openDeviceTabs),
