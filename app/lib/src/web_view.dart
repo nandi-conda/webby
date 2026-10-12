@@ -82,8 +82,21 @@ class WebbyController extends ChangeNotifier {
       stderr.writeln('webby-trace pumps=$_pumps dartFrames=$_dartFrames delay=${_pumpDelay.inMilliseconds}ms '
           '[${views.join('; ')}]');
       _pumps = _dartFrames = 0;
+      // What the shown pages are animating.
+      for (final c in _live.where((c) => c._visible && c._messagePrefix.isNotEmpty)) {
+        if (!_traced.contains(c)) {
+          _traced.add(c);
+          c.pageMessages.where((m) => m.startsWith('{"type":"trace"')).listen((m) => stderr.writeln('webby-trace page $m'));
+        }
+        c.runJavaScript('''(() => { try { const a = document.getAnimations().map(a => {
+          const t = a.effect && a.effect.target; return (a.animationName || a.transitionProperty || a.constructor.name) +
+          '@' + (t ? t.tagName + '.' + String(t.className).slice(0, 40) : '?') + ':' + a.playState; });
+          window.prompt(${jsonEncode(c._messagePrefix)} + JSON.stringify({type: 'trace', url: location.href,
+          animations: a.slice(0, 12), count: a.length})); } catch (e) {} })()''');
+      }
     });
   }
+  static final Set<WebbyController> _traced = {};
 
   /// Called with each view the page opens (a target=_blank link, window.open()); the receiver owns the controller.
   /// Without a listener such views are closed at once rather than left running unseen.
