@@ -1,5 +1,9 @@
-## tabs for webby-nim (not ported yet).
+## Tabs for webby-nim: saved sessions, pinned and vertical tabs, the tab and page right-click menus, reopening closed
+## tabs, incognito windows and discarding long-hidden tabs. The pieces are in src/features/tabs/.
 
-import ../browser
+import tabs/[strip, sessions, contextmenu]
 
-proc install*() = discard
+proc install*() =
+  strip.install()
+  sessions.install()
+  contextmenu.install()
