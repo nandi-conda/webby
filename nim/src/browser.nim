@@ -156,7 +156,10 @@ proc refreshChrome*() =
   let t = currentTab()
   if t == nil: return
   let name = if incognito: "Webby (Incognito)" else: "Webby"
-  gtk_window_set_title(window, cstring(if t.title.len > 0: t.title & " - " & name else: name))
+  # An installed web app's window is titled by the app alone.
+  let title = if appUrl.len > 0 and t.title.len > 0: t.title
+              elif t.title.len > 0: t.title & " - " & name else: name
+  gtk_window_set_title(window, title.cstring)
   if gtk_widget_has_focus(urlEntry) == 0: gtk_entry_set_text(urlEntry, t.url.cstring)
   gtk_widget_set_sensitive(backButton, t.canBack.gboolean)
   gtk_widget_set_sensitive(forwardButton, t.canForward.gboolean)
@@ -546,7 +549,7 @@ proc pumpAll(data: pointer): gboolean {.cdecl.} =
   if cs != clipboardSerial:
     clipboardSerial = cs
     gtk_clipboard_set_text(systemClipboard(), webby_clipboard_text(), -1)
-  let snapshot = tabs
+  var snapshot = tabs   # a copy: pumpTab may add or close tabs
   for t in snapshot:
     if not t.closed and pumpTab(t, t == currentTab()): busy = true
   if trace:
