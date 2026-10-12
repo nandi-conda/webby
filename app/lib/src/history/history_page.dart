@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flatkit/flatkit.dart';
@@ -25,6 +26,26 @@ String historyDayLabel(DateTime day, DateTime now) {
 
 String _clock(DateTime time) =>
     '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+
+/// [visits] (newest first) split into days, and each day into rows: back-to-back visits to the same page are one row.
+List<List<List<HistoryEntry>>> groupHistory(Iterable<HistoryEntry> visits) {
+  final days = <List<List<HistoryEntry>>>[];
+  DateTime? day;
+  for (final entry in visits) {
+    final date = entry.date;
+    if (day == null || date.year != day.year || date.month != day.month || date.day != day.day) {
+      day = date;
+      days.add([]);
+    }
+    final rows = days.last;
+    if (rows.isNotEmpty && HistoryStore.samePage(rows.last.first.url, entry.url)) {
+      rows.last.add(entry);
+    } else {
+      rows.add([entry]);
+    }
+  }
+  return days;
+}
 
 /// The history page (Ctrl+H): every visit, newest first and grouped by day, with search, deleting single visits and
 /// clearing the history.
@@ -56,31 +77,6 @@ class _HistoryPageState extends State<HistoryPage> {
     super.dispose();
   }
 
-  Widget _row(HistoryEntry entry) {
-    final c = KitTheme.of(context);
-    final host = Uri.tryParse(entry.url)?.host ?? '';
-    return KitListRow(
-      height: 36,
-      onTap: () => Navigator.pop(context, entry.url),
-      child: Row(
-        children: [
-          SizedBox(width: 44, child: Text(_clock(entry.date), style: KitText.dim(context, small: true))),
-          Icon(Icons.public, size: 16, color: c.textDim),
-          const SizedBox(width: 10),
-          Flexible(child: Text(entry.label, maxLines: 1, overflow: TextOverflow.ellipsis)),
-          if (host.isNotEmpty && entry.title.isNotEmpty) ...[
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(host, maxLines: 1, overflow: TextOverflow.ellipsis, style: KitText.dim(context, small: true)),
-            ),
-          ],
-          const Spacer(),
-          KitIconButton.compact(Icons.close, tooltip: 'Remove from history', onPressed: () => _store.remove([entry])),
-        ],
-      ),
-    );
-  }
-
   Widget _contents() {
     final query = _search.text.trim();
     final visits = _store.search(query);
@@ -92,35 +88,48 @@ class _HistoryPageState extends State<HistoryPage> {
         ),
       );
     }
-    // Day headings between the visits.
+    final c = KitTheme.of(context);
+    final days = groupHistory(visits);
     final now = DateTime.now();
-    final rows = <Object>[];
-    DateTime? day;
-    for (final entry in visits) {
-      final date = entry.date;
-      if (day == null || date.year != day.year || date.month != day.month || date.day != day.day) {
-        day = date;
-        rows.add(historyDayLabel(date, now));
-      }
-      rows.add(entry);
-    }
-    return Align(
-      alignment: Alignment.topCenter,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 900),
-        child: ListView.builder(
-          padding: const EdgeInsets.only(bottom: 16),
-          itemCount: rows.length,
-          itemBuilder: (context, index) {
-            final row = rows[index];
-            if (row is HistoryEntry) return _row(row);
-            return Padding(
-              padding: const EdgeInsets.fromLTRB(12, 18, 12, 6),
-              child: Text(row as String, style: KitText.heading(context)),
-            );
-          },
-        ),
-      ),
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      children: [
+        for (final day in days)
+          Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 960),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(4, 16, 4, 8),
+                    child: Text(historyDayLabel(day.first.first.date, now), style: KitText.heading(context)),
+                  ),
+                  Container(
+                    clipBehavior: Clip.antiAlias,
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    decoration: BoxDecoration(
+                      color: c.surface,
+                      border: Border.all(color: c.border),
+                      borderRadius: BorderRadius.circular(kitRadius),
+                    ),
+                    child: Column(
+                      children: [
+                        for (final group in day)
+                          _HistoryRow(
+                            entry: group.first,
+                            repeats: group.length,
+                            onOpen: () => Navigator.pop(context, group.first.url),
+                            onRemove: () => _store.remove(group),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
     );
   }
 
@@ -206,4 +215,76 @@ Future<bool> showClearHistoryDialog(BuildContext context, {HistoryStore? store})
   if (cleared != true) return false;
   (store ?? HistoryStore.instance).clear(since: range.since);
   return true;
+}
+
+/// One row of the history page: time, page title and site in fixed columns, and a remove button at the right that
+/// shows while the row is hovered (always on phones, which can't hover).
+class _HistoryRow extends StatefulWidget {
+  const _HistoryRow({required this.entry, required this.repeats, required this.onOpen, required this.onRemove});
+
+  final HistoryEntry entry;
+
+  /// How many back-to-back visits to the page this row stands for.
+  final int repeats;
+  final VoidCallback onOpen;
+  final VoidCallback onRemove;
+
+  @override
+  State<_HistoryRow> createState() => _HistoryRowState();
+}
+
+class _HistoryRowState extends State<_HistoryRow> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = KitTheme.of(context);
+    final entry = widget.entry;
+    final host = Uri.tryParse(entry.url)?.host ?? '';
+    final site = host.startsWith('www.') ? host.substring(4) : host;
+    final dim = KitText.dim(context, small: true);
+    final showRemove = _hovered || Platform.isAndroid || Platform.isIOS;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onOpen,
+        child: Container(
+          height: 40,
+          color: _hovered ? c.hover : null,
+          padding: const EdgeInsets.only(left: 14, right: 6),
+          child: Row(
+            children: [
+              SizedBox(width: 48, child: Text(_clock(entry.date), style: dim)),
+              Icon(Icons.public, size: 16, color: c.textDim),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Row(
+                  children: [
+                    Flexible(child: Text(entry.label, maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    if (widget.repeats > 1) Text('  ×${widget.repeats}', style: dim),
+                    if (site.isNotEmpty && entry.title.isNotEmpty) ...[
+                      const SizedBox(width: 10),
+                      Flexible(child: Text(site, maxLines: 1, overflow: TextOverflow.ellipsis, style: dim)),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              // Keeps its place while hidden so the titles don't shift.
+              Visibility(
+                visible: showRemove,
+                maintainSize: true,
+                maintainAnimation: true,
+                maintainState: true,
+                child: KitIconButton.compact(Icons.close, tooltip: 'Remove from history', onPressed: widget.onRemove),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

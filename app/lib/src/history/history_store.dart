@@ -133,6 +133,12 @@ class HistoryStore extends ChangeNotifier {
   HistoryEntry? record(String url, String title) {
     if (Incognito.active || !records(url)) return null;
     final now = historyClock();
+    // The same page again within a few seconds (a redirect, the page settling its address) is the same visit.
+    final last = _entries.lastOrNull;
+    if (last != null && samePage(last.url, url) && now - last.time < 10000) {
+      if (title.isNotEmpty) setTitle(last, title);
+      return last;
+    }
     final entry = HistoryEntry(
       id: '${now.toRadixString(36)}${pid.toRadixString(36)}${(_idCounter++).toRadixString(36)}',
       url: url,
@@ -176,6 +182,10 @@ class HistoryStore extends ChangeNotifier {
     _rewrite();
     notifyListeners();
   }
+
+  /// Whether [a] and [b] are the same page, ignoring a trailing slash ("https://ladybird.org" and ".../").
+  static bool samePage(String a, String b) =>
+      a == b || (a.endsWith('/') ? a.substring(0, a.length - 1) : a) == (b.endsWith('/') ? b.substring(0, b.length - 1) : b);
 
   /// Visits whose title or address contain every word of [query], newest first.
   List<HistoryEntry> search(String query) {

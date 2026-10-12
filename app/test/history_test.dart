@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flatkit/flatkit.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -41,6 +42,17 @@ void main() {
         ('https://example.com/a', 'A'),
         ('https://ladybird.org/', 'Ladybird'),
       ]);
+    });
+
+    test('the same page again within seconds is the same visit', () {
+      final store = HistoryStore(file);
+      final first = store.record('https://ladybird.org', '');
+      now += 2000;
+      expect(store.record('https://ladybird.org/', 'Ladybird'), same(first));
+      expect(first!.title, 'Ladybird');
+      now += 60000;
+      store.record('https://ladybird.org/', 'Ladybird');
+      expect(store.length, 2);
     });
 
     test('incognito windows record nothing', () {
@@ -91,6 +103,7 @@ void main() {
       final store = HistoryStore(file);
       for (var i = 0; i < 5; i++) {
         store.record('https://example.com/github-notes', 'Notes about GitHub');
+        now += 60000;
       }
       store.record('https://github.com/nandi-conda/webby', 'webby');
       store.record('https://github.com/', 'GitHub');
@@ -106,6 +119,26 @@ void main() {
     expect(historyDayLabel(DateTime(2026, 10, 12, 1), now), 'Today - Monday, October 12, 2026');
     expect(historyDayLabel(DateTime(2026, 10, 11, 23), now), 'Yesterday - Sunday, October 11, 2026');
     expect(historyDayLabel(DateTime(2026, 9, 30), now), 'Wednesday, September 30, 2026');
+  });
+
+  test('back-to-back visits to a page are one row, per day', () {
+    final store = HistoryStore(file);
+    store.record('https://ladybird.org/', 'Ladybird');
+    now += 60000;
+    store.record('https://ladybird.org', 'Ladybird');
+    now += 1000;
+    store.record('https://google.com/', 'Google');
+    now += 1000;
+    store.record('https://ladybird.org/', 'Ladybird');
+    now += Duration.millisecondsPerDay;
+    store.record('https://ladybird.org/', 'Ladybird');
+    final days = groupHistory(store.entries);
+    expect([for (final day in days) [for (final row in day) row.length]], [
+      [1],
+      [1, 1, 2],
+    ]);
+    store.remove(days[1][2]);
+    expect(store.length, 3);
   });
 
   group('ui', () {
@@ -140,6 +173,11 @@ void main() {
       await tester.enterText(find.byType(TextField), '');
       await tester.pump();
 
+      // The remove button shows on hover.
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: tester.getCenter(find.text('Example')));
+      addTearDown(mouse.removePointer);
+      await tester.pump();
       await tester.tap(find.byIcon(Icons.close).last);
       await tester.pump();
       expect(find.text('Example'), findsNothing);
