@@ -20,9 +20,12 @@ done
 cp -a "$BUILD/libexec/." "$STAGE/libexec/"
 cp -a "$BUILD/share/Lagom" "$STAGE/share/"
 
+# Ubuntu 22.04's binutils strip leaves libicudata.so unloadable ("ELF load command address/offset not page-aligned"),
+# so llvm-strip is preferred.
+STRIP="${STRIP:-$(command -v llvm-strip || command -v strip)}"
 for f in "$STAGE"/lib/* "$STAGE"/libexec/*; do
     [ -f "$f" ] && [ ! -L "$f" ] && [ "$(head -c4 "$f")" = "$(printf '\177ELF')" ] || continue
-    strip --strip-unneeded "$f"
+    "$STRIP" --strip-unneeded "$f"
 done
 
 tar --zstd -C "$STAGE" -cf "$OUT/webby-prebuilt-linux-x64.tar.zst" lib libexec share
