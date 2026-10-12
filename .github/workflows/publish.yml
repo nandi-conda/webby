@@ -115,6 +115,10 @@ jobs:
             [ "$i" = 5 ] && exit 1; sleep 30; pixi clean cache --repodata -y || true
           done
           pixi global list
+          # Every installed package must have come from nandi-testing.
+          if grep -L "prefix.dev/$CHANNEL" "$HOME"/.pixi/envs/webby/conda-meta/*.json | grep .; then
+            grep -h '"channel"' "$HOME"/.pixi/envs/webby/conda-meta/*.json | sort | uniq -c; exit 1
+          fi
       - name: Launch under Xvfb
         run: |
           export PATH="$HOME/.pixi/bin:$PATH"

@@ -28,10 +28,13 @@ webby = "*"
 TOML
 pixi lock --manifest-path "$WORK/pixi.toml"
 
-grep -oE 'https://conda\.anaconda\.org/conda-forge/[^ ]+\.(conda|tar\.bz2)' "$WORK/pixi.lock" | sort -u > "$WORK/urls"
+# Every package URL in the lock file that isn't already from our channel.
+grep -oE 'https?://[^ "]+\.(conda|tar\.bz2)' "$WORK/pixi.lock" | grep -v "/$CHANNEL/" | sort -u > "$WORK/urls"
+sed 's|/[^/]*/[^/]*$||' "$WORK/urls" | sort | uniq -c
 echo "$(wc -l < "$WORK/urls") conda-forge packages in webby's closure"
 mkdir "$WORK/pkgs"
 (cd "$WORK/pkgs" && xargs -n1 -P8 curl -fsSLO --retry 3 < "$WORK/urls")
 
 : "${PREFIX_API_KEY:?set PREFIX_API_KEY}"  # rattler-build reads it from the environment
-rattler-build upload prefix --skip-existing --channel "$CHANNEL" "$WORK"/pkgs/*
+ls "$WORK/pkgs" | wc -l
+rattler-build upload prefix --skip-existing --channel "$CHANNEL" "$WORK"/pkgs/* 2>&1 | tail -n 20
