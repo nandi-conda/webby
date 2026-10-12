@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:webby/src/omnibox.dart';
 
@@ -29,5 +30,26 @@ void main() {
     expect(addressToUrl('foo.bar baz'), '${google}foo.bar+baz');
     expect(addressToUrl('c++'), '${google}c%2B%2B');
     expect(addressToUrl('1.5'), '${google}1.5');
+  });
+
+  testWidgets('the tune icon opens site settings', (tester) async {
+    var opened = 0;
+    final controller = TextEditingController(text: 'https://maps.google.com/');
+    final focus = FocusNode();
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: Omnibox(
+          controller: controller,
+          focusNode: focus,
+          url: 'https://maps.google.com/',
+          onSubmitted: (_) {},
+          onSiteSettings: () => opened++,
+        ),
+      ),
+    ));
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pump();
+    expect(opened, 1);
+    expect(focus.hasFocus, isFalse);
   });
 }
