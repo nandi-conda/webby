@@ -239,7 +239,7 @@ View::View(Core::AnonymousBuffer theme, Web::DevicePixelSize size)
     // getUserMedia() asks through a confirm dialog with this text (patches/0011).
     on_request_confirm = [this, headless_confirm = move(on_request_confirm)](Utf16String const& message) {
         static constexpr auto microphone_request = "\x01webby-permission:microphone"sv;
-        if (message.to_utf8().bytes_as_string_view() == microphone_request) {
+        if (auto utf8 = message.to_utf8(); utf8.bytes_as_string_view() == microphone_request) {
             ask_permission("microphone"sv, [this](bool granted) { confirm_closed(granted); });
             return;
         }
