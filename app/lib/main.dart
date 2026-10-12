@@ -13,6 +13,7 @@ import 'src/bookmarks/bookmark_store.dart';
 import 'src/bookmarks/bookmarks_page.dart';
 import 'src/color_scheme.dart';
 import 'src/frame_bench.dart';
+import 'src/incognito.dart';
 import 'src/omnibox.dart';
 import 'src/passkey_dialog.dart';
 import 'src/passwords/password_bar.dart';
@@ -32,14 +33,16 @@ Future<void> main(List<String> args) async {
   // `--app=<url>` opens an installed web app in its own window (what the app launchers run).
   final app = args.where((a) => a.startsWith('--app=')).map((a) => a.substring(6)).firstOrNull;
   final urls = args.where((a) => !a.startsWith('--')).toList();
-  var initialUrl = app ?? (urls.isNotEmpty ? urls.first : 'https://ladybird.org');
+  // `--incognito` makes this process an incognito window: its own Ladybird that keeps nothing (see Incognito).
+  if (app == null && args.contains(Incognito.flag) && !Platform.isAndroid) Incognito.enable();
+  var initialUrl = app ?? (urls.isNotEmpty ? urls.first : (Incognito.active ? 'about:blank' : 'https://ladybird.org'));
   if (Platform.isAndroid) {
     WidgetsFlutterBinding.ensureInitialized();
     await AndroidHost.prepare();
     initialUrl = await AndroidHost.initialUrl() ?? initialUrl;
   }
   // Desktop launchers for installed web apps; Android has none.
-  if (app == null && !Platform.isAndroid) AppStore.instance.refreshLaunchers().ignore();
+  if (app == null && !Incognito.active && !Platform.isAndroid) AppStore.instance.refreshLaunchers().ignore();
   runApp(WebbyApp(initialUrl: initialUrl, appMode: app != null));
 }
 
@@ -53,11 +56,13 @@ class WebbyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     // flatkit colours: the KDE colour scheme on Plasma, otherwise light or dark with the desktop.
     return KitSystemTheme(
-      builder: (context, colors) {
+      builder: (context, systemColors) {
+        // Incognito windows always use their own dark colours.
+        final colors = Incognito.active ? Incognito.colors : systemColors;
         // Pages follow the same light or dark choice as the UI (prefers-color-scheme).
         PageColorScheme.brightness.value = colors.brightness;
         return MaterialApp(
-          title: 'Webby',
+          title: Incognito.active ? 'Webby (Incognito)' : 'Webby',
           debugShowCheckedModeBanner: false,
           theme: KitTheme.material(colors),
           builder: (context, child) => Material(color: colors.background, child: child),
@@ -132,7 +137,8 @@ class _BrowserPageState extends State<BrowserPage> {
       final tab = _addTab(widget.initialUrl);
       _address.text = widget.initialUrl;
       PasswordManager.instance.start(WebbyBindings.open());
-      OfflineMonitor.start(WebbyBindings.open())?.addListener(_onBookmarksChanged);
+      // Offline mode serves pages from the disk cache, which incognito windows don't have.
+      if (!Incognito.active) OfflineMonitor.start(WebbyBindings.open())?.addListener(_onBookmarksChanged);
       maybeStartBench(tab.controller);
       BookmarkStore.instance.addListener(_onBookmarksChanged);
       _discardTimer = Timer.periodic(const Duration(minutes: 1), (_) => _discardIdleTabs());
@@ -178,8 +184,19 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   /// Lets the user's other devices see this window's tabs (see [DeviceTabs]).
-  void _publishTabs() =>
-      DeviceTabs.instance.setTabs([for (final t in _tabs) DeviceTab(t.controller.title, t.controller.url)]);
+  /// Incognito tabs are never shared.
+  void _publishTabs() {
+    if (Incognito.active) return;
+    DeviceTabs.instance.setTabs([for (final t in _tabs) DeviceTab(t.controller.title, t.controller.url)]);
+  }
+
+  /// Opens a new incognito window (a separate process; desktop only).
+  void _openIncognito() {
+    if (Platform.isAndroid) return;
+    AppStore.instance.openIncognito().catchError((Object error) {
+      if (mounted) showKitToast(context, 'Could not open an incognito window: $error');
+    });
+  }
 
   Future<void> _openDeviceTabs() async {
     final urls = await Navigator.of(context).push<List<String>>(MaterialPageRoute(builder: (_) => const DeviceTabsPage()));
@@ -322,7 +339,7 @@ class _BrowserPageState extends State<BrowserPage> {
 
   void _bookmarkPage() {
     final controller = _controller;
-    if (controller == null || controller.url.isEmpty) return;
+    if (Incognito.active || controller == null || controller.url.isEmpty) return;
     bookmarkPage(context, url: controller.url, title: controller.title);
   }
 
@@ -339,6 +356,7 @@ class _BrowserPageState extends State<BrowserPage> {
     SingleActivator(LogicalKeyboardKey.keyO, control: true, shift: true): 'manager',
     SingleActivator(LogicalKeyboardKey.keyT, control: true): 'newTab',
     SingleActivator(LogicalKeyboardKey.keyT, control: true, shift: true): 'reopenTab',
+    SingleActivator(LogicalKeyboardKey.keyN, control: true, shift: true): 'incognito',
     SingleActivator(LogicalKeyboardKey.keyW, control: true): 'closeTab',
     SingleActivator(LogicalKeyboardKey.tab, control: true): 'nextTab',
     SingleActivator(LogicalKeyboardKey.tab, control: true, shift: true): 'previousTab',
@@ -380,7 +398,8 @@ class _BrowserPageState extends State<BrowserPage> {
         _tabDigits.contains(key)) {
       return !keyboard.isShiftPressed;
     }
-    return keyboard.isShiftPressed && (key == LogicalKeyboardKey.keyB || key == LogicalKeyboardKey.keyO);
+    return keyboard.isShiftPressed &&
+        (key == LogicalKeyboardKey.keyB || key == LogicalKeyboardKey.keyO || key == LogicalKeyboardKey.keyN);
   }
 
   void _runShortcut(String name) {
@@ -395,6 +414,8 @@ class _BrowserPageState extends State<BrowserPage> {
         _newTab();
       case 'reopenTab':
         _reopenClosedTab();
+      case 'incognito':
+        _openIncognito();
       case 'closeTab':
         _closeTab(_active);
       case 'nextTab':
@@ -480,6 +501,7 @@ class _BrowserPageState extends State<BrowserPage> {
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
               child: Row(
                 children: [
+                  if (Incognito.active) ...[const IncognitoBadge(), const SizedBox(width: 4)],
                   KitIconButton(
                     Icons.arrow_back,
                     tooltip: 'Back',
@@ -511,15 +533,18 @@ class _BrowserPageState extends State<BrowserPage> {
                               child: Icon(Icons.cloud_off, size: 16, color: c.textDim),
                             ),
                           ),
-                        InstallAppButton(agent: tab.pwa),
-                        KitIconButton(
-                          bookmarked ? Icons.star : Icons.star_border,
-                          tooltip: bookmarked ? 'Edit bookmark (Ctrl+D)' : 'Bookmark this page (Ctrl+D)',
-                          color: bookmarked ? c.accent : null,
-                          size: 16,
-                          extent: 26,
-                          onPressed: controller.url.isEmpty ? null : _bookmarkPage,
-                        ),
+                        // Incognito windows don't install apps or bookmark pages.
+                        if (!Incognito.active) ...[
+                          InstallAppButton(agent: tab.pwa),
+                          KitIconButton(
+                            bookmarked ? Icons.star : Icons.star_border,
+                            tooltip: bookmarked ? 'Edit bookmark (Ctrl+D)' : 'Bookmark this page (Ctrl+D)',
+                            color: bookmarked ? c.accent : null,
+                            size: 16,
+                            extent: 26,
+                            onPressed: controller.url.isEmpty ? null : _bookmarkPage,
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -527,7 +552,8 @@ class _BrowserPageState extends State<BrowserPage> {
                   KitMenu(
                     minWidth: 260,
                     items: () => [
-                      KitMenuItem('Bookmark this page', shortcut: 'Ctrl+D', onSelected: _bookmarkPage),
+                      if (!Incognito.active)
+                        KitMenuItem('Bookmark this page', shortcut: 'Ctrl+D', onSelected: _bookmarkPage),
                       KitMenuItem(
                         'Show bookmarks bar',
                         shortcut: 'Ctrl+Shift+B',
@@ -536,17 +562,26 @@ class _BrowserPageState extends State<BrowserPage> {
                       ),
                       const KitMenuDivider(),
                       KitMenuItem('Bookmark manager', shortcut: 'Ctrl+Shift+O', onSelected: _openBookmarks),
-                      const KitMenuDivider(),
-                      KitMenuItem('Tabs from other devices', onSelected: _openDeviceTabs),
+                      if (!Incognito.active) ...[
+                        const KitMenuDivider(),
+                        KitMenuItem('Tabs from other devices', onSelected: _openDeviceTabs),
+                      ],
+                      if (!Platform.isAndroid) ...[
+                        const KitMenuDivider(),
+                        KitMenuItem('New incognito window', shortcut: 'Ctrl+Shift+N', onSelected: _openIncognito),
+                      ],
                     ],
                     builder: (context, toggle, open) =>
                         KitIconButton(Icons.bookmarks_outlined, tooltip: 'Bookmarks', onPressed: toggle),
                   ),
-                  KitIconButton(
-                    Icons.key,
-                    tooltip: 'Passwords and passkeys',
-                    onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const VaultPage())),
-                  ),
+                  // The vault belongs to the normal windows; incognito ones only fill from it.
+                  if (!Incognito.active)
+                    KitIconButton(
+                      Icons.key,
+                      tooltip: 'Passwords and passkeys',
+                      onPressed: () =>
+                          Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const VaultPage())),
+                    ),
                 ],
               ),
             ),
@@ -579,6 +614,8 @@ class _BrowserPageState extends State<BrowserPage> {
                       ],
                     ),
                   ),
+                  if (Incognito.active && (controller.url.isEmpty || controller.url == _blankUrl))
+                    const Positioned.fill(child: IncognitoNewTab()),
                   if (controller.hoveredLink.isNotEmpty)
                     Positioned(
                       left: 0,

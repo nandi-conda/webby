@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import '../incognito.dart';
 import '../passwords/sync/sync_doc.dart';
 
 /// A bookmarked page, or a folder of them (a folder has no [url]).
@@ -170,6 +171,8 @@ class BookmarkStore extends ChangeNotifier {
   }
 
   void _save() {
+    // An incognito window can open bookmarks but changes there aren't kept (the normal window owns the file).
+    if (Incognito.active) return;
     final directory = file.parent;
     if (!directory.existsSync()) directory.createSync(recursive: true);
     final contents = const JsonEncoder.withIndent('  ').convert({

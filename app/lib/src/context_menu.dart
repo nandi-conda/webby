@@ -6,6 +6,8 @@ import 'package:flatkit/flatkit.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import 'incognito.dart';
+import 'pwa/app_store.dart';
 import 'web_view.dart';
 
 /// JavaScript that reports right-clicks to the browser so it can show its context menu.
@@ -259,11 +261,13 @@ List<ContextMenuEntry> contextMenuEntries(
   required bool canGoForward,
   required bool canOpenInNewTab,
   required bool clipboardHasText,
+  bool canOpenIncognito = false,
 }) {
   final groups = <List<ContextMenuEntry>>[];
   if (target != null && target.link.isNotEmpty) {
     groups.add([
       if (canOpenInNewTab) const ContextMenuEntry('openLinkInNewTab', 'Open link in new tab'),
+      if (canOpenIncognito) const ContextMenuEntry('openLinkIncognito', 'Open link in incognito window'),
       const ContextMenuEntry('openLink', 'Open link'),
       const ContextMenuEntry('copyLink', 'Copy link address'),
       if (target.linkText.isNotEmpty) const ContextMenuEntry('copyLinkText', 'Copy link text'),
@@ -368,6 +372,8 @@ Future<List<KitMenuEntry>> contextMenuItems(
     canGoForward: controller.canGoForward,
     canOpenInNewTab: onOpenInNewTab != null,
     clipboardHasText: clipboardHasText,
+    // From a normal browser window on the desktop (an incognito window is its own process; see Incognito).
+    canOpenIncognito: onOpenInNewTab != null && !Incognito.active && !Platform.isAndroid,
   );
   return [
     for (final entry in entries)
@@ -400,6 +406,8 @@ Future<void> runContextMenuAction(
   switch (id) {
     case 'openLinkInNewTab':
       openInNewTab(t.link);
+    case 'openLinkIncognito':
+      await AppStore.instance.openIncognito(t.link);
     case 'openLink':
       controller.load(t.link);
     case 'copyLink':

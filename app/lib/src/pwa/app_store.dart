@@ -183,6 +183,15 @@ class AppStore extends ChangeNotifier {
         mode: ProcessStartMode.detached,
       );
 
+  /// Opens a new incognito window (its own process, see Incognito), showing [url] if given.
+  Future<void> openIncognito([String? url]) => Process.start(
+        launchCommand.first,
+        [...launchCommand.skip(1), '--incognito', if (url != null) url],
+        environment: _browserEnvironment,
+        includeParentEnvironment: false,
+        mode: ProcessStartMode.detached,
+      );
+
   /// Installs [manifest] as [name]: saves its icon (as PNG, or SVG as is) and writes the launcher.
   Future<InstalledApp> install(
     WebAppManifest manifest, {

@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 
 import '../bindings.dart';
 import '../bookmarks/bookmark_store.dart';
+import '../incognito.dart';
 import '../tabs/device_tabs.dart';
 import '../web_view.dart';
 import 'generator.dart';
@@ -48,6 +49,10 @@ class PasswordManager extends ChangeNotifier {
     if (_opening || vault != null) return;
     _opening = true;
     _native = PasswordNative.of(bindings);
+    if (Incognito.active) {
+      await _startIncognito();
+      return;
+    }
     try {
       final opened = await Vault.open();
       vault = opened;
@@ -61,6 +66,18 @@ class PasswordManager extends ChangeNotifier {
       error = 'Could not open the password vault: $e';
       debugPrint('webby: $error');
     }
+    notifyListeners();
+  }
+
+  /// Incognito windows fill from an existing vault but never write it (the normal window owns the file and its sync),
+  /// and passkeys made here live only in the authenticator's memory.
+  Future<void> _startIncognito() async {
+    try {
+      if (Vault.exists()) vault = await Vault.open();
+    } catch (e) {
+      debugPrint('webby: incognito window without saved passwords: $e');
+    }
+    _native?.usePasskeyVault(vault?.passkeys ?? const []);
     notifyListeners();
   }
 
@@ -188,6 +205,9 @@ class PasswordAgent extends ChangeNotifier {
     }
 
     switch (message['type']) {
+      case 'newPassword' || 'submit' when Incognito.active:
+        // Nothing is saved from an incognito window, so there's nothing to offer.
+        return;
       case 'newPassword':
         // Not again for the confirm field once a password is in, or while one is on offer.
         if (_generated != null || offer is SaveOffer || (offer is GenerateOffer && offer!.origin == origin)) return;

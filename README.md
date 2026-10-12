@@ -54,6 +54,11 @@ webby https://example.com
 `webby` is a release build of `app/` (recipe `conda/webby`) that depends on `webby-ladybird`; its launcher points
 `WEBBY_LADYBIRD_PREFIX` at that package unless you've set it yourself.
 
+`webby --incognito [url]` (or Ctrl+Shift+N, or "New incognito window" in the bookmarks menu) opens an incognito
+window: its own Ladybird with a temporary profile, no SQL database and no HTTP disk cache, so cookies, site storage,
+cache and permission decisions are gone when it closes. It doesn't save passwords or bookmarks, sync, or share its
+tabs with other devices.
+
 ## Layout
 
 | Path | What |

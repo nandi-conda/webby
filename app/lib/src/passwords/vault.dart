@@ -156,15 +156,22 @@ class Vault extends ChangeNotifier {
     return Directory('${Platform.environment['HOME'] ?? '/tmp'}/.local/share');
   }
 
+  /// Whether the current profile has a vault file yet.
+  static bool exists() => _vaultFile().existsSync();
+
+  static File _vaultFile() {
+    final override = Platform.environment['WEBBY_VAULT_FILE'];
+    return override != null && override.isNotEmpty
+        ? File(override)
+        : File('${_dataHome().path}/webby/profiles/${_profileName()}/vault.json');
+  }
+
   /// Opens (or creates) the vault of the current profile ($WEBBY_PROFILE, default "default").
   ///
   /// $WEBBY_VAULT_KEYRING=0 skips the keyring and keeps the key in a file (meant for tests and headless machines).
   static Future<Vault> open() async {
     final profile = _profileName();
-    final override = Platform.environment['WEBBY_VAULT_FILE'];
-    final file = override != null && override.isNotEmpty
-        ? File(override)
-        : File('${_dataHome().path}/webby/profiles/$profile/vault.json');
+    final file = _vaultFile();
     final directory = file.parent;
     if (!directory.existsSync()) directory.createSync(recursive: true);
     _restrict(directory.path, '700');
