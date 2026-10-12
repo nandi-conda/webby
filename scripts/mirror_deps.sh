@@ -18,7 +18,10 @@ cat > "$WORK/pixi.toml" <<TOML
 [workspace]
 name = "webby-mirror"
 channels = ["https://prefix.dev/$CHANNEL", "conda-forge"]
-platforms = [{ name = "linux-64-glibc", platform = "linux-64", glibc = "$GLIBC" }]
+platforms = ["linux-64"]
+
+[system-requirements]
+libc = "$GLIBC"
 
 [dependencies]
 webby = "*"
