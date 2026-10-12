@@ -30,6 +30,10 @@ if ! grep -q WEBBY_APP_ID "$runner"; then
   sed -i 's/g_set_prgname(APPLICATION_ID);/g_set_prgname(webby_app_id);/; s/"application-id", APPLICATION_ID,/"application-id", webby_app_id,/' "$runner"
 fi
 [ "$(grep -c webby_app_id "$runner")" -ge 4 ]
+# Hide the windows as soon as the app quits instead of when the process finally exits; see fast_close.inc.
+grep -q gtk_window_list_toplevels "$runner" ||
+  sed -i "/Perform any actions required at application shutdown./r $RECIPE_DIR/fast_close.inc" "$runner"
+grep -q gtk_window_list_toplevels "$runner"
 flutter build linux --release
 
 mkdir -p "$PREFIX/lib/webby" "$PREFIX/bin"
