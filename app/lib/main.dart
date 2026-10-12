@@ -29,6 +29,7 @@ import 'src/pwa/app_window.dart';
 import 'src/pwa/install_dialog.dart';
 import 'src/pwa/offline.dart';
 import 'src/pwa/pwa_agent.dart';
+import 'src/route_guard.dart';
 import 'src/site_data.dart';
 import 'src/site_settings.dart';
 import 'src/summarize.dart';
@@ -57,6 +58,8 @@ Future<void> main(List<String> args) async {
   }
   // Desktop launchers for installed web apps; Android has none.
   if (app == null && !Incognito.active && !Platform.isAndroid) AppStore.instance.refreshLaunchers().ignore();
+  WidgetsFlutterBinding.ensureInitialized();
+  PlatformRouteGuard.install();
   runApp(WebbyApp(initialUrl: initialUrl, launchUrl: launchUrl, appMode: app != null));
 }
 

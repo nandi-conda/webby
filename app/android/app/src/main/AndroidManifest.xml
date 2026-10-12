@@ -27,6 +27,12 @@
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
               />
+            <!-- Links reach the app through MainActivity's "initialUrl"/"openUrl", not Flutter's deep linking, which
+                 would push each link's path ("/") as a route and stack a second browser page on top. -->
+            <meta-data
+              android:name="flutter_deeplinking_enabled"
+              android:value="false"
+              />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
