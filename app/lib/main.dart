@@ -36,6 +36,7 @@ import 'src/tabs/device_tabs.dart';
 import 'src/tabs/device_tabs_page.dart';
 import 'src/tabs/sessions.dart';
 import 'src/tabs/sessions_page.dart';
+import 'src/tabs/tab_layout.dart';
 import 'src/web_view.dart';
 
 Future<void> main(List<String> args) async {
@@ -385,6 +386,53 @@ class _BrowserPageState extends State<BrowserPage> {
     if (_closedUrls.isNotEmpty) _newTab(_closedUrls.removeLast());
   }
 
+  /// Opens a copy of tab [index] next to it and switches to it.
+  void _duplicateTab(int index) {
+    if (index < 0 || index >= _tabs.length) return;
+    final url = _tabs[index].controller.url;
+    final copy = _addTab(url.isEmpty ? _blankUrl : url, at: index + 1);
+    _selectTab(_tabs.indexOf(copy));
+  }
+
+  /// Closes every tab but [index] (or only those after it, with [toTheRight]).
+  void _closeOtherTabs(int index, {bool toTheRight = false}) {
+    if (index < 0 || index >= _tabs.length) return;
+    final keep = _tabs[index];
+    for (var i = _tabs.length - 1; i >= 0; i--) {
+      if (_tabs[i] != keep && (!toTheRight || i > index)) _closeTab(i);
+    }
+    _selectTab(_tabs.indexOf(keep), force: true);
+  }
+
+  /// The tab strip's right-click menu, for tab [index], or for no tab (null) on the strip's empty space.
+  List<KitMenuEntry> _tabMenuItems(int? index) {
+    final layout = TabLayout.instance;
+    return [
+      KitMenuItem('New tab', shortcut: 'Ctrl+T', onSelected: _newTab),
+      if (index != null) ...[
+        const KitMenuDivider(),
+        KitMenuItem('Reload', onSelected: () => _tabs[index].controller.reload()),
+        KitMenuItem('Duplicate', onSelected: () => _duplicateTab(index)),
+        const KitMenuDivider(),
+        KitMenuItem('Close', shortcut: index == _active ? 'Ctrl+W' : null, onSelected: () => _closeTab(index)),
+        KitMenuItem('Close other tabs', onSelected: _tabs.length > 1 ? () => _closeOtherTabs(index) : null),
+        KitMenuItem(layout.vertical ? 'Close tabs below' : 'Close tabs to the right',
+            onSelected: index < _tabs.length - 1 ? () => _closeOtherTabs(index, toTheRight: true) : null),
+      ],
+      const KitMenuDivider(),
+      KitMenuItem('Reopen closed tab', shortcut: 'Ctrl+Shift+T',
+          onSelected: _closedUrls.isEmpty ? null : _reopenClosedTab),
+      if (!Platform.isAndroid) ...[
+        const KitMenuDivider(),
+        KitMenuItem(
+          'Vertical tabs',
+          checked: layout.vertical,
+          onSelected: () => setState(() => layout.vertical = !layout.vertical),
+        ),
+      ],
+    ];
+  }
+
   void _selectTab(int index, {bool force = false}) {
     if (index < 0 || index >= _tabs.length || (index == _active && !force)) return;
     setState(() => _active = index);
@@ -633,6 +681,20 @@ class _BrowserPageState extends State<BrowserPage> {
 
     final controller = tab.controller;
     final bookmarked = BookmarkStore.instance.bookmarkFor(controller.url) != null;
+    // Android's screen is too narrow for a tab list beside the page.
+    final vertical = TabLayout.instance.vertical && !Platform.isAndroid;
+    final tabStrip = TabStrip(
+      tabs: [
+        for (final t in _tabs)
+          TabLabel(title: tabTitle(t.controller.title, t.controller.url), loading: t.controller.isLoading),
+      ],
+      active: _active,
+      vertical: vertical,
+      onSelect: _selectTab,
+      onClose: _closeTab,
+      onNew: _newTab,
+      menuItems: _tabMenuItems,
+    );
     // The system back button/gesture goes back in the page's history first.
     return PopScope(
       canPop: !controller.canGoBack,
@@ -650,16 +712,7 @@ class _BrowserPageState extends State<BrowserPage> {
           child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TabStrip(
-              tabs: [
-                for (final t in _tabs)
-                  TabLabel(title: tabTitle(t.controller.title, t.controller.url), loading: t.controller.isLoading),
-              ],
-              active: _active,
-              onSelect: _selectTab,
-              onClose: _closeTab,
-              onNew: _newTab,
-            ),
+            if (!vertical) tabStrip,
             Container(
               color: c.surface,
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
@@ -769,6 +822,15 @@ class _BrowserPageState extends State<BrowserPage> {
                   ? LinearProgressIndicator(minHeight: 2, color: c.accent, backgroundColor: c.border)
                   : Align(alignment: Alignment.topCenter, child: Container(height: 1, color: c.border)),
             ),
+            Expanded(
+              child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+              if (vertical) tabStrip,
+              Expanded(
+              child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
             BookmarkBar(onOpen: _go, onOpenInNewTab: _openInBackgroundTab),
             PasswordBar(key: ObjectKey(tab), agent: tab.passwords),
             Expanded(
@@ -814,6 +876,12 @@ class _BrowserPageState extends State<BrowserPage> {
                       ),
                     ),
                 ],
+              ),
+            ),
+              ],
+              ),
+              ),
+              ],
               ),
             ),
           ],

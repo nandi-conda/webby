@@ -1,4 +1,5 @@
 import 'package:flatkit/flatkit.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:webby/src/tab_strip.dart';
@@ -13,17 +14,22 @@ void main() {
 
   testWidgets('selects, closes and opens tabs', (tester) async {
     final events = <String>[];
-    await tester.pumpWidget(MaterialApp(
-      home: Scaffold(
-        body: TabStrip(
-          tabs: const [TabLabel(title: 'One'), TabLabel(title: 'Two', loading: true)],
-          active: 0,
-          onSelect: (i) => events.add('select $i'),
-          onClose: (i) => events.add('close $i'),
-          onNew: () => events.add('new'),
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: TabStrip(
+            tabs: const [
+              TabLabel(title: 'One'),
+              TabLabel(title: 'Two', loading: true),
+            ],
+            active: 0,
+            onSelect: (i) => events.add('select $i'),
+            onClose: (i) => events.add('close $i'),
+            onNew: () => events.add('new'),
+          ),
         ),
       ),
-    ));
+    );
     expect(find.text('One'), findsOneWidget);
     expect(find.byType(KitSpinner), findsOneWidget);
 
@@ -31,5 +37,60 @@ void main() {
     await tester.tap(find.byIcon(Icons.close).first);
     await tester.tap(find.byIcon(Icons.add));
     expect(events, ['select 1', 'close 0', 'new']);
+  });
+
+  testWidgets('right-click opens the menu for a tab or for the empty strip', (tester) async {
+    final opened = <int?>[];
+    final picked = <String>[];
+    Widget strip({bool vertical = false}) => MaterialApp(
+      home: Scaffold(
+        body: Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: 800,
+            height: 400,
+            // Laid out like the browser does: the vertical list sits in a row beside the page.
+            child: Flex(
+              direction: vertical ? Axis.horizontal : Axis.vertical,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TabStrip(
+                  tabs: const [
+                    TabLabel(title: 'One'),
+                    TabLabel(title: 'Two'),
+                  ],
+                  active: 0,
+                  vertical: vertical,
+                  onSelect: (_) {},
+                  onClose: (_) {},
+                  onNew: () {},
+                  menuItems: (tab) {
+                    opened.add(tab);
+                    return [KitMenuItem('Vertical tabs', checked: vertical, onSelected: () => picked.add('toggle'))];
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpWidget(strip());
+    await tester.tap(find.text('Two'), buttons: kSecondaryButton);
+    await tester.pumpAndSettle();
+    expect(opened.last, 1);
+    await tester.tap(find.text('Vertical tabs'));
+    await tester.pumpAndSettle();
+    expect(picked, ['toggle']);
+
+    await tester.tapAt(const Offset(700, 15), buttons: kSecondaryButton);
+    await tester.pumpAndSettle();
+    expect(opened.last, isNull);
+    expect(find.text('Vertical tabs'), findsOneWidget);
+
+    // The vertical list is a fixed-width column.
+    await tester.pumpWidget(strip(vertical: true));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(find.byType(TabStrip)).width, TabStrip.verticalWidth);
   });
 }
