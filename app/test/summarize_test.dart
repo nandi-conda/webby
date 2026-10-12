@@ -164,4 +164,11 @@ void main() {
     await again.setSecret(deepSeekKeySecret, null);
     expect((await Vault.open()).secret(deepSeekKeySecret), isNull);
   }, skip: Platform.environment['WEBBY_VAULT_FILE'] == null ? 'needs WEBBY_VAULT_FILE and WEBBY_VAULT_KEYRING=0' : false);
+
+  test('the summary is asked for in English, with source links to the page', () {
+    final system = (summaryRequest(page)['messages'] as List).first['content'] as String;
+    expect(system, contains('This needs to be in English'));
+    expect(system, contains('[§](#words)'));
+    expect(jumpToTextScript('He said "hi" \$x'), contains(jsonEncode('He said "hi" \$x')));
+  });
 }

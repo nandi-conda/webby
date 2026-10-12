@@ -46,7 +46,8 @@ String pageTextScript(String prefix, String id) => '''
       if (SKIP.has(tag) || node.hidden || node.getAttribute('aria-hidden') === 'true') return;
       if (node.getAttribute('role') === 'navigation') return;
       const block = BLOCK.has(tag);
-      if (block) out.push('\\n');
+      if (/^H[1-6]\$/.test(tag)) out.push('\\n## ');
+      else if (block) out.push('\\n');
       for (let child = node.firstChild; child; child = child.nextSibling) walk(child);
       if (block) out.push('\\n');
     };
@@ -73,6 +74,57 @@ String pageTextScript(String prefix, String id) => '''
   const message = { type: 'pagetext', id: ID, selection, title: document.title || '', url: location.href,
     lang: document.documentElement.lang || '', text: text.slice(0, LIMIT) };
   try { window.prompt(PREFIX + JSON.stringify(message)); } catch (e) {}
+})();
+''';
+
+/// JavaScript that scrolls the page to the first place showing [words] (a source link's target in a summary) and
+/// flashes it: a heading with that text first, then any text containing it, then its first six and four words.
+String jumpToTextScript(String words) => '''
+(() => {
+  const norm = (s) => String(s).toLowerCase().replace(/[‘’ʼ]/g, "'").replace(/[“”]/g, '"')
+    .replace(/[‐-―]/g, '-').replace(/[*_`]/g, '').replace(/\\s+/g, ' ').trim();
+  const want = norm(${jsonEncode(words)});
+  if (!want) return;
+  const shown = (el) => { for (; el && el.nodeType === 1; el = el.parentElement) {
+    if (el.hidden || el.getAttribute('aria-hidden') === 'true') return false; } return true; };
+  const go = (el) => {
+    if (!el) return false;
+    while (el.parentElement && el.nodeType === 1 && /^(SPAN|A|B|I|EM|STRONG|CODE|MARK|SMALL|SUP|SUB)\$/.test(el.tagName)) el = el.parentElement;
+    try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { el.scrollIntoView(); }
+    const style = el.style, background = style.backgroundColor, outline = style.outline;
+    style.backgroundColor = 'rgba(255, 213, 79, 0.45)';
+    style.outline = '2px solid rgba(255, 179, 0, 0.9)';
+    setTimeout(() => { style.backgroundColor = background; style.outline = outline; }, 1800);
+    return true;
+  };
+  const headings = [...document.querySelectorAll('h1, h2, h3, h4, h5, h6')].filter(shown);
+  const heading = headings.find((h) => norm(h.textContent) === want) || headings.find((h) => {
+    const t = norm(h.textContent); return t && (t.includes(want) || want.includes(t) && t.length > 12);
+  });
+  if (heading) return go(heading);
+  const SKIP = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'HEAD']);
+  const nodes = [], starts = [];
+  let all = '';
+  const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const parent = node.parentElement;
+    if (!parent || SKIP.has(parent.tagName.toUpperCase())) continue;
+    const t = norm(node.nodeValue);
+    if (!t) continue;
+    nodes.push(node); starts.push(all.length + 1); all += ' ' + t;
+  }
+  const words = want.split(' ');
+  for (const tryWords of [want, words.slice(0, 6).join(' '), words.slice(0, 4).join(' ')]) {
+    if (!tryWords || tryWords.length < 6) continue;
+    let index = all.indexOf(tryWords);
+    while (index >= 0) {
+      let i = starts.length - 1;
+      while (i > 0 && starts[i] > index) i--;
+      if (shown(nodes[i].parentElement)) return go(nodes[i].parentElement);
+      index = all.indexOf(tryWords, index + 1);
+    }
+  }
+  return false;
 })();
 ''';
 
@@ -132,10 +184,11 @@ Map<String, Object?> summaryRequest(PageText page, {String model = 'deepseek-cha
   'messages': [
     {
       'role': 'system',
-      'content': 'You summarize web pages for a browser\'s summary panel. Reply in the language of the page. Start '
-          'with one or two sentences saying what the page is about, then give the key points as a short markdown '
-          'bullet list. Use markdown: **bold** for key names and figures, `code` for code, and a short ### heading '
-          'only when the page covers clearly separate topics. No tables, images or links.',
+      'content': 'You summarize web pages for a browser\'s summary panel. This needs to be in English: write the '
+          'summary in English whatever the language of the page. Start with one or two sentences saying what the '
+          'page is about, then give the key points as a short markdown bullet list. Use markdown: **bold** for key '
+          'names and figures, `code` for code, and a short ### heading only when the page covers clearly separate '
+          'topics. No tables or images. $_sourceLinkRule',
     },
     {
       'role': 'user',
@@ -145,10 +198,19 @@ Map<String, Object?> summaryRequest(PageText page, {String model = 'deepseek-cha
   ],
 };
 
+/// How the model links points to the part of the page they come from; [MarkdownView] turns these links into jumps
+/// (see [jumpToTextScript]).
+const _sourceLinkRule = 'End each bullet with a source link to the part of the page it comes from, written '
+    '[§](#words), where words are 3 to 8 consecutive words copied exactly from the page text; a section heading '
+    '(marked ## in the text) is best. Copy them character for character in the page\'s own language, even when it '
+    'isn\'t English, without parentheses or brackets. No other links.';
+
 /// The system prompt for follow-up questions about a summarized page.
 const _questionPrompt = 'You answer questions about a web page the user is reading, in a browser\'s side panel. Use '
-    'the page text and your earlier summary. Answer in the language of the question, concisely, in markdown (bullet '
-    'lists, **bold**, `code`; no tables or images). If the page doesn\'t say, say so before adding what you know.';
+    'the page text and your earlier summary. This needs to be in English: answer in English, concisely, in markdown '
+    '(bullet lists, **bold**, `code`; no tables or images). If the page doesn\'t say, say so before adding what you '
+    'know. Where a point comes from the page, you may end it with a source link written [§](#words), where words '
+    'are 3 to 8 consecutive words copied exactly from the page text, in its own language.';
 
 /// The request body for a follow-up [question] about [page] (null when its text couldn't be read), given the
 /// [summary] and the earlier [questions] and answers.
@@ -409,6 +471,14 @@ class SummaryJob extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Scrolls the page to the part a summary's source link points at ([words] copied from the page). Returns false
+  /// when the tab shows another page by now.
+  bool jumpTo(String words) {
+    if (SummaryCache.keyFor(controller.url) != SummaryCache.keyFor(url)) return false;
+    controller.runJavaScript(jumpToTextScript(words));
+    return true;
+  }
+
   void close() {
     _generation++;
     if (questions.isNotEmpty && questions.last.running) {
@@ -605,6 +675,10 @@ class _SummaryPanelState extends State<_SummaryPanel> {
     });
   }
 
+  void _jump(String words) {
+    if (!job.jumpTo(words)) showKitToast(context, 'Go back to the summarized page to jump to that part.');
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = KitTheme.of(context);
@@ -637,7 +711,7 @@ class _SummaryPanelState extends State<_SummaryPanel> {
                     onPressed: job.text.isEmpty
                         ? null
                         : () {
-                            Clipboard.setData(ClipboardData(text: job.text.trim()));
+                            Clipboard.setData(ClipboardData(text: job.text.replaceAll(RegExp(r' ?\[§\]\(#[^)\n]*\)'), '').trim()));
                             showKitToast(context, 'Summary copied');
                           },
                   ),
@@ -672,7 +746,7 @@ class _SummaryPanelState extends State<_SummaryPanel> {
                       else if (job.text.isEmpty && job.running)
                         Text('Reading the page…', style: KitText.dim(context))
                       else
-                        MarkdownView(job.text.trim()),
+                        MarkdownView(job.text.trim(), onAnchor: _jump),
                       for (final qa in job.questions) ...[
                         const SizedBox(height: 16),
                         Container(
@@ -681,7 +755,7 @@ class _SummaryPanelState extends State<_SummaryPanel> {
                           child: Text(qa.question, style: KitText.body(context).copyWith(fontWeight: FontWeight.w600)),
                         ),
                         const SizedBox(height: 8),
-                        if (qa.answer.trim().isNotEmpty) MarkdownView(qa.answer.trim()),
+                        if (qa.answer.trim().isNotEmpty) MarkdownView(qa.answer.trim(), onAnchor: _jump),
                         if (qa.answer.trim().isEmpty && qa.running) Text('Thinking…', style: KitText.dim(context)),
                         if (qa.error != null)
                           Text(qa.error!, style: KitText.body(context).copyWith(color: c.danger)),

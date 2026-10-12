@@ -35,4 +35,18 @@ void main() {
     expect(find.textContaining('Head'), findsOneWidget);
     expect(find.textContaining('a item'), findsOneWidget);
   });
+
+  testWidgets('anchor links jump into the page, and are left out without a handler', (tester) async {
+    final jumps = <String>[];
+    await tester.pumpWidget(MaterialApp(
+      home: KitTheme(
+        colors: KitColors.light,
+        child: Material(child: MarkdownView('- Point [§](#The Early Years%20of “X”)', onAnchor: jumps.add)),
+      ),
+    ));
+    await tester.tap(find.text('§'));
+    expect(jumps, ['The Early Years of “X']);
+    const base = TextStyle(fontSize: 14);
+    expect(plain(markdownSpans('Point [§](#some words)', base, codeBackground: Colors.grey)), 'Point ');
+  });
 }

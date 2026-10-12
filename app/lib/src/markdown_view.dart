@@ -118,17 +118,19 @@ List<MdBlock> parseMarkdown(String source) {
 
 int _depth(String indent) => (indent.replaceAll('\t', '    ').length / 2).floor().clamp(0, 4);
 
-final _inline = RegExp(r'(\*\*|__)(.+?)\1|`([^`]+)`|(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?!\w)|(?<![\w_])_(?!\s)(.+?)(?<!\s)_(?!\w)|~~(.+?)~~|\[([^\]]+)\]\(([^)\s]+)\)');
+final _inline = RegExp(r'(\*\*|__)(.+?)\1|`([^`]+)`|(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?!\w)|(?<![\w_])_(?!\s)(.+?)(?<!\s)_(?!\w)|~~(.+?)~~|\[([^\]]+)\]\(([^)\n]+)\)');
 
 /// Inline markdown in [text] (bold, italic, code, strikethrough, links shown as their text) as spans over [base].
-List<InlineSpan> markdownSpans(String text, TextStyle base, {required Color codeBackground, Color? linkColor}) {
+/// Links to `#words` are anchors into the page: with [onAnchor] they are clickable and call it with the words.
+List<InlineSpan> markdownSpans(String text, TextStyle base,
+    {required Color codeBackground, Color? linkColor, void Function(String words)? onAnchor}) {
   final spans = <InlineSpan>[];
   var at = 0;
   for (final match in _inline.allMatches(text)) {
     if (match.start > at) spans.add(TextSpan(text: text.substring(at, match.start)));
     if (match[2] != null) {
       spans.add(TextSpan(
-        children: markdownSpans(match[2]!, base, codeBackground: codeBackground, linkColor: linkColor),
+        children: markdownSpans(match[2]!, base, codeBackground: codeBackground, linkColor: linkColor, onAnchor: onAnchor),
         style: const TextStyle(fontWeight: FontWeight.w700),
       ));
     } else if (match[3] != null) {
@@ -138,13 +140,37 @@ List<InlineSpan> markdownSpans(String text, TextStyle base, {required Color code
       ));
     } else if (match[4] != null || match[5] != null) {
       spans.add(TextSpan(
-        children: markdownSpans(match[4] ?? match[5]!, base, codeBackground: codeBackground, linkColor: linkColor),
+        children: markdownSpans(match[4] ?? match[5]!, base, codeBackground: codeBackground, linkColor: linkColor, onAnchor: onAnchor),
         style: const TextStyle(fontStyle: FontStyle.italic),
       ));
     } else if (match[6] != null) {
       spans.add(TextSpan(text: match[6], style: const TextStyle(decoration: TextDecoration.lineThrough)));
     } else if (match[7] != null) {
-      spans.add(TextSpan(text: match[7], style: TextStyle(color: linkColor, decoration: TextDecoration.underline)));
+      final target = match[8]!.trim();
+      final words = target.startsWith('#') ? _anchorWords(target.substring(1)) : '';
+      final style = TextStyle(color: linkColor, decoration: TextDecoration.underline);
+      if (words.isEmpty) {
+        spans.add(TextSpan(text: match[7], style: style));
+      } else if (onAnchor != null) {
+        spans.add(WidgetSpan(
+          alignment: PlaceholderAlignment.baseline,
+          baseline: TextBaseline.alphabetic,
+          child: Tooltip(
+            message: 'Go to “$words”',
+            child: MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => onAnchor(words),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 2),
+                  child: Text(match[7]!, style: base.merge(style).copyWith(decoration: TextDecoration.none)),
+                ),
+              ),
+            ),
+          ),
+        ));
+      }
     }
     at = match.end;
   }
@@ -152,11 +178,25 @@ List<InlineSpan> markdownSpans(String text, TextStyle base, {required Color code
   return spans;
 }
 
-/// Renders markdown with flatkit colours. Wrap it in a [SelectionArea] to make the text selectable.
+/// The page words an anchor link (`[§](#words)`) points at, with URL escapes and stray quotes undone.
+String _anchorWords(String target) {
+  final words = target.replaceAllMapped(RegExp(r'(%[0-9A-Fa-f]{2})+'), (m) {
+    try {
+      return Uri.decodeComponent(m[0]!);
+    } catch (_) {
+      return m[0]!;
+    }
+  });
+  return words.replaceAll(RegExp(r'^[\s"“”‘’]+|[\s"“”‘’]+$'), '').replaceAll(RegExp(r'\s+'), ' ');
+}
+
+/// Renders markdown with flatkit colours. Wrap it in a [SelectionArea] to make the text selectable. Anchor links
+/// (`[§](#words)`) call [onAnchor] when clicked and are left out without it.
 class MarkdownView extends StatelessWidget {
-  const MarkdownView(this.source, {super.key});
+  const MarkdownView(this.source, {super.key, this.onAnchor});
 
   final String source;
+  final void Function(String words)? onAnchor;
 
   @override
   Widget build(BuildContext context) {
@@ -164,7 +204,7 @@ class MarkdownView extends StatelessWidget {
     final body = KitText.body(context).copyWith(height: 1.45);
     final codeBackground = c.hover;
     Widget rich(String text, TextStyle style) => Text.rich(
-      TextSpan(style: style, children: markdownSpans(text, style, codeBackground: codeBackground, linkColor: c.accent)),
+      TextSpan(style: style, children: markdownSpans(text, style, codeBackground: codeBackground, linkColor: c.accent, onAnchor: onAnchor)),
     );
 
     final children = <Widget>[];
