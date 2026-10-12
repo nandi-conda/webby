@@ -37,11 +37,16 @@ cd "$LADYBIRD_DIR"
 # Ladybird links statically on Android, and several of its Rust static libraries each carry their own copy of shared
 # crates (regex, ICU glue); the copies are the same code, so the linker may keep the first one it sees.
 LINK_FLAGS="-Wl,--allow-multiple-definition"
-if [ ! -f "$BUILD_DIR/build.ninja" ] || ! grep -q -- "$LINK_FLAGS" "$BUILD_DIR/CMakeCache.txt"; then
+# cranelift-compiler is a Rust executable, so cargo links it itself and needs the NDK's clang for that.
+CARGO_LINKER_VAR="CARGO_TARGET_$(echo "$RUST_TRIPLE" | tr 'a-z-' 'A-Z_')_LINKER"
+export "$CARGO_LINKER_VAR=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/$RUST_TRIPLE$ANDROID_API-clang"
+if [ ! -f "$BUILD_DIR/build.ninja" ] || ! grep -q -- "$LINK_FLAGS" "$BUILD_DIR/CMakeCache.txt" \
+    || ! grep -q '^ENABLE_CRANELIFT_JIT:BOOL=ON' "$BUILD_DIR/CMakeCache.txt"; then
     # VCPKG_TARGET_ANDROID makes Ladybird chain vcpkg's toolchain with the NDK's (UI/Android/vcpkg_android.cmake).
     # The helpers are plain executables here, not Ladybird's Android services: the app ships them as lib*.so files
     # and runs them from its native library directory. Everything links libc++ statically, so the helpers need no
-    # libc++_shared.so next to them.
+    # libc++_shared.so next to them. With the Cranelift JIT, WebAssembly is compiled to machine code by the WasmCompiler
+    # helper (through the cranelift-compiler executable) instead of being interpreted.
     cmake -S . -B "$BUILD_DIR" -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DLADYBIRD_VCPKG_TYPE=release \
@@ -54,12 +59,12 @@ if [ ! -f "$BUILD_DIR/build.ninja" ] || ! grep -q -- "$LINK_FLAGS" "$BUILD_DIR/C
         -DLADYBIRD_UI_FLUTTER=ON \
         -DBUILD_TESTING=OFF \
         -DENABLE_LTO_FOR_RELEASE=OFF \
-        -DENABLE_CRANELIFT_JIT=OFF \
+        -DENABLE_CRANELIFT_JIT=ON \
         -DCMAKE_EXE_LINKER_FLAGS="$LINK_FLAGS" \
         -DCMAKE_SHARED_LINKER_FLAGS="$LINK_FLAGS"
 fi
 
-cmake --build "$BUILD_DIR" --target ladybird -- ${WEBBY_NINJA_ARGS:-}
+cmake --build "$BUILD_DIR" --target ladybird WasmCompiler cranelift-compiler-build -- ${WEBBY_NINJA_ARGS:-}
 
 echo
 echo "Android Ladybird prefix: $BUILD_DIR"
