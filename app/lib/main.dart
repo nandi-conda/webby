@@ -900,7 +900,11 @@ class _BrowserPageState extends State<BrowserPage> {
             BookmarkBar(onOpen: _go, onOpenInNewTab: _openInBackgroundTab),
             PasswordBar(key: ObjectKey(tab), agent: tab.passwords),
             Expanded(
-              child: Stack(
+              // An open summary sits beside the page (below it on narrow windows), which shrinks the page.
+              child: SummaryLayout(
+                key: ObjectKey(tab),
+                controller: controller,
+                child: Stack(
                 children: [
                   // Every tab's view stays laid out (so its Ladybird view keeps its size); only the active one shows.
                   Positioned.fill(
@@ -922,7 +926,6 @@ class _BrowserPageState extends State<BrowserPage> {
                   if (Incognito.active && (controller.url.isEmpty || controller.url == _blankUrl))
                     const Positioned.fill(child: IncognitoNewTab()),
                   PermissionBubble(key: ObjectKey(tab), controller: controller),
-                  Positioned.fill(child: SummaryOverlay(key: ObjectKey(tab), controller: controller)),
                   if (controller.hoveredLink.isNotEmpty && !controller.pointerIsTouch)
                     Positioned(
                       left: 0,
@@ -943,6 +946,7 @@ class _BrowserPageState extends State<BrowserPage> {
                       ),
                     ),
                 ],
+              ),
               ),
             ),
               ],

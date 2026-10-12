@@ -361,31 +361,36 @@ class _ApiKeyDialogState extends State<_ApiKeyDialog> {
   }
 }
 
-/// The summary of [controller]'s page: a panel on the right of the page on wide windows, a sheet over the lower part
-/// of the page on narrow ones (phones). Nothing while there's no summary open.
-class SummaryOverlay extends StatelessWidget {
-  const SummaryOverlay({super.key, required this.controller});
+/// [child] (the page) with the summary of [controller]'s page beside it: a panel on the right on wide windows, a
+/// sheet under the page on narrow ones (phones). The page shrinks to make room, so nothing of it is covered.
+class SummaryLayout extends StatelessWidget {
+  const SummaryLayout({super.key, required this.controller, required this.child});
 
   final WebbyController controller;
+  final Widget child;
 
   @override
   Widget build(BuildContext context) {
     final job = SummaryJob.of(controller);
     return ListenableBuilder(
       listenable: job,
-      builder: (context, _) {
-        if (!job.open) return const SizedBox.shrink();
-        return LayoutBuilder(builder: (context, constraints) {
-          final wide = constraints.maxWidth >= 720;
-          final panel = _SummaryPanel(job: job, wide: wide);
-          return wide
-              ? Align(alignment: Alignment.centerRight, child: SizedBox(width: 380, height: double.infinity, child: panel))
-              : Align(
-                  alignment: Alignment.bottomCenter,
-                  child: SizedBox(width: double.infinity, height: constraints.maxHeight * 0.6, child: panel),
-                );
-        });
-      },
+      child: child,
+      builder: (context, page) => LayoutBuilder(builder: (context, constraints) {
+        final open = job.open;
+        final wide = constraints.maxWidth >= 720;
+        // The page keeps its place in the tree whether the panel is open or not, so its view isn't rebuilt.
+        return Flex(
+          direction: wide ? Axis.horizontal : Axis.vertical,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(child: page!),
+            if (open)
+              wide
+                  ? SizedBox(width: 380, child: _SummaryPanel(job: job, wide: true))
+                  : SizedBox(height: constraints.maxHeight * 0.5, child: _SummaryPanel(job: job, wide: false)),
+          ],
+        );
+      }),
     );
   }
 }
