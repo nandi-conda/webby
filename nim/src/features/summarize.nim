@@ -1,5 +1,561 @@
-## summarize for webby-nim (not ported yet).
+## Summarize (app/lib/src/summarize.dart): reads the page's text through a page script, streams a summary from
+## DeepSeek into the side panel, answers follow-up questions about the page, and saves both (summarize/cache.nim).
+## The API key is a device-only secret in the password vault; without the vault (getSecret is nil) it is asked for
+## and kept in memory until Webby quits.
 
+import std/[random, strutils, times]
 import ../browser
+import summarize/[cache, deepseek, markdown]
 
-proc install*() = discard
+const
+  deepSeekKeySecret = "deepseek-api-key"   ## the key's name among the vault's device-only secrets
+  maxSummaryInputChars = 40000             ## longer pages are cut before they're sent
+
+# The Flutter app's page script (pageTextScript in summarize.dart), read at compile time so both front ends send
+# the same text. It posts {"type": "pagetext", "id", "selection", "title", "url", "lang", "text"} as a page message.
+const pageTextTemplate = block:
+  let dart = staticRead("../../../app/lib/src/summarize.dart")
+  const head = "String pageTextScript(String prefix, String id) => '''"
+  let start = dart.find(head) + head.len
+  dart[start ..< dart.find("''';", start)].replace("\\\\", "\\")
+
+proc pageTextScript(prefix, id: string): string =
+  pageTextTemplate.multiReplace(("${jsonEncode(prefix)}", $(%prefix)), ("${jsonEncode(id)}", $(%id)),
+    ("$maxSummaryInputChars", $maxSummaryInputChars))
+
+const summaryPrompt = "You summarize web pages for a browser's summary panel. Reply in the language of the page. " &
+  "Start with one or two sentences saying what the page is about, then give the key points as a short markdown " &
+  "bullet list. Use markdown: **bold** for key names and figures, `code` for code, and a short ### heading only " &
+  "when the page covers clearly separate topics. No tables, images or links."
+
+const questionPrompt = "You answer questions about a web page the user is reading, in a browser's side panel. Use " &
+  "the page text and your earlier summary. Answer in the language of the question, concisely, in markdown (bullet " &
+  "lists, **bold**, `code`; no tables or images). If the page doesn't say, say so before adding what you know."
+
+type
+  PageText = object
+    title, url, text: string
+    selection: bool
+
+  Question = ref object
+    question, answer, error: string
+    running: bool
+
+  Job = ref object
+    ## One tab's summary: the page it is for, the text so far, and whether it is still coming.
+    tab: Tab
+    open, running, selection: bool
+    title, url, text, error: string
+    savedAt: int64             ## ms; when the summary shown was made, if it came from the cache
+    questions: seq[Question]
+    generation: int
+    key: string
+    page: PageText
+    hasPage: bool
+    madeAt: int64
+    chat: Chat
+
+  Panel = object
+    root, spinner, copyButton, redoButton, content, entry, sendButton, adjustment: Widget
+    stickToBottom: bool
+
+var
+  jobs: Table[string, Job]     ## by the tab's messagePrefix
+  memoryKey: string            ## the key when there's no vault to keep it in
+  pendingReads: Table[string, proc (ok: bool, page: PageText)]
+  panelJob: Job                ## the job the side panel shows, nil when it shows something else
+  panel: Panel
+  switchingPanel = false
+  renderQueued = false
+
+const GTK_RESPONSE_REJECT = -2.cint
+proc gtk_check_button_new_with_mnemonic(label: cstring): Widget {.importc, cdecl.}
+proc gtk_box_set_spacing(b: Widget, s: cint) {.importc, cdecl.}
+proc gtk_scrolled_window_get_vadjustment(s: Widget): Widget {.importc, cdecl.}
+proc gtk_adjustment_get_value(a: Widget): cdouble {.importc, cdecl.}
+proc gtk_adjustment_set_value(a: Widget, v: cdouble) {.importc, cdecl.}
+proc gtk_adjustment_get_upper(a: Widget): cdouble {.importc, cdecl.}
+proc gtk_adjustment_get_page_size(a: Widget): cdouble {.importc, cdecl.}
+
+proc nowMs(): int64 = (epochTime() * 1000).int64
+
+proc later(ms: int, action: proc ()) =
+  let cb = new(proc ())
+  cb[] = action
+  GC_ref(cb)
+  discard g_timeout_add(ms.cuint, proc (d: pointer): gboolean {.cdecl.} =
+    let cb = cast[ref proc ()](d)
+    GC_unref(cb)
+    cb[]()
+    0, cast[pointer](cb))
+
+# ---------------------------------------------------------------------------------------------------------------
+# The API key
+
+proc apiKey(): string =
+  if getSecret != nil:
+    result = getSecret(deepSeekKeySecret)
+  if result.len == 0: result = memoryKey
+
+proc storeKey(value: string) =
+  if setSecret != nil: setSecret(deepSeekKeySecret, value)
+  else: memoryKey = value
+
+
+proc onShowKey(button: Widget, entry: pointer) {.cdecl.} =
+  gtk_entry_set_visibility(entry, gtk_toggle_button_get_active(button))
+
+proc render()
+
+proc showSummarizeSettings*() =
+  ## The dialog where the DeepSeek API key is entered, replaced or removed.
+  if incognito and setSecret != nil:
+    alert("Set the DeepSeek API key in a normal window.")
+    return
+  let hasKey = apiKey().len > 0
+  let d = gtk_dialog_new_with_buttons("Summarize with DeepSeek", window, GTK_DIALOG_MODAL, nil)
+  if hasKey: discard gtk_dialog_add_button(d, "_Remove key", GTK_RESPONSE_REJECT)
+  discard gtk_dialog_add_button(d, "_Cancel", GTK_RESPONSE_CANCEL)
+  discard gtk_dialog_add_button(d, "_Save", GTK_RESPONSE_OK)
+  gtk_dialog_set_default_response(d, GTK_RESPONSE_OK)
+  let box = gtk_dialog_get_content_area(d)
+  gtk_container_set_border_width(box, 12)
+  gtk_box_set_spacing(box, 6)
+  let label = gtk_label_new(cstring(if hasKey: "New API key (one is saved)" else: "DeepSeek API key"))
+  gtk_label_set_xalign(label, 0)
+  gtk_box_pack_start(box, label, 0, 0, 0)
+  let entry = gtk_entry_new()
+  gtk_entry_set_visibility(entry, 0)
+  gtk_entry_set_placeholder_text(entry, "sk-…")
+  gtk_entry_set_activates_default(entry, 1)
+  gtk_entry_set_width_chars(entry, 44)
+  gtk_box_pack_start(box, entry, 0, 0, 0)
+  let show = gtk_check_button_new_with_mnemonic("Sho_w key")
+  connect(show, "toggled", onShowKey, entry)
+  gtk_box_pack_start(box, show, 0, 0, 0)
+  let where =
+    if setSecret != nil: "It is kept encrypted in this device's password vault and is never synced."
+    else: "The password vault isn't available, so the key is kept in memory until Webby quits."
+  let info = markupLabel("<small>" & escapeMarkup("Create a key at platform.deepseek.com. " & where &
+    " Summarize sends the page's text to DeepSeek.") & "</small>", selectable = false)
+  addClass(info, "webby-md-dim")
+  gtk_box_pack_start(box, info, 0, 0, 0)
+  gtk_widget_show_all(d)
+  while true:
+    let r = gtk_dialog_run(d)
+    let text = ($gtk_entry_get_text(entry)).strip
+    if r == GTK_RESPONSE_OK and text.len == 0: continue
+    if r == GTK_RESPONSE_OK: storeKey(text)
+    elif r == GTK_RESPONSE_REJECT: storeKey("")
+    break
+  gtk_widget_destroy(d)
+  render()
+
+# ---------------------------------------------------------------------------------------------------------------
+# Reading the page
+
+proc readPageText(t: Tab, done: proc (ok: bool, page: PageText)) =
+  ## Runs the page-text script in `t`; `done` gets its message, or ok = false after 8 s.
+  if t == nil or t.closed or t.messagePrefix.len == 0:
+    done(false, PageText())
+    return
+  var id = ""
+  for _ in 0 ..< 8: id.add toHex(rand(255), 2).toLowerAscii
+  pendingReads[id] = done
+  t.runJs(pageTextScript(t.messagePrefix, id))
+  wake()
+  later(8000, proc () =
+    if id in pendingReads:
+      let cb = pendingReads[id]
+      pendingReads.del id
+      cb(false, PageText()))
+
+proc onPageMessage(t: Tab, msg: string): bool =
+  if not msg.startsWith("{") or "\"pagetext\"" notin msg: return false
+  let j = try: parseJson(msg) except CatchableError: nil
+  if j == nil or j.kind != JObject or j{"type"}.getStr != "pagetext": return false
+  let id = j{"id"}.getStr
+  if id notin pendingReads: return true
+  let cb = pendingReads[id]
+  pendingReads.del id
+  cb(true, PageText(title: j{"title"}.getStr, url: (if j{"url"} != nil: j{"url"}.getStr else: t.url),
+    text: j{"text"}.getStr, selection: j{"selection"}.getBool))
+  true
+
+# ---------------------------------------------------------------------------------------------------------------
+# Requests
+
+proc summaryRequest(page: PageText): JsonNode =
+  %*{"model": "deepseek-chat", "stream": true, "temperature": 0.3, "messages": [
+    {"role": "system", "content": summaryPrompt},
+    {"role": "user", "content": (if page.selection: "Summarize this text selected on" else: "Summarize this page:") &
+      " " & (if page.title.len == 0: "" else: "\"" & page.title & "\" ") & "(" & page.url & ")\n\n" & page.text}]}
+
+proc questionRequest(job: Job, earlier: seq[Question], question: string): JsonNode =
+  let context =
+    if not job.hasPage: "The page \"" & job.title & "\" (" & job.url & "). Its text isn't available any more; go " &
+      "by your summary."
+    else: (if job.page.selection: "Text selected on" else: "The page") & " \"" &
+      (if job.page.title.len == 0: job.title else: job.page.title) & "\" (" & job.page.url & "):\n\n" & job.page.text
+  var messages = %*[{"role": "system", "content": questionPrompt}, {"role": "user", "content": context},
+    {"role": "assistant", "content": job.text}]
+  for qa in earlier:
+    messages.add %*{"role": "user", "content": qa.question}
+    messages.add %*{"role": "assistant", "content": qa.answer}
+  messages.add %*{"role": "user", "content": question}
+  %*{"model": "deepseek-chat", "stream": true, "temperature": 0.3, "messages": messages}
+
+# ---------------------------------------------------------------------------------------------------------------
+# Jobs
+
+proc changed(job: Job) =
+  ## Re-renders the panel soon (at most every 50 ms while text streams in) if it shows `job`.
+  if job != panelJob or renderQueued: return
+  renderQueued = true
+  later(50, proc () =
+    renderQueued = false
+    render())
+
+proc jobOf(t: Tab): Job =
+  result = jobs.getOrDefault(t.messagePrefix)
+  if result == nil:
+    result = Job(tab: t)
+    jobs[t.messagePrefix] = result
+
+proc answering(job: Job): bool = job.questions.len > 0 and job.questions[^1].running
+
+proc showSaved(job: Job, key: string, saved: CachedSummary) =
+  inc job.generation
+  job.key = key
+  job.questions.setLen 0
+  for qa in saved.questions: job.questions.add Question(question: qa.question, answer: qa.answer)
+  job.open = true
+  job.running = false
+  job.error = ""
+  job.title = saved.title
+  job.url = saved.url
+  job.text = saved.text
+  job.selection = saved.selection
+  job.savedAt = saved.at
+  job.madeAt = saved.at
+  changed(job)
+
+proc save(job: Job) =
+  if job.key.len == 0 or job.text.strip.len == 0: return
+  if job.madeAt == 0: job.madeAt = nowMs()
+  var s = CachedSummary(title: job.title, url: job.url, text: job.text, at: job.madeAt, selection: job.selection)
+  for qa in job.questions:
+    if not qa.running and qa.error.len == 0 and qa.answer.strip.len > 0: s.questions.add (qa.question, qa.answer)
+  storeSummary(job.key, s)
+
+proc stopChat(job: Job) =
+  job.chat.cancel()
+  job.chat = nil
+
+proc start(job: Job, key: string, fresh = false) =
+  ## Reads the page and asks DeepSeek for a summary. A summary saved for the same page (or selection) is shown
+  ## instead unless `fresh`.
+  job.stopChat()
+  inc job.generation
+  let generation = job.generation
+  let t = job.tab
+  job.open = true
+  job.running = true
+  job.error = ""
+  job.text = ""
+  job.title = t.title
+  job.url = t.url
+  job.savedAt = 0
+  job.questions.setLen 0
+  job.key = ""
+  job.hasPage = false
+  job.madeAt = 0
+  changed(job)
+  proc fail(message: string) =
+    if generation != job.generation: return
+    job.error = message
+    job.running = false
+    changed(job)
+  readPageText(t, proc (ok: bool, page: PageText) =
+    if generation != job.generation: return
+    if not ok: (fail("Couldn't read the text of this page."); return)
+    let k = summaryKey(page.url, if page.selection: page.text else: "")
+    let (found, saved) = if fresh: (false, CachedSummary()) else: lookupSummary(k)
+    job.page = page
+    job.hasPage = true
+    if found:
+      job.showSaved(k, saved)
+      return
+    job.key = k
+    job.title = if page.title.len == 0: t.title else: page.title
+    job.url = page.url
+    job.selection = page.selection
+    if page.text.strip.len < 40: (fail("This page has no text to summarize."); return)
+    changed(job)
+    job.chat = streamChat(key, summaryRequest(page),
+      proc (piece: string) =
+        if generation != job.generation: return
+        job.text.add piece
+        changed(job),
+      proc (error: string) =
+        if generation != job.generation: return
+        job.chat = nil
+        if error.len > 0: (fail(error); return)
+        if job.text.strip.len == 0: (fail("DeepSeek sent back an empty summary."); return)
+        job.save()
+        job.running = false
+        changed(job)))
+
+proc ask(job: Job, key, text: string) =
+  ## Asks a follow-up question with the page text, the summary and the earlier questions as context.
+  let question = text.strip
+  if question.len == 0 or job.running or job.answering or job.text.strip.len == 0: return
+  let generation = job.generation
+  var earlier: seq[Question]
+  for qa in job.questions:
+    if qa.error.len == 0 and qa.answer.strip.len > 0: earlier.add qa
+  let entry = Question(question: question, running: true)
+  job.questions.add entry
+  changed(job)
+  proc send() =
+    if generation != job.generation: return
+    job.chat = streamChat(key, questionRequest(job, earlier, question),
+      proc (piece: string) =
+        if generation != job.generation: return
+        entry.answer.add piece
+        changed(job),
+      proc (error: string) =
+        if generation != job.generation: return
+        job.chat = nil
+        entry.running = false
+        entry.error = if error.len > 0: error
+                      elif entry.answer.strip.len == 0: "DeepSeek sent back an empty answer."
+                      else: ""
+        if entry.error.len == 0: job.save()
+        changed(job))
+  # A saved summary has no page text with it: read the page again if the tab still shows it.
+  if not job.hasPage and not job.selection and summaryKey(job.tab.url) == summaryKey(job.url):
+    readPageText(job.tab, proc (ok: bool, page: PageText) =
+      if ok:
+        job.page = page
+        job.hasPage = true
+      send())
+  else: send()
+
+proc close(job: Job) =
+  job.stopChat()
+  inc job.generation
+  if job.answering:
+    job.questions[^1].running = false
+    if job.questions[^1].error.len == 0: job.questions[^1].error = "Stopped."
+  job.open = false
+  job.running = false
+
+# ---------------------------------------------------------------------------------------------------------------
+# The panel
+
+const panelCss = markdownCss & """
+.webby-summary-question { background-color: alpha(currentColor, 0.07); border-radius: 6px; padding: 7px 10px; }
+"""
+
+proc dim(text: string): string = "<small>" & escapeMarkup(text) & "</small>"
+proc danger(text: string): string = "<span foreground=\"#d0393e\">" & escapeMarkup(text) & "</span>"
+
+proc whenText(ms: int64): string =
+  let t = fromUnix(ms div 1000).local
+  let now = now()
+  if t.year == now.year and t.yearday == now.yearday: "today " & t.format("HH:mm") else: t.format("yyyy-MM-dd HH:mm")
+
+proc add(w: Widget, margin = 0) =
+  gtk_widget_set_margin_top(w, margin.cint)
+  gtk_box_pack_start(panel.content, w, 0, 0, 0)
+
+proc render() =
+  let job = panelJob
+  if job == nil or panel.content == nil: return
+  let key = apiKey()
+  let busy = job.running or job.answering
+  gtk_label_set_text(sidePanelTitle, cstring(if job.selection: "Summary of selection" else: "Summary"))
+  gtk_widget_set_visible(panel.spinner, busy.gboolean)
+  if busy: gtk_spinner_start(panel.spinner) else: gtk_spinner_stop(panel.spinner)
+  gtk_widget_set_sensitive(panel.copyButton, (job.text.len > 0).gboolean)
+  gtk_widget_set_sensitive(panel.redoButton, (not busy and key.len > 0).gboolean)
+  let canAsk = key.len > 0 and job.text.strip.len > 0 and not job.running and job.error.len == 0
+  gtk_widget_set_sensitive(panel.entry, canAsk.gboolean)
+  gtk_widget_set_sensitive(panel.sendButton, (canAsk and not job.answering).gboolean)
+
+  clearChildren(panel.content)
+  if job.title.len > 0: add markupLabel("<b>" & escapeMarkup(job.title) & "</b>")
+  if job.url.len > 0:
+    let url = markupLabel(dim(job.url))
+    gtk_label_set_line_wrap(url, 0)
+    gtk_label_set_ellipsize(url, PANGO_ELLIPSIZE_END)
+    addClass(url, "webby-md-dim")
+    add url
+  if job.savedAt != 0 and not job.running:
+    let note = markupLabel(dim("Saved summary from " & whenText(job.savedAt) & ". Summarize again for a new one."))
+    addClass(note, "webby-md-dim")
+    add note
+  if job.error.len > 0: add(markupLabel(danger(job.error)), 12)
+  elif job.text.len == 0 and job.running:
+    let reading = markupLabel(escapeMarkup("Reading the page…"))
+    addClass(reading, "webby-md-dim")
+    add(reading, 12)
+  else: add(markdownView(job.text.strip), 12)
+  for qa in job.questions:
+    let q = markupLabel("<b>" & escapeMarkup(qa.question) & "</b>")
+    addClass(q, "webby-summary-question")
+    add(q, 16)
+    if qa.answer.strip.len > 0: add(markdownView(qa.answer.strip), 8)
+    elif qa.running:
+      let thinking = markupLabel(escapeMarkup("Thinking…"))
+      addClass(thinking, "webby-md-dim")
+      add(thinking, 8)
+    if qa.error.len > 0: add(markupLabel(danger(qa.error)), 8)
+  gtk_widget_show_all(panel.content)
+  if not busy: gtk_widget_hide(panel.spinner)
+
+proc onAdjustmentChanged(a: Widget, data: pointer) {.cdecl.} =
+  if panel.stickToBottom:
+    gtk_adjustment_set_value(a, gtk_adjustment_get_upper(a) - gtk_adjustment_get_page_size(a))
+
+proc onScrolled(a: Widget, data: pointer) {.cdecl.} =
+  if gtk_adjustment_get_value(a) < gtk_adjustment_get_upper(a) - gtk_adjustment_get_page_size(a) - 24:
+    panel.stickToBottom = false
+
+proc askFromEntry() =
+  let job = panelJob
+  let key = apiKey()
+  let question = ($gtk_entry_get_text(panel.entry)).strip
+  if job == nil or key.len == 0 or question.len == 0 or job.running or job.answering: return
+  gtk_entry_set_text(panel.entry, "")
+  panel.stickToBottom = true
+  job.ask(key, question)
+  render()
+  onAdjustmentChanged(panel.adjustment, nil)
+
+proc onEntryActivate(e: Widget, data: pointer) {.cdecl.} = askFromEntry()
+
+proc showPanel(job: Job) =
+  ## Shows `job` in the side panel (replacing whatever was there).
+  switchingPanel = true
+  panelJob = nil
+  if sidePanelShowing(): closeSidePanel()
+  switchingPanel = false
+  let root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
+  let bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)
+  gtk_widget_set_margin_end(bar, 4)
+  panel.redoButton = iconButton("view-refresh-symbolic", "Summarize again", proc () =
+    let job = panelJob
+    let key = apiKey()
+    if job != nil and key.len > 0 and not job.running and not job.answering:
+      panel.stickToBottom = false
+      job.start(key, fresh = true)
+      render())
+  panel.copyButton = iconButton("edit-copy-symbolic", "Copy summary", proc () =
+    if panelJob != nil and panelJob.text.len > 0:
+      gtk_clipboard_set_text(systemClipboard(), panelJob.text.strip.cstring, -1))
+  panel.spinner = gtk_spinner_new()
+  gtk_box_pack_end(bar, panel.redoButton, 0, 0, 0)
+  gtk_box_pack_end(bar, panel.copyButton, 0, 0, 0)
+  gtk_box_pack_end(bar, panel.spinner, 0, 0, 6)
+  gtk_box_pack_start(root, bar, 0, 0, 0)
+  gtk_box_pack_start(root, gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), 0, 0, 0)
+
+  let scroller = gtk_scrolled_window_new(nil, nil)
+  gtk_scrolled_window_set_policy(scroller, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
+  panel.content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
+  for side in [gtk_widget_set_margin_start, gtk_widget_set_margin_end, gtk_widget_set_margin_top,
+      gtk_widget_set_margin_bottom]:
+    side(panel.content, 14)
+  gtk_container_add(scroller, panel.content)
+  gtk_box_pack_start(root, scroller, 1, 1, 0)
+  panel.adjustment = gtk_scrolled_window_get_vadjustment(scroller)
+  panel.stickToBottom = false
+  connect(panel.adjustment, "changed", onAdjustmentChanged)
+  connect(panel.adjustment, "value-changed", onScrolled)
+
+  gtk_box_pack_start(root, gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), 0, 0, 0)
+  let askRow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4)
+  for side in [gtk_widget_set_margin_start, gtk_widget_set_margin_end, gtk_widget_set_margin_top,
+      gtk_widget_set_margin_bottom]:
+    side(askRow, 8)
+  panel.entry = gtk_entry_new()
+  gtk_entry_set_placeholder_text(panel.entry, "Ask about this page")
+  connect(panel.entry, "activate", onEntryActivate)
+  panel.sendButton = iconButton("mail-send-symbolic", "Ask", askFromEntry)
+  gtk_box_pack_start(askRow, panel.entry, 1, 1, 0)
+  gtk_box_pack_start(askRow, panel.sendButton, 0, 0, 0)
+  gtk_box_pack_start(root, askRow, 0, 0, 0)
+  panel.root = root
+
+  showSidePanel("Summary", root, 380, proc () =
+    let shown = panelJob
+    panelJob = nil
+    panel = Panel()
+    if not switchingPanel and shown != nil: shown.close())
+  # showSidePanel's show_all skips the panel itself (it is no_show_all), so show it here.
+  for child in children(sidePanel): gtk_widget_show_all(child)
+  gtk_widget_show(sidePanel)
+  panelJob = job
+  render()
+
+proc hidePanel() =
+  ## Takes the summary out of the side panel without stopping it (another tab is showing).
+  switchingPanel = true
+  closeSidePanel()
+  switchingPanel = false
+
+# ---------------------------------------------------------------------------------------------------------------
+# Entry points
+
+proc summarizePage*() =
+  ## Summarizes the current page, asking for the API key first when there's none. A saved summary of the page is
+  ## shown without asking DeepSeek again (the panel's redo button makes a new one).
+  let t = currentTab()
+  if t == nil or t.url.len == 0: return
+  let job = jobOf(t)
+  # The saved page summary wins over a selection here; redo reads the page again and summarizes the selection.
+  let k = summaryKey(t.url)
+  let (found, saved) = lookupSummary(k)
+  if found:
+    job.stopChat()
+    job.hasPage = false
+    job.showSaved(k, saved)
+    showPanel(job)
+    return
+  var key = apiKey()
+  if key.len == 0:
+    showSummarizeSettings()
+    key = apiKey()
+    if key.len == 0: return
+  job.start(key)
+  showPanel(job)
+
+proc toggleSummary() =
+  let t = currentTab()
+  if t != nil and panelJob != nil and panelJob.tab == t: closeSidePanel()
+  else: summarizePage()
+
+proc install*() =
+  pageMessageHooks.add onPageMessage
+  windowHooks.add proc () =
+    loadCss(panelCss)
+    linkHandler = proc (url: string) = discard openTab(url)
+    discard addToolbarButton("format-justify-left-symbolic", "Summarize this page", toggleSummary)
+    if children(moreMenu).len > 0: addMenuSeparator()
+    addMenuItem("Summarize this page", summarizePage)
+    if not incognito or setSecret == nil: addMenuItem("DeepSeek API key…", showSummarizeSettings)
+  activeTabHooks.add proc (t: Tab) =
+    let job = jobs.getOrDefault(t.messagePrefix)
+    let wanted = job != nil and job.open
+    if panelJob != nil and panelJob.tab != t:
+      if wanted: showPanel(job) else: hidePanel()
+    elif panelJob == nil and wanted and not sidePanelShowing():
+      showPanel(job)
+  tabClosedHooks.add proc (t: Tab) =
+    let job = jobs.getOrDefault(t.messagePrefix)
+    if job == nil: return
+    if panelJob == job: closeSidePanel()
+    job.close()
+    jobs.del t.messagePrefix
