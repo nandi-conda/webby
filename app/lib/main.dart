@@ -403,15 +403,28 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
 
   void _closePanel() => setState(() => _panel = null);
 
-  /// The sidebar: beside the page on wide windows, under it on narrow ones (phones).
-  Widget _sidePanel(_Panel panel, {required bool wide}) => switch (panel) {
-    _Panel.sessions => SessionsPanel(
+  /// The sessions sidebar, kept as one widget instance so the window's rebuilds (every page notification, many per
+  /// second while a page loads) don't rebuild it too; it updates from [SessionStore] on its own. Rebuilding it on
+  /// every one of them made its corner flicker on desktop during loads.
+  SessionsPanel? _sessions;
+
+  Widget _sessionsPanel({required bool wide}) {
+    final sessions = _sessions;
+    if (sessions != null && sessions.wide == wide) return sessions;
+    return _sessions = SessionsPanel(
       wide: wide,
       onOpen: _restoreSession,
       onClose: _closePanel,
       onSaveOpenTabs: _saveSession,
-      onCloseAllAndSave: () => _saveSession(closeAll: true),
-    ),
+      onCloseAllAndSave: _closeAllAndSaveSession,
+    );
+  }
+
+  void _closeAllAndSaveSession() => _saveSession(closeAll: true);
+
+  /// The sidebar: beside the page on wide windows, under it on narrow ones (phones).
+  Widget _sidePanel(_Panel panel, {required bool wide}) => switch (panel) {
+    _Panel.sessions => _sessionsPanel(wide: wide),
     _Panel.bookmarks => SidePanel(
       key: const ValueKey(_Panel.bookmarks),
       wide: wide,
