@@ -110,6 +110,12 @@ class Vault extends ChangeNotifier {
         }
       }
     }
+    final secrets = contents['secrets'];
+    if (secrets is Map<String, Object?>) {
+      for (final entry in secrets.entries) {
+        if (entry.value is String) _secrets[entry.key] = entry.value as String;
+      }
+    }
     final sync = contents['sync'];
     if (sync is Map<String, Object?>) {
       try {
@@ -139,6 +145,9 @@ class Vault extends ChangeNotifier {
   /// When things were deleted (seconds), by section and key, so the deletions reach other devices.
   final Map<String, Map<String, int>> _deleted = {'passwords': {}, 'passkeys': {}, 'neverSave': {}};
   SyncSettings? _sync;
+
+  /// This device's own secrets, such as API keys. Kept out of [toSyncDoc], so they never leave the device.
+  final Map<String, String> _secrets = {};
 
   List<SavedPassword> get passwords => List.unmodifiable(_passwords);
   List<Map<String, Object?>> get passkeys => List.unmodifiable(_passkeys);
@@ -294,6 +303,7 @@ class Vault extends ChangeNotifier {
         'passkeys': _passkeys,
         'deleted': _deleted,
         if (_sync != null) 'sync': _sync!.toJson(),
+        if (_secrets.isNotEmpty) 'secrets': _secrets,
       }));
       final box = await _cipher.encrypt(clear, secretKey: _key, aad: utf8.encode(_aad));
       final envelope = jsonEncode({
@@ -388,6 +398,21 @@ class Vault extends ChangeNotifier {
       _deleted['passkeys']!.remove(id);
     }
     _passkeys = passkeys;
+    notifyListeners();
+    return _save();
+  }
+
+  /// The device-only secret stored as [name], or null.
+  String? secret(String name) => _secrets[name];
+
+  /// Stores (or with null or empty [value], removes) a device-only secret. Secrets are never synced.
+  Future<void> setSecret(String name, String? value) {
+    if (value == null || value.isEmpty) {
+      if (_secrets.remove(name) == null) return _saving;
+    } else {
+      if (_secrets[name] == value) return _saving;
+      _secrets[name] = value;
+    }
     notifyListeners();
     return _save();
   }

@@ -31,6 +31,7 @@ import 'src/pwa/offline.dart';
 import 'src/pwa/pwa_agent.dart';
 import 'src/site_data.dart';
 import 'src/site_settings.dart';
+import 'src/summarize.dart';
 import 'src/tab_strip.dart';
 import 'src/tabs/device_tabs.dart';
 import 'src/tabs/device_tabs_page.dart';
@@ -819,10 +820,19 @@ class _BrowserPageState extends State<BrowserPage> {
                         KitMenuItem('New incognito window', shortcut: 'Ctrl+Shift+N', onSelected: _openIncognito),
                       ],
                       const KitMenuDivider(),
+                      KitMenuItem('Summarize this page', onSelected: () => summarizePage(context, controller)),
+                      if (!Incognito.active)
+                        KitMenuItem('DeepSeek API key…', onSelected: () => showSummarizeSettings(context)),
+                      const KitMenuDivider(),
                       KitMenuItem('Clear browsing data…', shortcut: 'Ctrl+Shift+Del', onSelected: _clearBrowsingData),
                     ],
                     builder: (context, toggle, open) =>
                         KitIconButton(Icons.bookmarks_outlined, tooltip: 'Bookmarks', onPressed: toggle),
+                  ),
+                  KitIconButton(
+                    Icons.summarize_outlined,
+                    tooltip: 'Summarize this page',
+                    onPressed: controller.url.isEmpty ? null : () => summarizePage(context, controller),
                   ),
                   // The vault belongs to the normal windows; incognito ones only fill from it.
                   if (!Incognito.active)
@@ -876,6 +886,7 @@ class _BrowserPageState extends State<BrowserPage> {
                   if (Incognito.active && (controller.url.isEmpty || controller.url == _blankUrl))
                     const Positioned.fill(child: IncognitoNewTab()),
                   PermissionBubble(key: ObjectKey(tab), controller: controller),
+                  Positioned.fill(child: SummaryOverlay(key: ObjectKey(tab), controller: controller)),
                   if (controller.hoveredLink.isNotEmpty && !controller.pointerIsTouch)
                     Positioned(
                       left: 0,
