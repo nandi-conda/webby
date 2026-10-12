@@ -1,7 +1,7 @@
 ## Saved summaries (app/lib/src/summary_cache.dart): by page (and by selection), newest last, in
 ## profiles/<profile>/summaries.json, the same file and format as the Flutter app. Incognito keeps them in memory only.
 
-import std/[os, strutils, times]
+import std/[algorithm, os, strutils, times]
 import ../../browser
 
 type
@@ -19,6 +19,7 @@ var
   deleted: OrderedTable[string, int64]
   cacheFile: string
   loaded = false
+  summaryListeners*: seq[proc ()]  ## run after every change (sync listens)
 
 proc fromJson(j: JsonNode): CachedSummary =
   result = CachedSummary(title: j{"title"}.getStr, url: j{"url"}.getStr, text: j{"text"}.getStr,
@@ -64,6 +65,7 @@ proc save() =
     j["deleted"] = d
   try: writeJsonFile(cacheFile, j)
   except CatchableError as e: stderr.writeLine "webby: could not save summaries: ", e.msg
+  for h in summaryListeners: h()
 
 proc fnv1a(text: string): string =
   # FNV-1a, 64-bit: enough to tell selections apart.
@@ -111,3 +113,30 @@ proc clearSummaries*(sinceMs: int64 = 0) =
     deleted[k] = max(now, entries[k].updatedAt + 1)
     entries.del k
   save()
+
+proc toSyncRecords*(): JsonNode =
+  ## The summaries in their synced form (SyncDoc.summaries): a record per key plus tombstones for cleared ones.
+  load()
+  result = newJObject()
+  for k, at in deleted: result[k] = %*{"updatedAt": at, "deleted": true}
+  for k, v in entries: result[k] = toJson(v)
+
+proc applySyncRecords*(records: JsonNode): bool =
+  ## Replaces the summaries with merged sync records. Returns whether anything changed.
+  load()
+  if records == nil or records.kind != JObject or records == toSyncRecords(): return false
+  var live: seq[(string, CachedSummary)]
+  deleted.clear
+  for k, r in records:
+    if r.kind != JObject: continue
+    if r{"deleted"}.getBool: deleted[k] = r{"updatedAt"}.getBiggestInt
+    else: live.add (k, fromJson(r))
+  live.sort(proc (a, b: (string, CachedSummary)): int = cmp(a[1].updatedAt, b[1].updatedAt))
+  entries.clear
+  for (k, v) in live: entries[k] = v
+  while entries.len > summaryLimit:
+    for k in entries.keys:
+      entries.del k
+      break
+  save()
+  true
