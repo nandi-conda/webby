@@ -86,6 +86,11 @@ class WebbyController extends ChangeNotifier {
   int _frameSerial = 0;
   int _stateSerial = -1;
   int _lastCompatMicros = 0;
+
+  /// More page scripts to run alongside [pageCompatScript]: as soon as navigation starts and every so often while a
+  /// page loads, so they land before most of the page's own scripts look for what they provide. Each returns the
+  /// script for the page as it is now, or '' for none; the scripts must be safe to run more than once.
+  final List<String Function()> pageScripts = [];
   WebbyTexture? _texture;
   bool _texturePending = false;
   bool _decoding = false;
@@ -486,6 +491,10 @@ class WebbyController extends ChangeNotifier {
   void _runPageCompat() {
     _lastCompatMicros = _pumpClock.elapsedMicroseconds;
     runJavaScript(pageCompatScript);
+    for (final script in pageScripts.toList()) {
+      final source = script();
+      if (source.isNotEmpty) runJavaScript(source);
+    }
   }
 
   /// Picks up what changed in this view since the last tick; returns whether anything did (or still is).

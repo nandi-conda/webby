@@ -23,8 +23,10 @@ import 'web_view.dart';
 String notificationPageScript(String prefix, String permission) => '''
 (() => {
   const state = window.__webbyNotifications;
-  if (state) { state.permission = ${jsonEncode(permission)}; return; }
-  if ('Notification' in window) return;
+  if (state) { state.setPermission(${jsonEncode(permission)}); return; }
+  // Ladybird has a Notification interface of its own, but without permission or requestPermission(), so pages that
+  // ask (Slack's "enable notifications") got nothing. Only an engine that answers Notification.permission keeps its own.
+  if (window.Notification && typeof window.Notification.permission === 'string') return;
   const PREFIX = ${jsonEncode(prefix)};
   const prompt = window.prompt;
   const send = (message) => { try { prompt.call(window, PREFIX + JSON.stringify(message)); } catch (e) {} };
@@ -33,8 +35,14 @@ String notificationPageScript(String prefix, String permission) => '''
     nextId: 1,
     waiting: new Map(),
     shown: new Map(),
-    resolve(id, permission) {
+    statuses: new Set(),
+    setPermission(permission) {
+      if (permission === self.permission) return;
       self.permission = permission;
+      for (const status of self.statuses) status.dispatchEvent(new Event('change'));
+    },
+    resolve(id, permission) {
+      self.setPermission(permission);
       const done = self.waiting.get(id);
       self.waiting.delete(id);
       if (done) done(permission);
@@ -97,6 +105,51 @@ String notificationPageScript(String prefix, String permission) => '''
     }
   }
   Object.defineProperty(window, 'Notification', { value: Notification, writable: true, configurable: true });
+
+  // navigator.permissions.query({name: 'notifications'}), which sites check before offering to turn notifications on.
+  // Ladybird only has navigator.permissions behind its experimental switch, so provide it, or answer notifications
+  // ourselves in front of the engine's.
+  class PermissionStatus extends EventTarget {
+    // A status for anything but notifications stays at "prompt": the page has to ask the feature itself.
+    constructor(name) {
+      super();
+      this.name = name;
+      let handler = null;
+      Object.defineProperty(this, 'onchange', {
+        get: () => handler,
+        set: (value) => {
+          if (handler) this.removeEventListener('change', handler);
+          handler = typeof value === 'function' ? value : null;
+          if (handler) this.addEventListener('change', handler);
+        },
+      });
+      if (name === 'notifications') self.statuses.add(this);
+    }
+    get state() {
+      if (this.name !== 'notifications') return 'prompt';
+      return self.permission === 'default' ? 'prompt' : self.permission;
+    }
+  }
+  const notificationsStatus = (descriptor) => {
+    if (descriptor && descriptor.name === 'notifications') return Promise.resolve(new PermissionStatus('notifications'));
+    return null;
+  };
+  const permissions = navigator.permissions;
+  if (permissions && typeof permissions.query === 'function') {
+    const query = permissions.query;
+    permissions.query = function (descriptor) {
+      return notificationsStatus(descriptor) || query.call(this, descriptor);
+    };
+  } else {
+    const shim = {
+      query(descriptor) {
+        if (descriptor === undefined || descriptor === null || typeof descriptor.name !== 'string')
+          return Promise.reject(new TypeError("Failed to execute 'query' on 'Permissions': required member name is undefined."));
+        return notificationsStatus(descriptor) || Promise.resolve(new PermissionStatus(descriptor.name));
+      },
+    };
+    try { Object.defineProperty(navigator, 'permissions', { value: shim, configurable: true }); } catch (e) {}
+  }
 })();
 ''';
 
@@ -104,6 +157,7 @@ String notificationPageScript(String prefix, String permission) => '''
 class NotificationAgent {
   NotificationAgent(this.controller, {this.onClick}) {
     controller.addListener(_onPageChanged);
+    controller.pageScripts.add(_script);
     _messages = controller.pageMessages.listen(_onMessage);
     SitePermissionStore.instance.addListener(_onSettingsChanged);
   }
@@ -134,10 +188,17 @@ class NotificationAgent {
         PermissionSetting.ask => 'default',
       };
 
-  void _inject() {
+  /// The page script for the page as it is now ('' on pages that can't have notifications). The controller runs it
+  /// with its own page scripts from the start of each navigation, so it's in before the page checks for it.
+  String _script() {
     final origin = _origin;
-    if (origin == null || !controller.isAttached || controller.messagePrefix.isEmpty) return;
-    controller.runJavaScript(notificationPageScript(controller.messagePrefix, _permission(origin)));
+    if (origin == null || controller.messagePrefix.isEmpty) return '';
+    return notificationPageScript(controller.messagePrefix, _permission(origin));
+  }
+
+  void _inject() {
+    final script = _script();
+    if (script.isNotEmpty && controller.isAttached) controller.runJavaScript(script);
   }
 
   void _onPageChanged() {
@@ -191,6 +252,7 @@ class NotificationAgent {
 
   void dispose() {
     controller.removeListener(_onPageChanged);
+    controller.pageScripts.remove(_script);
     _messages.cancel();
     SitePermissionStore.instance.removeListener(_onSettingsChanged);
   }
