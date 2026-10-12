@@ -77,3 +77,50 @@ jobs:
           export WEBBY_BUILD_NUMBER="$RUN"
           echo "publishing webby $WEBBY_VERSION build $WEBBY_BUILD_NUMBER"
           scripts/publish_conda.sh webby
+
+  # Copies webby's conda-forge run-time closure into nandi-testing (scripts/mirror_deps.sh) so a single-channel
+  # `pixi global install -c https://prefix.dev/nandi-testing webby` works, then checks that on a clean Ubuntu 22.04.
+  mirror:
+    needs: webby
+    if: ${{ !cancelled() && needs.webby.result == 'success' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: publish-mirror
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pixi and rattler-build
+        run: |
+          curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=$PIXI_VERSION bash
+          echo "$HOME/.pixi/bin" >> "$GITHUB_PATH"
+          "$HOME/.pixi/bin/pixi" global install rattler-build
+      - run: scripts/mirror_deps.sh
+        env:
+          PREFIX_API_KEY: ${{ secrets.PREFIX_API_KEY }}
+
+  verify-install:
+    needs: mirror
+    if: ${{ !cancelled() && needs.mirror.result == 'success' }}
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    steps:
+      - name: Install from nandi-testing only
+        run: |
+          apt-get update -qq && apt-get install -y -qq curl ca-certificates xvfb xauth procps >/dev/null
+          curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=$PIXI_VERSION bash
+          export PATH="$HOME/.pixi/bin:$PATH"
+          # The mirror's uploads can take a moment to show up in the channel's repodata.
+          for i in 1 2 3 4 5; do
+            pixi global install -c https://prefix.dev/$CHANNEL webby && break
+            [ "$i" = 5 ] && exit 1; sleep 30; pixi clean cache --repodata -y || true
+          done
+          pixi global list
+      - name: Launch under Xvfb
+        run: |
+          export PATH="$HOME/.pixi/bin:$PATH"
+          ENV="$HOME/.pixi/envs/webby"
+          if ldd "$ENV/lib/webby/webby" "$ENV"/lib/webby-ladybird/lib/libwebby.so | grep 'not found'; then exit 1; fi
+          xvfb-run -a webby https://example.com > webby.log 2>&1 &
+          sleep 25
+          pgrep -a WebContent || { cat webby.log; exit 1; }
+          pgrep -a RequestServer

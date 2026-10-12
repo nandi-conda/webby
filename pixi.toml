@@ -3,7 +3,9 @@
 # and the prebuilt Ladybird runtime from the webby-ladybird package (conda/webby-ladybird) on prefix.dev/nandi-testing.
 [workspace]
 name = "webby"
-channels = ["https://prefix.dev/nandi-testing", "conda-forge"]
+# conda-forge first: nandi-testing also mirrors the conda-forge packages webby needs (scripts/mirror_deps.sh), and
+# under strict channel priority an earlier channel would pin those names to the mirrored copies.
+channels = ["conda-forge", "https://prefix.dev/nandi-testing"]
 # The prebuilt Ladybird runtime is built on Ubuntu 22.04 (scripts/portable_build.sh), so it needs glibc 2.35.
 platforms = [{ name = "linux-64-glibc235", platform = "linux-64", glibc = "2.35" }]
 

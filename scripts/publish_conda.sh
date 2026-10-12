@@ -9,6 +9,6 @@ PKG="${1:-webby-ladybird}"
 CHANNEL="${CHANNEL:-nandi-testing}"
 OUT="${OUT:-$ROOT/build/conda}"
 
-rattler-build build --recipe "$ROOT/conda/$PKG/recipe.yaml" --output-dir "$OUT" -c "https://prefix.dev/$CHANNEL" -c conda-forge
+rattler-build build --recipe "$ROOT/conda/$PKG/recipe.yaml" --output-dir "$OUT" -c conda-forge -c "https://prefix.dev/$CHANNEL"
 : "${PREFIX_API_KEY:?set PREFIX_API_KEY}"  # rattler-build reads it from the environment
 rattler-build upload prefix --skip-existing --channel "$CHANNEL" "$OUT"/linux-64/"$PKG"-[0-9]*.conda

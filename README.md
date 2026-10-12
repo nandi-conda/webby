@@ -48,7 +48,7 @@ Later runs skip the downloads.
 To just use the browser, install the `webby` package globally and run it:
 
 ```sh
-pixi global install -c https://prefix.dev/nandi-testing -c conda-forge webby
+pixi global install -c https://prefix.dev/nandi-testing webby
 webby https://example.com
 ```
 

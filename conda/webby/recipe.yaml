@@ -1,6 +1,6 @@
 # conda package of the webby browser itself: a release build of app/ (the Flutter UI) plus a `webby` launcher.
 # The Ladybird engine comes from the webby-ladybird package; the launcher points the app at it.
-# Install: pixi global install -c https://prefix.dev/nandi-testing -c conda-forge webby
+# Install: pixi global install -c https://prefix.dev/nandi-testing webby
 # Build + upload: scripts/publish_conda.sh webby (needs PREFIX_API_KEY; downloads the Flutter SDK while building).
 # CI sets WEBBY_VERSION (commit date + run number) and WEBBY_BUILD_NUMBER (run number); see .github/workflows/publish.yml.
 context:
