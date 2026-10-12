@@ -88,11 +88,25 @@ class WebbyController extends ChangeNotifier {
           _traced.add(c);
           c.pageMessages.where((m) => m.startsWith('{"type":"trace"')).listen((m) => stderr.writeln('webby-trace page $m'));
         }
-        c.runJavaScript('''(() => { try { const a = document.getAnimations().map(a => {
-          const t = a.effect && a.effect.target; return (a.animationName || a.transitionProperty || a.constructor.name) +
-          '@' + (t ? t.tagName + '.' + String(t.className).slice(0, 40) : '?') + ':' + a.playState; });
-          window.prompt(${jsonEncode(c._messagePrefix)} + JSON.stringify({type: 'trace', url: location.href,
-          animations: a.slice(0, 12), count: a.length})); } catch (e) {} })()''');
+        c.runJavaScript('''(() => { try {
+          if (!window.__webbyTrace) {
+            const t = window.__webbyTrace = {raf: {}, timers: {}, mutations: 0};
+            const where = () => (new Error().stack || '').split('\\n').slice(2, 4).join(' < ').slice(0, 160);
+            const raf = window.requestAnimationFrame.bind(window);
+            window.requestAnimationFrame = (f) => { const k = where(); t.raf[k] = (t.raf[k] || 0) + 1; return raf(f); };
+            const st = window.setTimeout.bind(window);
+            window.setTimeout = (f, d, ...r) => { const k = d + 'ms ' + where(); t.timers[k] = (t.timers[k] || 0) + 1; return st(f, d, ...r); };
+            new MutationObserver((m) => { t.mutations += m.length; }).observe(document, {subtree: true, childList: true, attributes: true, characterData: true});
+          }
+          const t = window.__webbyTrace;
+          const a = document.getAnimations().map(a => { const e = a.effect && a.effect.target;
+            return (a.animationName || a.transitionProperty || a.constructor.name) + '@' + (e ? e.tagName + '.' + String(e.className).slice(0, 40) : '?'); });
+          const top = (o) => Object.entries(o).sort((x, y) => y[1] - x[1]).slice(0, 4);
+          window.prompt(${jsonEncode(c._messagePrefix)} + JSON.stringify({type: 'trace', animations: a.slice(0, 8),
+            raf: top(t.raf), timers: top(t.timers), mutations: t.mutations, focus: document.activeElement && document.activeElement.tagName,
+            hover: Array.from(document.querySelectorAll(':hover')).map(e => e.tagName).join('>')}));
+          t.raf = {}; t.timers = {}; t.mutations = 0;
+        } catch (e) { window.prompt(${jsonEncode(c._messagePrefix)} + JSON.stringify({type: 'trace', error: String(e)})); } })()''');
       }
     });
   }
@@ -643,8 +657,9 @@ class WebbyController extends ChangeNotifier {
       return true;
     }
 
-    // Copy now: the native buffer may be rewritten by the next pump while the image decodes.
-    final pixels = Uint8List.fromList(_bindings.framePixels(_view).asTypedList(width * height * 4));
+    // decodeImageFromPixels copies the pixels into an engine buffer before it returns, so it can read the native
+    // frame directly even though the next pump may rewrite it while the image decodes.
+    final pixels = _bindings.framePixels(_view).asTypedList(width * height * 4);
     final copyMicros = clock.elapsedMicroseconds;
     _decoding = true;
     ui.decodeImageFromPixels(pixels, width, height, ui.PixelFormat.bgra8888, (image) {

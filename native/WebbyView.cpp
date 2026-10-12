@@ -593,19 +593,27 @@ void View::copy_front_bitmap()
         return;
 
     auto row_bytes = static_cast<size_t>(width) * 4;
+    bool same_size = width == m_frame_width && height == m_frame_height;
     m_frame.resize(row_bytes * height);
 
     bool swap_red_blue = bitmap->format() == Gfx::BitmapFormat::RGBA8888 || bitmap->format() == Gfx::BitmapFormat::RGBx8888;
     bool force_opaque = bitmap->format() == Gfx::BitmapFormat::BGRx8888 || bitmap->format() == Gfx::BitmapFormat::RGBx8888;
 
+    // Pages with a running animation (often one nobody can see) present a new frame every vsync even when no pixel
+    // changed. Comparing costs about what the copy does, and an unchanged frame then isn't handed to Flutter at all.
+    bool changed = !same_size;
     for (int y = 0; y < height; ++y) {
         auto const* source = bitmap->scanline_u8(y);
         auto* destination = m_frame.data() + (row_bytes * y);
 
         if (!swap_red_blue && !force_opaque) {
+            if (!changed && __builtin_memcmp(destination, source, row_bytes) == 0)
+                continue;
+            changed = true;
             __builtin_memcpy(destination, source, row_bytes);
             continue;
         }
+        changed = true;
 
         for (int x = 0; x < width; ++x) {
             auto const* in = source + (x * 4);
@@ -617,6 +625,8 @@ void View::copy_front_bitmap()
         }
     }
 
+    if (!changed)
+        return;
     m_frame_width = width;
     m_frame_height = height;
     ++m_frame_serial;
