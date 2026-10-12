@@ -338,7 +338,12 @@ class _BrowserPageState extends State<BrowserPage> {
     final open = await Navigator.of(context).push<SessionOpen>(
       MaterialPageRoute(builder: (_) => SessionsPage(onSaveOpenTabs: Incognito.active ? null : _saveSession)),
     );
-    if (open == null || open.urls.isEmpty || !mounted) return;
+    if (open != null && mounted) _restoreSession(open);
+  }
+
+  /// Opens a saved session's tabs next to the current one.
+  void _restoreSession(SessionOpen open) {
+    if (open.urls.isEmpty) return;
     // A blank current tab takes the first page; the rest open in the background and the session's front tab is shown.
     final blank = _controller?.url.isEmpty != false || _controller?.url == _blankUrl;
     var at = blank ? _active : _active + 1;
@@ -858,11 +863,6 @@ class _BrowserPageState extends State<BrowserPage> {
                       if (!Incognito.active) ...[
                         const KitMenuDivider(),
                         KitMenuItem('Tabs from other devices', onSelected: _openDeviceTabs),
-                        const KitMenuDivider(),
-                        KitMenuItem('Sessions', onSelected: _openSessions),
-                        KitMenuItem('Save open tabs as session', onSelected: _saveSession),
-                        KitMenuItem('Close all tabs and save as session',
-                            onSelected: () => _saveSession(closeAll: true)),
                       ],
                       if (!Platform.isAndroid) ...[
                         const KitMenuDivider(),
@@ -878,6 +878,31 @@ class _BrowserPageState extends State<BrowserPage> {
                     builder: (context, toggle, open) =>
                         KitIconButton(Icons.bookmarks_outlined, tooltip: 'Bookmarks', onPressed: toggle),
                   ),
+                  // Sessions: save the open tabs, restore a saved set, or manage them.
+                  if (!Incognito.active)
+                    KitMenu(
+                      minWidth: 260,
+                      items: () {
+                        final sessions = SessionStore.instance.sessions;
+                        return [
+                          KitMenuItem('Save open tabs as session', onSelected: _saveSession),
+                          KitMenuItem('Close all tabs and save as session',
+                              onSelected: () => _saveSession(closeAll: true)),
+                          if (sessions.isNotEmpty) const KitMenuDivider(),
+                          for (final session in sessions)
+                            KitMenuItem(
+                              '${session.name} (${session.tabs.length} tab${session.tabs.length == 1 ? '' : 's'})',
+                              onSelected: () => _restoreSession(
+                                (urls: [for (final tab in session.tabs) tab.url], active: session.active),
+                              ),
+                            ),
+                          const KitMenuDivider(),
+                          KitMenuItem('Manage sessions…', onSelected: _openSessions),
+                        ];
+                      },
+                      builder: (context, toggle, open) =>
+                          KitIconButton(Icons.layers_outlined, tooltip: 'Sessions', onPressed: toggle),
+                    ),
                   KitIconButton(
                     Icons.summarize_outlined,
                     tooltip: 'Summarize this page',
