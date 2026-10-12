@@ -32,7 +32,7 @@ fi
 # Our Ladybird patches: 0001 teaches UI/ about the Flutter frontend, 0002 adds Web Authentication (passkeys), 0003
 # adds RequestServer's offline (cache-only) mode, 0004 lets image/media documents load the resource they show despite
 # its CSP, 0005 to 0010 get the Android build working and running (plain helper executables, HarfBuzz/FreeType for
-# Skia, bit-rotted Android code, a primitive storage cage that fits a 39-bit address space, a writable temp dir), 0011 adds the microphone permission prompt, 0012 builds the Cranelift WebAssembly JIT for Android, 0013 gives the Android Compositor an ANGLE GLES backend for WebGL, 0014 keeps WebGL bindings across canvas resizes, 0015 lets webby turn off the spare WebContent process, 0016 passes MIMALLOC_* settings on to the helper processes. When the patch set changes, the tree goes back to the pinned commit first so every patch
+# Skia, bit-rotted Android code, a primitive storage cage that fits a 39-bit address space, a writable temp dir), 0011 adds the microphone permission prompt, 0012 builds the Cranelift WebAssembly JIT for Android, 0013 gives the Android Compositor an ANGLE GLES backend for WebGL, 0014 keeps WebGL bindings across canvas resizes, 0015 lets webby turn off the spare WebContent process, 0016 passes MIMALLOC_* settings on to the helper processes, 0017 stops pages with a <video> from repainting every frame. When the patch set changes, the tree goes back to the pinned commit first so every patch
 # applies to pristine sources.
 PATCHES_STAMP="$(cat "$ROOT"/patches/*.patch | sha256sum | cut -d' ' -f1)"
 if [ "$(cat .git/webby-patches 2>/dev/null || true)" != "$PATCHES_STAMP" ]; then

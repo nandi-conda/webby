@@ -544,7 +544,8 @@ class WebbyController extends ChangeNotifier {
     _pumps++;
     if (_live.isEmpty) return;
     final bindings = _pumpBindings ??= _live.first._bindings;
-    var busy = bindings.pump() > 0;
+    final events = bindings.pump() > 0;
+    var busy = false;
     final first = _live.first;
     first._clipboard.pushPageCopies();
     first._location?.poll();
@@ -552,7 +553,13 @@ class WebbyController extends ChangeNotifier {
       if (_live.contains(controller) && controller._pump()) busy = true;
     }
     if (_live.isEmpty) return;
-    _quietTicks = busy ? 0 : _quietTicks + 1;
+    // Events alone (an animation presenting unchanged frames, a page's timers) get a short 4 ms burst after a slower
+    // spell, so a run of IPC round trips isn't held up, then settle at 16 ms instead of keeping the 4 ms tick forever.
+    _quietTicks = busy
+        ? 0
+        : events
+        ? (_quietTicks >= 80 ? 40 : (_quietTicks + 1).clamp(0, 79))
+        : _quietTicks + 1;
     // About a quarter second of quiet at full speed, then progressively slower.
     final delay = _quietTicks < 60
         ? _busyTick
