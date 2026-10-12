@@ -64,7 +64,7 @@ bool isSessionUrl(String url) => url.isNotEmpty && url != 'about:blank';
 
 /// The profile's saved sessions, in
 /// `${XDG_DATA_HOME:-~/.local/share}/webby/profiles/<WEBBY_PROFILE|default>/sessions.json` (or $WEBBY_SESSIONS_FILE).
-/// Incognito windows never save one. Sessions sync between devices (see [toSyncDoc]); [askOnQuit] stays on this one.
+/// Incognito windows never save one. Sessions sync between devices (see [toSyncDoc]).
 class SessionStore extends ChangeNotifier {
   SessionStore(this.file) {
     _load();
@@ -90,7 +90,6 @@ class SessionStore extends ChangeNotifier {
 
   /// When sessions were deleted (seconds), by id, so the deletion reaches other devices.
   final Map<String, int> _deleted = {};
-  bool _askOnQuit = true;
   int _idCounter = 0;
 
   /// Why the file couldn't be read (it was set aside), or null.
@@ -99,19 +98,10 @@ class SessionStore extends ChangeNotifier {
   /// Newest first.
   List<SavedSession> get sessions => List.unmodifiable(_sessions);
 
-  /// Whether closing the window asks to save its tabs as a session.
-  bool get askOnQuit => _askOnQuit;
-  set askOnQuit(bool value) {
-    if (value == _askOnQuit) return;
-    _askOnQuit = value;
-    _changed();
-  }
-
   void _load() {
     if (!file.existsSync()) return;
     try {
       final json = jsonDecode(file.readAsStringSync()) as Map<String, Object?>;
-      _askOnQuit = json['askOnQuit'] as bool? ?? true;
       for (final entry in (json['sessions'] as List<Object?>? ?? const [])) {
         final session = SavedSession.fromJson(entry);
         if (session != null) _sessions.add(session);
@@ -140,7 +130,6 @@ class SessionStore extends ChangeNotifier {
     _deleted.removeWhere((_, at) => at < expireBefore);
     final contents = const JsonEncoder.withIndent('  ').convert({
       'version': 1,
-      'askOnQuit': _askOnQuit,
       'sessions': [for (final session in _sessions) session.toJson()],
       if (_deleted.isNotEmpty) 'deleted': _deleted,
     });

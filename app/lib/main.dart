@@ -161,9 +161,8 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
   final _addressFocus = FocusNode(debugLabel: 'address');
   String _shownUrl = '';
   Timer? _discardTimer;
-  /// Asks to save the tabs as a session when the window is closed (see [_onExitRequested]).
+  /// Saves the tabs as a session when the window is closed (see [_onExitRequested]).
   AppLifecycleListener? _exitListener;
-  bool _askingToQuit = false;
 
   /// Background tabs hidden this long lose their page (and its WebContent process) until they're shown again: 30
   /// minutes, 5 on Android, where a phone has little RAM to spare. WEBBY_DISCARD_MINUTES overrides it; 0 never
@@ -206,7 +205,7 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
   }
 
   /// Android stops apps whenever it likes (in the background, for updates), so there the open tabs are kept as they
-  /// change and come back at the next start. Desktop asks whether to save them as a session when the window closes.
+  /// change and come back at the next start. Desktop saves them as a session when the window closes.
   static final bool _restoresTabs = Platform.isAndroid && !Incognito.active;
   AppLifecycleListener? _lifecycle;
 
@@ -341,22 +340,11 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
 
   int get _sessionTabCount => _tabs.where((t) => isSessionUrl(t.controller.url)).length;
 
-  /// Closing the window asks whether to keep its tabs as a session. Incognito windows never save one.
+  /// Closing the window keeps its tabs as a session, without asking. Incognito windows never save one, and a window
+  /// with only blank tabs saves nothing ([SessionStore.save] skips those).
   Future<AppExitResponse> _onExitRequested() async {
-    final store = SessionStore.instance;
-    final count = _sessionTabCount;
-    if (Incognito.active || !store.askOnQuit || count == 0 || !mounted) return AppExitResponse.exit;
-    // The question is already up; another click on the window's close button doesn't stack a second one.
-    if (_askingToQuit) return AppExitResponse.cancel;
-    _askingToQuit = true;
-    try {
-      final (choice, name) = await askSaveOnQuit(context, tabCount: count, store: store);
-      if (choice == QuitChoice.cancel) return AppExitResponse.cancel;
-      if (choice == QuitChoice.save) store.save(_sessionTabs(), name: name, active: _active);
-      return AppExitResponse.exit;
-    } finally {
-      _askingToQuit = false;
-    }
+    if (!Incognito.active) SessionStore.instance.save(_sessionTabs(), active: _active);
+    return AppExitResponse.exit;
   }
 
   /// Asks for a name and saves the open tabs as a session. Returns whether one was saved.
