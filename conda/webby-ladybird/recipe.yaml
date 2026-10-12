@@ -3,7 +3,7 @@
 # never shadow conda-forge's; activation sets WEBBY_LADYBIRD_PREFIX to it.
 # Build + upload: scripts/publish_conda.sh (uploads to prefix.dev channel nandi-testing; needs PREFIX_API_KEY).
 context:
-  version: "2026.10.12.5"
+  version: "2026.10.12.6"
 
 package:
   name: webby-ladybird
@@ -12,7 +12,7 @@ package:
 source:
   # GitHub Release made by .github/workflows/prebuilt-release.yml
   url: https://github.com/nandi-conda/webby/releases/download/webby-prebuilt-${{ version }}/webby-prebuilt-linux-x64.tar.zst
-  sha256: aa39c78931d9fcc80a56948bd7eb0265dafaff02ddc6f0a12e2291f2ace570f3
+  sha256: 4413fcc33dd58db7f54df09651b2d474c9858b1d492cf67b33589b973bb22c1a
 
 build:
   number: 0
@@ -28,12 +28,13 @@ build:
   script:
     - mkdir -p $PREFIX/lib/webby-ladybird $PREFIX/etc/conda/activate.d $PREFIX/etc/conda/deactivate.d
     - cp -a lib libexec share $PREFIX/lib/webby-ladybird/
-    # 2026.10.11.3's tarball kept its build machine's RUNPATHs, so libwebby.so couldn't find liblagom-*.so.
+    # RUNPATHs: the bundled lib/ first, then the env's lib/ for what the system can't be counted on for (a libstdc++
+    # new enough for C++23, libpulse, ncurses), which comes from conda-forge.
     - |
       cd $PREFIX/lib/webby-ladybird
       for f in lib/* libexec/*; do
         [ -f "$f" ] && [ ! -L "$f" ] && [ "$(head -c4 "$f")" = "$(printf '\177ELF')" ] || continue
-        case "$f" in lib/*) rp='$ORIGIN' ;; *) rp='$ORIGIN/../lib' ;; esac
+        case "$f" in lib/*) rp='$ORIGIN:$ORIGIN/../..' ;; *) rp='$ORIGIN/../lib:$ORIGIN/../..' ;; esac
         patchelf --set-rpath "$rp" "$f"
       done
     - cp $RECIPE_DIR/activate.sh $PREFIX/etc/conda/activate.d/webby-ladybird.sh
@@ -43,8 +44,13 @@ requirements:
   build:
     - patchelf
   run:
-    # Built on Ubuntu 26.04.
-    - __glibc >=2.43
+    # Built on Ubuntu 22.04 (scripts/portable_build.sh); scripts/pack_prebuilt.sh prints the glibc the binaries need.
+    - __glibc >=2.35
+    # Linked against libstdc++ 14; Ubuntu 22.04's own is older.
+    - libstdcxx >=14
+    - libgcc
+    - ncurses
+    - pulseaudio-client
 
 tests:
   - package_contents:

@@ -20,7 +20,8 @@ and forwards pointer and keyboard events.
 
 ## Requirements
 
-Linux x86_64 with **glibc 2.43 or newer** (the Ladybird runtime is built on Ubuntu 26.04) and a CPU that supports
+Linux x86_64 with **glibc 2.35 or newer** (Ubuntu 22.04, Debian 12, Fedora 36 or later; the Ladybird runtime is built
+on Ubuntu 22.04) and a CPU that supports
 **x86-64-v3** (AVX2; roughly Intel Haswell / AMD Excavator or later). [pixi](https://pixi.sh) installs everything else.
 
 ## Quick start
@@ -98,8 +99,10 @@ Two things to know:
   other than the build host's. `build_ladybird.sh` turns on `ENABLE_CI_BASELINE_CPU`, which targets x86-64-v3 like
   Ladybird's own CI, so the result runs on any AVX2-era machine. Keep it on for anything you publish.
 - **glibc.** The binaries need at least the glibc of the machine that built them. The published `webby-ladybird`
-  was built on Ubuntu 26.04, hence glibc 2.43; if you rebuild it, keep the `__glibc` run requirement in
-  `conda/webby-ladybird/recipe.yaml` and the `glibc` in `pixi.toml` in step with the build host.
+  is built on Ubuntu 22.04 by `scripts/portable_build.sh` (clang 21 and libstdc++ 14 from their apt repositories),
+  hence glibc 2.35; the newer libstdc++ comes from conda-forge at run time. `scripts/pack_prebuilt.sh` packs the
+  build and prints the glibc it needs; keep the `__glibc` run requirement in `conda/webby-ladybird/recipe.yaml` and
+  the `glibc` in `pixi.toml` in step with it.
 
 To publish a new runtime, bump the version or build number in `conda/webby-ladybird/recipe.yaml` and run
 `scripts/publish_conda.sh`.
