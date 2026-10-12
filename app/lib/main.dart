@@ -1050,7 +1050,10 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
             SizedBox(
               height: 2,
               child: controller.isLoading
-                  ? LinearProgressIndicator(minHeight: 2, color: c.accent, backgroundColor: c.border)
+                  // Its own layer, so the animation doesn't repaint the rest of the window every frame of a load.
+                  ? RepaintBoundary(
+                      child: LinearProgressIndicator(minHeight: 2, color: c.accent, backgroundColor: c.border),
+                    )
                   : Align(alignment: Alignment.topCenter, child: Container(height: 1, color: c.border)),
             ),
             Expanded(

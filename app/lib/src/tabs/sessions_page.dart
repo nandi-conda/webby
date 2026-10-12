@@ -88,6 +88,16 @@ class _SessionsPanelState extends State<SessionsPanel> {
   @override
   Widget build(BuildContext context) {
     final c = KitTheme.of(context);
+    // A layer of its own, like the other sidebars (their navigator gives them one): without it the panel was
+    // repainted with the window on every frame of a page load, and its corner flickered on desktop.
+    return RepaintBoundary(
+      child: ClipRect(
+        child: _panel(context, c),
+      ),
+    );
+  }
+
+  Widget _panel(BuildContext context, KitColors c) {
     return Material(
       color: c.surface,
       child: Container(
