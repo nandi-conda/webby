@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'incognito.dart';
+import 'markdown_view.dart';
 import 'passwords/password_manager.dart';
 import 'ui.dart';
 import 'web_view.dart';
@@ -131,8 +132,9 @@ Map<String, Object?> summaryRequest(PageText page, {String model = 'deepseek-cha
     {
       'role': 'system',
       'content': 'You summarize web pages for a browser\'s summary panel. Reply in the language of the page. Start '
-          'with one or two sentences saying what the page is about, then give the key points as short bullet lines '
-          'that start with "• ". Use plain text only: no markdown, headings, bold or links.',
+          'with one or two sentences saying what the page is about, then give the key points as a short markdown '
+          'bullet list. Use markdown: **bold** for key names and figures, `code` for code, and a short ### heading '
+          'only when the page covers clearly separate topics. No tables, images or links.',
     },
     {
       'role': 'user',
@@ -454,7 +456,7 @@ class _SummaryPanel extends StatelessWidget {
                     else if (job.text.isEmpty && job.running)
                       Text('Reading the page…', style: KitText.dim(context))
                     else
-                      SelectableText(job.text.trim(), style: KitText.body(context).copyWith(height: 1.45)),
+                      SelectionArea(child: MarkdownView(job.text.trim())),
                   ],
                 ),
               ),
