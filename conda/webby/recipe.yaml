@@ -77,6 +77,7 @@ tests:
   - package_contents:
       files:
         - bin/webby
+        - lib/webby-ladybird/share/Lagom/fonts/webby-fonts.conf
         - lib/webby/webby
         - lib/webby/lib/libapp.so
         - lib/webby/lib/libflutter_linux_gtk.so

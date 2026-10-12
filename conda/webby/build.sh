@@ -42,6 +42,9 @@ flutter build linux --release
 mkdir -p "$PREFIX/lib/webby" "$PREFIX/bin"
 cp -a build/linux/x64/release/bundle/. "$PREFIX/lib/webby/"
 install -m 755 "$RECIPE_DIR/webby.sh" "$PREFIX/bin/webby"
+# The launcher's FONTCONFIG_FILE; it goes in webby-ladybird's share/Lagom/fonts so the sandboxed helpers can read it.
+mkdir -p "$PREFIX/lib/webby-ladybird/share/Lagom/fonts"
+sed "s|@PREFIX@|$PREFIX|" "$RECIPE_DIR/webby-fonts.conf" > "$PREFIX/lib/webby-ladybird/share/Lagom/fonts/webby-fonts.conf"
 
 # Icons, rendered from icons/*.svg; the small variant is drawn for 16-32 px.
 icons="$PREFIX/share/icons/hicolor"
