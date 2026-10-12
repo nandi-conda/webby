@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'incognito.dart';
 import 'markdown_view.dart';
 import 'passwords/password_manager.dart';
+import 'summary_cache.dart';
 import 'ui.dart';
 import 'web_view.dart';
 
@@ -216,10 +217,35 @@ class SummaryJob extends ChangeNotifier {
   String text = '';
   String? error;
   bool selection = false;
+
+  /// When the summary shown was made, if it came from the cache.
+  DateTime? savedAt;
   int _generation = 0;
 
-  /// Reads the page and asks DeepSeek for a summary, showing the panel.
-  Future<void> start(String apiKey) async {
+  /// Shows the saved summary of the current page, if there is one. Returns whether there was.
+  bool showSaved() {
+    final saved = SummaryCache.instance.lookup(SummaryCache.keyFor(controller.url));
+    if (saved == null) return false;
+    _show(saved);
+    return true;
+  }
+
+  void _show(CachedSummary saved) {
+    _generation++;
+    open = true;
+    running = false;
+    error = null;
+    title = saved.title;
+    url = saved.url;
+    text = saved.text;
+    selection = saved.selection;
+    savedAt = DateTime.fromMillisecondsSinceEpoch(saved.at);
+    notifyListeners();
+  }
+
+  /// Reads the page and asks DeepSeek for a summary, showing the panel. A summary saved for the same page (or the
+  /// same selection) is shown instead unless [fresh].
+  Future<void> start(String apiKey, {bool fresh = false}) async {
     final generation = ++_generation;
     open = true;
     running = true;
@@ -227,10 +253,17 @@ class SummaryJob extends ChangeNotifier {
     text = '';
     title = controller.title;
     url = controller.url;
+    savedAt = null;
     notifyListeners();
     try {
       final page = await readPageText(controller);
       if (generation != _generation) return;
+      final key = SummaryCache.keyFor(page.url, selection: page.selection ? page.text : null);
+      final saved = fresh ? null : SummaryCache.instance.lookup(key);
+      if (saved != null) {
+        _show(saved);
+        return;
+      }
       title = page.title.isEmpty ? controller.title : page.title;
       url = page.url;
       selection = page.selection;
@@ -242,6 +275,13 @@ class SummaryJob extends ChangeNotifier {
         notifyListeners();
       }
       if (text.trim().isEmpty) throw SummaryError('DeepSeek sent back an empty summary.');
+      SummaryCache.instance.store(key, CachedSummary(
+        title: title,
+        url: url,
+        text: text,
+        at: DateTime.now().millisecondsSinceEpoch,
+        selection: selection,
+      ));
     } on SummaryError catch (e) {
       if (generation == _generation) error = e.message;
     } catch (e) {
@@ -263,15 +303,19 @@ class SummaryJob extends ChangeNotifier {
 /// The stored DeepSeek API key, or null.
 String? deepSeekApiKey() => PasswordManager.instance.vault?.secret(deepSeekKeySecret);
 
-/// Summarizes [controller]'s page, asking for the API key first when there's none.
+/// Summarizes [controller]'s page, asking for the API key first when there's none. A summary saved for the page is
+/// shown without asking DeepSeek again (the panel's redo button makes a new one).
 Future<void> summarizePage(BuildContext context, WebbyController controller) async {
+  final job = SummaryJob.of(controller);
+  // The saved page summary wins over a selection here; redo reads the page again and summarizes the selection.
+  if (job.showSaved()) return;
   var key = deepSeekApiKey();
   if (key == null || key.isEmpty) {
     await showSummarizeSettings(context);
     key = deepSeekApiKey();
     if (key == null || key.isEmpty) return;
   }
-  SummaryJob.of(controller).start(key);
+  job.start(key);
 }
 
 /// The dialog where the DeepSeek API key is entered, replaced or removed.
@@ -439,7 +483,7 @@ class _SummaryPanel extends StatelessWidget {
                     Icons.refresh,
                     tooltip: 'Summarize again',
                     size: 16,
-                    onPressed: job.running || key == null ? null : () => job.start(key),
+                    onPressed: job.running || key == null ? null : () => job.start(key, fresh: true),
                   ),
                   KitIconButton(Icons.close, tooltip: 'Close', size: 16, onPressed: job.close),
                 ],
@@ -455,6 +499,9 @@ class _SummaryPanel extends StatelessWidget {
                       Text(job.title, style: KitText.body(context).copyWith(fontWeight: FontWeight.w600)),
                     if (job.url.isNotEmpty)
                       Text(job.url, maxLines: 1, overflow: TextOverflow.ellipsis, style: KitText.small(context, color: c.textDim)),
+                    if (job.savedAt != null)
+                      Text('Saved summary from ${_when(job.savedAt!)}. Summarize again for a new one.',
+                          style: KitText.small(context, color: c.textDim)),
                     const SizedBox(height: 12),
                     if (job.error != null)
                       Text(job.error!, style: KitText.body(context).copyWith(color: c.danger))
@@ -471,4 +518,12 @@ class _SummaryPanel extends StatelessWidget {
       ),
     );
   }
+}
+
+String _when(DateTime time) {
+  final now = DateTime.now();
+  String two(int n) => n.toString().padLeft(2, '0');
+  final clock = '${two(time.hour)}:${two(time.minute)}';
+  if (time.year == now.year && time.month == now.month && time.day == now.day) return 'today $clock';
+  return '${time.year}-${two(time.month)}-${two(time.day)} $clock';
 }

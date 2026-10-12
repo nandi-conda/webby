@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:webby/src/passwords/vault.dart';
 import 'package:webby/src/summarize.dart';
+import 'package:webby/src/summary_cache.dart';
 
 const page = PageText(title: 'Example', url: 'https://example.com/', text: 'Some readable text about examples.');
 
@@ -59,6 +60,28 @@ void main() {
       streamSummary('k', page, endpoint: endpoint).toList(),
       throwsA(isA<SummaryError>().having((e) => e.message, 'message', contains('nope'))),
     );
+  });
+
+  test('summary cache keys, persists, trims and clears', () {
+    final dir = Directory.systemTemp.createTempSync('webby-summaries');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final file = File('${dir.path}/summaries.json');
+    final key = SummaryCache.keyFor('https://e.com/a#part');
+    expect(key, SummaryCache.keyFor('https://e.com/a'));
+    expect(SummaryCache.keyFor('https://e.com/a', selection: 'x'), isNot(key));
+    final cache = SummaryCache(file);
+    cache.store(key, const CachedSummary(title: 'A', url: 'https://e.com/a', text: '- one', at: 1000));
+    final again = SummaryCache(file);
+    expect(again.lookup(key)!.text, '- one');
+    for (var i = 0; i < SummaryCache.limit + 5; i++) {
+      again.store('k$i', CachedSummary(title: '', url: '', text: '$i', at: 2000 + i));
+    }
+    expect(again.lookup(key), isNull);
+    expect(again.lookup('k${SummaryCache.limit + 4}'), isNotNull);
+    again.clear(since: DateTime.fromMillisecondsSinceEpoch(2000 + SummaryCache.limit));
+    expect(again.lookup('k${SummaryCache.limit + 4}'), isNull);
+    expect(again.lookup('k${SummaryCache.limit}'), isNull);
+    expect(SummaryCache(file).lookup('k10'), isNotNull);
   });
 
   test('page script carries the prefix and request id', () {

@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 
 import 'bindings.dart';
 import 'history/history_store.dart';
+import 'summary_cache.dart';
 import 'ui.dart';
 
 class SiteData {
@@ -124,7 +125,10 @@ Future<bool> showClearBrowsingData(BuildContext context, SiteData data) async {
                     (cookies ? SiteData.siteData : 0) | (cached ? SiteData.cache : 0) | (history ? SiteData.history : 0),
                     since: since,
                   );
-                  if (history) HistoryStore.instance.clear(since: since);
+                  if (history) {
+                    HistoryStore.instance.clear(since: since);
+                    SummaryCache.instance.clear(since: since);
+                  }
                   Navigator.of(dialogContext).pop(true);
                 }),
         ],
