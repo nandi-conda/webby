@@ -171,7 +171,7 @@ class _BrowserPageState extends State<BrowserPage> {
       maybeStartBench(tab.controller);
       BookmarkStore.instance.addListener(_onBookmarksChanged);
       _discardTimer = Timer.periodic(const Duration(minutes: 1), (_) => _discardIdleTabs());
-      if (Platform.isAndroid) AndroidHost.onOpenUrl(_go);
+      if (Platform.isAndroid) AndroidHost.onOpenUrl(_openFromOtherApp);
       if (_restoresTabs) _lifecycle = AppLifecycleListener(onHide: () => OpenTabsStore.instance.flush(_sessionTabs(), _active));
       if (!Incognito.active && !Platform.isAndroid) _exitListener = AppLifecycleListener(onExitRequested: _onExitRequested);
     } catch (error) {
@@ -695,7 +695,18 @@ class _BrowserPageState extends State<BrowserPage> {
     }
   }
 
-  void _go(String input) {
+  /// A link another app opened while webby runs: it gets a tab of its own (a blank current tab takes it), like
+  /// links opened from other apps in other browsers, so the page the user was on stays put.
+  void _openFromOtherApp(String url) {
+    final current = _controller?.url;
+    if (current == null || current.isEmpty || current == _blankUrl) {
+      _go(url);
+    } else {
+      _newTab(addressToUrl(url.trim()));
+    }
+  }
+
+    void _go(String input) {
     final text = input.trim();
     final tab = _tab;
     if (text.isEmpty || tab == null) return;

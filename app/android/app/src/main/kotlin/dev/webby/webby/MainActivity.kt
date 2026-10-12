@@ -5,6 +5,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -19,18 +20,37 @@ import io.flutter.plugin.common.MethodChannel
 // "initialUrl" is the link the app was opened with, and "openUrl" sends links that arrive later. Sites' notifications:
 // "requestNotificationPermission", "showNotification" and "cancelNotification"; a tap comes back as
 // "notificationClicked" with the notification's id.
+//
+// The Flutter engine (and so the Dart app and its tabs) belongs to the process, not to this activity: Back on the last
+// page, or Android dropping the activity, would otherwise end the engine while Ladybird's views and their WebContent
+// processes live on, and the next start would open a second browser beside the orphaned one.
 class MainActivity : FlutterActivity() {
     private var channel: MethodChannel? = null
     private val permissionResults = mutableListOf<MethodChannel.Result>()
+    // Whether this activity is coming back (from recents or after Android dropped it) rather than being opened anew;
+    // then its intent is the one it was first opened with, and its link was already handled.
+    private var reopened = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Before any Dart runs: Ladybird and the app read their directories from the environment.
         LadybirdRuntime.setEnvironment(this)
+        reopened = savedInstanceState != null ||
+            (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
         super.onCreate(savedInstanceState)
+    }
+
+    override fun provideFlutterEngine(context: Context): FlutterEngine =
+        engine ?: FlutterEngine(context.applicationContext).also { engine = it }
+
+    // Back on the last page leaves the browser running in the background instead of closing it.
+    override fun popSystemNavigator(): Boolean {
+        moveTaskToBack(true)
+        return true
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        val running = flutterEngine.dartExecutor.isExecutingDart
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "webby/android")
         channel.setMethodCallHandler { call, result ->
             when (call.method) {
@@ -45,7 +65,7 @@ class MainActivity : FlutterActivity() {
                         }
                     }.start()
                 }
-                "initialUrl" -> result.success(viewedUrl(intent))
+                "initialUrl" -> result.success(if (reopened) null else viewedUrl(intent))
                 "requestNotificationPermission" -> requestNotificationPermission(result)
                 "showNotification" -> {
                     showNotification(
@@ -64,6 +84,8 @@ class MainActivity : FlutterActivity() {
             }
         }
         this.channel = channel
+        // The app is already running, so it won't ask for "initialUrl": hand it this activity's link instead.
+        if (running && !reopened) viewedUrl(intent)?.let { channel.invokeMethod("openUrl", it) }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -123,6 +145,7 @@ class MainActivity : FlutterActivity() {
     }
 
     companion object {
+        private var engine: FlutterEngine? = null
         private const val NOTIFICATION_CHANNEL = "sites"
         private const val NOTIFICATION_TAG = "site"
         private const val EXTRA_NOTIFICATION = "dev.webby.notification"
