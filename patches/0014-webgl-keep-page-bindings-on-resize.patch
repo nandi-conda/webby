@@ -1,0 +1,39 @@
+diff --git a/Services/Compositor/OpenGLContext.cpp b/Services/Compositor/OpenGLContext.cpp
+index 0395274022..020a9d004d 100644
+--- a/Services/Compositor/OpenGLContext.cpp
++++ b/Services/Compositor/OpenGLContext.cpp
+@@ -553,6 +553,22 @@ void OpenGLContext::allocate_painting_surface_if_needed()
+     if (m_painting_surface)
+         return;
+ 
++    // The page's GL state lives in this same context, and (re)allocating the drawing buffer binds our own texture,
++    // framebuffer and renderbuffer. Put the page's bindings back afterwards: otherwise a canvas resize leaves the
++    // drawing buffer's color texture bound to the page's active texture unit, and the next draw that samples it is a
++    // feedback loop that WebGL rejects with INVALID_OPERATION.
++    eglMakeCurrent(m_impl->display, EGL_NO_SURFACE, EGL_NO_SURFACE, m_impl->context);
++    GLint previous_texture = 0;
++    GLint previous_framebuffer = 0;
++    GLint previous_renderbuffer = 0;
++    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previous_texture);
++    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previous_framebuffer);
++    glGetIntegerv(GL_RENDERBUFFER_BINDING, &previous_renderbuffer);
++    bool page_bound_its_own_framebuffer = previous_framebuffer != 0 && static_cast<GLuint>(previous_framebuffer) != m_impl->framebuffer;
++    bool page_bound_its_own_renderbuffer = previous_renderbuffer != 0 && static_cast<GLuint>(previous_renderbuffer) != m_impl->depth_buffer;
++    if (static_cast<GLuint>(previous_texture) == m_impl->color_buffer)
++        previous_texture = 0;
++
+     free_surface_resources();
+ 
+     VERIFY(!m_size.is_empty());
+@@ -605,6 +621,11 @@ void OpenGLContext::allocate_painting_surface_if_needed()
+     }
+ 
+     VERIFY(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
++
++    glBindTexture(GL_TEXTURE_2D, previous_texture);
++    if (page_bound_its_own_framebuffer)
++        glBindFramebuffer(GL_FRAMEBUFFER, previous_framebuffer);
++    glBindRenderbuffer(GL_RENDERBUFFER, page_bound_its_own_renderbuffer ? previous_renderbuffer : 0);
+ #endif
+ }
+ 
