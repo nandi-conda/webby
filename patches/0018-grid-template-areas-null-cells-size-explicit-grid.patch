@@ -1,0 +1,30 @@
+--- a/Libraries/LibWeb/Rust/src/layout/grid_formatting_context.rs
++++ b/Libraries/LibWeb/Rust/src/layout/grid_formatting_context.rs
+@@ -1471,6 +1471,27 @@ impl<'pass> GridFormattingContext<'pass> {
+             grid_style.areas.as_slice(),
+             grid_style.names.raws(),
+         );
++        // https://drafts.csswg.org/css-grid-2/#explicit-grids
++        // The size of the explicit grid is determined by the larger of the number of rows/columns defined by
++        // grid-template-areas and the number of rows/columns sized by grid-template-rows/grid-template-columns.
++        // Null cells (".") count too, so `grid-template-areas: ". ."` makes two columns even with no named area.
++        if let Some(crate::css::style_value::StyleValueData::GridTemplateArea {
++            row_count,
++            column_count,
++            ..
++        }) = grid_style.grid_template_areas_style_value.style_value()
++        {
++            let (row_count, column_count) = (*row_count, *column_count);
++            if !self.is_subgridded(Axis::Column, grid_style) && column_count > 0 {
++                columns
++                    .lines
++                    .resize_with(columns.lines.len().max(column_count.saturating_add(1)), Vec::new);
++            }
++            if !self.is_subgridded(Axis::Row, grid_style) && row_count > 0 {
++                rows.lines
++                    .resize_with(rows.lines.len().max(row_count.saturating_add(1)), Vec::new);
++            }
++        }
+         self.explicit_column_line_count = columns.lines.len();
+         self.explicit_row_line_count = rows.lines.len();
+         self.column_lines = columns.lines;
