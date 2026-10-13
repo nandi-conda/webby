@@ -252,8 +252,7 @@ proc tabRow(t: DeviceTab): Widget =
 proc deviceHeader(d: RemoteDevice): Widget =
   result = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8)
   gtk_widget_set_margin_top(result, 8)
-  let icon = if d.platform in ["android", "ios"]: "phone-symbolic" else: "computer-symbolic"
-  gtk_box_pack_start(result, gtk_image_new_from_icon_name(icon.cstring, GTK_ICON_SIZE_BUTTON), 0, 0, 0)
+  gtk_box_pack_start(result, icon(if d.platform in ["android", "ios"]: "smartphone" else: "computer"), 0, 0, 0)
   gtk_box_pack_start(result, markupLabel("<b>" & escapeMarkup(d.name) & "</b>  <small><span alpha='65%'>" &
     ago(d.seenAt, yesterday = true) & "</span></small>"), 1, 1, 0)
   if d.tabs.len > 1:

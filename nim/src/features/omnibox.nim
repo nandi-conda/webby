@@ -132,17 +132,17 @@ proc onPopupPress(l: Widget, ev: GEvent, data: pointer): gboolean {.cdecl.} =
 
 proc kindIcon(kind: string): string =
   case kind
-  of "bookmark": "starred-symbolic"
-  of "tab": "view-paged-symbolic"
-  of "search": "edit-find-symbolic"
-  else: "document-open-recent-symbolic"
+  of "bookmark": "star_border"
+  of "tab": "tab"
+  of "search": "search"
+  else: "history"
 
 proc row(s: Suggestion): Widget =
   let box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10)
   gtk_widget_set_margin_start(box, 12)
   gtk_widget_set_margin_end(box, 12)
   gtk_widget_set_size_request(box, -1, 30)
-  gtk_box_pack_start(box, gtk_image_new_from_icon_name(kindIcon(s.kind).cstring, GTK_ICON_SIZE_MENU), 0, 0, 0)
+  gtk_box_pack_start(box, icon(kindIcon(s.kind)), 0, 0, 0)
   if s.title.len > 0:
     let title = gtk_label_new(s.title.cstring)
     gtk_label_set_ellipsize(title, PANGO_ELLIPSIZE_END)

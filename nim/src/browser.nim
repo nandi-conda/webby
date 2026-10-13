@@ -3,8 +3,8 @@
 ## (UI pieces go in `windowHooks`, which run once the window exists). Nothing here knows about a feature.
 
 import std/[json, monotimes, os, random, strutils, tables, times]
-import gtk, ffi
-export gtk, ffi, json, tables
+import gtk, ffi, icons
+export gtk, ffi, icons, json, tables
 
 # The Flutter app's page shims (lib/src/page_compat.dart), read at compile time so both front ends run the same JS.
 const pageCompatScript* = block:
@@ -179,8 +179,7 @@ proc refreshChrome*() =
   if gtk_widget_has_focus(urlEntry) == 0: gtk_entry_set_text(urlEntry, t.url.cstring)
   gtk_widget_set_sensitive(backButton, t.canBack.gboolean)
   gtk_widget_set_sensitive(forwardButton, t.canForward.gboolean)
-  gtk_image_set_from_icon_name(gtk_button_get_image(reloadButton),
-    cstring(if t.loading: "process-stop-symbolic" else: "view-refresh-symbolic"), GTK_ICON_SIZE_SMALL_TOOLBAR)
+  setIcon(gtk_button_get_image(reloadButton), if t.loading: "close" else: "refresh")
   gtk_label_set_text(status, t.hovered.cstring)
   gtk_widget_set_visible(status, (t.hovered.len > 0).gboolean)
   let win = gtk_widget_get_window(area)
@@ -262,13 +261,14 @@ proc adoptView*(view: View, focus = true, index = -1): Tab =
   GC_ref(t)
   webby_view_set_message_prefix(view, t.messagePrefix.cstring)
   let box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4)
-  t.icon = gtk_image_new_from_icon_name("text-html-symbolic", GTK_ICON_SIZE_MENU)
+  t.icon = icon("public", 14)
   t.label = gtk_label_new("New tab")
   gtk_label_set_ellipsize(t.label, PANGO_ELLIPSIZE_END)
   gtk_label_set_width_chars(t.label, 14)
   gtk_label_set_max_width_chars(t.label, 22)
   gtk_label_set_xalign(t.label, 0)
-  let close = gtk_button_new_from_icon_name("window-close-symbolic", GTK_ICON_SIZE_MENU)
+  let close = gtk_button_new()
+  iconButtonImage(close, "close", 14)
   gtk_button_set_relief(close, GTK_RELIEF_NONE)
   addClass(close, "webby-tab-close")
   connect(close, "clicked", onTabClose, cast[pointer](t))
@@ -339,9 +339,10 @@ proc closeTab*(t: Tab) =
 # ---------------------------------------------------------------------------------------------------------------
 # Chrome helpers for features
 
-proc iconButton*(icon, tooltip: string, action: proc () {.closure.}): Widget =
-  ## A flat toolbar button with a symbolic icon.
-  result = gtk_button_new_from_icon_name(icon.cstring, GTK_ICON_SIZE_SMALL_TOOLBAR)
+proc iconButton*(icon, tooltip: string, action: proc () {.closure.}, size = 18): Widget =
+  ## A flat toolbar button with one of the Flutter app's icons (an Icons.* name, see icons.nim).
+  result = gtk_button_new()
+  if icon.len > 0: iconButtonImage(result, icon, size)
   gtk_button_set_relief(result, GTK_RELIEF_NONE)
   gtk_widget_set_tooltip_text(result, tooltip.cstring)
   let cb = new(proc ())
@@ -349,11 +350,20 @@ proc iconButton*(icon, tooltip: string, action: proc () {.closure.}): Widget =
   GC_ref(cb)
   connect(result, "clicked", proc (w: Widget, d: pointer) {.cdecl.} = cast[ref proc ()](d)[](), cast[pointer](cb))
 
-proc addToolbarButton*(icon, tooltip: string, action: proc () {.closure.}): Widget =
-  ## A button right of the URL bar, before the ⋮ menu.
+var panelButtons: seq[tuple[button: Widget, icon, openIcon, panel: string]]
+var openPanel: string   ## the side panel's title while it shows
+
+proc refreshPanelButtons() =
+  for b in panelButtons:
+    setIcon(gtk_button_get_image(b.button), if b.panel == openPanel: b.openIcon else: b.icon)
+
+proc addToolbarButton*(icon, tooltip: string, action: proc () {.closure.}, openIcon = "", panel = ""): Widget =
+  ## A button right of the URL bar, before the ⋮ menu. A button that toggles a side panel names it (its title) and
+  ## the icon to show while it is open, as the Flutter app swaps Icons.key_outlined for Icons.key.
   result = iconButton(icon, tooltip, action)
   gtk_box_pack_start(toolbarEnd, result, 0, 0, 0)
   gtk_widget_show_all(result)
+  if openIcon.len > 0: panelButtons.add (result, icon, openIcon, panel)
 
 proc menuItem*(menu: Widget, label: string, action: proc () {.closure.}): Widget {.discardable.} =
   result = gtk_menu_item_new_with_label(label.cstring)
@@ -392,12 +402,17 @@ proc closeSidePanel*() =
     h()
   clearChildren(sidePanelBody)
   gtk_widget_hide(sidePanel)
+  if openPanel.len > 0:
+    openPanel = ""
+    refreshPanelButtons()
 
 proc showSidePanel*(title: string, content: Widget, width = 360, onClose: proc () = nil) =
   ## Shows `content` in the sidebar right of the page, replacing what was there.
   closeSidePanel()
   sidePanelCloseHook = onClose
   gtk_label_set_text(sidePanelTitle, title.cstring)
+  openPanel = title
+  refreshPanelButtons()
   gtk_box_pack_start(sidePanelBody, content, 1, 1, 0)
   # The panel is no_show_all (so show_all on the window leaves it hidden): show its parts, then itself.
   for c in children(sidePanel): gtk_widget_show_all(c)
@@ -887,7 +902,7 @@ proc buildWindow() =
   window = gtk_window_new(GTK_WINDOW_TOPLEVEL)
   gtk_window_set_default_size(window, 1280, 800)
   gtk_window_set_title(window, if incognito: "Webby (Incognito)" else: "Webby")
-  gtk_window_set_icon_name(window, "webby")
+  setAppIcon(window)
   connect(window, "delete-event", onDelete)
   connect(window, "key-press-event", onWindowKey)
   loadCss(css)
@@ -901,14 +916,14 @@ proc buildWindow() =
   tabStrip = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2)
   gtk_container_add(scroller, tabStrip)
   gtk_box_pack_start(tabStripBox, scroller, 1, 1, 0)
-  gtk_box_pack_start(tabStripBox, iconButton("list-add-symbolic", "New tab (Ctrl+T)", proc () = discard openTab("")),
+  gtk_box_pack_start(tabStripBox, iconButton("add", "New tab (Ctrl+T)", proc () = discard openTab("")),
     0, 0, 0)
   gtk_box_pack_start(mainBox, tabStripBox, 0, 0, 0)
 
   toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2)
-  backButton = iconButton("go-previous-symbolic", "Back (Alt+Left)", goBack)
-  forwardButton = iconButton("go-next-symbolic", "Forward (Alt+Right)", goForward)
-  reloadButton = iconButton("view-refresh-symbolic", "Reload (Ctrl+R)", reloadOrStop)
+  backButton = iconButton("arrow_back", "Back (Alt+Left)", goBack)
+  forwardButton = iconButton("arrow_forward", "Forward (Alt+Right)", goForward)
+  reloadButton = iconButton("refresh", "Reload (Ctrl+R)", reloadOrStop)
   urlEntry = gtk_entry_new()
   gtk_entry_set_placeholder_text(urlEntry, "Search or enter address")
   connect(urlEntry, "activate", onUrlActivate)
@@ -922,7 +937,7 @@ proc buildWindow() =
   moreMenu = gtk_menu_new()
   moreButton = gtk_menu_button_new()
   gtk_button_set_relief(moreButton, GTK_RELIEF_NONE)
-  gtk_button_set_image(moreButton, gtk_image_new_from_icon_name("open-menu-symbolic", GTK_ICON_SIZE_SMALL_TOOLBAR))
+  iconButtonImage(moreButton, "more_vert", 18)
   gtk_widget_set_tooltip_text(moreButton, "More")
   gtk_menu_button_set_popup(moreButton, moreMenu)
   gtk_box_pack_start(toolbar, moreButton, 0, 0, 0)
@@ -967,7 +982,7 @@ proc buildWindow() =
   gtk_widget_set_margin_start(sidePanelTitle, 8)
   addClass(sidePanelTitle, "title")
   gtk_box_pack_start(header, sidePanelTitle, 1, 1, 0)
-  gtk_box_pack_end(header, iconButton("window-close-symbolic", "Close (Esc)", closeSidePanel), 0, 0, 0)
+  gtk_box_pack_end(header, iconButton("close", "Close (Esc)", closeSidePanel, 16), 0, 0, 0)
   gtk_box_pack_start(sidePanel, header, 0, 0, 2)
   sidePanelBody = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
   gtk_box_pack_start(sidePanel, sidePanelBody, 1, 1, 0)

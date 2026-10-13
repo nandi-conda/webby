@@ -30,7 +30,8 @@ proc button*(label: string, action: proc () {.closure.}, suggested = false, flat
   result.on("clicked", action)
 
 proc smallIconButton*(icon, tooltip: string, action: proc () {.closure.}): Widget =
-  result = gtk_button_new_from_icon_name(icon.cstring, GTK_ICON_SIZE_MENU)
+  result = gtk_button_new()
+  iconButtonImage(result, icon, 14)
   gtk_button_set_relief(result, GTK_RELIEF_NONE)
   gtk_widget_set_tooltip_text(result, tooltip.cstring)
   result.on("clicked", action)

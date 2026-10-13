@@ -97,7 +97,7 @@ proc showBar() =
     return
   let o = a.offer
   let host = "<b>" & escapeMarkup(hostOf(o.origin)) & "</b>"
-  gtk_box_pack_start(bar, gtk_image_new_from_icon_name("dialog-password-symbolic", GTK_ICON_SIZE_BUTTON), 0, 0, 0)
+  gtk_box_pack_start(bar, icon("key", 18), 0, 0, 0)
   var message: string
   var actions: seq[Widget]
   case o.kind
@@ -115,7 +115,7 @@ proc showBar() =
       a.dismiss(), suggested = true)
   of generateOffer:
     message = "Use a strong password  <b><tt>" & escapeMarkup(o.password) & "</tt></b>"
-    actions.add smallIconButton("view-refresh-symbolic", "Another one", proc () =
+    actions.add smallIconButton("refresh", "Another one", proc () =
       a.setOffer(Offer(kind: generateOffer, origin: o.origin, password: generatePassword())))
     actions.add button("No thanks", proc () = a.dismiss())
     actions.add button("Use password", proc () = a.useGenerated(), suggested = true)
@@ -124,12 +124,12 @@ proc showBar() =
     proc accountButton(account: SavedPassword): Widget =
       # A proc per button: closures made in a loop body would share one `account`.
       result = button(if account.username.len == 0: "(no username)" else: account.username, proc () = a.fill(account))
-      gtk_button_set_image(result, gtk_image_new_from_icon_name("avatar-default-symbolic", GTK_ICON_SIZE_BUTTON))
+      gtk_button_set_image(result, icon("account_circle"))
       gtk_button_set_always_show_image(result, 1)
     for i, account in o.accounts:
       if i == 4: break
       actions.add accountButton(account)
-    actions.add smallIconButton("window-close-symbolic", "Close", proc () = a.dismiss())
+    actions.add smallIconButton("close", "Close", proc () = a.dismiss())
   of noOffer: discard
   gtk_box_pack_start(bar, markupLabel(message), 1, 1, 0)
   for w in actions: gtk_box_pack_start(bar, w, 0, 0, 0)
@@ -241,7 +241,7 @@ proc passkeyDialog(t: Tab, prompt: JsonNode) =
     let display = account{"userDisplayName"}.getStr
     result = gtk_button_new()
     let row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8)
-    gtk_box_pack_start(row, gtk_image_new_from_icon_name("avatar-default-symbolic", GTK_ICON_SIZE_BUTTON), 0, 0, 0)
+    gtk_box_pack_start(row, icon("account_circle", 18), 0, 0, 0)
     gtk_box_pack_start(row, markupLabel(bold(if display.len > 0: display else: name) &
       (if display.len > 0: "\n<small>" & escapeMarkup(name) & "</small>" else: "")), 1, 1, 0)
     gtk_container_add(result, row)
@@ -288,7 +288,7 @@ proc install*() =
     gtk_box_pack_end(barSlot, bar, 0, 0, 0)
     # The vault belongs to the normal windows; incognito ones only fill from it.
     if not incognito:
-      discard addToolbarButton("dialog-password-symbolic", "Passwords and passkeys", toggleVaultPanel)
+      discard addToolbarButton("key_outlined", "Passwords and passkeys", toggleVaultPanel, "key", "Passwords and passkeys")
       addMenuItem("Passwords and passkeys", showVaultPanel)
   tabCreatedHooks.add proc (t: Tab) = agents.add Agent(tab: t)
   tabClosedHooks.add proc (t: Tab) =

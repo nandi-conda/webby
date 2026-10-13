@@ -27,7 +27,7 @@ proc row(icon, title, subtitle: string, trailing: seq[Widget], monoSubtitle = fa
   gtk_widget_set_margin_end(result, 4)
   gtk_widget_set_margin_top(result, 4)
   gtk_widget_set_margin_bottom(result, 4)
-  gtk_box_pack_start(result, gtk_image_new_from_icon_name(icon.cstring, GTK_ICON_SIZE_BUTTON), 0, 0, 0)
+  gtk_box_pack_start(result, icon(icon, 18), 0, 0, 0)
   let text = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
   gtk_box_pack_start(text, markupLabel("<b>" & escapeMarkup(title) & "</b>"), 0, 0, 0)
   if subtitle.len > 0: gtk_box_pack_start(text, markupLabel("<small>" & subtitle & "</small>"), 0, 0, 0)
@@ -99,24 +99,24 @@ proc passwordRow(entry: SavedPassword): Widget =
   let shown = entry.id in revealed
   let subtitle = escapeMarkup(if entry.username.len == 0: "(no username)" else: entry.username) & "   <tt>" &
     escapeMarkup(if shown: entry.password else: "••••••••••") & "</tt>"
-  row("web-browser-symbolic", hostOf(entry.origin), subtitle, @[
-    smallIconButton(if shown: "view-conceal-symbolic" else: "view-reveal-symbolic",
+  row("language", hostOf(entry.origin), subtitle, @[
+    smallIconButton(if shown: "visibility_off" else: "visibility",
       if shown: "Hide password" else: "Show password", proc () =
         if entry.id in revealed: revealed.excl entry.id else: revealed.incl entry.id
         refreshPanel()),
-    smallIconButton("avatar-default-symbolic", "Copy username", proc () =
+    smallIconButton("person_outline", "Copy username", proc () =
       copyText(entry.username); say("Username copied")),
-    smallIconButton("edit-copy-symbolic", "Copy password", proc () =
+    smallIconButton("copy", "Copy password", proc () =
       copyText(entry.password); say("Password copied")),
-    smallIconButton("document-edit-symbolic", "Edit", proc () = editPassword(entry)),
-    smallIconButton("user-trash-symbolic", "Delete", proc () =
+    smallIconButton("edit_outlined", "Edit", proc () = editPassword(entry)),
+    smallIconButton("delete_outline", "Delete", proc () =
       if confirm("Delete password?", "The password for " &
           (if entry.username.len == 0: "this account" else: entry.username) & " on " & hostOf(entry.origin) &
           " will be removed from Webby."):
         theVault.deletePassword(entry))])
 
 proc neverSaveRow(origin: string): Widget =
-  row("action-unavailable-symbolic", hostOf(origin), "", @[
+  row("block", hostOf(origin), "", @[
     button("Allow saving", proc () = theVault.setNeverSave(origin, false), flat = true)])
 
 proc passkeyRow(p: JsonNode): Widget =
@@ -128,8 +128,8 @@ proc passkeyRow(p: JsonNode): Widget =
   if p{"userName"}.getStr.len > 0: parts.add p{"userName"}.getStr
   let created = date(p{"createdAt"}.getBiggestInt)
   if created.len > 0: parts.add "created " & created
-  row("dialog-password-symbolic", rpId, escapeMarkup(parts.join(" · ")), @[
-    smallIconButton("user-trash-symbolic", "Delete", proc () =
+  row("key", rpId, escapeMarkup(parts.join(" · ")), @[
+    smallIconButton("delete_outline", "Delete", proc () =
       if confirm("Delete passkey?", "You won't be able to sign in to " & rpId & " with this passkey any more. " &
           "The site may still list it until you remove it there too."):
         deletePasskey(id))])
