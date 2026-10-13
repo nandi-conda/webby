@@ -229,6 +229,11 @@ const markdownCss* = """
 .webby-md-code { background-color: alpha(currentColor, 0.08); border-radius: 6px; padding: 8px; }
 .webby-md-quote { border-left: 3px solid alpha(currentColor, 0.25); padding-left: 10px; }
 .webby-md-dim { opacity: 0.65; }
+.webby-md label, .webby-md entry { font-size: 14px; }
+.webby-md .webby-md-h1 { font-size: 18.9px; }
+.webby-md .webby-md-h2 { font-size: 16.8px; }
+.webby-md .webby-md-h3 { font-size: 15.1px; }
+.webby-md .webby-md-code label { font-size: 12.9px; }
 """
 
 var linkHandler*: proc (url: string)  ## a link clicked in rendered markdown; nil = GTK's default
@@ -237,6 +242,10 @@ proc onLink(label: Widget, uri: cstring, data: pointer): gboolean {.cdecl.} =
   if linkHandler == nil: return 0
   linkHandler($uri)
   1
+
+proc spaced(markup: string): string =
+  ## Body text at markdown_view.dart's 1.45 line height.
+  "<span line_height=\"1.45\">" & markup & "</span>"
 
 proc markupLabel*(markup: string, selectable = true): Widget =
   ## A wrapping, left-aligned label showing Pango `markup`.
@@ -266,13 +275,10 @@ proc markdownView*(source: string): Widget =
     var w: Widget
     case b.kind
     of mdHeading:
-      let size = case b.level
-        of 1: "x-large"
-        of 2: "large"
-        else: "medium"
-      w = markupLabel("<span size=\"" & size & "\" weight=\"bold\">" & inlineMarkup(b.text) & "</span>")
+      w = markupLabel("<b>" & inlineMarkup(b.text) & "</b>")
+      addClass(w, "webby-md-h" & $min(b.level, 4))   # sizes in markdownCss
     of mdParagraph:
-      w = markupLabel(inlineMarkup(b.text))
+      w = markupLabel(spaced(inlineMarkup(b.text)))
     of mdListItem:
       w = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)
       gtk_widget_set_margin_start(w, cint(4 + b.depth * 16))
@@ -282,9 +288,9 @@ proc markdownView*(source: string): Widget =
       gtk_widget_set_valign(marker, GTK_ALIGN_START)
       gtk_widget_set_size_request(marker, (if b.marker == "•": 14 else: 22), -1)
       gtk_box_pack_start(w, marker, 0, 0, 0)
-      gtk_box_pack_start(w, markupLabel(inlineMarkup(b.text)), 1, 1, 0)
+      gtk_box_pack_start(w, markupLabel(spaced(inlineMarkup(b.text))), 1, 1, 0)
     of mdQuote:
-      w = markupLabel(inlineMarkup(b.text))
+      w = markupLabel(spaced(inlineMarkup(b.text)))
       addClass(w, "webby-md-quote")
       addClass(w, "webby-md-dim")
     of mdCode:

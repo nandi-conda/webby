@@ -494,6 +494,7 @@ proc showPanel(job: Job) =
   if sidePanelShowing(): closeSidePanel()
   switchingPanel = false
   let root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
+  addClass(root, "webby-md")   # markdownCss font sizes, matching the Flutter panel
   let bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)
   gtk_widget_set_margin_end(bar, 4)
   panel.redoButton = iconButton("refresh", "Summarize again", proc () =
