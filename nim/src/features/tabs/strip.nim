@@ -263,6 +263,10 @@ proc fillTabMenu*(t: Tab, menu: Widget) =
 proc onStripPress(w: Widget, e: GEvent, d: pointer): gboolean {.cdecl.} =
   var b: cuint
   discard gdk_event_get_button(e, addr b)
+  # Double-clicking the strip's empty space opens a new tab, as in tab_strip.dart. Tabs keep their own clicks.
+  if gdk_event_get_event_type(e) == GDK_2BUTTON_PRESS and b == 1:
+    newTab()
+    return 1
   if gdk_event_get_event_type(e) != GDK_BUTTON_PRESS or b != 3: return 0
   let menu = gtk_menu_new()
   fillTabMenu(nil, menu)
