@@ -1,0 +1,36 @@
+diff --git a/Services/Compositor/OpenGLContext.cpp b/Services/Compositor/OpenGLContext.cpp
+index 325022f9..789e6c27 100644
+--- a/Services/Compositor/OpenGLContext.cpp
++++ b/Services/Compositor/OpenGLContext.cpp
+@@ -21,6 +21,7 @@ extern "C" {
+ #include <EGL/eglext_angle.h>
+ }
+ 
++#include <AK/ByteBuffer.h>
+ #include <AK/HashMap.h>
+ #include <AK/OwnPtr.h>
+ #include <AK/String.h>
+@@ -522,8 +523,21 @@ void OpenGLContext::copy_default_framebuffer_to_cpu_painting_surface()
+         glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+     }
+ 
+-    for (int source_y = 0; source_y < m_size.height(); ++source_y)
+-        glReadPixels(0, source_y, m_size.width(), 1, GL_RGBA, GL_UNSIGNED_BYTE, bitmap->scanline_u8(m_size.height() - source_y - 1));
++    // One read for the whole frame, then flip its rows (GL's run bottom-up): on a hardware GPU every glReadPixels
++    // call waits for the GPU and copies out of the tiled framebuffer, so reading row by row costs a sync per row.
++    auto row_bytes = static_cast<size_t>(m_size.width()) * 4;
++    if (bitmap->pitch() == row_bytes) {
++        glReadPixels(0, 0, m_size.width(), m_size.height(), GL_RGBA, GL_UNSIGNED_BYTE, bitmap->scanline_u8(0));
++        auto row = MUST(ByteBuffer::create_uninitialized(row_bytes));
++        for (int top = 0, bottom = m_size.height() - 1; top < bottom; ++top, --bottom) {
++            memcpy(row.data(), bitmap->scanline_u8(top), row_bytes);
++            memcpy(bitmap->scanline_u8(top), bitmap->scanline_u8(bottom), row_bytes);
++            memcpy(bitmap->scanline_u8(bottom), row.data(), row_bytes);
++        }
++    } else {
++        for (int source_y = 0; source_y < m_size.height(); ++source_y)
++            glReadPixels(0, source_y, m_size.width(), 1, GL_RGBA, GL_UNSIGNED_BYTE, bitmap->scanline_u8(m_size.height() - source_y - 1));
++    }
+ 
+     if (m_webgl_version == WebGLVersion::WebGL2) {
+         glPixelStorei(GL_PACK_ROW_LENGTH, original_pack_row_length);

@@ -1,0 +1,13 @@
+diff --git a/Libraries/LibWebView/Process.cpp b/Libraries/LibWebView/Process.cpp
+index be75bb76..6927b06c 100644
+--- a/Libraries/LibWebView/Process.cpp
++++ b/Libraries/LibWebView/Process.cpp
+@@ -115,6 +115,8 @@ Vector<ByteString> Process::helper_process_environment(ProcessType type)
+     // Mesa and the Vulkan loader read these to select and configure the GPU driver.
+     static constexpr Array gpu_prefixes {
+         "DRI_PRIME"sv,
++        "GALLIUM_"sv,
++        "LIBGL_"sv,
+         "MESA_"sv,
+         "VK_"sv,
+         "__EGL_"sv,

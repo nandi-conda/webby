@@ -1,0 +1,65 @@
+# Builds the Ladybird runtime (scripts/portable_build.sh: Ubuntu 22.04, so glibc 2.35) with every patch in patches/,
+# packs it (scripts/pack_prebuilt.sh) and publishes it as the GitHub Release `webby-prebuilt-<version>`, which
+# conda/webby-ladybird downloads. A cold build takes a few hours on a hosted runner; ccache and vcpkg's binary cache
+# carry over between runs.
+name: runtime-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Runtime version (e.g. 2026.10.13.1); conda/webby-ladybird's version gets bumped to it afterwards
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            /usr/local/.ghcup /usr/share/swift /usr/local/lib/node_modules
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
+          sudo mkdir -p /build/ccache /build/vcpkg-cache && sudo chown -R "$USER" /build
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            /build/ccache
+            /build/vcpkg-cache
+          key: runtime-${{ github.sha }}
+          restore-keys: runtime-
+      - name: Build Ladybird
+        env:
+          VCPKG_DEFAULT_BINARY_CACHE: /build/vcpkg-cache
+        run: |
+          # portable_build.sh clones the repo at main; use this checkout's commit instead.
+          mkdir -p /build && ln -sfn "$GITHUB_WORKSPACE" /build/webby-src
+          sed -i 's#^if \[ -d webby/.git \].*#rm -rf webby; cp -a /build/webby-src/. webby#' scripts/portable_build.sh
+          sudo -E env "PATH=$PATH" VCPKG_DEFAULT_BINARY_CACHE=/build/vcpkg-cache bash scripts/portable_build.sh || true
+          sudo chown -R "$USER" /build
+          test -f /build/BUILD_OK
+      - name: Save caches
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /build/ccache
+            /build/vcpkg-cache
+          key: runtime-${{ github.sha }}
+      - name: Pack and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          export PATH="/usr/lib/llvm-21/bin:$PATH"
+          scripts/pack_prebuilt.sh /build/ladybird/Build/release out
+          gh release create "webby-prebuilt-$VERSION" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "webby-prebuilt $VERSION" \
+            --notes "Prebuilt Ladybird runtime (libwebby.so, helper processes, share/Lagom) for linux-x64, built by runtime-build from $GITHUB_SHA." \
+            out/webby-prebuilt-linux-x64.tar.zst out/webby-prebuilt-linux-x64.tar.zst.sha256
