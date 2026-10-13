@@ -43,7 +43,8 @@ build:
         cd ladybird
         export CARGO_HOME="$SRC_DIR/cargo-home"
         cargo build --release --locked -p libwasm_cranelift --bin cranelift-compiler
-        install -m 755 target/release/cranelift-compiler $PREFIX/lib/webby-ladybird/libexec/cranelift-compiler
+        # conda's rust sets CARGO_BUILD_TARGET, which puts the binary under target/<triple>/release.
+        install -m 755 "$(find target -path '*/release/cranelift-compiler' -type f | head -1)" $PREFIX/lib/webby-ladybird/libexec/cranelift-compiler
       )
       ${STRIP:-strip} $PREFIX/lib/webby-ladybird/libexec/cranelift-compiler
     # RUNPATHs: the bundled lib/ first, then the env's lib/ for what the system can't be counted on for (a libstdc++
