@@ -3,27 +3,19 @@
 # never shadow conda-forge's; activation sets WEBBY_LADYBIRD_PREFIX to it.
 # Build + upload: scripts/publish_conda.sh (uploads to prefix.dev channel nandi-testing; needs PREFIX_API_KEY).
 context:
-  version: "2026.10.12.7"
+  version: "2026.10.13.1"
 
 package:
   name: webby-ladybird
   version: ${{ version }}
 
 source:
-  # GitHub Release made by .github/workflows/prebuilt-release.yml
+  # GitHub Release made by .github/workflows/runtime-build.yml (all patches, 0018 included)
   - url: https://github.com/nandi-conda/webby/releases/download/webby-prebuilt-${{ version }}/webby-prebuilt-linux-x64.tar.zst
-    sha256: c9df700ab002ef117a669308bb6254cb8b6ffda03531f5e3f41b8a4521d5d89b
-  # Ladybird at LADYBIRD_COMMIT, only to rebuild the WebAssembly JIT compiler (a standalone Rust program) with
-  # patches/0018 until the prebuilt runtime is rebuilt with it.
-  - git: https://github.com/LadybirdBrowser/ladybird.git
-    rev: b13bbd5aa8fe71710efe1f1ff2ec7862cfe8231d
-    depth: 1
-    target_directory: ladybird
-    patches:
-      - ../../patches/0018-wasm-jit-tier-up-entry-depths.patch
+    sha256: 5375c8586767ede3a125cab9bd5a841697ce72d42240aaa0dc08e9b562493fc8
 
 build:
-  number: 2
+  number: 0
   skip:
     - not linux64
   # Prebuilt binaries; the script points their RPATHs at the bundled lib/ ($ORIGIN-relative) and conda leaves them be.
@@ -36,17 +28,6 @@ build:
   script:
     - mkdir -p $PREFIX/lib/webby-ladybird $PREFIX/etc/conda/activate.d $PREFIX/etc/conda/deactivate.d
     - cp -a lib libexec share $PREFIX/lib/webby-ladybird/
-    # The prebuilt's cranelift-compiler crashes WebContent ("VERIFICATION FAILED: count <= size()" in
-    # BytecodeInterpreter::call_address) whenever a running loop tiers up into compiled code; patches/0018 fixes it.
-    - |
-      (
-        cd ladybird
-        export CARGO_HOME="$SRC_DIR/cargo-home"
-        cargo build --release --locked -p libwasm_cranelift --bin cranelift-compiler
-        # conda's rust sets CARGO_BUILD_TARGET, which puts the binary under target/<triple>/release.
-        install -m 755 "$(find target -path '*/release/cranelift-compiler' -type f | head -1)" $PREFIX/lib/webby-ladybird/libexec/cranelift-compiler
-      )
-      ${STRIP:-strip} $PREFIX/lib/webby-ladybird/libexec/cranelift-compiler
     # RUNPATHs: the bundled lib/ first, then the env's lib/ for what the system can't be counted on for (a libstdc++
     # new enough for C++23, libpulse, ncurses), which comes from conda-forge.
     - |
@@ -62,8 +43,6 @@ build:
 requirements:
   build:
     - patchelf
-    - ${{ compiler('rust') }}
-    - ${{ compiler('c') }}
     # Its run export sets the glibc floor; newer sysroots would demand glibc 2.39.
     - sysroot_linux-64 2.28.*
   run:
