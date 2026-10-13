@@ -1,0 +1,22 @@
+--- a/Libraries/LibWasm/Rust/src/compiler.rs
++++ b/Libraries/LibWasm/Rust/src/compiler.rs
+@@ -2424,6 +2424,19 @@ impl CraneliftCompiler {
+                             .branch_target;
+                         let next_tail = builder.create_block();
+                         builder.switch_to_block(tail);
++                        // Without the vstack, branches trim the real value stack (shared with the caller frames) to
++                        // each enclosing block's entry depth, which BLOCK/LOOP/IF read from the stack on the way in.
++                        // The dispatch skips that code, and an undefined variable reads as zero, so the first branch
++                        // after tier-up would drop every caller's operands. Tier-up checkpoints sit at loop headers
++                        // with this frame's operand stack empty, so every enclosing entry depth is the frame's base.
++                        if max_stack_depth == 0 {
++                            let base = builder.use_var(initial_stack_size_var);
++                            for frame in &control_stack {
++                                if let Some(var) = frame.entry_real_depth_var {
++                                    builder.def_var(var, base);
++                                }
++                            }
++                        }
+                         let matches = builder.ins().icmp_imm(IntCC::Equal, tier_up_target_ip, insn.imm1);
+                         builder.ins().brif(matches, header, &[], next_tail, &[]);
+                         builder.seal_block(tail);
