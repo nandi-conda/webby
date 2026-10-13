@@ -26,7 +26,7 @@ proc label(text: string, dim = false, markup = false): Widget =
 
 proc row(icon: string, text: Widget): Widget =
   result = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10)
-  gtk_box_pack_start(result, gtk_image_new_from_icon_name(icon.cstring, GTK_ICON_SIZE_BUTTON), 0, 0, 0)
+  gtk_box_pack_start(result, icon(icon), 0, 0, 0)
   gtk_box_pack_start(result, text, 1, 1, 0)
 
 proc fill()
@@ -73,7 +73,7 @@ proc fill() =
     gtk_box_pack_start(box, label("This page has no site settings.", dim = true), 0, 0, 0)
   else:
     let secure = origin.startsWith("https:")
-    gtk_box_pack_start(box, row(if secure: "channel-secure-symbolic" else: "channel-insecure-symbolic",
+    gtk_box_pack_start(box, row(if secure: "lock_outline" else: "lock_open",
       label(if secure: "Connection is secure" else: "Connection is not secure")), 0, 0, 0)
     gtk_box_pack_start(box, gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), 0, 0, 4)
     gtk_box_pack_start(box, label("Permissions", dim = true), 0, 0, 0)
@@ -96,7 +96,7 @@ proc fill() =
       gtk_box_pack_end(r, combo, 0, 0, 0)
       gtk_box_pack_start(box, r, 0, 0, 0)
     gtk_box_pack_start(box, gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), 0, 0, 4)
-    let data = row("user-trash-symbolic", label("Cookies and site data"))
+    let data = row("cookie_outlined", label("Cookies and site data"))
     let del = gtk_button_new_with_label("Delete")
     connect(del, "clicked", proc (b: Widget, d: pointer) {.cdecl.} =
       gtk_popover_popdown(popover)
@@ -139,21 +139,10 @@ proc showSiteSettings*() =
   fill()
   gtk_popover_popup(popover)
 
-proc refreshButton() =
-  let t = currentTab()
-  let url = if t == nil: "" else: t.url
-  let origin = originOf(url)
-  let icon = if origin.startsWith("https:"): "channel-secure-symbolic"
-             elif origin.len > 0: "channel-insecure-symbolic"
-             else: "dialog-information-symbolic"
-  gtk_image_set_from_icon_name(gtk_button_get_image(button), icon.cstring, GTK_ICON_SIZE_SMALL_TOOLBAR)
-
 proc install*() =
   windowHooks.add proc () =
-    button = iconButton("dialog-information-symbolic", "Site settings", showSiteSettings)
+    button = iconButton("tune", "Site settings", showSiteSettings)
     gtk_box_pack_start(toolbar, button, 0, 0, 0)
     gtk_box_reorder_child(toolbar, button, children(toolbar).find(urlEntry).cint)
     popover = gtk_popover_new(button)
     gtk_popover_set_position(popover, GTK_POS_BOTTOM)
-  activeTabHooks.add proc (t: Tab) = refreshButton()
-  tabStateHooks.add proc (t: Tab) = (if t == currentTab(): refreshButton())

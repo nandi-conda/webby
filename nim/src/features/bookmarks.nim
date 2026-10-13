@@ -301,8 +301,7 @@ proc barItem(node: Bookmark): Widget =
   gtk_button_set_relief(b, GTK_RELIEF_NONE)
   addClass(b, "webby-bookmark")
   let box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6)
-  gtk_box_pack_start(box, gtk_image_new_from_icon_name(
-    cstring(if node.isFolder: "folder-symbolic" else: "web-browser-symbolic"), GTK_ICON_SIZE_MENU), 0, 0, 0)
+  gtk_box_pack_start(box, icon(if node.isFolder: "folder_outlined" else: "public", 14), 0, 0, 0)
   let l = gtk_label_new(node.label.cstring)
   gtk_label_set_ellipsize(l, PANGO_ELLIPSIZE_END)
   gtk_label_set_max_width_chars(l, 24)
@@ -388,7 +387,8 @@ proc deleteNode(node: Bookmark) =
   remove(node)
 
 proc smallButton(icon, tooltip: string, action: proc ()): Widget =
-  result = gtk_button_new_from_icon_name(icon.cstring, GTK_ICON_SIZE_MENU)
+  result = gtk_button_new()
+  iconButtonImage(result, icon, 14)
   gtk_button_set_relief(result, GTK_RELIEF_NONE)
   gtk_widget_set_tooltip_text(result, tooltip.cstring)
   gtk_widget_set_valign(result, GTK_ALIGN_CENTER)
@@ -401,8 +401,7 @@ proc managerRow(node: Bookmark, reorderable: bool): Widget =
   gtk_widget_set_margin_end(box, 4)
   gtk_widget_set_margin_top(box, 4)
   gtk_widget_set_margin_bottom(box, 4)
-  gtk_box_pack_start(box, gtk_image_new_from_icon_name(
-    cstring(if node.isFolder: "folder-symbolic" else: "web-browser-symbolic"), GTK_ICON_SIZE_BUTTON), 0, 0, 0)
+  gtk_box_pack_start(box, icon(if node.isFolder: "folder_outlined" else: "public", 18), 0, 0, 0)
   let text = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
   let title = gtk_label_new(node.label.cstring)
   gtk_label_set_xalign(title, 0)
@@ -415,8 +414,8 @@ proc managerRow(node: Bookmark, reorderable: bool): Widget =
   addClass(sub, "dim-label")
   gtk_box_pack_start(text, sub, 0, 0, 0)
   gtk_box_pack_start(box, text, 1, 1, 0)
-  gtk_box_pack_start(box, smallButton("document-edit-symbolic", "Edit", proc () = editBookmark(node)), 0, 0, 0)
-  gtk_box_pack_start(box, smallButton("user-trash-symbolic", "Delete", proc () = deleteNode(node)), 0, 0, 0)
+  gtk_box_pack_start(box, smallButton("edit_outlined", "Edit", proc () = editBookmark(node)), 0, 0, 0)
+  gtk_box_pack_start(box, smallButton("delete_outline", "Delete", proc () = deleteNode(node)), 0, 0, 0)
   gtk_container_add(events, box)
   onPress(events, proc (ev: GEvent): bool =
     if button(ev) == 2 and not node.isFolder:
@@ -483,9 +482,8 @@ proc folderRow(f: Bookmark, depth: int): Widget =
   gtk_widget_set_margin_start(box, cint(12 + 16 * depth))
   gtk_widget_set_margin_top(box, 3)
   gtk_widget_set_margin_bottom(box, 3)
-  let icon = if f == bar: "user-bookmarks-symbolic" elif f == managerFolder: "folder-open-symbolic"
-             else: "folder-symbolic"
-  gtk_box_pack_start(box, gtk_image_new_from_icon_name(icon.cstring, GTK_ICON_SIZE_MENU), 0, 0, 0)
+  let name = if f == bar: "bookmarks_outlined" elif f == managerFolder: "folder_open" else: "folder_outlined"
+  gtk_box_pack_start(box, icon(name), 0, 0, 0)
   let l = gtk_label_new(f.label.cstring)
   gtk_label_set_xalign(l, 0)
   gtk_label_set_ellipsize(l, PANGO_ELLIPSIZE_END)
@@ -539,11 +537,11 @@ proc showManager*() =
   gtk_entry_set_placeholder_text(managerSearch, "Search bookmarks")
   onAction(managerSearch, fillManager, "search-changed")
   gtk_box_pack_start(top, managerSearch, 1, 1, 0)
-  gtk_box_pack_start(top, iconButton("folder-new-symbolic", "New folder", proc () = newFolderIn(managerFolder)),
+  gtk_box_pack_start(top, iconButton("create_new_folder_outlined", "New folder", proc () = newFolderIn(managerFolder)),
     0, 0, 0)
   let more = gtk_menu_button_new()
   gtk_button_set_relief(more, GTK_RELIEF_NONE)
-  gtk_button_set_image(more, gtk_image_new_from_icon_name("view-more-symbolic", GTK_ICON_SIZE_SMALL_TOOLBAR))
+  iconButtonImage(more, "more_vert", 18)
   gtk_widget_set_tooltip_text(more, "More")
   let menu = gtk_menu_new()
   gtk_widget_set_halign(menu, GTK_ALIGN_END)
@@ -589,8 +587,7 @@ proc updateStar() =
   if starButton == nil: return
   let t = currentTab()
   let marked = t != nil and bookmarkFor(t.url) != nil
-  # A text star rather than an icon: it shows in every icon theme and takes the accent colour.
-  gtk_label_set_text(gtk_bin_get_child(starButton), cstring(if marked: "★" else: "☆"))
+  setIcon(gtk_button_get_image(starButton), if marked: "star" else: "star_border")
   gtk_widget_set_tooltip_text(starButton,
     cstring(if marked: "Edit bookmark (Ctrl+D)" else: "Bookmark this page (Ctrl+D)"))
   if marked: addClass(starButton, "webby-starred") else: removeClass(starButton, "webby-starred")
@@ -631,18 +628,16 @@ proc accel(item: Widget, key: uint32, mods: uint32) =
 proc buildChrome() =
   if appUrl.len > 0: return
   ensureLoaded()
-  loadCss(".webby-star { font-size: 18px; padding: 0 6px; min-height: 0; }\n" &
-    ".webby-starred label { color: @theme_selected_bg_color; }\n" &
+  loadCss(".webby-star { padding: 0 4px; min-height: 0; }\n" &
+    ".webby-starred image { color: @theme_selected_bg_color; }\n" &
     ".webby-bookmark { padding: 2px 6px; min-height: 0; }\n" &
     ".webby-bookmark-bar { border-bottom: 1px solid alpha(currentColor, 0.12); }")
   # Incognito windows don't bookmark pages.
   if not incognito:
-    starButton = iconButton("", "Bookmark this page (Ctrl+D)", bookmarkPage)
-    gtk_button_set_image(starButton, nil)
-    gtk_button_set_label(starButton, "☆")
+    starButton = iconButton("star_border", "Bookmark this page (Ctrl+D)", bookmarkPage, 16)
     addClass(starButton, "webby-star")
     gtk_box_pack_start(starSlot, starButton, 0, 0, 0)
-  discard addToolbarButton("user-bookmarks-symbolic", "Bookmarks (Ctrl+Shift+O)", toggleManager)
+  discard addToolbarButton("bookmarks_outlined", "Bookmarks (Ctrl+Shift+O)", toggleManager, "bookmarks", "Bookmarks")
   buildBar()
   if not incognito: addMenuItem("Bookmark this page", bookmarkPage).accel(0x64, GDK_CONTROL_MASK)
   barCheck = gtk_check_menu_item_new_with_label("Show bookmarks bar")

@@ -16,6 +16,10 @@ The core is `src/browser.nim` (window, tabs, input, pump, hooks); each feature i
 libcrypto before libwebby, whose own crypto library then fails to load. Features use GIO for HTTP and the runtime's
 libcrypto for cryptography.
 
+Icons are the Flutter app's (Material Icons, compiled in from `src/icondata.nim`, drawn in the theme's text colour)
+rather than the desktop icon theme's: `icon("arrow_back")` / `setIcon(image, name)` in `src/icons.nim`, with
+`scripts/material_icons.py <flutter-sdk>` adding more names. The window icon is `icons/webby*.svg`, also compiled in.
+
 `pixi run webby-nim [url]` builds it with the pixi env's Nim and GTK (again only when the sources change) and runs it
 against the webby-ladybird package. By hand:
 

@@ -102,8 +102,9 @@ proc linkButton(label: string, action: proc ()): Widget =
   addClass(result, "webby-link")
   connectAction(result, "clicked", action)
 
-proc smallIconButton(icon, tooltip: string, action: proc ()): Widget =
-  result = gtk_button_new_from_icon_name(icon.cstring, GTK_ICON_SIZE_MENU)
+proc smallIconButton(icon, tooltip: string, action: proc (), size = 16): Widget =
+  result = gtk_button_new()
+  iconButtonImage(result, icon, size)
   gtk_button_set_relief(result, GTK_RELIEF_NONE)
   gtk_widget_set_tooltip_text(result, tooltip.cstring)
   connectAction(result, "clicked", action)
@@ -122,7 +123,7 @@ proc setUndo(message: string, action: proc ()) =
 proc tabRow(s: SavedSession, index: int, t: DeviceTab): Widget =
   ## A saved tab: remove button and title, which opens it.
   result = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2)
-  gtk_box_pack_start(result, smallIconButton("window-close-symbolic", "Remove from session", proc () =
+  gtk_box_pack_start(result, smallIconButton("close", "Remove from session", size = 14, action = proc () =
     let (ok, removed) = removeSessionTab(s, index)
     if ok:
       let label = if removed.title.len == 0: removed.url else: removed.title
@@ -173,13 +174,13 @@ proc sessionGroup(s: SavedSession): Widget =
 proc fillPanel(box: Widget) =
   let actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2)
   gtk_widget_set_margin_start(actions, 8)
-  gtk_box_pack_start(actions, smallIconButton("list-add-symbolic", "Save open tabs as session",
+  gtk_box_pack_start(actions, smallIconButton("add", "Save open tabs as session",
     proc () = saveOpenTabs()), 0, 0, 0)
-  gtk_box_pack_start(actions, smallIconButton("document-save-symbolic", "Close all tabs and save as session",
+  gtk_box_pack_start(actions, smallIconButton("move_to_inbox_outlined", "Close all tabs and save as session",
     proc () = saveOpenTabs(closeAll = true)), 0, 0, 0)
   let list = sessions()
   if list.len > 0:
-    gtk_box_pack_start(actions, smallIconButton("edit-delete-symbolic", "Delete all sessions", proc () =
+    gtk_box_pack_start(actions, smallIconButton("delete_sweep_outlined", "Delete all sessions", proc () =
       let n = sessions().len
       if confirm("Delete all sessions?", "All " & plural(n, "saved session") & " will be deleted. This can't be undone."):
         deleteAllSessions()
@@ -205,7 +206,7 @@ proc fillPanel(box: Widget) =
       a()
       rebuildPanel())
     gtk_box_pack_start(strip, b, 0, 0, 0)
-    gtk_box_pack_start(strip, smallIconButton("window-close-symbolic", "Dismiss", proc () =
+    gtk_box_pack_start(strip, smallIconButton("close", "Dismiss", size = 18, action = proc () =
       undo = ("", nil)
       rebuildPanel()), 0, 0, 0)
     gtk_box_pack_start(box, strip, 0, 0, 0)
@@ -272,4 +273,4 @@ proc install*() =
 .webby-undo { padding: 4px 8px; background-color: alpha(currentColor, 0.06); }
 .webby-error { color: #e5484d; padding: 4px 8px; }
 """)
-    discard addToolbarButton("view-paged-symbolic", "Sessions", toggleSessionsPanel)
+    discard addToolbarButton("layers_outlined", "Sessions", toggleSessionsPanel, "layers", "Sessions")

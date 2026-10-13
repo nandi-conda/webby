@@ -43,8 +43,7 @@ proc refreshButton() =
     gtk_widget_hide(installButton)
     return
   let (isInstalled, app) = installed(a)
-  gtk_image_set_from_icon_name(gtk_button_get_image(installButton),
-    cstring(if isInstalled: "window-new-symbolic" else: "computer-symbolic"), GTK_ICON_SIZE_SMALL_TOOLBAR)
+  setIcon(gtk_button_get_image(installButton), if isInstalled: "open_in_new" else: "install_desktop")
   gtk_widget_set_tooltip_text(installButton,
     cstring(if isInstalled: "Open " & app.name & " app" else: "Install " & a.manifest.title))
   gtk_widget_show(installButton)
@@ -182,9 +181,7 @@ proc refreshOutside() =
   var host = t.url
   try: host = parseUri(t.url).hostname except CatchableError: discard
   gtk_label_set_text(outsideHost, host.cstring)
-  gtk_image_set_from_icon_name(outsideIcon,
-    cstring(if t.url.startsWith("https:"): "channel-secure-symbolic" else: "dialog-information-symbolic"),
-    GTK_ICON_SIZE_MENU)
+  setIcon(outsideIcon, if t.url.startsWith("https:"): "lock_outline" else: "info_outline")
   gtk_widget_set_sensitive(backToApp, t.canBack.gboolean)
   gtk_widget_set_no_show_all(outsideBar, 0)
   gtk_widget_show_all(outsideBar)
@@ -196,8 +193,8 @@ proc buildAppWindow() =
   # Pages outside the app's scope get a thin strip with their site and a way out to the browser.
   outsideBar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6)
   gtk_container_set_border_width(outsideBar, 2)
-  backToApp = iconButton("go-previous-symbolic", "Back to " & (if hasApp: app.name else: "the app"), goBack)
-  outsideIcon = gtk_image_new_from_icon_name("dialog-information-symbolic", GTK_ICON_SIZE_MENU)
+  backToApp = iconButton("arrow_back", "Back to " & (if hasApp: app.name else: "the app"), goBack)
+  outsideIcon = icon("info_outline", 14)
   outsideHost = gtk_label_new("")
   gtk_label_set_xalign(outsideHost, 0)
   gtk_label_set_ellipsize(outsideHost, PANGO_ELLIPSIZE_END)
@@ -205,7 +202,7 @@ proc buildAppWindow() =
   gtk_box_pack_start(outsideBar, backToApp, 0, 0, 0)
   gtk_box_pack_start(outsideBar, outsideIcon, 0, 0, 0)
   gtk_box_pack_start(outsideBar, outsideHost, 1, 1, 0)
-  gtk_box_pack_end(outsideBar, iconButton("web-browser-symbolic", "Open in Webby", proc () =
+  gtk_box_pack_end(outsideBar, iconButton("open_in_browser", "Open in Webby", proc () =
     let t = currentTab()
     if t != nil: openInBrowser(t.url)), 0, 0, 0)
   gtk_widget_set_no_show_all(outsideBar, 1)
@@ -280,7 +277,7 @@ proc startOffline() =
     gtk_widget_set_no_show_all(offlineBanner, 1)
     gtk_box_pack_start(barSlot, offlineBanner, 0, 0, 2)
   else:
-    offlineIcon = gtk_image_new_from_icon_name("network-offline-symbolic", GTK_ICON_SIZE_SMALL_TOOLBAR)
+    offlineIcon = icon("cloud_off")
     gtk_widget_set_tooltip_text(offlineIcon, "Offline: pages come from the copies saved when you last opened them")
     gtk_widget_set_margin_start(offlineIcon, 5)
     gtk_widget_set_margin_end(offlineIcon, 5)
@@ -314,7 +311,7 @@ proc install*() =
     if appUrl.len > 0: buildAppWindow()
     elif not incognito:
       # Incognito windows don't install apps.
-      installButton = iconButton("computer-symbolic", "Install app", onInstallClicked)
+      installButton = iconButton("install_desktop", "Install app", onInstallClicked)
       gtk_widget_set_no_show_all(installButton, 1)
       gtk_box_pack_start(starSlot, installButton, 0, 0, 0)
       gtk_box_reorder_child(starSlot, installButton, 0)

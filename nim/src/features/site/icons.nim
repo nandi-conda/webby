@@ -35,7 +35,7 @@ const iconScript = """
 var cache: Table[string, pointer]   ## icon URL to a 16 px GdkPixbuf (nil: it failed)
 
 proc setDefault(t: Tab) =
-  gtk_image_set_from_icon_name(t.icon, "text-html-symbolic", GTK_ICON_SIZE_MENU)
+  setIcon(t.icon, "public")
 
 proc show(t: Tab, href: string) =
   if t.closed or t.props.getOrDefault("site.icon") != href: return

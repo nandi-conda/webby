@@ -496,14 +496,14 @@ proc showPanel(job: Job) =
   let root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
   let bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)
   gtk_widget_set_margin_end(bar, 4)
-  panel.redoButton = iconButton("view-refresh-symbolic", "Summarize again", proc () =
+  panel.redoButton = iconButton("refresh", "Summarize again", proc () =
     let job = panelJob
     let key = apiKey()
     if job != nil and key.len > 0 and not job.running and not job.answering:
       panel.stickToBottom = false
       job.start(key, fresh = true)
       render())
-  panel.copyButton = iconButton("edit-copy-symbolic", "Copy summary", proc () =
+  panel.copyButton = iconButton("copy", "Copy summary", proc () =
     if panelJob != nil and panelJob.text.len > 0:
       gtk_clipboard_set_text(systemClipboard(), withoutSourceLinks(panelJob.text).cstring, -1))
   panel.spinner = gtk_spinner_new()
@@ -534,7 +534,7 @@ proc showPanel(job: Job) =
   panel.entry = gtk_entry_new()
   gtk_entry_set_placeholder_text(panel.entry, "Ask about this page")
   connect(panel.entry, "activate", onEntryActivate)
-  panel.sendButton = iconButton("mail-send-symbolic", "Ask", askFromEntry)
+  panel.sendButton = iconButton("send", "Ask", askFromEntry)
   gtk_box_pack_start(askRow, panel.entry, 1, 1, 0)
   gtk_box_pack_start(askRow, panel.sendButton, 0, 0, 0)
   gtk_box_pack_start(root, askRow, 0, 0, 0)
@@ -593,7 +593,7 @@ proc install*() =
       if not url.startsWith(anchorPrefix): discard openTab(url)
       elif panelJob != nil and not panelJob.jumpTo(url[anchorPrefix.len .. ^1]):
         alert("Go back to the summarized page to jump to that part.")
-    discard addToolbarButton("format-justify-left-symbolic", "Summarize this page", toggleSummary)
+    discard addToolbarButton("summarize_outlined", "Summarize this page", toggleSummary, "summarize", "Summary")
     if children(moreMenu).len > 0: addMenuSeparator()
     addMenuItem("Summarize this page", summarizePage)
     if not incognito or setSecret == nil: addMenuItem("DeepSeek API key…", showSummarizeSettings)

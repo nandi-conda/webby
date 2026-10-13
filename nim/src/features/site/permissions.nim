@@ -11,9 +11,9 @@ type
   Kind* = tuple[name, label, request, icon: string]
 
 const kinds*: array[3, Kind] = [
-  ("geolocation", "Location", "Know your location", "find-location-symbolic"),
-  ("microphone", "Microphone", "Use your microphones", "audio-input-microphone-symbolic"),
-  ("notifications", "Notifications", "Show notifications", "preferences-system-notifications-symbolic")]
+  ("geolocation", "Location", "Know your location", "location_on_outlined"),
+  ("microphone", "Microphone", "Use your microphones", "mic_none"),
+  ("notifications", "Notifications", "Show notifications", "notifications_outlined")]
 
 proc kindNamed*(name: string): int =
   for i, k in kinds:
@@ -192,7 +192,7 @@ proc refreshBar() =
     gtk_widget_hide(bar)
     return
   let k = kinds[kindNamed(shownAsk.permission)]
-  gtk_image_set_from_icon_name(barIcon, k.icon.cstring, GTK_ICON_SIZE_BUTTON)
+  setIcon(barIcon, k.icon)
   gtk_label_set_markup(barLabel, cstring("<b>" & escapeMarkup(siteName(shownAsk.origin)) & " wants to</b>  " &
     escapeMarkup(k.request)))
   reveal(bar)
@@ -281,7 +281,7 @@ proc buildBar() =
   gtk_info_bar_set_message_type(bar, GTK_MESSAGE_QUESTION)
   gtk_info_bar_set_show_close_button(bar, 1)
   let content = gtk_info_bar_get_content_area(bar)
-  barIcon = gtk_image_new_from_icon_name("dialog-question-symbolic", GTK_ICON_SIZE_BUTTON)
+  barIcon = icon("help_outline", 18)
   barLabel = gtk_label_new("")
   gtk_label_set_xalign(barLabel, 0)
   gtk_label_set_ellipsize(barLabel, PANGO_ELLIPSIZE_END)

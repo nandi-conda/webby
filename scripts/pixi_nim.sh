@@ -7,8 +7,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$ROOT/nim/webby"
 export WEBBY_LADYBIRD_PREFIX="${WEBBY_LADYBIRD_PREFIX:-$CONDA_PREFIX/lib/webby-ladybird}"
 
-# The page shims are read from the Flutter app's Dart files at compile time, so those count as sources too.
-if [ ! -x "$BIN" ] || [ -n "$(find "$ROOT/nim" "$ROOT/app/lib" \( -name '*.nim' -o -name '*.dart' \) -newer "$BIN" -print -quit)" ]; then
+# The page shims are read from the Flutter app's Dart files and the window icon from icons/*.svg at compile time, so
+# those count as sources too.
+if [ ! -x "$BIN" ] || [ -n "$(find "$ROOT/nim" "$ROOT/app/lib" "$ROOT/icons" \( -name '*.nim' -o -name '*.dart' -o -name '*.svg' \) -newer "$BIN" -print -quit)" ]; then
   echo "Building nim/webby..." >&2
   # No -d:ssl: Nim's OpenSSL setup would load a libcrypto before libwebby's own. The rpath makes the binary use the
   # env's GTK at run time.
