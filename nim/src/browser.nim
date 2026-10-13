@@ -99,6 +99,11 @@ var
   lastClick: tuple[time: uint32, x, y: float, button: cuint, count: int]
   shortcuts: seq[tuple[mods: int, keyval: uint32, action: proc (): bool]]
   quitting = false
+  # Wheel coalescing: while a sent wheel event hasn't produced a new frame yet, later ones add up here and go out
+  # as one event with the next frame (or after wheelHoldMs), so a fast touchpad can't queue work in the engine.
+  wheelQ: tuple[t: Tab, x, y: cint, dx, dy: float, precise, mods: cint, pending: bool]
+  wheelInFlight = false
+  wheelSentAt: MonoTime
   # WEBBY_TRACE counters
   trace = getEnv("WEBBY_TRACE") == "1"
   pumps, frames, draws: int
@@ -109,6 +114,17 @@ var
   wheelUs, maxWheelUs: int64
 
 proc us(d: Duration): int64 = d.inMicroseconds
+
+const wheelHoldMs = 50
+
+proc flushWheel() =
+  if not wheelQ.pending: return
+  wheelQ.pending = false
+  wheelInFlight = true
+  wheelSentAt = getMonoTime()
+  let q = wheelQ
+  if not q.t.closed:
+    webby_view_wheel_event(q.t.view, q.x, q.y, q.dx, q.dy, q.precise, q.mods)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Files: the same places the Flutter app keeps its data, so both front ends share a profile.
@@ -528,6 +544,9 @@ proc pumpTab(t: Tab, isActive: bool): bool =
     busy = true
     if isActive:
       inc frames
+      if wheelInFlight:
+        wheelInFlight = false
+        flushWheel()
       if trace and wheelPending:
         let d = us(getMonoTime() - wheelSent)
         wheelPending = false
@@ -555,6 +574,10 @@ proc pumpAll(data: pointer): gboolean {.cdecl.} =
   if trace:
     nativeUs += us(t1 - t0)
     maxTickUs = max(maxTickUs, us(getMonoTime() - t0))
+  if wheelInFlight and getMonoTime() - wheelSentAt >= initDuration(milliseconds = wheelHoldMs):
+    wheelInFlight = false
+    flushWheel()
+  if wheelQ.pending: busy = true
   pumping = false
   quietTicks =
     if busy or wokeInPump: 0
@@ -721,7 +744,13 @@ proc onScroll(w: Widget, e: GEvent, data: pointer): gboolean {.cdecl.} =
     wheelPending = true
   # A wheel notch arrives as a smooth delta of 1.0 under XInput 2; it's still a mouse wheel, not a touchpad.
   if precise == 1 and (abs(dx) == 1 or abs(dy) == 1) and (dx == 0 or dy == 0): precise = 0
-  webby_view_wheel_event(t.view, x, y, dx * s, dy * s, precise, modifiers(eventState(e)).cint)
+  let mods = modifiers(eventState(e)).cint
+  if wheelQ.pending and (wheelQ.t != t or wheelQ.precise != precise or wheelQ.mods != mods): flushWheel()
+  if wheelQ.pending:
+    wheelQ.x = x; wheelQ.y = y; wheelQ.dx += dx * s; wheelQ.dy += dy * s
+  else:
+    wheelQ = (t, x, y, dx * s, dy * s, precise, mods, true)
+  if not wheelInFlight or getMonoTime() - wheelSentAt >= initDuration(milliseconds = wheelHoldMs): flushWheel()
   wake()
   1
 
