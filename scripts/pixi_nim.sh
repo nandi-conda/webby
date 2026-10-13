@@ -16,4 +16,13 @@ if [ ! -x "$BIN" ] || [ -n "$(find "$ROOT/nim" "$ROOT/app/lib" "$ROOT/icons" \( 
   nim c -d:release --hints:off --warnings:off --cc:clang --nimcache:"$ROOT/.pixi/nimcache" \
     --passL:"-fuse-ld=lld -L$CONDA_PREFIX/lib -Wl,-rpath,$CONDA_PREFIX/lib" -o:"$BIN" "$ROOT/nim/webby.nim"
 fi
+# A fontconfig file Ladybird's sandboxed helpers can read, as conda/webby's launcher sets up: they may only read
+# share/Lagom/fonts, so without it each one prints "Cannot load default config file".
+fonts_conf="$WEBBY_LADYBIRD_PREFIX/share/Lagom/fonts/webby-fonts.conf"
+if [ ! -r "$fonts_conf" ] && [ -w "$WEBBY_LADYBIRD_PREFIX/share/Lagom/fonts" ]; then
+  sed "s|@PREFIX@|$CONDA_PREFIX|" "$ROOT/conda/webby/webby-fonts.conf" > "$fonts_conf"
+fi
+if [ -z "${FONTCONFIG_FILE:-}" ] && [ -r "$fonts_conf" ]; then
+  export FONTCONFIG_FILE="$fonts_conf"
+fi
 exec "$BIN" "$@"

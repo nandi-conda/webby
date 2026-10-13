@@ -12,13 +12,29 @@ const
   maxSummaryInputChars = 40000             ## longer pages are cut before they're sent
 
 proc dartScript(name: string): string {.compileTime.} =
-  ## The body of the `String name(...) => '''...''';` script in summarize.dart, with Dart's escapes undone.
+  ## The body of the `String name(...) => '''...''';` script in summarize.dart, with Dart's escapes undone. A raw
+  ## script (`r'''...''' + expr + r'''...'''`) is taken as is, with each spliced-in expr written `${expr}` as in the
+  ## plain ones, so both kinds are filled in the same way.
   let dart = staticRead("../../../app/lib/src/summarize.dart")
-  let head = "String " & name & "("
-  var start = dart.find(head)
-  start = dart.find("=> '''", start) + "=> '''".len
-  let raw = dart[start ..< dart.find("''';", start)]
+  var start = dart.find("String " & name & "(")
+  doAssert start >= 0, name & " not found in summarize.dart"
+  let arrow = dart.find("=> ", start) + "=> ".len
+  let rawString = dart.continuesWith("r'''", arrow)
+  start = arrow + (if rawString: 4 else: 3)
+  let stop = dart.find("\n''';", start) + 1   # the script's own closing line (a splice can end in r''';)
+  doAssert stop > start, name & ": end of the script not found in summarize.dart"
+  let raw = dart[start ..< stop]
   var i = 0
+  if rawString:
+    while i < raw.len:
+      let splice = raw.find("''' + ", i)
+      if splice < 0:
+        result.add raw[i .. ^1]
+        break
+      let close = raw.find(" + r'''", splice)
+      result.add raw[i ..< splice] & "${" & raw[splice + "''' + ".len ..< close] & "}"
+      i = close + " + r'''".len
+    return
   while i < raw.len:
     if raw[i] == '\\' and i + 1 < raw.len:
       result.add(case raw[i + 1]
