@@ -2,7 +2,7 @@
 ## into. Features live in src/features/*.nim; each has an `install()` that only appends to the hook lists below
 ## (UI pieces go in `windowHooks`, which run once the window exists). Nothing here knows about a feature.
 
-import std/[json, monotimes, os, random, strutils, tables, times]
+import std/[algorithm, json, math, monotimes, os, random, strutils, tables, times]
 import gtk, ffi, icons
 export gtk, ffi, icons, json, tables
 
@@ -104,6 +104,13 @@ var
   wheelQ: tuple[t: Tab, x, y: cint, dx, dy: float, precise, mods: cint, pending: bool]
   wheelInFlight = false
   wheelSentAt: MonoTime
+  # Smooth wheel scrolling: a mouse-wheel notch glides in along an ease-out curve instead of jumping. smooth.rem is
+  # the distance the curve still has to cover (it decays with smoothTau); each event sent to the page carries the
+  # curve's position at the time its frame should be on screen (frameEst ahead), so a page that draws every 60 ms
+  # still moves most of a notch on its first frame while a fast page glides over several. smooth.left is what the
+  # page has yet to be sent of the notches so far.
+  smooth: tuple[t: Tab, x, y: cint, remX, remY, leftX, leftY: float, at: MonoTime, active: bool]
+  frameEstMs = 16.0
   # WEBBY_TRACE counters
   trace = getEnv("WEBBY_TRACE") == "1"
   startedAt = getMonoTime()
@@ -119,6 +126,42 @@ var
 proc us(d: Duration): int64 = d.inMicroseconds
 
 const wheelHoldMs = 50
+
+const smoothTau = 40.0   # ms; the curve is 95% done after ~120 ms
+
+proc flushWheel()
+
+proc advanceSmooth() =
+  let now = getMonoTime()
+  let decay = exp(-(now - smooth.at).inMicroseconds.float / 1000 / smoothTau)
+  smooth.at = now
+  smooth.remX *= decay; smooth.remY *= decay
+
+# Moves the smooth-scroll curve to now and, unless a sent wheel event still awaits its frame, sends the page the
+# distance to where the curve will be when the next frame shows.
+proc stepSmooth() =
+  if not smooth.active: return
+  advanceSmooth()
+  if smooth.t.closed:
+    smooth.active = false
+    return
+  if wheelInFlight: return
+  let ahead = exp(-frameEstMs / smoothTau)
+  var tx = smooth.remX * ahead
+  var ty = smooth.remY * ahead
+  if abs(tx) < 0.5 and abs(ty) < 0.5:
+    tx = 0; ty = 0
+    smooth.active = false
+  let dx = smooth.leftX - tx
+  let dy = smooth.leftY - ty
+  smooth.leftX = tx; smooth.leftY = ty
+  if abs(dx) < 0.01 and abs(dy) < 0.01: return
+  if wheelQ.pending and (wheelQ.t != smooth.t or wheelQ.precise != 1 or wheelQ.mods != 0): flushWheel()
+  if wheelQ.pending:
+    wheelQ.dx += dx; wheelQ.dy += dy
+  else:
+    wheelQ = (smooth.t, smooth.x, smooth.y, dx, dy, 1.cint, 0.cint, true)
+  flushWheel()
 
 proc flushWheel() =
   if not wheelQ.pending: return
@@ -576,7 +619,10 @@ proc pumpTab(t: Tab, isActive: bool): bool =
       inc frames
       if wheelInFlight:
         wheelInFlight = false
+        let ms = (getMonoTime() - wheelSentAt).inMicroseconds.float / 1000
+        frameEstMs = clamp(frameEstMs * 0.7 + ms * 0.3, 8.0, 120.0)
         flushWheel()
+        stepSmooth()
       if trace and wheelPending:
         let d = us(getMonoTime() - wheelSent)
         wheelPending = false
@@ -607,7 +653,8 @@ proc pumpAll(data: pointer): gboolean {.cdecl.} =
   if wheelInFlight and getMonoTime() - wheelSentAt >= initDuration(milliseconds = wheelHoldMs):
     wheelInFlight = false
     flushWheel()
-  if wheelQ.pending: busy = true
+  stepSmooth()
+  if wheelQ.pending or smooth.active: busy = true
   pumping = false
   quietTicks =
     if busy or wokeInPump: 0
@@ -631,7 +678,79 @@ proc wake*() =
   if pumpSource != 0: discard g_source_remove(pumpSource)
   schedule(4)
 
+# CPU time of this process and its helpers, for WEBBY_TRACE: "webby-cpu" lines give each process's (and its busiest
+# threads') share of one core since the last tick, read from /proc.
+var cpuTicks: Table[string, int]   # "pid" or "pid/tid" -> utime + stime clock ticks
+var cpuLast = getMonoTime()
+
+proc statFields(path: string): (string, seq[string]) =
+  # comm is in parentheses and may contain spaces; the fields after it are space-separated.
+  try:
+    let s = readFile(path)
+    let a = s.find('(')
+    let b = s.rfind(')')
+    if a < 0 or b < a: return ("", @[])
+    (s[a + 1 ..< b], s[b + 2 .. ^1].splitWhitespace())
+  except CatchableError: ("", @[])
+
+proc cpuReport(): string =
+  let now = getMonoTime()
+  let secs = max((now - cpuLast).inMicroseconds.float / 1e6, 0.001)
+  cpuLast = now
+  # Our process tree: pid -> parent, from /proc/<pid>/stat (state is field 0 after comm, ppid field 1).
+  var parent: Table[int, int]
+  var names: Table[int, string]
+  for kind, path in walkDir("/proc"):
+    let pid = try: parseInt(path.extractFilename) except ValueError: -1
+    if pid < 0: continue
+    let (name, f) = statFields(path / "stat")
+    if f.len < 2: continue
+    parent[pid] = parseInt(f[1])
+    names[pid] = name
+  let me = getCurrentProcessId()
+  proc ours(pid: int): bool =
+    var p = pid
+    for _ in 0 .. 32:
+      if p == me: return true
+      if p <= 1 or p notin parent: return false
+      p = parent[p]
+    false
+  var fresh: Table[string, int]
+  var parts: seq[string]
+  for pid, name in names:
+    if not ours(pid): continue
+    let (_, f) = statFields("/proc" / $pid / "stat")
+    if f.len < 13: continue
+    let ticks = parseInt(f[11]) + parseInt(f[12])
+    fresh[$pid] = ticks
+    let pct = (ticks - cpuTicks.getOrDefault($pid, ticks)).float / secs   # 100 ticks/s = 100%
+    if pct < 2: continue
+    # The busiest threads of a busy process, which tell e.g. LibJS from Wasm from painting apart.
+    var threads: seq[(float, string)]
+    for kind, tpath in walkDir("/proc" / $pid / "task"):
+      let tid = tpath.extractFilename
+      let (tname, tf) = statFields(tpath / "stat")
+      if tf.len < 13: continue
+      let tt = parseInt(tf[11]) + parseInt(tf[12])
+      let key = $pid & "/" & tid
+      fresh[key] = tt
+      let tp = (tt - cpuTicks.getOrDefault(key, tt)).float / secs
+      if tp >= 5: threads.add((tp, tname))
+    threads.sort(proc (a, b: (float, string)): int = cmp(b[0], a[0]))
+    var part = (if pid == me: "UI" else: name) & "=" & $int(pct) & "%"
+    if threads.len > 1:
+      part.add " ["
+      for i, (tp, tname) in threads:
+        if i >= 3: break
+        if i > 0: part.add ", "
+        part.add tname & " " & $int(tp) & "%"
+      part.add "]"
+    parts.add part
+  cpuTicks = fresh
+  parts.join("  ")
+
 proc traceTick(data: pointer): gboolean {.cdecl.} =
+  stderr.writeLine "webby-cpu ", cpuReport()
   stderr.writeLine "webby-trace pumps=", pumps, " frames=", frames, " draws=", draws, " delay=", pumpDelay,
     "ms nativeMs=", nativeUs div 1000, " drawMs=", drawUs div 1000,
     " maxTickMs=", formatFloat(maxTickUs.float / 1000, ffDecimal, 1), " wheels=", wheelFrames,
@@ -778,6 +897,22 @@ proc onScroll(w: Widget, e: GEvent, data: pointer): gboolean {.cdecl.} =
   # A wheel notch arrives as a smooth delta of 1.0 under XInput 2; it's still a mouse wheel, not a touchpad.
   if precise == 1 and (abs(dx) == 1 or abs(dy) == 1) and (dx == 0 or dy == 0): precise = 0
   let mods = modifiers(eventState(e)).cint
+  # A plain wheel notch joins the smooth-scroll curve; touchpads already scroll smoothly, and Ctrl+wheel zooms.
+  if precise == 0 and mods == 0:
+    if smooth.active and smooth.t == t:
+      advanceSmooth()
+      # A reversed notch starts the curve over from where the page is rather than unwinding the old one first.
+      if smooth.remY * dy < 0 or smooth.remX * dx < 0:
+        smooth.remX = smooth.leftX; smooth.remY = smooth.leftY
+      smooth.remX += dx * s; smooth.remY += dy * s
+      smooth.leftX += dx * s; smooth.leftY += dy * s
+    else:
+      smooth = (t, x, y, dx * s, dy * s, dx * s, dy * s, getMonoTime(), true)
+    smooth.x = x; smooth.y = y
+    stepSmooth()
+    wake()
+    return 1
+  if smooth.active: smooth.active = false
   if wheelQ.pending and (wheelQ.t != t or wheelQ.precise != precise or wheelQ.mods != mods): flushWheel()
   if wheelQ.pending:
     wheelQ.x = x; wheelQ.y = y; wheelQ.dx += dx * s; wheelQ.dy += dy * s

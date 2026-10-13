@@ -29,7 +29,8 @@ WEBBY_LADYBIRD_PREFIX=<webby-ladybird runtime> nim/webby https://example.com
 ```
 
 Keys: Ctrl+T new tab, Ctrl+W close, Ctrl+L URL bar, Ctrl+R / F5 reload, Alt+Left/Right, Ctrl+(Shift+)Tab,
-middle-click a tab to close it. `WEBBY_TRACE=1` prints pump, frame, draw and wheel-latency counters every 5 s.
+middle-click a tab to close it. `WEBBY_TRACE=1` prints pump, frame, draw and wheel-latency counters every 5 s, plus a `webby-cpu` line with each webby
+process's (and its busiest threads') CPU, as % of one core.
 
 ## Nim vs Flutter, same engine
 
