@@ -106,6 +106,9 @@ var
   wheelSentAt: MonoTime
   # WEBBY_TRACE counters
   trace = getEnv("WEBBY_TRACE") == "1"
+  startedAt = getMonoTime()
+  framesMarked = 0
+  firstDrawSeen = false
   pumps, frames, draws: int
   nativeUs, drawUs, maxTickUs: int64
   wheelSent: MonoTime
@@ -509,10 +512,19 @@ proc answerRequests(t: Tab) =
 
 proc runPageScripts(t: Tab) =
   t.lastCompat = getMonoTime()
-  t.runJs(pageCompatScript)
+  # Right after a load starts, the tab's URL is already the new page's while its document is still the about:blank
+  # one being navigated away from. Our scripts there (several of them talk back through prompt()) can wedge
+  # Ladybird's navigation: under CPU load the new page's DOMContentLoaded and first paint then wait out a 15 s timeout.
+  # So a tab that isn't headed for about:blank skips that document; the 100 ms re-runs while loading reach the new one.
+  let (open, close) = if t.url == "about:blank": ("", "") else: ("if (location.href !== 'about:blank') {\n", "\n}")
+  t.runJs(open & pageCompatScript & close)
   for h in pageScriptHooks:
     let js = h(t)
-    if js.len > 0: t.runJs(js)
+    if js.len > 0: t.runJs(open & js & close)
+
+template mark*(what: string) =
+  ## WEBBY_TRACE=1: when each step of startup happened, in ms since the process started.
+  if trace: stderr.writeLine "webby-startup ", (getMonoTime() - startedAt).inMilliseconds, " ms ", what
 
 proc pumpTab(t: Tab, isActive: bool): bool =
   var busy = t.loading
@@ -557,6 +569,9 @@ proc pumpTab(t: Tab, isActive: bool): bool =
   if fs != t.frameSerial:
     t.frameSerial = fs
     busy = true
+    if trace and framesMarked < 3:
+      inc framesMarked
+      mark "frame " & $fs & " " & t.url
     if isActive:
       inc frames
       if wheelInFlight:
@@ -647,6 +662,9 @@ proc onDraw(w: Widget, cr: Cairo, data: pointer): gboolean {.cdecl.} =
       cairo_set_source_surface(cr, surface, 0, 0)
       cairo_paint(cr)
       cairo_surface_destroy(surface)
+      if not firstDrawSeen:
+        firstDrawSeen = true
+        mark "first frame drawn"
   if trace:
     inc draws
     drawUs += us(getMonoTime() - t0)
@@ -1017,17 +1035,23 @@ proc parseCommandLine() =
 proc run*() =
   randomize()
   parseCommandLine()
+  mark "main"
   gtk_init(nil, nil)
+  mark "gtk_init"
   if incognito:
     g_object_set(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", 1.cint, nil)
   for h in startupHooks: h()
+  mark "startup hooks"
   let prefix = ladybirdPrefix()
   loadWebby(prefix)
   if webby_init(prefix.cstring) != 0: quit "webby_init failed for " & prefix
+  mark "webby_init"
   defaultShortcuts()
   buildWindow()
   for h in windowHooks: h()
+  mark "window hooks"
   gtk_widget_show_all(window)
+  mark "window shown"
 
   let urls = if appUrl.len > 0: @[appUrl] else: commandLineUrls
   var opened = false
@@ -1041,6 +1065,7 @@ proc run*() =
     discard openTab(first)
     for u in urls[min(1, urls.len) .. ^1]: discard openTab(u, focus = false)
     activateTab(0)
+  mark "tabs opened"
   focusPage()
   if trace: discard g_timeout_add(5000, traceTick, nil)
   wake()
