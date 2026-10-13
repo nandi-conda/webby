@@ -3,7 +3,7 @@
 ## The API key is a device-only secret in the password vault; without the vault (getSecret is nil) it is asked for
 ## and kept in memory until Webby quits.
 
-import std/[random, strutils, times]
+import std/[json, random, strutils, times]
 import ../browser
 import summarize/[cache, deepseek, markdown]
 
@@ -409,6 +409,61 @@ const panelCss = markdownCss & """
 .webby-summary-question { background-color: alpha(currentColor, 0.07); border-radius: 6px; padding: 7px 10px; }
 """
 
+# Text sizes: markdown_view.dart's (body, then headings 1.35/1.2/1.08x and code 0.92x), in pt so they follow the
+# desktop's DPI and text scale, times the panel's own zoom (Ctrl+plus/minus/0 or Ctrl+wheel over the panel).
+const baseTextPt = 11.0
+var
+  textZoom = 1.0
+  textCss: pointer   ## the GtkCssProvider holding the sizes
+
+proc zoomFile(): string = profileFile("summary_text_zoom.json")
+
+proc applyTextZoom() =
+  let b = baseTextPt * textZoom
+  proc pt(f: float): string = formatFloat(b * f, ffDecimal, 1) & "pt"
+  let css = ".webby-md label, .webby-md entry { font-size: " & pt(1) & "; }\n" &
+    ".webby-md .webby-md-h1 { font-size: " & pt(1.35) & "; }\n" &
+    ".webby-md .webby-md-h2 { font-size: " & pt(1.2) & "; }\n" &
+    ".webby-md .webby-md-h3 { font-size: " & pt(1.08) & "; }\n" &
+    ".webby-md .webby-md-code label { font-size: " & pt(0.92) & "; }\n"
+  if textCss == nil:
+    textCss = gtk_css_provider_new()
+    gtk_style_context_add_provider_for_screen(gdk_screen_get_default(), textCss,
+      GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
+  discard gtk_css_provider_load_from_data(textCss, css.cstring, css.len, nil)
+
+proc setTextZoom(z: float) =
+  textZoom = clamp(z, 0.6, 2.5)
+  applyTextZoom()
+  if not incognito:
+    try: writeJsonFile(zoomFile(), %*{"zoom": textZoom})
+    except CatchableError: discard
+
+proc gtk_window_get_focus(w: Widget): Widget {.importc, cdecl.}
+proc gtk_widget_is_ancestor(w, ancestor: Widget): gboolean {.importc, cdecl.}
+
+proc gtk_widget_get_pointer(w: Widget, x, y: ptr cint) {.importc, cdecl.}
+
+proc panelHasFocus(): bool =
+  ## Whether the keyboard focus or the mouse pointer is in the summary panel.
+  if panel.root == nil or not sidePanelShowing(): return false
+  let f = gtk_window_get_focus(window)
+  if f != nil and (f == panel.root or gtk_widget_is_ancestor(f, panel.root) != 0): return true
+  var x, y: cint
+  gtk_widget_get_pointer(panel.root, addr x, addr y)
+  x >= 0 and y >= 0 and x < gtk_widget_get_allocated_width(panel.root) and
+    y < gtk_widget_get_allocated_height(panel.root)
+
+proc onPanelWheel(w: Widget, e: GEvent, d: pointer): gboolean {.cdecl.} =
+  if (eventState(e) and GDK_CONTROL_MASK) == 0: return 0
+  var dx, dy: cdouble
+  var dir: cint
+  if gdk_event_get_scroll_deltas(e, addr dx, addr dy) == 0:
+    if gdk_event_get_scroll_direction(e, addr dir) == 0: return 1
+    dy = (if dir == GDK_SCROLL_UP: -1.0 elif dir == GDK_SCROLL_DOWN: 1.0 else: 0.0)
+  if dy != 0: setTextZoom(textZoom * (if dy < 0: 1.1 else: 1 / 1.1))
+  1
+
 proc withoutSourceLinks(text: string): string =
   ## `text` without its ` [§](#words)` links (for Copy).
   var i = 0
@@ -537,6 +592,7 @@ proc showPanel(job: Job) =
       gtk_widget_set_margin_bottom]:
     side(panel.content, 14)
   gtk_container_add(scroller, panel.content)
+  connect(scroller, "scroll-event", onPanelWheel)
   gtk_box_pack_start(root, scroller, 1, 1, 0)
   panel.adjustment = gtk_scrolled_window_get_vadjustment(scroller)
   panel.stickToBottom = false
@@ -605,6 +661,18 @@ proc toggleSummary() =
 proc install*() =
   pageMessageHooks.add onPageMessage
   windowHooks.add proc () =
+    let saved = readJsonFile(zoomFile())
+    if saved != nil and saved.kind == JObject: textZoom = clamp(saved{"zoom"}.getFloat(1.0), 0.6, 2.5)
+    applyTextZoom()
+    # Ctrl+plus/minus/0 size the summary text while the panel has focus or the pointer; elsewhere the keys go on as before.
+    proc zoomKey(mods: int, key: uint32, factor: float) =
+      addKeyHandler(mods, key, proc (): bool =
+        if not panelHasFocus(): return false
+        setTextZoom(if factor == 0: 1.0 else: textZoom * factor)
+        true)
+    for (mods, key, z) in [(modCtrl, 0x3d'u32, 1.1), (modCtrl or modShift, 0x2b'u32, 1.1), (modCtrl, 0xffab'u32, 1.1),
+        (modCtrl, 0x2d'u32, 1 / 1.1), (modCtrl, 0xffad'u32, 1 / 1.1), (modCtrl, 0x30'u32, 0.0)]:
+      zoomKey(mods, key, z)
     loadCss(panelCss)
     linkHandler = proc (url: string) =
       if not url.startsWith(anchorPrefix): discard openTab(url)

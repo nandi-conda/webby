@@ -229,11 +229,6 @@ const markdownCss* = """
 .webby-md-code { background-color: alpha(currentColor, 0.08); border-radius: 6px; padding: 8px; }
 .webby-md-quote { border-left: 3px solid alpha(currentColor, 0.25); padding-left: 10px; }
 .webby-md-dim { opacity: 0.65; }
-.webby-md label, .webby-md entry { font-size: 14px; }
-.webby-md .webby-md-h1 { font-size: 18.9px; }
-.webby-md .webby-md-h2 { font-size: 16.8px; }
-.webby-md .webby-md-h3 { font-size: 15.1px; }
-.webby-md .webby-md-code label { font-size: 12.9px; }
 """
 
 var linkHandler*: proc (url: string)  ## a link clicked in rendered markdown; nil = GTK's default
