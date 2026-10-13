@@ -448,6 +448,14 @@ class WebbyController extends ChangeNotifier {
 
   void runJavaScript(String source) => _ifAttached((v) => _withString(source, (s) => _bindings.runJavaScript(v, s)));
 
+  /// Runs one of the browser's own page scripts (shims, context menu, password and manifest helpers) in the page.
+  /// Right after a load starts, [url] is already the new page's while the document is still the about:blank one
+  /// being navigated away from. Our scripts there (several talk back through prompt()) can wedge Ladybird's
+  /// navigation: under CPU load the new page's DOMContentLoaded and first paint wait out a 15 s timeout. So unless
+  /// the view is headed for about:blank, the script skips that document; callers run it again once the load is on.
+  void runPageScript(String source) =>
+      runJavaScript(url == 'about:blank' ? source : "if (location.href !== 'about:blank') {\n$source\n}");
+
   /// Answers [webauthnPrompt]: `accepted: false` cancels it; for a sign-in, [accountIndex] picks one of its accounts.
   void respondToWebAuthn({required bool accepted, int accountIndex = -1}) =>
       _ifAttached((v) => _bindings.webauthnRespond(v, accepted ? 1 : 0, accountIndex));
@@ -598,10 +606,10 @@ class WebbyController extends ChangeNotifier {
 
   void _runPageCompat() {
     _lastCompatMicros = _pumpClock.elapsedMicroseconds;
-    runJavaScript(pageCompatScript);
+    runPageScript(pageCompatScript);
     for (final script in pageScripts.toList()) {
       final source = script();
-      if (source.isNotEmpty) runJavaScript(source);
+      if (source.isNotEmpty) runPageScript(source);
     }
   }
 

@@ -191,7 +191,7 @@ class PasswordAgent extends ChangeNotifier {
       }
       _scriptedUrl = controller.url;
       if (originOf(controller.url) != null && controller.isAttached) {
-        controller.runJavaScript(passwordPageScript(manager.messagePrefix));
+        controller.runPageScript(passwordPageScript(manager.messagePrefix));
       }
     }
   }

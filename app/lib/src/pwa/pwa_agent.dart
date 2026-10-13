@@ -67,7 +67,7 @@ class PwaAgent extends ChangeNotifier {
     _scriptedUrl = controller.url;
     final url = Uri.tryParse(controller.url);
     if (url != null && (url.isScheme('http') || url.isScheme('https')) && controller.isAttached && controller.messagePrefix.isNotEmpty) {
-      controller.runJavaScript(manifestPageScript(controller.messagePrefix));
+      controller.runPageScript(manifestPageScript(controller.messagePrefix));
     }
   }
 

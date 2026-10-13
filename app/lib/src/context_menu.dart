@@ -342,7 +342,7 @@ class ContextMenuAgent {
     if (controller.url == _scriptedUrl && !loadFinished) return;
     _scriptedUrl = controller.url;
     if (controller.isAttached && controller.url.isNotEmpty && controller.messagePrefix.isNotEmpty) {
-      controller.runJavaScript(contextMenuPageScript(controller.messagePrefix));
+      controller.runPageScript(contextMenuPageScript(controller.messagePrefix));
     }
   }
 

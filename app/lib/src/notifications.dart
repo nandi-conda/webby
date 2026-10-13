@@ -198,7 +198,7 @@ class NotificationAgent {
 
   void _inject() {
     final script = _script();
-    if (script.isNotEmpty && controller.isAttached) controller.runJavaScript(script);
+    if (script.isNotEmpty && controller.isAttached) controller.runPageScript(script);
   }
 
   void _onPageChanged() {
