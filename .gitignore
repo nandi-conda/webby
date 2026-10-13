@@ -9,3 +9,4 @@ app/.gitignore
 nim/webby
 nim/*.log
 .claude/
+__pycache__/
