@@ -103,8 +103,12 @@ String passwordPageScript(String prefix) => '''
     else if (el.type === 'password' || (isTextLike(el) && passwordFields(el.form).length)) send({ type: 'focus' });
   }, true);
 
+  // Not while the document is still being parsed: a prompt() then leaves Ladybird's parser paused for good (no
+  // DOMContentLoaded, no first paint, the page loading forever; LWN's login bar did it). DOMContentLoaded checks
+  // instead.
   let hadFields = false;
   function checkFields() {
+    if (document.readyState === 'loading') return;
     const has = passwordFields(document).length > 0;
     if (has && !hadFields) send({ type: 'fields' });
     hadFields = has;
@@ -113,7 +117,8 @@ String passwordPageScript(String prefix) => '''
   new MutationObserver(() => {
     if (!pending) pending = setTimeout(() => { pending = 0; checkFields(); }, 300);
   }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['type', 'style', 'class', 'hidden'] });
-  checkFields();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', checkFields, { once: true });
+  else checkFields();
 
   function setValue(el, value) {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
