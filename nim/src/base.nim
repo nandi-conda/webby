@@ -24,6 +24,12 @@ var
   httpRequest*: proc (meth, url: string, headers: seq[(string, string)], body: string,
                       done: proc (status: int, reason: string, headers: seq[(string, string)], body, error: string))
 
+  # Streamed HTTP (Android: DeepSeek summaries): `onStatus` once the headers are in, `onData` for each piece of the
+  # body, then `onDone` with "" or an error; all on the main loop. Returns an id for httpStreamCancel.
+  httpStream*: proc (meth, url: string, headers: seq[(string, string)], body: string, onStatus: proc (status: int),
+                     onData: proc (data: string), onDone: proc (error: string)): int
+  httpStreamCancel*: proc (id: int)
+
   deviceDescription*: string   ## e.g. "Pixel 6a" on Android (sync names the device after it); "" on the desktop
 
 # ---------------------------------------------------------------------------------------------------------------

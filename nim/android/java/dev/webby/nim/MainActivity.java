@@ -308,6 +308,8 @@ public final class MainActivity extends Activity {
         menu.getMenu().add(0, 11, 0, "Tabs from other devices");
         menu.getMenu().add(0, 13, 0, "Sessions");
         menu.getMenu().add(0, 12, 0, "Sync");
+        menu.getMenu().add(0, 15, 0, "Summarize page").setEnabled(onPage);
+        if (!state.optString("app").isEmpty()) menu.getMenu().add(0, 16, 0, "Install app");
         menu.getMenu().add(0, 3, 0, "Share").setEnabled(onPage);
         menu.getMenu().add(0, 4, 0, "Copy link").setEnabled(onPage);
         menu.getMenu().add(0, 14, 0, "Site settings").setEnabled(onPage);
@@ -329,6 +331,8 @@ public final class MainActivity extends Activity {
                 case 12: SyncScreen.show(this); break;
                 case 13: SessionsScreen.show(this); break;
                 case 14: Site.showSettings(this); break;
+                case 15: SummaryScreen.open(this); break;
+                case 16: WebApps.install(this, state.optString("app")); break;
             }
             return true;
         });
@@ -512,6 +516,10 @@ public final class MainActivity extends Activity {
                 case "passwordOffer": Passwords.showOffer(a, a.passwordBar, e); break;
                 case "passkey": Passwords.passkey(a, e); break;
                 case "http": Net.request(e); break;
+                case "httpStream": Net.stream(e); break;
+                case "httpStreamCancel": Net.cancelStream(e); break;
+                case "summary": SummaryScreen.update(a, e); break;
+                case "pinShortcut": WebApps.pin(a, e); break;
                 case "syncStatus": SyncScreen.statusChanged(a, e); break;
                 case "sessionsChanged": SessionsScreen.changed(); break;
                 case "permissionAsk": Site.showAsk(a, a.permissionBar, e); break;

@@ -29,6 +29,7 @@ class Screen {
     private final TextView title;
     private final LinearLayout actions;
     private final LinearLayout top;
+    private final LinearLayout root;
     private final ListView list;
     private final List<View> rows = new ArrayList<>();
     private final Adapter adapter = new Adapter();
@@ -39,7 +40,7 @@ class Screen {
         activity = a;
         dialog = new Dialog(a, android.R.style.Theme_DeviceDefault_DayNight);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
-        LinearLayout root = new LinearLayout(a);
+        root = new LinearLayout(a);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Ui.background);
 
@@ -131,6 +132,16 @@ class Screen {
 
     void addTop(View v) {
         top.addView(v);
+    }
+
+    /** A view under the list (e.g. a field to type into), kept above the keyboard. */
+    void addBottom(View v) {
+        root.addView(v);
+    }
+
+    /** Scrolls the list to its last row. */
+    void scrollToEnd() {
+        list.post(() -> list.setSelection(rows.size() - 1));
     }
 
     void setRows(List<View> newRows) {

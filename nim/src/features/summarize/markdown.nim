@@ -1,9 +1,14 @@
 ## Markdown for the summary panel (app/lib/src/markdown_view.dart): the same block parser, which copes with
-## half-written text so a streaming answer can be shown as it comes, and inline markup as Pango markup on GtkLabels.
+## half-written text so a streaming answer can be shown as it comes, and inline markup as Pango markup on GtkLabels
+## (on Android, as the HTML subset TextView's Html.fromHtml shows: markdownHtml).
 
 import std/strutils
 from std/unicode import validateUtf8
-import ../../browser
+when defined(android):
+  proc escapeMarkup(s: string): string =
+    s.multiReplace(("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ("\"", "&quot;"))
+else:
+  import ../../browser
 
 type
   MdKind* = enum mdHeading, mdParagraph, mdListItem, mdQuote, mdCode, mdRule
@@ -160,7 +165,8 @@ proc anchorWords*(target: string): string =
       if result.endsWith(q): (result = result[0 ..< result.len - q.len]; changed = true)
   result = result.splitWhitespace.join(" ")
 
-const codeSpan = "<span font_family=\"monospace\" background=\"#808080\" bgalpha=\"22%\">"
+const codeSpan = when defined(android): "<tt>" else: "<span font_family=\"monospace\" background=\"#808080\" bgalpha=\"22%\">"
+const codeSpanEnd = when defined(android): "</tt>" else: "</span>"
 
 proc inlineMarkup*(text: string): string =
   ## `text` with its inline markdown as Pango markup (escaped otherwise).
@@ -182,7 +188,7 @@ proc inlineMarkup*(text: string): string =
     if c == '`':
       let close = text.find('`', i + 1)
       if close > i + 1:
-        emit codeSpan & escapeMarkup(text[i + 1 ..< close]) & "</span>"
+        emit codeSpan & escapeMarkup(text[i + 1 ..< close]) & codeSpanEnd
         i = close + 1
         continue
     if c == '*' or c == '_':
@@ -219,84 +225,100 @@ proc inlineMarkup*(text: string): string =
     inc i
   emit ""
 
-# ---------------------------------------------------------------------------------------------------------------
-# Widgets
+when defined(android):
+  proc markdownHtml*(source: string): string =
+    ## `source` as HTML for Html.fromHtml (anchor links keep anchorPrefix hrefs; Java jumps to their words).
+    for b in parseMarkdown(source):
+      case b.kind
+      of mdHeading:
+        let h = "h" & $min(b.level + 2, 6)
+        result.add "<" & h & ">" & inlineMarkup(b.text) & "</" & h & ">"
+      of mdParagraph: result.add "<p>" & inlineMarkup(b.text) & "</p>"
+      of mdListItem:
+        result.add "<p>" & repeat("&nbsp;&nbsp;&nbsp;&nbsp;", b.depth) & escapeMarkup(b.marker) & "&nbsp;" &
+          inlineMarkup(b.text) & "</p>"
+      of mdQuote: result.add "<blockquote>" & inlineMarkup(b.text) & "</blockquote>"
+      of mdCode: result.add "<p><tt>" & escapeMarkup(b.text).replace("\n", "<br>") & "</tt></p>"
+      of mdRule: result.add "<p>―――</p>"
+else:
+  # ---------------------------------------------------------------------------------------------------------------
+  # Widgets
 
-proc gtk_label_set_line_wrap_mode(l: Widget, mode: cint) {.importc, cdecl.}
-const PANGO_WRAP_WORD_CHAR = 2.cint
+  proc gtk_label_set_line_wrap_mode(l: Widget, mode: cint) {.importc, cdecl.}
+  const PANGO_WRAP_WORD_CHAR = 2.cint
 
-const markdownCss* = """
-.webby-md-code { background-color: alpha(currentColor, 0.08); border-radius: 6px; padding: 8px; }
-.webby-md-quote { border-left: 3px solid alpha(currentColor, 0.25); padding-left: 10px; }
-.webby-md-dim { opacity: 0.65; }
-"""
+  const markdownCss* = """
+  .webby-md-code { background-color: alpha(currentColor, 0.08); border-radius: 6px; padding: 8px; }
+  .webby-md-quote { border-left: 3px solid alpha(currentColor, 0.25); padding-left: 10px; }
+  .webby-md-dim { opacity: 0.65; }
+  """
 
-var linkHandler*: proc (url: string)  ## a link clicked in rendered markdown; nil = GTK's default
+  var linkHandler*: proc (url: string)  ## a link clicked in rendered markdown; nil = GTK's default
 
-proc onLink(label: Widget, uri: cstring, data: pointer): gboolean {.cdecl.} =
-  if linkHandler == nil: return 0
-  linkHandler($uri)
-  1
+  proc onLink(label: Widget, uri: cstring, data: pointer): gboolean {.cdecl.} =
+    if linkHandler == nil: return 0
+    linkHandler($uri)
+    1
 
-proc spaced(markup: string): string =
-  ## Body text at markdown_view.dart's 1.45 line height.
-  "<span line_height=\"1.45\">" & markup & "</span>"
+  proc spaced(markup: string): string =
+    ## Body text at markdown_view.dart's 1.45 line height.
+    "<span line_height=\"1.45\">" & markup & "</span>"
 
-proc markupLabel*(markup: string, selectable = true): Widget =
-  ## A wrapping, left-aligned label showing Pango `markup`.
-  result = gtk_label_new("")
-  gtk_label_set_markup(result, markup.cstring)
-  gtk_label_set_xalign(result, 0)
-  gtk_label_set_line_wrap(result, 1)
-  gtk_label_set_line_wrap_mode(result, PANGO_WRAP_WORD_CHAR)
-  gtk_label_set_max_width_chars(result, 1)   # wrap to the panel instead of asking for a wide one
-  gtk_widget_set_hexpand(result, 1)
-  if selectable:
-    gtk_label_set_selectable(result, 1)
-    gtk_widget_set_can_focus(result, 0)
-  connect(result, "activate-link", onLink)
+  proc markupLabel*(markup: string, selectable = true): Widget =
+    ## A wrapping, left-aligned label showing Pango `markup`.
+    result = gtk_label_new("")
+    gtk_label_set_markup(result, markup.cstring)
+    gtk_label_set_xalign(result, 0)
+    gtk_label_set_line_wrap(result, 1)
+    gtk_label_set_line_wrap_mode(result, PANGO_WRAP_WORD_CHAR)
+    gtk_label_set_max_width_chars(result, 1)   # wrap to the panel instead of asking for a wide one
+    gtk_widget_set_hexpand(result, 1)
+    if selectable:
+      gtk_label_set_selectable(result, 1)
+      gtk_widget_set_can_focus(result, 0)
+    connect(result, "activate-link", onLink)
 
-proc markdownView*(source: string): Widget =
-  ## A box of labels rendering `source`.
-  result = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
-  var previous = -1
-  for b in parseMarkdown(source):
-    let gap =
-      if previous < 0: 0
-      elif previous == ord(mdListItem) and b.kind == mdListItem: 3
-      elif b.kind == mdHeading: 14
-      else: 8
-    previous = ord(b.kind)
-    var w: Widget
-    case b.kind
-    of mdHeading:
-      w = markupLabel("<b>" & inlineMarkup(b.text) & "</b>")
-      addClass(w, "webby-md-h" & $min(b.level, 4))   # sizes in markdownCss
-    of mdParagraph:
-      w = markupLabel(spaced(inlineMarkup(b.text)))
-    of mdListItem:
-      w = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)
-      gtk_widget_set_margin_start(w, cint(4 + b.depth * 16))
-      let marker = gtk_label_new(b.marker.cstring)
-      addClass(marker, "webby-md-dim")
-      gtk_label_set_xalign(marker, 0)
-      gtk_widget_set_valign(marker, GTK_ALIGN_START)
-      gtk_widget_set_size_request(marker, (if b.marker == "•": 14 else: 22), -1)
-      gtk_box_pack_start(w, marker, 0, 0, 0)
-      gtk_box_pack_start(w, markupLabel(spaced(inlineMarkup(b.text))), 1, 1, 0)
-    of mdQuote:
-      w = markupLabel(spaced(inlineMarkup(b.text)))
-      addClass(w, "webby-md-quote")
-      addClass(w, "webby-md-dim")
-    of mdCode:
-      let label = markupLabel("<span font_family=\"monospace\">" & escapeMarkup(b.text) & "</span>")
-      gtk_label_set_line_wrap(label, 0)
-      let scroller = gtk_scrolled_window_new(nil, nil)
-      gtk_scrolled_window_set_policy(scroller, GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER)
-      gtk_container_add(scroller, label)
-      addClass(scroller, "webby-md-code")
-      w = scroller
-    of mdRule:
-      w = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL)
-    gtk_widget_set_margin_top(w, gap.cint)
-    gtk_box_pack_start(result, w, 0, 0, 0)
+  proc markdownView*(source: string): Widget =
+    ## A box of labels rendering `source`.
+    result = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
+    var previous = -1
+    for b in parseMarkdown(source):
+      let gap =
+        if previous < 0: 0
+        elif previous == ord(mdListItem) and b.kind == mdListItem: 3
+        elif b.kind == mdHeading: 14
+        else: 8
+      previous = ord(b.kind)
+      var w: Widget
+      case b.kind
+      of mdHeading:
+        w = markupLabel("<b>" & inlineMarkup(b.text) & "</b>")
+        addClass(w, "webby-md-h" & $min(b.level, 4))   # sizes in markdownCss
+      of mdParagraph:
+        w = markupLabel(spaced(inlineMarkup(b.text)))
+      of mdListItem:
+        w = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)
+        gtk_widget_set_margin_start(w, cint(4 + b.depth * 16))
+        let marker = gtk_label_new(b.marker.cstring)
+        addClass(marker, "webby-md-dim")
+        gtk_label_set_xalign(marker, 0)
+        gtk_widget_set_valign(marker, GTK_ALIGN_START)
+        gtk_widget_set_size_request(marker, (if b.marker == "•": 14 else: 22), -1)
+        gtk_box_pack_start(w, marker, 0, 0, 0)
+        gtk_box_pack_start(w, markupLabel(spaced(inlineMarkup(b.text))), 1, 1, 0)
+      of mdQuote:
+        w = markupLabel(spaced(inlineMarkup(b.text)))
+        addClass(w, "webby-md-quote")
+        addClass(w, "webby-md-dim")
+      of mdCode:
+        let label = markupLabel("<span font_family=\"monospace\">" & escapeMarkup(b.text) & "</span>")
+        gtk_label_set_line_wrap(label, 0)
+        let scroller = gtk_scrolled_window_new(nil, nil)
+        gtk_scrolled_window_set_policy(scroller, GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER)
+        gtk_container_add(scroller, label)
+        addClass(scroller, "webby-md-code")
+        w = scroller
+      of mdRule:
+        w = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL)
+      gtk_widget_set_margin_top(w, gap.cint)
+      gtk_box_pack_start(result, w, 0, 0, 0)

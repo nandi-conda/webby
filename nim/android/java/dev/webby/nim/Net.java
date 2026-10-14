@@ -77,4 +77,75 @@ final class Net {
             main.post(() -> Native.command("http.done", done.toString()));
         });
     }
+
+    // ---- Streams (features/net.nim's httpStream): the body goes to Nim piece by piece as it arrives.
+
+    private static final ExecutorService streams = Executors.newCachedThreadPool();
+    private static final java.util.Map<Integer, HttpURLConnection> open = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final java.util.Set<Integer> cancelled = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    private static void send(String command, JSONObject o) {
+        main.post(() -> Native.command(command, o.toString()));
+    }
+
+    static void stream(JSONObject r) {
+        int id = r.optInt("id");
+        streams.execute(() -> {
+            String error = "";
+            try {
+                HttpURLConnection c = (HttpURLConnection) new URL(r.getString("url")).openConnection();
+                open.put(id, c);
+                if (cancelled.contains(id)) return;
+                c.setConnectTimeout(15000);
+                c.setReadTimeout(60000);
+                c.setUseCaches(false);
+                String method = r.optString("method", "POST");
+                c.setRequestMethod(method);
+                JSONArray hs = r.optJSONArray("headers");
+                for (int i = 0; hs != null && i < hs.length(); i++) {
+                    JSONArray h = hs.getJSONArray(i);
+                    c.setRequestProperty(h.getString(0), h.getString(1));
+                }
+                byte[] body = Base64.decode(r.optString("body"), Base64.DEFAULT);
+                if (body.length > 0) {
+                    c.setDoOutput(true);
+                    c.setFixedLengthStreamingMode(body.length);
+                    try (OutputStream o = c.getOutputStream()) {
+                        o.write(body);
+                    }
+                }
+                int status = c.getResponseCode();
+                send("httpStream.status", new JSONObject().put("id", id).put("status", status));
+                InputStream in = status >= 400 ? c.getErrorStream() : c.getInputStream();
+                if (in != null) {
+                    try (InputStream s = in) {
+                        byte[] buf = new byte[1 << 14];
+                        for (int k; (k = s.read(buf)) > 0; ) {
+                            if (cancelled.contains(id)) return;
+                            send("httpStream.data", new JSONObject().put("id", id)
+                                .put("data", Base64.encodeToString(buf, 0, k, Base64.NO_WRAP)));
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                error = e.getMessage() == null ? e.toString() : e.getMessage();
+            } finally {
+                HttpURLConnection c = open.remove(id);
+                if (c != null) c.disconnect();
+            }
+            if (cancelled.remove(id)) return;
+            try {
+                send("httpStream.done", new JSONObject().put("id", id).put("error", error));
+            } catch (Exception ignored) {
+                // not reached
+            }
+        });
+    }
+
+    static void cancelStream(JSONObject r) {
+        int id = r.optInt("id");
+        cancelled.add(id);
+        HttpURLConnection c = open.get(id);
+        if (c != null) streams.execute(c::disconnect);
+    }
 }
