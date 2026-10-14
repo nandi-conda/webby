@@ -299,6 +299,7 @@ public final class MainActivity extends Activity {
         menu.getMenu().add(0, 8, 0, "History");
         menu.getMenu().add(0, 10, 0, "Passwords and passkeys");
         menu.getMenu().add(0, 11, 0, "Tabs from other devices");
+        menu.getMenu().add(0, 13, 0, "Sessions");
         menu.getMenu().add(0, 12, 0, "Sync");
         menu.getMenu().add(0, 3, 0, "Share").setEnabled(onPage);
         menu.getMenu().add(0, 4, 0, "Copy link").setEnabled(onPage);
@@ -318,6 +319,7 @@ public final class MainActivity extends Activity {
                 case 10: Passwords.show(this); break;
                 case 11: SyncScreen.showDevices(this); break;
                 case 12: SyncScreen.show(this); break;
+                case 13: SessionsScreen.show(this); break;
             }
             return true;
         });
@@ -403,7 +405,7 @@ public final class MainActivity extends Activity {
             title.setTextColor(foreground);
             title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
             TextView url = new TextView(MainActivity.this);
-            url.setText(tab.optString("url"));
+            url.setText((tab.optBoolean("pinned") ? "\uD83D\uDCCC " : "") + tab.optString("url"));
             url.setSingleLine(true);
             url.setEllipsize(TextUtils.TruncateAt.END);
             url.setTextColor((foreground & 0x00ffffff) | 0x99000000);
@@ -416,6 +418,18 @@ public final class MainActivity extends Activity {
             row.setOnClickListener(v -> {
                 Native.selectTab(index);
                 if (tabsDialog != null) tabsDialog.dismiss();
+            });
+            boolean pinned = tab.optBoolean("pinned");
+            row.setOnLongClickListener(v -> {
+                String[] items = {pinned ? "Unpin tab" : "Pin tab", "Close other tabs", "Save all tabs as a session"};
+                new AlertDialog.Builder(MainActivity.this).setItems(items, (d, w) -> {
+                    switch (w) {
+                        case 0: Native.cmd("tabs.pin", "index", index, "on", !pinned); break;
+                        case 1: Native.cmd("tabs.closeOthers", "index", index); break;
+                        case 2: SessionsScreen.saveDialog(MainActivity.this, "", false); break;
+                    }
+                }).show();
+                return true;
             });
             return row;
         }
@@ -490,6 +504,7 @@ public final class MainActivity extends Activity {
                 case "passkey": Passwords.passkey(a, e); break;
                 case "http": Net.request(e); break;
                 case "syncStatus": SyncScreen.statusChanged(a, e); break;
+                case "sessionsChanged": SessionsScreen.changed(); break;
                 default: Log.w(TAG, "unknown event " + e.optString("event"));
             }
         } catch (JSONException ex) {
@@ -585,26 +600,42 @@ public final class MainActivity extends Activity {
 
     private void showContextMenu(JSONObject m) {
         String link = m.optString("link"), image = m.optString("image"), selection = m.optString("selection");
+        String linkText = m.optString("linkText");
         boolean editable = m.optBoolean("editable"), password = m.optBoolean("password");
         List<String> labels = new ArrayList<>();
         List<Runnable> actions = new ArrayList<>();
         if (isWebUrl(link)) {
             labels.add("Open in new tab"); actions.add(() -> Native.contextAction("openInNewTab", link));
             labels.add("Copy link"); actions.add(() -> copy(link));
+            if (!linkText.isEmpty()) { labels.add("Copy link text"); actions.add(() -> copy(linkText)); }
             labels.add("Share link"); actions.add(() -> share(link));
         }
         if (isWebUrl(image)) {
             labels.add("Open image in new tab"); actions.add(() -> Native.contextAction("openInNewTab", image));
+            labels.add("Save image to Downloads"); actions.add(() -> Files.saveImage(this, image));
             labels.add("Copy image address"); actions.add(() -> copy(image));
         }
-        if (!selection.isEmpty() && !password) {
-            labels.add("Copy"); actions.add(() -> copy(selection));
-            if (editable) { labels.add("Cut"); actions.add(() -> { copy(selection); Native.contextAction("cut", ""); }); }
-        }
         if (editable) {
+            if (!selection.isEmpty() && !password) {
+                labels.add("Cut"); actions.add(() -> { copy(selection); Native.contextAction("cut", ""); });
+                labels.add("Copy"); actions.add(() -> copy(selection));
+            }
             labels.add("Paste"); actions.add(() -> pasteFromClipboard(true));
+            labels.add("Select all"); actions.add(() -> Native.contextAction("selectAll", ""));
+        } else if (!selection.trim().isEmpty()) {
+            labels.add("Copy"); actions.add(() -> copy(selection));
+            String q = selection.trim();
+            String shortQ = q.length() > 30 ? q.substring(0, 30) + "\u2026" : q;
+            labels.add("Search the web for \u201c" + shortQ + "\u201d"); actions.add(() -> Native.newTab(q, true));
+            labels.add("Share"); actions.add(() -> share(q));
         }
-        labels.add("Select all"); actions.add(() -> Native.contextAction("selectAll", ""));
+        if (link.isEmpty() && image.isEmpty() && !editable) {
+            if (state.optBoolean("canForward")) { labels.add("Forward"); actions.add(() -> Native.nav(Native.FORWARD)); }
+            labels.add("Reload"); actions.add(() -> Native.nav(Native.RELOAD));
+            labels.add("Select all"); actions.add(() -> Native.contextAction("selectAll", ""));
+            labels.add("Copy page address"); actions.add(() -> copy(state.optString("url")));
+        }
+        labels.add("Inspect"); actions.add(() -> Native.cmd("inspect"));
         String title = !link.isEmpty() ? link : !image.isEmpty() ? image : null;
         AlertDialog.Builder b = new AlertDialog.Builder(this);
         if (title != null) b.setTitle(title);

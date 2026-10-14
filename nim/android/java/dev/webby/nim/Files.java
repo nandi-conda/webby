@@ -158,4 +158,39 @@ final class Files {
             }
         });
     }
+
+    /** "Save image to Downloads": http(s) through the DownloadManager, data: URLs decoded here. */
+    static void saveImage(MainActivity a, String url) {
+        try {
+            if (url.startsWith("data:")) {
+                int comma = url.indexOf(',');
+                String meta = url.substring(5, comma);
+                String mime = meta.split(";")[0];
+                byte[] bytes = meta.endsWith(";base64")
+                    ? android.util.Base64.decode(url.substring(comma + 1), android.util.Base64.DEFAULT)
+                    : java.net.URLDecoder.decode(url.substring(comma + 1), "UTF-8").getBytes(StandardCharsets.UTF_8);
+                String ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime);
+                android.content.ContentValues v = new android.content.ContentValues();
+                v.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, "image" + (ext != null ? "." + ext : ""));
+                v.put(android.provider.MediaStore.Downloads.MIME_TYPE, mime.isEmpty() ? "application/octet-stream" : mime);
+                Uri out = a.getContentResolver().insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                try (OutputStream o = a.getContentResolver().openOutputStream(out)) {
+                    o.write(bytes);
+                }
+                Ui.toast(a, "Saved to Downloads");
+                return;
+            }
+            Uri u = Uri.parse(url);
+            String name = u.getLastPathSegment();
+            if (name == null || name.isEmpty()) name = "image";
+            android.app.DownloadManager.Request r = new android.app.DownloadManager.Request(u)
+                .setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, name.replace('/', '_'));
+            a.getSystemService(android.app.DownloadManager.class).enqueue(r);
+            Ui.toast(a, "Downloading " + name);
+        } catch (Exception e) {
+            Log.e(TAG, "save image", e);
+            Ui.toast(a, "Could not save the image");
+        }
+    }
 }

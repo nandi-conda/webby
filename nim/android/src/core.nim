@@ -68,6 +68,7 @@ type
     webauthnJson*, filePickerJson*, permissionJson*: string
     props*: Table[string, string]  ## per-tab scratch space for features
     closed*: bool
+    pinned*: bool            ## kept at the front of the tab list and across restarts
 
 var
   tabs*: seq[Tab]
@@ -160,7 +161,10 @@ proc saveTabs() =
   for t in tabs: urls.add %(if t.url.len > 0: t.url else: "about:blank")
   try:
     createDir(profile)
-    writeFile(tabsFile() & ".tmp", $(%*{"tabs": urls, "active": active}))
+    var pinned = 0
+    for t in tabs:
+      if t.pinned: inc pinned
+    writeFile(tabsFile() & ".tmp", $(%*{"tabs": urls, "active": active, "pinned": pinned}))
     moveFile(tabsFile() & ".tmp", tabsFile())
   except CatchableError as e: log "saving tabs: " & e.msg
 
@@ -170,7 +174,9 @@ proc saveTabs() =
 proc sendState*() =
   var list = newJArray()
   proc shown(url: string): string = (if url == "about:blank": "" else: url)
-  for t in tabs: list.add %*{"id": t.id, "title": (if t.url == "about:blank": "New tab" else: t.title), "url": shown(t.url), "loading": t.loading}
+  for t in tabs:
+    list.add %*{"id": t.id, "title": (if t.url == "about:blank": "New tab" else: t.title), "url": shown(t.url),
+      "loading": t.loading, "pinned": t.pinned}
   let t = current()
   let state = %*{
     "tabs": list, "active": active, "ready": initialTabsOpen,
@@ -246,6 +252,26 @@ proc openTab*(url: string, focus = true, at = -1): Tab {.discardable.} =
   wake()
 
 proc saveTabsSoon*() = saveTabs()
+
+proc moveTab*(i, to: int) =
+  ## Moves tab `i` to index `to`, keeping the active tab active.
+  if i notin 0 ..< tabs.len: return
+  let t = tabs[i]
+  let cur = current()
+  tabs.delete(i)
+  tabs.insert(t, clamp(to, 0, tabs.len))
+  active = tabs.find(cur)
+  saveTabs()
+  sendState()
+
+proc setPinned*(i: int, on: bool) =
+  ## Pinned tabs come first: pinning moves a tab to the end of the pinned ones, unpinning to just after them.
+  if i notin 0 ..< tabs.len or tabs[i].pinned == on: return
+  tabs[i].pinned = on
+  var n = 0
+  for t in tabs:
+    if t.pinned and t != tabs[i]: inc n
+  moveTab(i, n)
 
 proc closeTab*(i: int) =
   if i notin 0 ..< tabs.len: return
@@ -523,14 +549,17 @@ proc openInitialTabs() =
   ## Once Ladybird runs and the page's size is known: the saved tabs, or the home page.
   if not started or viewW <= 0 or tabs.len > 0: return
   var urls: seq[string]
-  var act = 0
+  var act, pinned = 0
   try:
     let j = parseJson(readFile(tabsFile()))
     for u in j{"tabs"}: urls.add u.getStr
     act = j{"active"}.getInt
+    pinned = j{"pinned"}.getInt
   except CatchableError: discard
   if urls.len == 0: urls = @[homePage]
-  for u in urls: discard openTab(u, focus = false)
+  for i, u in urls:
+    let t = openTab(u, focus = false)
+    t.pinned = i < pinned
   activate(clamp(act, 0, tabs.high))
   initialTabsOpen = true
   sendState()
@@ -588,7 +617,7 @@ proc nim_resize(w, h: cint) {.exportc, cdecl.} =
 proc nim_new_tab(url: cstring, focus: cint) {.exportc, cdecl.} =
   if not started: return
   let at = if active >= 0: active + 1 else: -1
-  discard openTab($url, focus != 0, at)
+  discard openTab(if url[0] == '\0': "" else: addressToUrl($url), focus != 0, at)
   saveTabs()
 
 proc nim_close_tab(i: cint) {.exportc, cdecl.} = closeTab(i.int)
