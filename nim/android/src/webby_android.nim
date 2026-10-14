@@ -10,13 +10,15 @@
 {.compile: "glue.c".}
 {.passL: "-landroid -llog".}
 
-import std/[json, math, monotimes, os, random, strutils, times]
+import std/[dynlib, json, math, monotimes, os, random, strutils, times]
 import ../../src/ffi
 
 proc glue_log(text: cstring) {.importc, cdecl.}
 proc glue_call(name, arg: cstring) {.importc, cdecl.}
 proc glue_schedule(ms: cint) {.importc, cdecl.}
 proc glue_blit(pixels: pointer, w, h: cint): cint {.importc, cdecl.}
+
+proc dlerror(): cstring {.importc, header: "<dlfcn.h>".}
 
 proc log(text: string) = glue_log(text.cstring)
 proc call(name, arg: string) = glue_call(name.cstring, arg.cstring)
@@ -68,6 +70,7 @@ var
   quietTicks = 0
   pumping, wokeInPump: bool
   started = false
+  initialTabsOpen = false      # the saved tabs are open; links from other apps can open now
 
 proc current(): Tab = (if active in 0 ..< tabs.len: tabs[active] else: nil)
 
@@ -105,7 +108,7 @@ proc sendState() =
   for t in tabs: list.add %*{"id": t.id, "title": t.title, "url": t.url, "loading": t.loading}
   let t = current()
   let state = $(%*{
-    "tabs": list, "active": active,
+    "tabs": list, "active": active, "ready": initialTabsOpen,
     "url": (if t != nil: t.url else: ""), "title": (if t != nil: t.title else: ""),
     "loading": t != nil and t.loading, "canBack": t != nil and t.canBack, "canForward": t != nil and t.canForward})
   if state != lastState:
@@ -430,6 +433,8 @@ proc openInitialTabs() =
   if urls.len == 0: urls = @[homePage]
   for u in urls: discard openTab(u, focus = false)
   activate(clamp(act, 0, tabs.high))
+  initialTabsOpen = true
+  sendState()
 
 proc nim_init(prefix, profileDir: cstring, d: cdouble, isDark: cint): cint {.exportc, cdecl.} =
   if started:
@@ -438,10 +443,15 @@ proc nim_init(prefix, profileDir: cstring, d: cdouble, isDark: cint): cint {.exp
     lastIme = ""
     sendState()
     return 0
+  log "nim_init: prefix " & $prefix & ", profile " & $profileDir
   randomize()
   density = max(d.float, 1.0)
   dark = isDark != 0
   profile = $profileDir
+  # ffi.loadWebbyLib quits the process on failure, where nothing would say why: check first.
+  if loadLib("libwebby.so") == nil:
+    log "dlopen(libwebby.so) failed: " & $dlerror()
+    return -100
   loadWebbyLib("libwebby.so")
   let r = webby_init(prefix)
   if r != 0:

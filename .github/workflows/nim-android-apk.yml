@@ -5,6 +5,10 @@
 # Version: commit date plus (100 + run number), e.g. 2026.10.14.101; the versionCode is the run number offset the
 # same way, so each APK installs over the last. Signing: the ANDROID_DEBUG_KEYSTORE secret if set (as android-apk.yml),
 # else the runner's fresh debug key.
+# workflow_dispatch on another branch builds without publishing.
+#
+# No emulator test: x86_64 images run arm64 apps through ndk_translation, which stops at the LSE atomics (CASAL) in
+# Ladybird's libraries ("Undefined instruction 0xc8e9fd48"). Test on an arm64 phone with nim/android/smoke.sh.
 name: nim-android-apk
 
 on:
@@ -78,3 +82,4 @@ jobs:
             --title "webby-nim for Android $VERSION" \
             --notes "The Nim front end (nim/android) on Android, built by CI from $GITHUB_SHA with native part $NATIVE_VERSION. Installs as \"Webby Nim\" next to the Flutter app. For arm64 phones on Android 11 or newer (debug-signed)." \
             webby-nim-android-arm64.apk webby-nim-android-arm64.apk.sha256
+

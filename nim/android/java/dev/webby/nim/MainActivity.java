@@ -102,6 +102,7 @@ public final class MainActivity extends Activity {
     }
 
     private void start(String prefix) {
+        Log.i(TAG, "Ladybird prepared at " + prefix);
         String profile = getFilesDir().getPath() + "/profile";
         int r = Native.init(MainActivity.class, prefix, profile, density(), dark ? 1 : 0);
         if (r != 0) {
@@ -364,7 +365,8 @@ public final class MainActivity extends Activity {
             tabsDialog.setTitle(tabs.size() == 1 ? "1 tab" : tabs.size() + " tabs");
             tabsAdapter.notifyDataSetChanged();
         }
-        if (pendingUrl != null && !tabs.isEmpty()) {
+        // A link the app was opened with waits for the saved tabs, or restoring them would switch away from it.
+        if (pendingUrl != null && s.optBoolean("ready")) {
             String url = pendingUrl;
             pendingUrl = null;
             Native.newTab(url, true);
@@ -485,7 +487,7 @@ public final class MainActivity extends Activity {
         super.onNewIntent(intent);
         String url = viewedUrl(intent);
         if (url == null) return;
-        if (started && !tabs.isEmpty()) Native.newTab(url, true);
+        if (started && state.optBoolean("ready")) Native.newTab(url, true);
         else pendingUrl = url;
     }
 
