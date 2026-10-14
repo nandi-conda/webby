@@ -3,8 +3,8 @@
 # (scripts/android/native.env); only the Nim core and the Java shell are built here.
 #
 # Version: commit date plus (100 + run number), e.g. 2026.10.14.101; the versionCode is the run number offset the
-# same way, so each APK installs over the last. Signing: the ANDROID_DEBUG_KEYSTORE secret if set (as android-apk.yml),
-# else the runner's fresh debug key.
+# same way, so each APK installs over the last. Signing: nim/android/debug.keystore, a debug key kept in the repo, so
+# every build has the same signature.
 # workflow_dispatch on another branch builds without publishing.
 #
 # No emulator test: x86_64 images run arm64 apps through ndk_translation, which stops at the LSE atomics (CASAL) in
@@ -56,14 +56,6 @@ jobs:
           curl -fsSL --retry 5 -o native.tar.zst \
             "https://github.com/$GITHUB_REPOSITORY/releases/download/webby-android-native-$NATIVE_VERSION/webby-android-native-arm64.tar.zst"
           echo "$NATIVE_SHA256  native.tar.zst" | sha256sum -c -
-      - name: Signing key
-        env:
-          KEYSTORE: ${{ secrets.ANDROID_DEBUG_KEYSTORE }}
-        run: |
-          if [ -n "$KEYSTORE" ]; then
-            mkdir -p ~/.android
-            echo "$KEYSTORE" | base64 -d > ~/.android/debug.keystore
-          fi
       - name: Build APK
         run: |
           RUN=$((100 + ${{ github.run_number }}))

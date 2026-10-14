@@ -4,7 +4,7 @@
 # Flutter: aapt2, javac, d8, zipalign and apksigner from the Android SDK, and the NDK's clang for Nim.
 #
 # Usage: nim/android/build.sh <native.tar.zst> [version-name] [version-code]
-# Output: nim/android/build/webby-nim-android-arm64.apk (arm64, Android 11 or newer), signed with ~/.android/debug.keystore
+# Output: nim/android/build/webby-nim-android-arm64.apk (arm64, Android 11 or newer), signed with nim/android/debug.keystore
 #
 # Needs: ANDROID_HOME with ndk;$NDK_VERSION, platforms;android-36, build-tools;36.0.0; Nim 2.x as $NIM (or on PATH);
 # a JDK 17+; python3, zstd; rsvg-convert for the launcher icon.
@@ -66,12 +66,9 @@ with zipfile.ZipFile(apk, "a", zipfile.ZIP_DEFLATED) as z:
     for name in sorted(os.listdir(libs)):
         z.write(os.path.join(libs, name), "lib/arm64-v8a/" + name)
 EOF
-KEYSTORE="${WEBBY_ANDROID_KEYSTORE:-$HOME/.android/debug.keystore}"
-if [ ! -f "$KEYSTORE" ]; then
-    mkdir -p "$(dirname "$KEYSTORE")"
-    keytool -genkeypair -keystore "$KEYSTORE" -storepass android -keypass android -alias androiddebugkey \
-        -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" >/dev/null
-fi
+# A debug key kept in the repo (password "android", like any Android debug key), so every build, CI's included, is
+# signed alike and installs over the last one. It is not a secret and proves nothing about who built the APK.
+KEYSTORE="${WEBBY_ANDROID_KEYSTORE:-$HERE/debug.keystore}"
 APK="$OUT/webby-nim-android-arm64.apk"
 "$BUILD_TOOLS/zipalign" -f -P 16 4 "$OUT/base.apk" "$OUT/aligned.apk"
 "$BUILD_TOOLS/apksigner" sign --ks "$KEYSTORE" --ks-pass pass:android --key-pass pass:android \
