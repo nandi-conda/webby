@@ -1,0 +1,80 @@
+# Builds webby-nim for Android (nim/android/build.sh) when the Nim front end changes on main, and publishes it as the
+# prerelease `webby-nim-android-<version>`. Ladybird's native part is the same prebuilt Release the Flutter APK uses
+# (scripts/android/native.env); only the Nim core and the Java shell are built here.
+#
+# Version: commit date plus (100 + run number), e.g. 2026.10.14.101; the versionCode is the run number offset the
+# same way, so each APK installs over the last. Signing: the ANDROID_DEBUG_KEYSTORE secret if set (as android-apk.yml),
+# else the runner's fresh debug key.
+name: nim-android-apk
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - nim/**
+      - app/lib/src/page_compat.dart
+      - app/lib/src/context_menu.dart
+      - scripts/android/native.env
+      - .github/workflows/nim-android-apk.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nim-android-apk
+  cancel-in-progress: false
+
+env:
+  NIM_VERSION: 2.2.4
+  NDK_VERSION: 29.0.14206865
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq librsvg2-bin zstd
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" "platforms;android-36" "build-tools;36.0.0" > /dev/null
+          curl -fsSL --retry 5 "https://nim-lang.org/download/nim-$NIM_VERSION-linux_x64.tar.xz" | tar -xJ -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nim-$NIM_VERSION/bin" >> "$GITHUB_PATH"
+      - name: Fetch the prebuilt native part
+        run: |
+          source scripts/android/native.env
+          curl -fsSL --retry 5 -o native.tar.zst \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/webby-android-native-$NATIVE_VERSION/webby-android-native-arm64.tar.zst"
+          echo "$NATIVE_SHA256  native.tar.zst" | sha256sum -c -
+      - name: Signing key
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_DEBUG_KEYSTORE }}
+        run: |
+          if [ -n "$KEYSTORE" ]; then
+            mkdir -p ~/.android
+            echo "$KEYSTORE" | base64 -d > ~/.android/debug.keystore
+          fi
+      - name: Build APK
+        run: |
+          RUN=$((100 + ${{ github.run_number }}))
+          VERSION="$(git show -s --format=%cd --date=format:%Y.%m.%d HEAD).$RUN"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          nim/android/build.sh native.tar.zst "$VERSION" "$RUN"
+          cp nim/android/build/webby-nim-android-arm64.apk .
+          sha256sum webby-nim-android-arm64.apk | tee webby-nim-android-arm64.apk.sha256
+      - name: Publish release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          source scripts/android/native.env
+          gh release create "webby-nim-android-$VERSION" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "webby-nim for Android $VERSION" \
+            --notes "The Nim front end (nim/android) on Android, built by CI from $GITHUB_SHA with native part $NATIVE_VERSION. Installs as \"Webby Nim\" next to the Flutter app. For arm64 phones on Android 11 or newer (debug-signed)." \
+            webby-nim-android-arm64.apk webby-nim-android-arm64.apk.sha256

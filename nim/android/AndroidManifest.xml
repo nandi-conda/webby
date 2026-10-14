@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- webby-nim for Android. A separate app id from the Flutter APK (dev.webby.webby), so both can be installed. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.webby.nim">
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <application
+        android:label="Webby Nim"
+        android:icon="@mipmap/ic_launcher"
+        android:theme="@style/Webby"
+        android:allowBackup="false"
+        android:extractNativeLibs="true">
+        <!-- extractNativeLibs: Ladybird's helper processes ship as lib<Name>.so and are run from the native library
+             directory (LadybirdRuntime.java), so they must be files there. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="http"/>
+                <data android:scheme="https"/>
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

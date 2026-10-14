@@ -14,6 +14,10 @@ name: android-apk
 on:
   push:
     branches: [main]
+    # The Nim front end has its own APK (nim-android-apk.yml).
+    paths-ignore:
+      - nim/**
+      - .github/workflows/nim-android-apk.yml
   workflow_dispatch:
 
 permissions:

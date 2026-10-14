@@ -85,8 +85,8 @@ proc ladybirdPrefix*(): string =
   result = getEnv("WEBBY_LADYBIRD_PREFIX")
   if result.len == 0: result = getAppDir() / "lib" / "ladybird"
 
-proc loadWebby*(prefix: string) =
-  let path = prefix / "lib" / "libwebby.so"
+proc loadWebbyLib*(path: string) =
+  ## Loads libwebby.so from `path` (a bare file name searches the library path, as on Android).
   let lib = loadLib(path)
   if lib == nil: quit "libwebby.so not found at " & path & ". Set WEBBY_LADYBIRD_PREFIX to the Ladybird runtime."
   template sym(p: untyped) = p = cast[typeof(p)](lib.checkedSymAddr(astToStr(p)))
@@ -149,5 +149,7 @@ proc loadWebby*(prefix: string) =
   sym webby_view_wheel_event
   sym webby_view_key_event
   sym webby_set_offline
+
+proc loadWebby*(prefix: string) = loadWebbyLib(prefix / "lib" / "libwebby.so")
 
 proc str*(p: cstring): string = (if p == nil: "" else: $p)

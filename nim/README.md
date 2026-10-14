@@ -9,7 +9,8 @@ profile: bookmarks (bar, manager, HTML import/export), history and omnibox sugge
 autofill and passkeys, end-to-end encrypted sync (compatible with Flutter devices), tabs from other devices, saved
 sessions, pinned and vertical tabs, tab and page context menus, incognito windows, site permissions and settings,
 file inputs, notifications, geolocation (GeoClue), dark mode, favicons, installable web apps (`--app=`), offline
-mode and Summarize. The Android app stays on Flutter.
+mode and Summarize. On Android, `nim/android` runs the same engine under a Nim core and a thin Java shell (see its
+README); the Flutter app is still the full-featured Android build.
 
 The core is `src/browser.nim` (window, tabs, input, pump, hooks); each feature is a module in `src/features/` whose
 `install()` only adds hooks. Build without `-d:ssl` and don't import std/net: Nim's OpenSSL setup loads the system
