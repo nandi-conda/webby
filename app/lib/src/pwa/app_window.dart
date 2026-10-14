@@ -9,6 +9,7 @@ import '../passkey_dialog.dart';
 import '../passwords/password_bar.dart';
 import '../passwords/password_manager.dart';
 import '../site_settings.dart';
+import '../tabs/new_tab_requests.dart';
 import '../ui.dart';
 import '../web_view.dart';
 import 'app_store.dart';
@@ -29,6 +30,7 @@ class _AppWindowPageState extends State<AppWindowPage> {
   WebbyController? _controller;
   PasswordAgent? _passwords;
   NotificationAgent? _notifications;
+  NewTabRequests? _newTabs;
   Object? _startupError;
   InstalledApp? _app;
   final _pageFocus = FocusNode(debugLabel: 'page');
@@ -44,6 +46,8 @@ class _AppWindowPageState extends State<AppWindowPage> {
       _controller = WebbyController(initialUrl: widget.startUrl)..addListener(_onPageChanged);
       _passwords = PasswordAgent(_controller!);
       _notifications = NotificationAgent(_controller!);
+      // An app window has no tabs: what the app opens with window.open(..., 'noopener') goes to the browser.
+      _newTabs = NewTabRequests(_controller!, onOpen: AppStore.instance.openInBrowser);
       PasswordManager.instance.start(WebbyBindings.open());
       OfflineMonitor.start(WebbyBindings.open())?.addListener(_onOffline);
     } catch (error) {
@@ -90,6 +94,7 @@ class _AppWindowPageState extends State<AppWindowPage> {
     OfflineMonitor.instance?.removeListener(_onOffline);
     _passwords?.dispose();
     _notifications?.dispose();
+    _newTabs?.dispose();
     _controller?.dispose();
     _pageFocus.dispose();
     super.dispose();

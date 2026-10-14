@@ -37,6 +37,7 @@ import 'src/summarize.dart';
 import 'src/tab_strip.dart';
 import 'src/tabs/device_tabs.dart';
 import 'src/tabs/device_tabs_page.dart';
+import 'src/tabs/new_tab_requests.dart';
 import 'src/tabs/open_tabs.dart';
 import 'src/tabs/sessions.dart';
 import 'src/tabs/sessions_page.dart';
@@ -129,6 +130,7 @@ class _BrowserTab {
   late final PwaAgent pwa;
   /// Set when the tab joins the window, which its notifications bring forward.
   NotificationAgent? notifications;
+  NewTabRequests? newTabs;
   final focus = FocusNode(debugLabel: 'page');
   Map<String, Object?>? shownPasskeyPrompt;
   PageDialog? shownDialog;
@@ -144,6 +146,7 @@ class _BrowserTab {
     passwords.dispose();
     pwa.dispose();
     notifications?.dispose();
+    newTabs?.dispose();
     controller.dispose();
     focus.dispose();
   }
@@ -252,6 +255,12 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
       final opened = _insertTab(_BrowserTab.withController(controller), at: index < 0 ? null : index + 1);
       _selectTab(_tabs.indexOf(opened));
     };
+    // window.open(..., 'noopener') gets a tab of its own, with its own WebContent (see new_tab_requests.dart).
+    tab.newTabs = NewTabRequests(tab.controller, onOpen: (url) {
+      if (!mounted || !_tabs.contains(tab)) return;
+      final opened = _addTab(url, at: _tabs.indexOf(tab) + 1);
+      _selectTab(_tabs.indexOf(opened));
+    });
     // Pinned tabs stay together at the start; an unpinned tab opened among them goes just after them.
     final pinnedCount = _pinnedCount;
     final index = at ?? _tabs.length;
