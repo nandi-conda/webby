@@ -37,6 +37,8 @@ extern void nim_paste(char const* text);
 extern void nim_context_action(char const* action, char const* arg);
 extern char const* nim_command(char const* name, char const* args);
 
+static char* jstr(JNIEnv* e, jstring s);
+
 static JavaVM* vm;
 static jclass activity_class;
 static ANativeWindow* window;
@@ -132,6 +134,29 @@ void glue_call(char const* name, char const* arg) {
         (*e)->ExceptionClear(e);
     }
     (*e)->DeleteLocalRef(e, s);
+}
+
+// MainActivity.<name>(String) returning a String, for answers Nim waits for; the result is malloc'd UTF-8 (or NULL).
+char* glue_call_string(char const* name, char const* arg) {
+    JNIEnv* e = env();
+    if (!e || !activity_class) return NULL;
+    jmethodID m = (*e)->GetStaticMethodID(e, activity_class, name, "(Ljava/lang/String;)Ljava/lang/String;");
+    if (!m) {
+        (*e)->ExceptionClear(e);
+        return NULL;
+    }
+    jstring s = jnew(e, arg);
+    jstring r = (jstring)(*e)->CallStaticObjectMethod(e, activity_class, m, s);
+    (*e)->DeleteLocalRef(e, s);
+    if ((*e)->ExceptionCheck(e)) {
+        (*e)->ExceptionDescribe(e);
+        (*e)->ExceptionClear(e);
+        return NULL;
+    }
+    if (!r) return NULL;
+    char* out = jstr(e, r);
+    (*e)->DeleteLocalRef(e, r);
+    return out;
 }
 
 // --- Pump: a timerfd on the main thread's looper, re-armed with the delay nim_pump() asks for.

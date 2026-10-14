@@ -61,6 +61,7 @@ public final class MainActivity extends Activity {
     private AlertDialog tabsDialog;
     private TabsAdapter tabsAdapter;
     private Omnibox omnibox;
+    private LinearLayout passwordBar;
 
     interface ResultCallback {
         void done(int resultCode, Intent data);
@@ -220,6 +221,13 @@ public final class MainActivity extends Activity {
         progress.setVisibility(View.INVISIBLE);
         root.addView(progress, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3)));
 
+        passwordBar = new LinearLayout(this);
+        passwordBar.setOrientation(LinearLayout.VERTICAL);
+        passwordBar.setPadding(dp(16), dp(8), dp(8), dp(4));
+        passwordBar.setBackgroundColor(fieldBackground);
+        passwordBar.setVisibility(View.GONE);
+        root.addView(passwordBar);
+
         page = new PageView(this);
         FrameLayout pageFrame = new FrameLayout(this);
         pageFrame.addView(page);
@@ -289,6 +297,7 @@ public final class MainActivity extends Activity {
         menu.getMenu().add(0, 6, 0, state.optBoolean("bookmarked") ? "Edit bookmark" : "Bookmark this page").setEnabled(onPage);
         menu.getMenu().add(0, 7, 0, "Bookmarks");
         menu.getMenu().add(0, 8, 0, "History");
+        menu.getMenu().add(0, 10, 0, "Passwords and passkeys");
         menu.getMenu().add(0, 3, 0, "Share").setEnabled(onPage);
         menu.getMenu().add(0, 4, 0, "Copy link").setEnabled(onPage);
         menu.getMenu().add(0, 9, 0, "Clear browsing data");
@@ -304,6 +313,7 @@ public final class MainActivity extends Activity {
                 case 7: BookmarksScreen.show(this); break;
                 case 8: HistoryScreen.show(this); break;
                 case 9: HistoryScreen.clearBrowsingData(this, null); break;
+                case 10: Passwords.show(this); break;
             }
             return true;
         });
@@ -472,11 +482,24 @@ public final class MainActivity extends Activity {
             JSONObject e = new JSONObject(json);
             switch (e.optString("event")) {
                 case "filePicker": Files.pick(a, e); break;
+                case "passwordOffer": Passwords.showOffer(a, a.passwordBar, e); break;
+                case "passkey": Passwords.passkey(a, e); break;
                 default: Log.w(TAG, "unknown event " + e.optString("event"));
             }
         } catch (JSONException ex) {
             Log.e(TAG, "event", ex);
         }
+    }
+
+    /** The vault key (src/features/passwords/keyring.nim): "" when none is saved, null when the Keystore failed. */
+    static String keystoreGet(String profile) {
+        MainActivity a = current;
+        return a == null ? null : Passwords.keystoreGet(a, profile);
+    }
+
+    static String keystorePut(String json) {
+        MainActivity a = current;
+        return a == null ? null : Passwords.keystorePut(a, json);
     }
 
     static void onIme(String json) {

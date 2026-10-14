@@ -2,7 +2,7 @@
 ## authenticator keeps passkeys in memory (webby_passkeys_use_vault) and the vault saves them whenever they change.
 
 import std/json
-import ../../browser
+import ../../[base, ffi]
 import vault
 
 var
@@ -10,7 +10,6 @@ var
   vaultError*: string        ## why it couldn't be opened
   passkeysInVault*: bool     ## the authenticator's passkeys live in the vault (else in its own passkeys.json)
   passkeySerial: uint64
-  passkeyTimer: cuint
 
 proc exportPasskeys(): seq[JsonNode] =
   try:
@@ -68,4 +67,7 @@ proc startManager*() =
   theVault.setPasskeys(exportPasskeys())
   if webby_passkeys_delete_file() != 0: stderr.writeLine "webby: could not delete the old passkeys file"
   # Passkeys are made inside libwebby during a sign-up; save them as soon as they appear.
-  passkeyTimer = g_timeout_add(250, proc (d: pointer): gboolean {.cdecl.} = (syncPasskeys(); 1), nil)
+  proc tick() =
+    syncPasskeys()
+    discard startTimer(250, tick)
+  discard startTimer(250, tick)

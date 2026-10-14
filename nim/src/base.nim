@@ -14,6 +14,11 @@ var
   getSecret*: proc (name: string): string
   setSecret*: proc (name, value: string)
 
+  # Timers on the front end's main loop, set by it (GLib on the desktop, the pump on Android): `action` runs once,
+  # `ms` from now; the id stops it.
+  startTimer*: proc (ms: int, action: proc ()): int
+  stopTimer*: proc (id: int)
+
 # ---------------------------------------------------------------------------------------------------------------
 # Files: the same places the Flutter app keeps its data, so both front ends share a profile.
 

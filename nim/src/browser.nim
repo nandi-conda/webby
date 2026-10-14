@@ -167,6 +167,36 @@ proc flushWheel() =
     webby_view_wheel_event(q.t.view, q.x, q.y, q.dx, q.dy, q.precise, q.mods)
 
 # ---------------------------------------------------------------------------------------------------------------
+# Timers for base.startTimer (GLib sources)
+
+type TimerBox = ref object
+  action: proc ()
+  source: cuint
+
+var timerBoxes: Table[int, TimerBox]
+
+proc onTimerBox(data: pointer): gboolean {.cdecl.} =
+  let id = cast[int](data)
+  let box = timerBoxes.getOrDefault(id)
+  timerBoxes.del id
+  if box != nil: box.action()
+  0
+
+base.startTimer = proc (ms: int, action: proc ()): int =
+  var id {.global.} = 0
+  inc id
+  let box = TimerBox(action: action)
+  timerBoxes[id] = box
+  box.source = g_timeout_add(max(ms, 0).cuint, onTimerBox, cast[pointer](id))
+  id
+
+base.stopTimer = proc (id: int) =
+  let box = timerBoxes.getOrDefault(id)
+  if box == nil: return
+  timerBoxes.del id
+  discard g_source_remove(box.source)
+
+# ---------------------------------------------------------------------------------------------------------------
 # Tabs
 
 proc wake*()

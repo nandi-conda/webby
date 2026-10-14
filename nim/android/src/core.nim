@@ -16,11 +16,20 @@ proc glue_log(text: cstring) {.importc, cdecl.}
 proc glue_call(name, arg: cstring) {.importc, cdecl.}
 proc glue_schedule(ms: cint) {.importc, cdecl.}
 proc glue_blit(pixels: pointer, w, h: cint): cint {.importc, cdecl.}
+proc glue_call_string(name, arg: cstring): cstring {.importc, cdecl.}
+proc c_free(p: pointer) {.importc: "free", header: "<stdlib.h>".}
 
 proc dlerror(): cstring {.importc, header: "<dlfcn.h>".}
 
 proc log*(text: string) = glue_log(text.cstring)
 proc call*(name, arg: string) = glue_call(name.cstring, arg.cstring)
+
+proc callJava*(name, arg: string): (bool, string) =
+  ## MainActivity.<name>(String): String, synchronously; (false, "") when it failed or returned null.
+  let r = glue_call_string(name.cstring, arg.cstring)
+  if r == nil: return (false, "")
+  result = (true, $r)
+  c_free(r)
 
 proc event*(name: string, data: JsonNode = nil) =
   ## MainActivity.onEvent: {"event": name, ...data}, for features' UI.
@@ -84,7 +93,9 @@ var
   tabStateHooks*: seq[proc (t: Tab)]              ## url, title or loading changed
   tabClosedHooks*: seq[proc (t: Tab)]
   pageScriptHooks*: seq[proc (t: Tab): string]    ## JS run with the compat shims on every page
-  pageMessageHooks*: seq[proc (t: Tab, msg: JsonNode): bool]  ## true = handled
+  pageTextHooks*: seq[proc (t: Tab, msg: string): bool]       ## raw messages, first; true = handled
+  pageMessageHooks*: seq[proc (t: Tab, msg: JsonNode): bool]  ## JSON messages; true = handled
+  activeTabHooks*: seq[proc (t: Tab)]             ## another tab became the active one
   stateHooks*: seq[proc (t: Tab, state: JsonNode)]  ## add fields to the state Java gets (t may be nil)
   ## Requests from pages; nil = declined.
   webauthnHandler*: proc (t: Tab, request: JsonNode)
@@ -128,6 +139,9 @@ proc runTimers(): int =
   for t in timers:
     let left = int((t.at - getMonoTime()).inMilliseconds)
     result = if result < 0: max(left, 1) else: min(result, max(left, 1))
+
+base.startTimer = after
+base.stopTimer = cancelTimer
 
 proc randomPrefix(): string =
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
@@ -203,6 +217,7 @@ proc activate*(i: int) =
   webby_view_set_focus(t.view, 1)
   needsBlit = true
   blitActive()
+  for h in activeTabHooks: h(t)
   sendState()
   sendIme()
   wake()
@@ -308,6 +323,8 @@ proc answerRequests(t: Tab) =
       except CatchableError as e: log "permission: " & e.msg
 
 proc pageMessage(t: Tab, msg: string) =
+  for h in pageTextHooks:
+    if h(t, msg): return
   try:
     let j = parseJson(msg)
     for h in pageMessageHooks:

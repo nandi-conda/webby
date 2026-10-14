@@ -34,7 +34,8 @@ proc loadHmac() =
   if hmacFn != nil: return
   var lib: LibHandle
   let runtime = getEnv("WEBBY_LADYBIRD_PREFIX")
-  for name in [(if runtime.len > 0: runtime / "lib" / "libcrypto.so.3" else: ""), "libcrypto.so.3", "libcrypto.so"]:
+  for name in [(if runtime.len > 0: runtime / "lib" / "libcrypto.so.3" else: ""), "libcrypto.so.3", "libcrypto.so",
+      (when defined(android): "libwebby.so" else: "")]:
     if name.len == 0: continue
     lib = loadLib(name)
     if lib != nil: break
