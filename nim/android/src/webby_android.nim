@@ -12,12 +12,14 @@
 {.passL: "-landroid -llog".}
 
 import core
-import features/[omnibox, history, bookmarks, home, files, passwords]
+import features/[net, omnibox, history, bookmarks, home, files, passwords, sync]
 
 # Suggestions list open tabs first, then history, then bookmarks, as on the desktop.
+net.install()
 omnibox.install()
 history.install()
 bookmarks.install()
 home.install()
 files.install()
 passwords.install()
+sync.install()

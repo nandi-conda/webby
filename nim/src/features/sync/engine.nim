@@ -3,7 +3,7 @@
 ## kind has its own blob under the vault's sync settings. Everything runs on the GTK loop, one request at a time.
 
 import std/[json, sets]
-import ../../browser
+import ../../base
 import ../passwords/[vault, manager]
 from ../bookmarks/store as bookmarkStore import nil
 from ../summarize/cache as summaryCache import nil
@@ -169,5 +169,8 @@ proc start*() =
   summaryCache.summaryListeners.add proc () = changedLocally(blobSummaries, summariesDoc)
   sessionStore.sessionListeners.add proc () = changedLocally(blobSessions, sessionsDoc)
   deviceListeners.add tabsChanged
-  discard g_timeout_add(5 * 60 * 1000, proc (d: pointer): gboolean {.cdecl.} = (syncNow(); 1), nil)
+  proc every5min() =
+    syncNow()
+    discard startTimer(5 * 60 * 1000, every5min)
+  discard startTimer(5 * 60 * 1000, every5min)
   if enabled(): discard after(500, syncNow)

@@ -19,6 +19,13 @@ var
   startTimer*: proc (ms: int, action: proc ()): int
   stopTimer*: proc (id: int)
 
+  # HTTP for front ends without GIO (Android: Java's HttpURLConnection). `done` gets (status (0 = failed), reason,
+  # headers with lower-case names, body, error) on the main loop.
+  httpRequest*: proc (meth, url: string, headers: seq[(string, string)], body: string,
+                      done: proc (status: int, reason: string, headers: seq[(string, string)], body, error: string))
+
+  deviceDescription*: string   ## e.g. "Pixel 6a" on Android (sync names the device after it); "" on the desktop
+
 # ---------------------------------------------------------------------------------------------------------------
 # Files: the same places the Flutter app keeps its data, so both front ends share a profile.
 

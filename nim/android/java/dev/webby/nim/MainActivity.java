@@ -298,6 +298,8 @@ public final class MainActivity extends Activity {
         menu.getMenu().add(0, 7, 0, "Bookmarks");
         menu.getMenu().add(0, 8, 0, "History");
         menu.getMenu().add(0, 10, 0, "Passwords and passkeys");
+        menu.getMenu().add(0, 11, 0, "Tabs from other devices");
+        menu.getMenu().add(0, 12, 0, "Sync");
         menu.getMenu().add(0, 3, 0, "Share").setEnabled(onPage);
         menu.getMenu().add(0, 4, 0, "Copy link").setEnabled(onPage);
         menu.getMenu().add(0, 9, 0, "Clear browsing data");
@@ -314,6 +316,8 @@ public final class MainActivity extends Activity {
                 case 8: HistoryScreen.show(this); break;
                 case 9: HistoryScreen.clearBrowsingData(this, null); break;
                 case 10: Passwords.show(this); break;
+                case 11: SyncScreen.showDevices(this); break;
+                case 12: SyncScreen.show(this); break;
             }
             return true;
         });
@@ -484,6 +488,8 @@ public final class MainActivity extends Activity {
                 case "filePicker": Files.pick(a, e); break;
                 case "passwordOffer": Passwords.showOffer(a, a.passwordBar, e); break;
                 case "passkey": Passwords.passkey(a, e); break;
+                case "http": Net.request(e); break;
+                case "syncStatus": SyncScreen.statusChanged(a, e); break;
                 default: Log.w(TAG, "unknown event " + e.optString("event"));
             }
         } catch (JSONException ex) {
@@ -500,6 +506,12 @@ public final class MainActivity extends Activity {
     static String keystorePut(String json) {
         MainActivity a = current;
         return a == null ? null : Passwords.keystorePut(a, json);
+    }
+
+    /** What sync calls this device unless it's renamed. */
+    static String deviceModel(String unused) {
+        String m = android.os.Build.MODEL;
+        return m == null || m.isEmpty() ? "Android phone" : m;
     }
 
     static void onIme(String json) {

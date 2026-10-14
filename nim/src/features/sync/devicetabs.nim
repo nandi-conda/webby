@@ -39,6 +39,7 @@ proc deviceFile(): string =
   if o.len > 0: o else: profileFile("device.json")
 
 proc defaultName(): string =
+  if deviceDescription.len > 0: return deviceDescription
   var buf: array[256, char]
   if gethostname(cast[cstring](addr buf[0]), buf.len) == 0:
     let host = $cast[cstring](addr buf[0])
@@ -125,7 +126,7 @@ proc devices*(): seq[RemoteDevice] =
 
 proc record(updatedAt: int64): JsonNode =
   if not shareOn: return %*{"updatedAt": updatedAt, "deleted": true}
-  result = %*{"name": myName, "platform": "linux", "updatedAt": updatedAt, "tabs": []}
+  result = %*{"name": myName, "platform": (when defined(android): "android" else: "linux"), "updatedAt": updatedAt, "tabs": []}
   for t in openTabs: result["tabs"].add %*{"title": t.title, "url": t.url}
 
 proc withoutTime(r: JsonNode): string =
