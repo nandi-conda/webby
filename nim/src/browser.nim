@@ -12,7 +12,8 @@ const pageCompatScript* = block:
   let start = dart.find("r'''") + 4
   dart[start ..< dart.rfind("'''")]
 
-const homePage* = "https://ladybird.org"
+# Blank tabs and startup show the start page (features/home.nim draws it into about:blank).
+const homePage* = "about:blank"
 
 # Ladybird modifier bits (Web::UIEvents::KeyModifier), used by shortcuts too.
 const modAlt* = 1
@@ -209,7 +210,7 @@ proc schedule(ms: int)
 proc currentTab*(): Tab = (if activeIndex in 0 ..< tabs.len: tabs[activeIndex] else: nil)
 
 proc tabLabel*(t: Tab): string =
-  if t.title.len > 0: t.title elif t.url.len > 0: t.url else: "New tab"
+  if t.url == "about:blank": "New tab" elif t.title.len > 0: t.title elif t.url.len > 0: t.url else: "New tab"
 
 proc runJs*(t: Tab, source: string) =
   if t != nil and not t.closed: webby_view_run_javascript(t.view, source.cstring)
@@ -222,7 +223,7 @@ proc refreshChrome*() =
   let title = if appUrl.len > 0 and t.title.len > 0: t.title
               elif t.title.len > 0: t.title & " - " & name else: name
   gtk_window_set_title(window, title.cstring)
-  if gtk_widget_has_focus(urlEntry) == 0: gtk_entry_set_text(urlEntry, t.url.cstring)
+  if gtk_widget_has_focus(urlEntry) == 0: gtk_entry_set_text(urlEntry, (if t.url == "about:blank": "" else: t.url).cstring)
   gtk_widget_set_sensitive(backButton, t.canBack.gboolean)
   gtk_widget_set_sensitive(forwardButton, t.canForward.gboolean)
   setIcon(gtk_button_get_image(reloadButton), if t.loading: "close" else: "refresh")
@@ -346,7 +347,7 @@ proc loadUrl*(t: Tab, text: string) =
 proc openTab*(url: string, focus = true, index = -1): Tab =
   let t = adoptView(newViewSized(), focus, index)
   if url.len > 0: t.loadUrl(url)
-  elif focus:
+  if (url.len == 0 or url == homePage) and focus:
     gtk_entry_set_text(urlEntry, "")
     gtk_widget_grab_focus(urlEntry)
   t
@@ -1021,7 +1022,7 @@ proc onDelete(w: Widget, e: GEvent, data: pointer): gboolean {.cdecl.} =
   1
 
 proc defaultShortcuts() =
-  addShortcut(modCtrl, 0x74, proc () = discard openTab(""))                       # Ctrl+T
+  addShortcut(modCtrl, 0x74, proc () = discard openTab(homePage))                       # Ctrl+T
   addShortcut(modCtrl, 0x77, proc () = (let t = currentTab(); if t != nil: closeTab(t)))  # Ctrl+W
   addShortcut(modCtrl, 0x6c, proc () = gtk_widget_grab_focus(urlEntry))          # Ctrl+L
   addShortcut(0, 0xffc6, proc () = gtk_widget_grab_focus(urlEntry))              # F6
@@ -1069,7 +1070,7 @@ proc buildWindow() =
   tabStrip = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2)
   gtk_container_add(scroller, tabStrip)
   gtk_box_pack_start(tabStripBox, scroller, 1, 1, 0)
-  gtk_box_pack_start(tabStripBox, iconButton("add", "New tab (Ctrl+T)", proc () = discard openTab("")),
+  gtk_box_pack_start(tabStripBox, iconButton("add", "New tab (Ctrl+T)", proc () = discard openTab(homePage)),
     0, 0, 0)
   gtk_box_pack_start(mainBox, tabStripBox, 0, 0, 0)
 

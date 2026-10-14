@@ -215,7 +215,7 @@ proc onEntryFocusOut(e: Widget, ev: GEvent, data: pointer): gboolean {.cdecl.} =
     let t = currentTab()
     if t != nil and t.url.len > 0:
       g_signal_handler_block(urlEntry, changedHandler)
-      gtk_entry_set_text(urlEntry, t.url.cstring)
+      gtk_entry_set_text(urlEntry, (if t.url == "about:blank": "" else: t.url).cstring)
       g_signal_handler_unblock(urlEntry, changedHandler)
     0, nil)
   0
@@ -263,7 +263,7 @@ proc install*() =
     elif sidePanelShowing(): closeSidePanel()
     elif gtk_widget_has_focus(urlEntry) != 0:
       let t = currentTab()
-      if t != nil: gtk_entry_set_text(urlEntry, t.url.cstring)
+      if t != nil: gtk_entry_set_text(urlEntry, (if t.url == "about:blank": "" else: t.url).cstring)
       gtk_editable_select_region(urlEntry, 0, -1)
     else: result = false)
   suggestionProviders.insert(tabSuggestions, 0)

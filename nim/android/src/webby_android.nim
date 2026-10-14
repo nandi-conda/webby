@@ -38,7 +38,15 @@ proc dartString(dart, head: string): string =
 const contextMenuScript = dartString(staticRead("../../../app/lib/src/context_menu.dart"),
   "String contextMenuPageScript(String prefix) => '''")
 
-const homePage = "https://duckduckgo.com"
+# The start page (app/lib/src/home_page.dart), drawn into about:blank tabs. No bookmarks or history here yet, so
+# it shows just the search/address box.
+const homePageScript = block:
+  let dart = staticRead("../../../app/lib/src/home_page.dart")
+  let head = "const homePageSource = r'''"
+  let start = dart.find(head) + head.len
+  dart[start ..< dart.find("''';", start)].replace("__WEBBY_HOME_DATA__", "{}")
+
+const homePage = "about:blank"
 
 type
   Tab = ref object
@@ -105,11 +113,12 @@ proc saveTabs() =
 
 proc sendState() =
   var list = newJArray()
-  for t in tabs: list.add %*{"id": t.id, "title": t.title, "url": t.url, "loading": t.loading}
+  proc shown(url: string): string = (if url == "about:blank": "" else: url)
+  for t in tabs: list.add %*{"id": t.id, "title": (if t.url == "about:blank": "New tab" else: t.title), "url": shown(t.url), "loading": t.loading}
   let t = current()
   let state = $(%*{
     "tabs": list, "active": active, "ready": initialTabsOpen,
-    "url": (if t != nil: t.url else: ""), "title": (if t != nil: t.title else: ""),
+    "url": (if t != nil: shown(t.url) else: ""), "title": (if t != nil: t.title else: ""),
     "loading": t != nil and t.loading, "canBack": t != nil and t.canBack, "canForward": t != nil and t.canForward})
   if state != lastState:
     lastState = state
@@ -211,6 +220,7 @@ proc runPageScripts(t: Tab) =
   let (open, close) = if t.url == "about:blank": ("", "") else: ("if (location.href !== 'about:blank') {\n", "\n}")
   t.runJs(open & pageCompatScript & close)
   t.runJs(open & contextMenuScript.replace("${jsonEncode(prefix)}", $(%t.messagePrefix)) & close)
+  if t.url == "about:blank": t.runJs(homePageScript)
 
 proc answerRequests(t: Tab) =
   let d = str(webby_view_dialog(t.view))

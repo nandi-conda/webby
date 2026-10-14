@@ -16,6 +16,7 @@ import 'src/color_scheme.dart';
 import 'src/frame_bench.dart';
 import 'src/history/history_page.dart';
 import 'src/history/history_store.dart';
+import 'src/home_page.dart';
 import 'src/incognito.dart';
 import 'src/notifications.dart';
 import 'src/omnibox.dart';
@@ -50,7 +51,7 @@ Future<void> main(List<String> args) async {
   final urls = args.where((a) => !a.startsWith('--')).toList();
   // `--incognito` makes this process an incognito window: its own Ladybird that keeps nothing (see Incognito).
   if (app == null && args.contains(Incognito.flag) && !Platform.isAndroid) Incognito.enable();
-  var initialUrl = app ?? (urls.isNotEmpty ? urls.first : (Incognito.active ? 'about:blank' : 'https://ladybird.org'));
+  var initialUrl = app ?? (urls.isNotEmpty ? urls.first : 'about:blank');
   String? launchUrl;
   if (Platform.isAndroid) {
     WidgetsFlutterBinding.ensureInitialized();
@@ -256,6 +257,10 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
       _selectTab(_tabs.indexOf(opened));
     };
     // window.open(..., 'noopener') gets a tab of its own, with its own WebContent (see new_tab_requests.dart).
+    // Blank tabs show webby's start page (incognito windows keep their own blank page).
+    if (!Incognito.active) {
+      tab.controller.pageScripts.add(() => tab.controller.url == _blankUrl ? homePageScript(homePageData()) : '');
+    }
     tab.newTabs = NewTabRequests(tab.controller, onOpen: (url) {
       if (!mounted || !_tabs.contains(tab)) return;
       final opened = _addTab(url, at: _tabs.indexOf(tab) + 1);

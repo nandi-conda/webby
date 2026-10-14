@@ -170,7 +170,7 @@ proc setVertical*(on: bool, save = true) =
 # ---------------------------------------------------------------------------------------------------------------
 # Commands
 
-proc newTab*() = discard openTab("")
+proc newTab*() = discard openTab(homePage)
 
 proc reopenClosedTab*() =
   if closedTabs.len > 0:

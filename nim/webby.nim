@@ -5,10 +5,11 @@
 ## The core is src/browser.nim; every feature is a module in src/features with an install() that adds hooks.
 
 import src/browser
-import src/features/[bookmarks, history, omnibox, passwords, tabs, site, pwa, summarize, sync]
+import src/features/[bookmarks, history, home, omnibox, passwords, tabs, site, pwa, summarize, sync]
 
 bookmarks.install()
 history.install()
+home.install()
 omnibox.install()
 passwords.install()
 tabs.install()
