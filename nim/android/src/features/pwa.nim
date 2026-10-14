@@ -61,11 +61,14 @@ proc load(t: Tab, href: string) =
     finish(nil)
     return
   get(href, "application/manifest+json, application/json;q=0.9, */*;q=0.1", proc (ok: bool, body, kind: string) =
-    finish(if ok: parseManifest(body, href, documentUrl) else: nil))
+    let m = if ok: parseManifest(body, href, documentUrl) else: nil
+    log "pwa: manifest " & href & (if not ok: " not fetched" elif m == nil: " not an app" else: ": " & m.title)
+    finish(m))
 
 proc onMessage(t: Tab, j: JsonNode): bool =
   if j{"type"}.getStr != "manifest": return false
   let href = j{"href"}.getStr
+  log "pwa: page " & t.url & " reports manifest " & (if href.len == 0: "(none)" else: href)
   let a = agent(t)
   if href == a.href and a.manifest != nil: return true
   a.href = href
