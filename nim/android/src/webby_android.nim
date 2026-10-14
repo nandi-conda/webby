@@ -38,8 +38,8 @@ proc dartString(dart, head: string): string =
 const contextMenuScript = dartString(staticRead("../../../app/lib/src/context_menu.dart"),
   "String contextMenuPageScript(String prefix) => '''")
 
-# The start page (app/lib/src/home_page.dart), drawn into about:blank tabs. No bookmarks or history here yet, so
-# it shows just the search/address box.
+# The start page (app/lib/src/home_page.dart), drawn into about:blank tabs. No bookmarks here yet, so it shows just
+# the search/address box.
 const homePageScript = block:
   let dart = staticRead("../../../app/lib/src/home_page.dart")
   let head = "const homePageSource = r'''"

@@ -1,19 +1,18 @@
 import 'dart:convert';
 
 import 'bookmarks/bookmark_store.dart';
-import 'history/history_store.dart';
 
-/// webby's start page, shown in new tabs and at startup instead of a website: a search/address box, the first
-/// bookmarks and the recently visited pages, light or dark with the page colour scheme.
+/// webby's start page, shown in new tabs and at startup instead of a website: a search/address box and the first
+/// bookmarks, light or dark with the page colour scheme.
 ///
 /// The tab stays on about:blank and this page script draws the page into that document, so everything that already
 /// treats about:blank as a blank tab (the empty address bar, "New tab" titles, history, sessions, closed tabs) keeps
 /// working. The Nim front ends (nim/src/features/home.nim, nim/android) read [homePageSource] from this file at
 /// compile time, so all three show the same page; each fills in `__WEBBY_HOME_DATA__` with
-/// `{"bookmarks": [{"title", "url"}], "recent": [{"title", "url"}]}`.
+/// `{"bookmarks": [{"title", "url"}]}`.
 String homePageScript(Map<String, Object?> data) => homePageSource.replaceFirst('__WEBBY_HOME_DATA__', jsonEncode(data));
 
-/// The start page's data from this profile's bookmarks and history.
+/// The start page's data from this profile's bookmarks.
 Map<String, Object?> homePageData({int limit = 8}) {
   final bookmarks = <Map<String, String>>[];
   void walk(Bookmark node) {
@@ -30,15 +29,7 @@ Map<String, Object?> homePageData({int limit = 8}) {
   final store = BookmarkStore.instance;
   walk(store.bar);
   walk(store.other);
-  final recent = <Map<String, String>>[];
-  final seen = <String>{};
-  for (final entry in HistoryStore.instance.entries) {
-    if (recent.length >= limit) break;
-    if (!entry.url.startsWith('http')) continue;
-    final key = entry.url.endsWith('/') ? entry.url.substring(0, entry.url.length - 1) : entry.url;
-    if (seen.add(key)) recent.add({'title': entry.title, 'url': entry.url});
-  }
-  return {'bookmarks': bookmarks, 'recent': recent};
+  return {'bookmarks': bookmarks};
 }
 
 const homePageSource = r'''
@@ -152,10 +143,9 @@ const homePageSource = r'''
     if (url) location.href = url;
   });
   main.append(logo, form);
-  const bookmarks = data.bookmarks || [], recent = data.recent || [];
+  const bookmarks = data.bookmarks || [];
   if (bookmarks.length) main.append(section('Bookmarks', bookmarks));
-  if (recent.length) main.append(section('Recently visited', recent));
-  if (!bookmarks.length && !recent.length) main.classList.add('empty');
+  else main.classList.add('empty');
   d.body.append(main);
 })();
 ''';

@@ -1,11 +1,10 @@
-## The start page (app/lib/src/home_page.dart): blank tabs and startup show a search/address box, the first bookmarks
-## and the recently visited pages instead of a website. The tab stays on about:blank and the Dart file's page script
+## The start page (app/lib/src/home_page.dart): blank tabs and startup show a search/address box and the first
+## bookmarks instead of a website. The tab stays on about:blank and the Dart file's page script
 ## draws the page into that document, so blank-tab handling everywhere else is unchanged.
 
 import std/[json, strutils]
 import ../browser
 import bookmarks/store as bookmarkStore
-import history/store as historyStore
 
 const homePageSource = block:
   let dart = staticRead("../../../app/lib/src/home_page.dart")
@@ -23,9 +22,7 @@ proc homePageData(limit = 8): JsonNode =
   bookmarkStore.ensureLoaded()
   walk(bookmarkStore.bar)
   walk(bookmarkStore.other)
-  var recent = newJArray()
-  for e in historyStore.recent(limit): recent.add %*{"title": e.title, "url": e.url}
-  %*{"bookmarks": marks, "recent": recent}
+  %*{"bookmarks": marks}
 
 proc pageScript(t: Tab): string =
   if incognito or appUrl.len > 0 or t.url != "about:blank": return ""

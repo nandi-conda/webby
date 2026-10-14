@@ -101,19 +101,6 @@ proc records*(url: string): bool =
   ## Whether visits to `url` are recorded: web pages and local files, not about: pages, data: URLs and the like.
   try: parseUri(url).scheme.toLowerAscii in ["http", "https", "file"] except CatchableError: false
 
-proc recent*(limit: int): seq[HistoryEntry] =
-  ## The newest visits first, one per page (ignoring a trailing slash), web pages only.
-  ensureLoaded()
-  var seen: seq[string]
-  for i in countdown(entries.high, 0):
-    if result.len >= limit: break
-    let e = entries[i]
-    if not e.url.startsWith("http"): continue
-    let key = (if e.url.endsWith('/'): e.url[0 ..< ^1] else: e.url)
-    if key notin seen:
-      seen.add key
-      result.add e
-
 proc samePage*(a, b: string): bool =
   ## Whether `a` and `b` are the same page, ignoring a trailing slash.
   proc noSlash(s: string): string = (if s.endsWith('/'): s[0 ..< ^1] else: s)
