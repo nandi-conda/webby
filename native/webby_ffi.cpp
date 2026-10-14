@@ -210,6 +210,26 @@ void webby_view_run_javascript(WebbyView* handle, char const* source)
     handle->view->run_javascript(string.release_value());
 }
 
+void webby_view_find(WebbyView* handle, char const* query, int case_sensitive)
+{
+    auto string = Utf16String::from_utf8_with_replacement_character(StringView { query, strlen(query) });
+    if (string.is_empty())
+        handle->view->reset_find_result();
+    handle->view->find_in_page(string, case_sensitive ? CaseSensitivity::CaseSensitive : CaseSensitivity::CaseInsensitive, true);
+}
+
+void webby_view_find_next(WebbyView* handle) { handle->view->find_in_page_next_match(); }
+void webby_view_find_previous(WebbyView* handle) { handle->view->find_in_page_previous_match(); }
+
+void webby_view_find_end(WebbyView* handle)
+{
+    handle->view->find_in_page_end();
+    handle->view->reset_find_result();
+}
+
+int webby_view_find_current(WebbyView* handle) { return handle->view->find_current(); }
+int webby_view_find_total(WebbyView* handle) { return handle->view->find_total(); }
+
 uint64_t webby_view_frame_serial(WebbyView* handle) { return handle->view->frame_serial(); }
 uint8_t const* webby_view_frame_pixels(WebbyView* handle) { return handle->view->frame_pixels(); }
 int webby_view_frame_width(WebbyView* handle) { return handle->view->frame_width(); }

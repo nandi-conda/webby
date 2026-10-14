@@ -64,6 +64,20 @@ WEBBY_API void webby_view_set_visible(WebbyView*, int visible);
  * when the system runs short of memory. */
 WEBBY_API void webby_view_collect_garbage(WebbyView*);
 
+/* Find in page. webby_view_find() searches the page for `query` (empty
+ * clears the search), highlights every match and scrolls the first one into
+ * view; next/previous move the active match (wrapping around), and end clears
+ * the highlights and leaves the active match selected. Results arrive
+ * asynchronously: find_current() is the 1-based active match (0 when there is
+ * none) and find_total() the number of matches; both change
+ * together with state_serial(). */
+WEBBY_API void webby_view_find(WebbyView*, char const* query, int case_sensitive);
+WEBBY_API void webby_view_find_next(WebbyView*);
+WEBBY_API void webby_view_find_previous(WebbyView*);
+WEBBY_API void webby_view_find_end(WebbyView*);
+WEBBY_API int webby_view_find_current(WebbyView*);
+WEBBY_API int webby_view_find_total(WebbyView*);
+
 /* Views the page opened (links with target=_blank, window.open()). Each one
  * is a full view with its own page; the UI should show it as a new tab.
  * webby_view_take_new_view() returns the oldest waiting one (the caller owns
