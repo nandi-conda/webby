@@ -1,0 +1,78 @@
+diff --git a/Libraries/LibWebCommon/Loader/SiteCompatibility.cpp b/Libraries/LibWebCommon/Loader/SiteCompatibility.cpp
+index 781a410c..9e6935c8 100644
+--- a/Libraries/LibWebCommon/Loader/SiteCompatibility.cpp
++++ b/Libraries/LibWebCommon/Loader/SiteCompatibility.cpp
+@@ -47,6 +47,8 @@ static ErrorOr<Vector<UserAgentTransformation>> parse_user_agent_transformations
+             return Error::from_string_literal("User-Agent transformations must be strings");
+         if (transformation.as_string() == "hide_Ladybird"sv)
+             TRY(result.try_append(UserAgentTransformation::HideLadybird));
++        else if (transformation.as_string() == "hide_Chrome"sv)
++            TRY(result.try_append(UserAgentTransformation::HideChrome));
+         else
+             return Error::from_string_literal("Unknown User-Agent transformation");
+     }
+@@ -130,12 +132,12 @@ bool SiteCompatibilityRule::matches(URL::URL const& url) const
+     return false;
+ }
+ 
+-static String remove_ladybird_product(StringView user_agent)
++static String remove_product(StringView user_agent, StringView product_prefix)
+ {
+     StringBuilder builder;
+     bool first = true;
+     for (auto product : user_agent.split_view(' ')) {
+-        if (product.starts_with("Ladybird/"sv))
++        if (product.starts_with(product_prefix))
+             continue;
+         if (!first)
+             builder.append(' ');
+@@ -151,7 +153,10 @@ String SiteCompatibilityRule::apply_user_agent_transformations(StringView user_a
+     for (auto transformation : m_user_agent_transformations) {
+         switch (transformation) {
+         case UserAgentTransformation::HideLadybird:
+-            transformed_user_agent = remove_ladybird_product(transformed_user_agent);
++            transformed_user_agent = remove_product(transformed_user_agent, "Ladybird/"sv);
++            break;
++        case UserAgentTransformation::HideChrome:
++            transformed_user_agent = remove_product(transformed_user_agent, "Chrome/"sv);
+             break;
+         }
+     }
+diff --git a/Libraries/LibWebCommon/Loader/SiteCompatibility.h b/Libraries/LibWebCommon/Loader/SiteCompatibility.h
+index af7059cb..cac1e844 100644
+--- a/Libraries/LibWebCommon/Loader/SiteCompatibility.h
++++ b/Libraries/LibWebCommon/Loader/SiteCompatibility.h
+@@ -18,6 +18,7 @@ namespace Web {
+ 
+ enum class UserAgentTransformation : u8 {
+     HideLadybird,
++    HideChrome,
+ };
+ 
+ class WEBCOMMON_API SiteCompatibilityRule {
+diff --git a/UI/cmake/ResourceFiles.cmake b/UI/cmake/ResourceFiles.cmake
+index 836832ec..1eb211a8 100644
+--- a/UI/cmake/ResourceFiles.cmake
++++ b/UI/cmake/ResourceFiles.cmake
+@@ -32,6 +32,7 @@ list(TRANSFORM INTERNAL_RESOURCES PREPEND "${LADYBIRD_SOURCE_DIR}/Base/res/ladyb
+ set(SITE_COMPATIBILITY_RESOURCES
+     aljazeera.com.json
+     cnn.com.json
++    invent.kde.org.json
+     nytimes.com.json
+ )
+ list(TRANSFORM SITE_COMPATIBILITY_RESOURCES PREPEND "${LADYBIRD_SOURCE_DIR}/WebCompat/")
+diff --git a/WebCompat/invent.kde.org.json b/WebCompat/invent.kde.org.json
+new file mode 100644
+index 00000000..ee0a934d
+--- /dev/null
++++ b/WebCompat/invent.kde.org.json
+@@ -0,0 +1,8 @@
++{
++    "matches": [
++        "https://invent.kde.org/*"
++    ],
++    "user_agent": [
++        "hide_Chrome"
++    ]
++}
