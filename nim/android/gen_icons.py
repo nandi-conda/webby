@@ -2,7 +2,7 @@
 """Writes Android vector drawables (res/drawable/ic_<name>.xml) for the Material icons the shell uses, from the
 glyph outlines the desktop Nim front end compiles in (nim/src/icondata.nim), so both look the same.
 
-Usage: gen_icons.py <icondata.nim> <res dir> name..."""
+Usage: gen_icons.py <icondata.nim> <res dir> [name...]   (no names: every icon)"""
 import os
 import re
 import sys
@@ -11,6 +11,7 @@ source, res, names = sys.argv[1], sys.argv[2], sys.argv[3:]
 text = open(source).read()
 em = int(re.search(r"const iconEm\* = (\d+)", text).group(1))
 paths = dict(re.findall(r'^\s*"([a-z0-9_]+)": "([^"]*)"', text, re.M))
+names = names or sorted(paths)
 os.makedirs(os.path.join(res, "drawable"), exist_ok=True)
 for name in names:
     with open(os.path.join(res, "drawable", f"ic_{name}.xml"), "w") as f:

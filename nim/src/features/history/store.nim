@@ -4,7 +4,7 @@
 ## temporary one. Visits older than 90 days are dropped. Incognito records nothing.
 
 import std/[algorithm, json, os, posix, sequtils, sets, strutils, tables, times, uri]
-import ../../browser
+import ../../base
 
 type
   HistoryEntry* = ref object

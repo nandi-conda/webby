@@ -4,7 +4,7 @@
 
 import std/[algorithm, json, os, posix, strutils, uri]
 from std/unicode import runes, Rune, `$`
-import ../../browser
+import ../../base
 import doc, blobs
 from ../passwords/crypto import randomBytes
 

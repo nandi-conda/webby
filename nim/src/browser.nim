@@ -3,8 +3,8 @@
 ## (UI pieces go in `windowHooks`, which run once the window exists). Nothing here knows about a feature.
 
 import std/[algorithm, json, math, monotimes, os, random, strutils, tables, times]
-import gtk, ffi, icons
-export gtk, ffi, icons, json, tables
+import base, gtk, ffi, icons
+export base, gtk, ffi, icons, json, tables
 
 # The Flutter app's page shims (lib/src/page_compat.dart), read at compile time so both front ends run the same JS.
 const pageCompatScript* = block:
@@ -43,8 +43,6 @@ type
 
 var
   # Command line
-  appUrl*: string              ## --app=<url>: an installed web app's own window (no tab strip, no URL bar)
-  incognito*: bool             ## --incognito: this process keeps nothing (see app/lib/src/incognito.dart)
   commandLineUrls*: seq[string]
 
   # Widgets
@@ -78,11 +76,6 @@ var
   suggestionProviders*: seq[proc (text: string): seq[Suggestion]]
   tabMenuHooks*: seq[proc (t: Tab, menu: Widget)]  ## right-click on a tab: append items to the GtkMenu
   pageContextMenuHook*: proc (t: Tab, info: JsonNode, event: GEvent) ## replaces the built-in page menu if set
-
-  # Device-only secrets kept in the password vault (e.g. the DeepSeek key), set by the passwords feature.
-  # nil until it installs; getSecret returns "" when there is none.
-  getSecret*: proc (name: string): string
-  setSecret*: proc (name, value: string)
 
   # Requests from pages. nil = declined by the core.
   webauthnHandler*: proc (t: Tab, request: JsonNode)
@@ -172,34 +165,6 @@ proc flushWheel() =
   let q = wheelQ
   if not q.t.closed:
     webby_view_wheel_event(q.t.view, q.x, q.y, q.dx, q.dy, q.precise, q.mods)
-
-# ---------------------------------------------------------------------------------------------------------------
-# Files: the same places the Flutter app keeps its data, so both front ends share a profile.
-
-proc dataHome*(): string =
-  let xdg = getEnv("XDG_DATA_HOME")
-  if xdg.len > 0: xdg else: getHomeDir() / ".local" / "share"
-
-proc profileName*(): string =
-  let p = getEnv("WEBBY_PROFILE")
-  if p.len > 0: p else: "default"
-
-proc profileDir*(): string = dataHome() / "webby" / "profiles" / profileName()
-
-proc profileFile*(name: string): string = profileDir() / name
-
-proc readJsonFile*(path: string): JsonNode =
-  ## The file's JSON, or nil if it's missing or unreadable.
-  try: parseJson(readFile(path)) except CatchableError: nil
-
-proc writeFileAtomic*(path, content: string) =
-  createDir(path.parentDir)
-  let tmp = path & ".tmp"
-  writeFile(tmp, content)
-  moveFile(tmp, path)
-
-proc writeJsonFile*(path: string, node: JsonNode, pretty = false) =
-  writeFileAtomic(path, if pretty: node.pretty else: $node)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Tabs

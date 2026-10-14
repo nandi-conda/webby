@@ -5,7 +5,7 @@
 
 import std/[algorithm, json, os, sequtils, sets, strutils, tables, times]
 from std/unicode import Rune, `$`
-import ../../browser
+import ../../base
 
 type
   Bookmark* = ref object

@@ -6,7 +6,7 @@
 ## plus tombstones), `applySyncDoc` takes a merged one back, and `sessionListeners` hear every change.
 
 import std/[json, os, strutils, times]
-import ../../browser
+import ../../base
 
 type
   DeviceTab* = object

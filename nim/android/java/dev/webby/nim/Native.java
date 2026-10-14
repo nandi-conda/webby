@@ -1,6 +1,10 @@
 package dev.webby.nim;
 
+import android.util.Log;
 import android.view.Surface;
+import org.json.JSONException;
+import org.json.JSONObject;
+import org.json.JSONTokener;
 
 /** libwebbynim.so (src/glue.c, src/webby_android.nim). Every call must come from the main thread. */
 final class Native {
@@ -60,4 +64,31 @@ final class Native {
 
     /** "openInNewTab" / "open" with a URL, or a context menu script action ("selectAll", "cut"). */
     static native void contextAction(String action, String arg);
+
+    /** Runs a feature's command (nim/android/src/features) with JSON arguments; the reply is JSON ("null" for none). */
+    static native String command(String name, String args);
+
+    /** {@link #command} with arguments given as key, value, key, value...; the reply parsed (JSONObject, JSONArray,
+     * a boxed value, or null). */
+    static Object cmd(String name, Object... keyValues) {
+        JSONObject args = new JSONObject();
+        try {
+            for (int i = 0; i + 1 < keyValues.length; i += 2) args.put((String) keyValues[i], keyValues[i + 1]);
+            Object r = new JSONTokener(command(name, args.toString())).nextValue();
+            return r == JSONObject.NULL ? null : r;
+        } catch (JSONException e) {
+            Log.e("webby-nim", name, e);
+            return null;
+        }
+    }
+
+    static JSONObject obj(String name, Object... keyValues) {
+        Object r = cmd(name, keyValues);
+        return r instanceof JSONObject ? (JSONObject) r : null;
+    }
+
+    static org.json.JSONArray arr(String name, Object... keyValues) {
+        Object r = cmd(name, keyValues);
+        return r instanceof org.json.JSONArray ? (org.json.JSONArray) r : new org.json.JSONArray();
+    }
 }

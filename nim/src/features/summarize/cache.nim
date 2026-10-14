@@ -2,7 +2,7 @@
 ## profiles/<profile>/summaries.json, the same file and format as the Flutter app. Incognito keeps them in memory only.
 
 import std/[algorithm, os, strutils, times]
-import ../../browser
+import ../../base
 
 type
   CachedSummary* = object

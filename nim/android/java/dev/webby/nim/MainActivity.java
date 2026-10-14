@@ -60,6 +60,14 @@ public final class MainActivity extends Activity {
     private int active = -1;
     private AlertDialog tabsDialog;
     private TabsAdapter tabsAdapter;
+    private Omnibox omnibox;
+
+    interface ResultCallback {
+        void done(int resultCode, Intent data);
+    }
+
+    private final android.util.SparseArray<ResultCallback> results = new android.util.SparseArray<>();
+    private int nextRequest = 1;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -71,9 +79,10 @@ public final class MainActivity extends Activity {
             Log.e(TAG, "environment", e);
         }
         dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
-        foreground = dark ? 0xffe6e1e5 : 0xff1c1b1f;
-        background = dark ? 0xff1c1b1f : 0xfffffbfe;
-        fieldBackground = dark ? 0xff2b2930 : 0xffece6f0;
+        Ui.setDark(dark);
+        foreground = Ui.foreground;
+        background = Ui.background;
+        fieldBackground = Ui.fieldBackground;
         getWindow().setStatusBarColor(background);
         getWindow().setNavigationBarColor(background);
         if (!dark) {
@@ -174,13 +183,14 @@ public final class MainActivity extends Activity {
             String text = urlField.getText().toString().trim();
             if (text.isEmpty()) return true;
             Native.load(text);
-            urlField.clearFocus();
-            hideKeyboard(urlField);
-            page.requestFocus();
+            leaveUrlField();
             return true;
         });
         urlField.setOnFocusChangeListener((v, focused) -> {
-            if (!focused) showUrl();
+            if (!focused) {
+                omnibox.hide();
+                showUrl();
+            }
         });
         bar.addView(urlField);
 
@@ -213,6 +223,7 @@ public final class MainActivity extends Activity {
         page = new PageView(this);
         FrameLayout pageFrame = new FrameLayout(this);
         pageFrame.addView(page);
+        omnibox = new Omnibox(this, urlField, pageFrame);
         root.addView(pageFrame, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         setContentView(root);
         page.requestFocus();
@@ -223,15 +234,64 @@ public final class MainActivity extends Activity {
     }
 
     private void showUrl() {
-        if (!urlField.hasFocus()) urlField.setText(state.optString("url"));
+        if (!urlField.hasFocus()) omnibox.setText(state.optString("url"));
+    }
+
+    /** Back to the page after the URL field was used. */
+    void leaveUrlField() {
+        omnibox.hide();
+        urlField.clearFocus();
+        hideKeyboard(urlField);
+        page.requestFocus();
+    }
+
+    /** startActivityForResult with a callback; false if nothing can handle the intent. */
+    boolean startForResult(Intent intent, ResultCallback callback) {
+        int code = nextRequest++;
+        results.put(code, callback);
+        try {
+            startActivityForResult(intent, code);
+            return true;
+        } catch (android.content.ActivityNotFoundException e) {
+            results.remove(code);
+            Ui.toast(this, "No app can do that");
+            return false;
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        ResultCallback cb = results.get(requestCode);
+        results.remove(requestCode);
+        if (cb != null) cb.done(resultCode, data);
+    }
+
+    void importBookmarks(Runnable done) {
+        Files.readText(this, "text/html", html -> {
+            JSONObject r = Native.obj("bookmarks.importHtml", "html", html);
+            int n = r == null ? 0 : r.optInt("count");
+            Ui.toast(this, n == 1 ? "Imported 1 bookmark" : "Imported " + n + " bookmarks");
+            if (done != null) done.run();
+        });
+    }
+
+    void exportBookmarks() {
+        JSONObject r = Native.obj("bookmarks.exportHtml");
+        if (r != null) Files.writeText(this, "bookmarks.html", "text/html", r.optString("html"));
     }
 
     private void showMenu(View anchor) {
         PopupMenu menu = new PopupMenu(this, anchor);
+        boolean onPage = !state.optString("url").isEmpty();
         menu.getMenu().add(0, 1, 0, "New tab");
         menu.getMenu().add(0, 2, 0, "Forward").setEnabled(state.optBoolean("canForward"));
-        menu.getMenu().add(0, 3, 0, "Share");
-        menu.getMenu().add(0, 4, 0, "Copy link");
+        menu.getMenu().add(0, 6, 0, state.optBoolean("bookmarked") ? "Edit bookmark" : "Bookmark this page").setEnabled(onPage);
+        menu.getMenu().add(0, 7, 0, "Bookmarks");
+        menu.getMenu().add(0, 8, 0, "History");
+        menu.getMenu().add(0, 3, 0, "Share").setEnabled(onPage);
+        menu.getMenu().add(0, 4, 0, "Copy link").setEnabled(onPage);
+        menu.getMenu().add(0, 9, 0, "Clear browsing data");
         menu.getMenu().add(0, 5, 0, "Close tab");
         menu.setOnMenuItemClickListener(item -> {
             switch (item.getItemId()) {
@@ -240,6 +300,10 @@ public final class MainActivity extends Activity {
                 case 3: share(state.optString("url")); break;
                 case 4: copy(state.optString("url")); break;
                 case 5: if (active >= 0) Native.closeTab(active); break;
+                case 6: BookmarksScreen.bookmarkPage(this); break;
+                case 7: BookmarksScreen.show(this); break;
+                case 8: HistoryScreen.show(this); break;
+                case 9: HistoryScreen.clearBrowsingData(this, null); break;
             }
             return true;
         });
@@ -249,17 +313,44 @@ public final class MainActivity extends Activity {
     private void newTab() {
         Native.newTab("", true);
         urlField.requestFocus();
-        urlField.setText("");
+        omnibox.setText("");
         getSystemService(InputMethodManager.class).showSoftInput(urlField, 0);
     }
 
-    private void share(String url) {
+    JSONObject state() {
+        return state;
+    }
+
+    /** Opens a page from History, Bookmarks and the like: in this tab when it's blank, else in a new one. */
+    void openUrl(String url) {
+        if (state.optString("url").isEmpty()) Native.load(url);
+        else Native.newTab(url, true);
+    }
+
+    void openInNewTab(String url, boolean focus) {
+        if (focus) Native.newTab(url, true);
+        else Native.contextAction("openInNewTab", url);
+    }
+
+    /** A long-press menu for a link in a list: open in a new tab, copy, share, and one extra action. */
+    void linkMenu(String url, Runnable extra, String extraLabel) {
+        List<String> labels = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        labels.add("Open in new tab"); actions.add(() -> openInNewTab(url, false));
+        labels.add("Copy link"); actions.add(() -> copy(url));
+        labels.add("Share"); actions.add(() -> share(url));
+        if (extra != null) { labels.add(extraLabel); actions.add(extra); }
+        new AlertDialog.Builder(this).setTitle(url)
+            .setItems(labels.toArray(new String[0]), (d, i) -> actions.get(i).run()).show();
+    }
+
+    void share(String url) {
         if (url.isEmpty()) return;
         Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, url);
         startActivity(Intent.createChooser(send, null));
     }
 
-    private void copy(String text) {
+    void copy(String text) {
         getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("webby", text));
     }
 
@@ -370,6 +461,21 @@ public final class MainActivity extends Activity {
             String url = pendingUrl;
             pendingUrl = null;
             Native.newTab(url, true);
+        }
+    }
+
+    /** Features' events: {"event": name, ...}. */
+    static void onEvent(String json) {
+        MainActivity a = current;
+        if (a == null) return;
+        try {
+            JSONObject e = new JSONObject(json);
+            switch (e.optString("event")) {
+                case "filePicker": Files.pick(a, e); break;
+                default: Log.w(TAG, "unknown event " + e.optString("event"));
+            }
+        } catch (JSONException ex) {
+            Log.e(TAG, "event", ex);
         }
     }
 

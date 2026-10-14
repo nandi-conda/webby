@@ -35,6 +35,7 @@ extern void nim_visible(int on);
 extern void nim_save(void);
 extern void nim_paste(char const* text);
 extern void nim_context_action(char const* action, char const* arg);
+extern char const* nim_command(char const* name, char const* args);
 
 static JavaVM* vm;
 static jclass activity_class;
@@ -55,6 +56,66 @@ static JNIEnv* env(void) {
     return e;
 }
 
+// Strings: real UTF-8 both ways (JNI's "UTF" calls use modified UTF-8, which mangles characters outside the BMP).
+
+static jstring jnew(JNIEnv* e, char const* s) {
+    if (!s) s = "";
+    size_t n = strlen(s);
+    jchar* u = malloc((n + 1) * sizeof(jchar));
+    size_t k = 0;
+    for (size_t i = 0; i < n;) {
+        uint8_t c = (uint8_t)s[i];
+        uint32_t cp;
+        int len;
+        if (c < 0x80) { cp = c; len = 1; }
+        else if ((c & 0xe0) == 0xc0) { cp = c & 0x1f; len = 2; }
+        else if ((c & 0xf0) == 0xe0) { cp = c & 0x0f; len = 3; }
+        else if ((c & 0xf8) == 0xf0) { cp = c & 0x07; len = 4; }
+        else { cp = 0xfffd; len = 1; }
+        if (i + len > n) { cp = 0xfffd; len = (int)(n - i); }
+        else for (int j = 1; j < len; j++) {
+            uint8_t d = (uint8_t)s[i + j];
+            if ((d & 0xc0) != 0x80) { cp = 0xfffd; len = j; break; }
+            cp = (cp << 6) | (d & 0x3f);
+        }
+        i += len;
+        if (cp >= 0x10000) {
+            cp -= 0x10000;
+            u[k++] = (jchar)(0xd800 + (cp >> 10));
+            u[k++] = (jchar)(0xdc00 + (cp & 0x3ff));
+        } else u[k++] = (jchar)cp;
+    }
+    jstring r = (*e)->NewString(e, u, (jsize)k);
+    free(u);
+    return r;
+}
+
+static char* jstr(JNIEnv* e, jstring s) {
+    if (!s) return strdup("");
+    jsize n = (*e)->GetStringLength(e, s);
+    jchar const* u = (*e)->GetStringChars(e, s, NULL);
+    char* r = malloc((size_t)n * 3 + 1);
+    size_t k = 0;
+    for (jsize i = 0; i < n; i++) {
+        uint32_t cp = u[i];
+        if (cp >= 0xd800 && cp < 0xdc00 && i + 1 < n && u[i + 1] >= 0xdc00 && u[i + 1] < 0xe000) {
+            cp = 0x10000 + ((cp - 0xd800) << 10) + (u[i + 1] - 0xdc00);
+            i++;
+        }
+        if (cp < 0x80) r[k++] = (char)cp;
+        else if (cp < 0x800) { r[k++] = (char)(0xc0 | (cp >> 6)); r[k++] = (char)(0x80 | (cp & 0x3f)); }
+        else if (cp < 0x10000) {
+            r[k++] = (char)(0xe0 | (cp >> 12)); r[k++] = (char)(0x80 | ((cp >> 6) & 0x3f)); r[k++] = (char)(0x80 | (cp & 0x3f));
+        } else {
+            r[k++] = (char)(0xf0 | (cp >> 18)); r[k++] = (char)(0x80 | ((cp >> 12) & 0x3f));
+            r[k++] = (char)(0x80 | ((cp >> 6) & 0x3f)); r[k++] = (char)(0x80 | (cp & 0x3f));
+        }
+    }
+    r[k] = 0;
+    (*e)->ReleaseStringChars(e, s, u);
+    return r;
+}
+
 // MainActivity.<name>(String) on the main thread.
 void glue_call(char const* name, char const* arg) {
     JNIEnv* e = env();
@@ -64,7 +125,7 @@ void glue_call(char const* name, char const* arg) {
         (*e)->ExceptionClear(e);
         return;
     }
-    jstring s = (*e)->NewStringUTF(e, arg ? arg : "");
+    jstring s = jnew(e, arg);
     (*e)->CallStaticVoidMethod(e, activity_class, m, s);
     if ((*e)->ExceptionCheck(e)) {
         (*e)->ExceptionDescribe(e);
@@ -134,14 +195,6 @@ int glue_blit(uint8_t const* pixels, int w, int h) {
 // --- Native methods
 
 #define FN(name) Java_dev_webby_nim_Native_##name
-
-static char* jstr(JNIEnv* e, jstring s) {
-    if (!s) return strdup("");
-    char const* c = (*e)->GetStringUTFChars(e, s, NULL);
-    char* r = strdup(c ? c : "");
-    if (c) (*e)->ReleaseStringUTFChars(e, s, c);
-    return r;
-}
 
 JNIEXPORT jint JNICALL FN(init)(JNIEnv* e, jclass c, jclass activity, jstring prefix, jstring profile, jfloat density,
                                 jint dark) {
@@ -239,4 +292,14 @@ JNIEXPORT void JNICALL FN(contextAction)(JNIEnv* e, jclass c, jstring action, js
     nim_context_action(a, b);
     free(a);
     free(b);
+}
+
+JNIEXPORT jstring JNICALL FN(command)(JNIEnv* e, jclass c, jstring name, jstring args) {
+    (void)c;
+    char* a = jstr(e, name);
+    char* b = jstr(e, args);
+    jstring r = jnew(e, nim_command(a, b));
+    free(a);
+    free(b);
+    return r;
 }

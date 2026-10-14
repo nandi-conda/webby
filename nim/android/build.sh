@@ -42,7 +42,7 @@ rm -rf "$OUT/jniLibs" "$OUT/assets"
 
 # Resources: the shell's icons (the desktop front end's Material glyphs) and the launcher icon.
 cp -r "$HERE/res/." "$OUT/res/"
-python3 "$HERE/gen_icons.py" "$ROOT/nim/src/icondata.nim" "$OUT/res" arrow_back arrow_forward close refresh more_vert add
+python3 "$HERE/gen_icons.py" "$ROOT/nim/src/icondata.nim" "$OUT/res"
 for density in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
     mkdir -p "$OUT/res/mipmap-${density%%:*}"
     rsvg-convert -w "${density##*:}" -h "${density##*:}" "$ROOT/icons/webby.svg" -o "$OUT/res/mipmap-${density%%:*}/ic_launcher.png"
