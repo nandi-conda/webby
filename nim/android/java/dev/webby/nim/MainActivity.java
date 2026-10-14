@@ -61,7 +61,7 @@ public final class MainActivity extends Activity {
     private AlertDialog tabsDialog;
     private TabsAdapter tabsAdapter;
     private Omnibox omnibox;
-    private LinearLayout passwordBar;
+    private LinearLayout passwordBar, permissionBar;
 
     interface ResultCallback {
         void done(int resultCode, Intent data);
@@ -97,6 +97,7 @@ public final class MainActivity extends Activity {
         if (started) {
             Native.init(MainActivity.class, "", "", density(), dark ? 1 : 0);
             Native.colorScheme(dark ? 2 : 1);
+            Site.opened(getIntent());
             return;
         }
         Handler main = new Handler(Looper.getMainLooper());
@@ -227,6 +228,12 @@ public final class MainActivity extends Activity {
         passwordBar.setBackgroundColor(fieldBackground);
         passwordBar.setVisibility(View.GONE);
         root.addView(passwordBar);
+        permissionBar = new LinearLayout(this);
+        permissionBar.setOrientation(LinearLayout.VERTICAL);
+        permissionBar.setPadding(dp(16), dp(8), dp(8), dp(4));
+        permissionBar.setBackgroundColor(fieldBackground);
+        permissionBar.setVisibility(View.GONE);
+        root.addView(permissionBar);
 
         page = new PageView(this);
         FrameLayout pageFrame = new FrameLayout(this);
@@ -303,6 +310,7 @@ public final class MainActivity extends Activity {
         menu.getMenu().add(0, 12, 0, "Sync");
         menu.getMenu().add(0, 3, 0, "Share").setEnabled(onPage);
         menu.getMenu().add(0, 4, 0, "Copy link").setEnabled(onPage);
+        menu.getMenu().add(0, 14, 0, "Site settings").setEnabled(onPage);
         menu.getMenu().add(0, 9, 0, "Clear browsing data");
         menu.getMenu().add(0, 5, 0, "Close tab");
         menu.setOnMenuItemClickListener(item -> {
@@ -320,6 +328,7 @@ public final class MainActivity extends Activity {
                 case 11: SyncScreen.showDevices(this); break;
                 case 12: SyncScreen.show(this); break;
                 case 13: SessionsScreen.show(this); break;
+                case 14: Site.showSettings(this); break;
             }
             return true;
         });
@@ -505,6 +514,10 @@ public final class MainActivity extends Activity {
                 case "http": Net.request(e); break;
                 case "syncStatus": SyncScreen.statusChanged(a, e); break;
                 case "sessionsChanged": SessionsScreen.changed(); break;
+                case "permissionAsk": Site.showAsk(a, a.permissionBar, e); break;
+                case "notify": Site.notify(a, e); break;
+                case "notifyCancel": Site.cancel(a, e); break;
+                case "location": Site.location(a, e); break;
                 default: Log.w(TAG, "unknown event " + e.optString("event"));
             }
         } catch (JSONException ex) {
@@ -655,8 +668,15 @@ public final class MainActivity extends Activity {
     }
 
     @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        Site.permissionResult();
+    }
+
+    @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        if (started) Site.opened(intent);
         String url = viewedUrl(intent);
         if (url == null) return;
         if (started && state.optBoolean("ready")) Native.newTab(url, true);
