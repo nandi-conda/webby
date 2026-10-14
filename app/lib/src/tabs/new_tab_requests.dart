@@ -10,7 +10,8 @@ import '../web_view.dart';
 
 /// JavaScript that wraps `window.open` so that a user-initiated `_blank` window with `noopener` or `noreferrer` goes
 /// to the browser as `{"type": "openTab", "url"}` through the page-message channel (see passwords/page_script.dart)
-/// and returns null, as such a window.open does anyway. Everything else goes to the engine's own window.open.
+/// and returns null, as such a window.open does anyway. Everything else goes to the engine's own window.open. Plain
+/// clicks on `<a target=_blank>` links go the same way.
 String newTabPageScript(String prefix) => '''
 (() => {
   if (window.__webbyOpen) return;
@@ -35,6 +36,18 @@ String newTabPageScript(String prefix) => '''
   };
   try { Object.defineProperty(wrapped, 'toString', { value: () => open.toString(), configurable: true }); } catch (e) {}
   window.open = wrapped;
+  // A plain click on <a target=_blank> (noopener unless rel=opener) would open the same shared window; the page's
+  // own handlers run first, and a click they took over is left alone.
+  window.addEventListener('click', (event) => {
+    try {
+      if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      const link = event.target && event.target.closest ? event.target.closest('a[href], area[href]') : null;
+      if (!link || String(link.target).toLowerCase() !== '_blank' || link.hasAttribute('download')) return;
+      if (/(^|\\s)opener(\\s|\$)/i.test(link.rel || '')) return;
+      if (!/^https?:/i.test(link.href)) return;
+      if (send({ type: 'openTab', url: link.href })) event.preventDefault();
+    } catch (e) {}
+  });
 })();
 ''';
 
