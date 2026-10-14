@@ -58,15 +58,16 @@ proc sendAsk() =
     event("permissionAsk", j)
 
 proc finish(a: Ask, allowed, remember: bool) =
-  let i = asks.find(a)
-  if i < 0: return
-  asks.delete(i)
+  # `a` may be borrowed from `asks` (answer's loop), so it leaves `asks` last: deleting it first could free it.
+  if asks.find(a) < 0: return
   if remember: set(a.origin, a.permission, if allowed: allow else: blocked)
   elif allowed: allowOnce(a.tab, a.origin, a.permission)
   if a.engineId >= 0:
     if not a.tab.closed: webby_view_permission_respond(a.tab.view, uint64(a.engineId), allowed.cint)
     wake()
   for d in a.done: d(allowed)
+  let i = asks.find(a)
+  if i >= 0: asks.delete(i)
   sendAsk()
 
 proc answer(args: JsonNode): JsonNode =

@@ -104,7 +104,12 @@ proc installCmd(args: JsonNode): JsonNode =
 
 proc install*() =
   pageScriptHooks.add proc (t: Tab): string =
-    if not isWeb(t.url): "" else: manifestScript.replace("${jsonEncode(prefix)}", $(%t.messagePrefix))
+    # Not while the document is parsing: the script reports with prompt() at once, which can wedge the load, and
+    # its observer needs <head>.
+    if not isWeb(t.url): ""
+    else: "(() => { const run = () => {\n" & manifestScript.replace("${jsonEncode(prefix)}", $(%t.messagePrefix)) &
+      "\n}; if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run, { once: true });" &
+      " else run(); })();"
   pageMessageHooks.add onMessage
   tabStateHooks.add proc (t: Tab) =
     let a = agent(t)
