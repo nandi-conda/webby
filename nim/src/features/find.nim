@@ -116,16 +116,9 @@ proc buildBar() =
   gtk_label_set_width_chars(countLabel, 10)
   gtk_label_set_xalign(countLabel, 0)
   gtk_box_pack_start(bar, countLabel, 0, 0, 4)
-  for (label, tip, forward) in [("↑", "Previous match (Shift+Enter)", false), ("↓", "Next match (Enter)", true)]:
-    let b = gtk_button_new_with_label(label.cstring)
-    gtk_button_set_relief(b, GTK_RELIEF_NONE)
-    gtk_widget_set_tooltip_text(b, tip.cstring)
-    let f = forward
-    let cb = new(proc ())
-    cb[] = proc () = step(f)
-    GC_ref(cb)
-    connect(b, "clicked", proc (w: Widget, d: pointer) {.cdecl.} = cast[ref proc ()](d)[](), cast[pointer](cb))
-    gtk_box_pack_start(bar, b, 0, 0, 0)
+  gtk_box_pack_start(bar, iconButton("keyboard_arrow_up", "Previous match (Shift+Enter)", proc () = step(false)),
+    0, 0, 0)
+  gtk_box_pack_start(bar, iconButton("keyboard_arrow_down", "Next match (Enter)", proc () = step(true)), 0, 0, 0)
   caseButton = gtk_toggle_button_new_with_label("Aa")
   gtk_button_set_relief(caseButton, GTK_RELIEF_NONE)
   gtk_widget_set_tooltip_text(caseButton, "Match case")

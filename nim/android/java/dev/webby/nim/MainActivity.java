@@ -308,6 +308,7 @@ public final class MainActivity extends Activity {
         menu.getMenu().add(0, 11, 0, "Tabs from other devices");
         menu.getMenu().add(0, 13, 0, "Sessions");
         menu.getMenu().add(0, 12, 0, "Sync");
+        menu.getMenu().add(0, 17, 0, "Find in page").setEnabled(onPage);
         menu.getMenu().add(0, 15, 0, "Summarize page").setEnabled(onPage);
         if (!state.optString("app").isEmpty()) menu.getMenu().add(0, 16, 0, "Install app");
         menu.getMenu().add(0, 3, 0, "Share").setEnabled(onPage);
@@ -333,6 +334,7 @@ public final class MainActivity extends Activity {
                 case 14: Site.showSettings(this); break;
                 case 15: SummaryScreen.open(this); break;
                 case 16: WebApps.install(this, state.optString("app")); break;
+                case 17: FindBar.show(this); break;
             }
             return true;
         });
@@ -493,6 +495,7 @@ public final class MainActivity extends Activity {
         reloadButton.setContentDescription(loading ? "Stop" : "Reload");
         progress.setVisibility(loading ? View.VISIBLE : View.INVISIBLE);
         showUrl();
+        FindBar.update(s);
         if (tabsDialog != null) {
             tabsDialog.setTitle(tabs.size() == 1 ? "1 tab" : tabs.size() + " tabs");
             tabsAdapter.notifyDataSetChanged();
@@ -693,7 +696,8 @@ public final class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (state.optBoolean("canBack")) Native.nav(Native.BACK);
+        if (FindBar.showing()) FindBar.close();
+        else if (state.optBoolean("canBack")) Native.nav(Native.BACK);
         else moveTaskToBack(true);
     }
 

@@ -17,6 +17,7 @@ import 'clipboard.dart';
 import 'color_scheme.dart';
 import 'context_menu.dart';
 import 'file_picker.dart';
+import 'find_in_page.dart';
 import 'geolocation.dart';
 import 'frame_bench.dart';
 import 'keys.dart';
@@ -194,6 +195,47 @@ class WebbyController extends ChangeNotifier {
   late final PagePermissions? _permissions = PagePermissions.of(_bindings)?..allowedThisTime = _allowedThisTime;
   late final LocationBridge? _location = LocationBridge.of(_bindings);
   late final PageDialogs? _dialogs = PageDialogs.of(_bindings);
+  late final NativeFind? _nativeFind = NativeFind.of(_bindings);
+
+  /// Find in page: the last search's active match (1-based, 0 for none) and its number of matches.
+  int findCurrent = 0;
+  int findTotal = 0;
+
+  /// Searches the page for [query] (empty clears the search) and goes to the first match. Ladybird does it when the
+  /// runtime has native find (every match highlighted); older runtimes run [findInPageScript].
+  void find(String query, {bool caseSensitive = false}) {
+    final native = _nativeFind;
+    if (native != null) {
+      _ifAttached((v) => native.find(v, query, caseSensitive));
+    } else {
+      runJavaScript(findInPageScriptFor(_messagePrefix) + findInPageCall('find', query: query, caseSensitive: caseSensitive));
+    }
+    if (query.isEmpty) _setFindResult(0, 0);
+  }
+
+  void findNext() => _findStep(_nativeFind?.next, 'next');
+  void findPrevious() => _findStep(_nativeFind?.previous, 'previous');
+
+  /// Ends the search: the highlights go, the active match stays selected.
+  void endFind() {
+    _findStep(_nativeFind?.end, 'end');
+    _setFindResult(0, 0);
+  }
+
+  void _findStep(void Function(ViewPtr)? native, String action) {
+    if (native != null) {
+      _ifAttached(native);
+    } else {
+      runJavaScript(findInPageScriptFor(_messagePrefix) + findInPageCall(action));
+    }
+  }
+
+  void _setFindResult(int current, int total) {
+    if ((current, total) == (findCurrent, findTotal)) return;
+    findCurrent = current;
+    findTotal = total;
+    if (!_disposed) notifyListeners();
+  }
 
   /// The page's alert(), confirm() or prompt() waiting for the user, or null.
   PageDialog? get dialog => _dialogs?.current;
@@ -635,6 +677,11 @@ class WebbyController extends ChangeNotifier {
       canGoBack = _bindings.canGoBack(_view) != 0;
       canGoForward = _bindings.canGoForward(_view) != 0;
       cursor = _bindings.cursor(_view);
+      final nativeFind = _nativeFind;
+      if (nativeFind != null) {
+        findCurrent = nativeFind.current(_view);
+        findTotal = nativeFind.total(_view);
+      }
       final prompt = _bindings.webauthnPrompt(_view).toDartString();
       if (prompt != _webauthnPromptJson) {
         _webauthnPromptJson = prompt;
@@ -667,6 +714,10 @@ class WebbyController extends ChangeNotifier {
     final nextMessage = _passwordNative.nextMessage;
     if (nextMessage != null && _messagePrefix.isNotEmpty) {
       for (var message = nextMessage(_view).toDartString(); message.isNotEmpty; message = nextMessage(_view).toDartString()) {
+        if (message.startsWith('{"type":"find"')) {
+          final result = jsonDecode(message) as Map<String, Object?>;
+          _setFindResult(result['current'] as int? ?? 0, result['total'] as int? ?? 0);
+        }
         _pageMessages.add(message);
         busy = true;
       }
