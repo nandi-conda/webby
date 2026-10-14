@@ -1,5 +1,6 @@
-## Installable web apps on Android (src/features/pwa.nim on the desktop): the Dart app's page script reports a
-## page's <link rel=manifest>; the manifest (pwa/manifest.nim) is fetched with base.httpRequest, and while the
+## Installable web apps on Android (src/features/pwa.nim on the desktop): a page script reports the page's
+## <link rel=manifest> each time page scripts run (every state change; the desktop's script reports once per
+## document, which on Android missed reloads); the manifest (pwa/manifest.nim) is fetched with base.httpRequest, and while the
 ## current page has one, the state Java gets carries "app" and the menu offers Install app. Installing pins a home
 ## screen shortcut (Java's ShortcutManager) that opens the app's start URL in Webby.
 
@@ -7,15 +8,18 @@ import std/[base64, strutils, uri]
 import ../core
 import ../../../src/features/pwa/manifest
 
-const manifestScript = block:
-  let dart = staticRead("../../../../app/lib/src/pwa/pwa_agent.dart")
-  let start = dart.find("String manifestPageScript")
-  let first = dart.find("'''", start) + 3
-  dart[first ..< dart.find("''';", first)]
+const manifestScript = """
+(() => {
+  if (document.readyState === 'loading') return;  // prompt() while parsing can wedge the load
+  const link = document.querySelector('link[rel~="manifest"][href]');
+  try { window.prompt(PREFIX + JSON.stringify({ type: 'manifest', href: link ? link.href : '' })); } catch (e) {}
+})();
+"""
 
 type Agent = ref object
   manifest: Manifest
-  href: string
+  href: string        ## the manifest URL the page last reported
+  fetching: bool
   generation: int
 
 var agents: Table[int, Agent]   ## by tab id
@@ -55,11 +59,13 @@ proc load(t: Tab, href: string) =
   let documentUrl = t.url
   let finish = proc (found: Manifest) =
     if t.closed or a.generation != generation: return
+    a.fetching = false
     a.manifest = found
     if t == current(): sendState()
   if href.len == 0 or not isWeb(href):
     finish(nil)
     return
+  a.fetching = true
   get(href, "application/manifest+json, application/json;q=0.9, */*;q=0.1", proc (ok: bool, body, kind: string) =
     let m = if ok: parseManifest(body, href, documentUrl) else: nil
     log "pwa: manifest " & href & (if not ok: " not fetched" elif m == nil: " not an app" else: ": " & m.title)
@@ -68,9 +74,9 @@ proc load(t: Tab, href: string) =
 proc onMessage(t: Tab, j: JsonNode): bool =
   if j{"type"}.getStr != "manifest": return false
   let href = j{"href"}.getStr
-  log "pwa: page " & t.url & " reports manifest " & (if href.len == 0: "(none)" else: href)
   let a = agent(t)
-  if href == a.href and a.manifest != nil: return true
+  if href == a.href and (a.manifest != nil or a.fetching or href.len == 0): return true
+  log "pwa: page " & t.url & " reports manifest " & (if href.len == 0: "(none)" else: href)
   a.href = href
   load(t, href)
   true
@@ -107,18 +113,14 @@ proc installCmd(args: JsonNode): JsonNode =
 
 proc install*() =
   pageScriptHooks.add proc (t: Tab): string =
-    # Not while the document is parsing: the script reports with prompt() at once, which can wedge the load, and
-    # its observer needs <head>.
-    if not isWeb(t.url): ""
-    else: "(() => { const run = () => {\n" & manifestScript.replace("${jsonEncode(prefix)}", $(%t.messagePrefix)) &
-      "\n}; if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run, { once: true });" &
-      " else run(); })();"
+    if not isWeb(t.url): "" else: manifestScript.replace("PREFIX", $(%t.messagePrefix))
   pageMessageHooks.add onMessage
   tabStateHooks.add proc (t: Tab) =
     let a = agent(t)
-    if a.manifest != nil and not inScope(a.manifest.scope, t.url):
+    if a.manifest != nil and isWeb(t.url) and not inScope(a.manifest.scope, t.url):
       a.manifest = nil
       a.href = ""
+      a.fetching = false
       inc a.generation
   tabClosedHooks.add proc (t: Tab) = agents.del t.id
   stateHooks.add proc (t: Tab, state: JsonNode) =
