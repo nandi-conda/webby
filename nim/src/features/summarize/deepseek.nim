@@ -15,8 +15,8 @@ else:
 const
   defaultEndpoint = "https://api.deepseek.com/chat/completions"
   busyLimit = initDuration(seconds = 90)   ## how long DeepSeek may keep a request queued before we give up
-  busyMessage* = "DeepSeek kept the request waiting in its queue for 90 seconds without starting on it, which it " &
-    "does when it's overloaded. Try again in a while."
+  busyMessage* = "DeepSeek accepted the request but hasn't sent anything back in 90 seconds. It may be having " &
+    "an outage: see status.deepseek.com."
 
 when not defined(android):
  {.push cdecl, importc.}
@@ -50,7 +50,7 @@ type
     ## One streaming request. `onPiece` gets each piece of the reply; `onDone` gets "" or an error message, once.
     onPiece*: proc (piece: string)
     onDone*: proc (error: string)
-    onQueued*: proc ()          ## called when DeepSeek says it has queued the request (": keep-alive" lines)
+    onQueued*: proc ()          ## called on DeepSeek's first ": keep-alive" line before any piece
     queued*: bool               ## DeepSeek holds the request in its queue and hasn't sent a piece yet
     gotPiece: bool
     lastPiece: MonoTime         ## when the last piece came (or the request was sent)
@@ -121,8 +121,8 @@ proc handleEvents(c: Chat) =
     let line = c.events[0 ..< nl].strip(leading = false, chars = {'\r'})
     c.events = c.events[nl + 1 .. ^1]
     if line.startsWith(":"):
-      # A comment: DeepSeek sends ": keep-alive" every few seconds while the request waits in its queue (when it's
-      # overloaded). They keep the connection alive, so the reply timeout never fires: give up after busyLimit.
+      # A comment: DeepSeek sends ": keep-alive" every few seconds while it holds a request without answering (seen
+      # during its outages). They keep the connection alive, so the reply timeout never fires: give up after busyLimit.
       if not c.gotPiece:
         if not c.queued:
           c.queued = true

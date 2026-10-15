@@ -81,7 +81,7 @@ type PageText* = object
 proc waitingText*(hasPage, queued: bool): string =
   ## What the summary panel says before the first piece of the summary comes.
   if not hasPage: "Reading the page…"
-  elif queued: "DeepSeek is busy and has queued the request. Waiting for it to start…"
+  elif queued: "DeepSeek hasn't started answering yet…"
   else: "Asking DeepSeek…"
 
 # ---------------------------------------------------------------------------------------------------------------

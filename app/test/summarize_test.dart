@@ -29,7 +29,7 @@ void main() {
       if (status != 200) {
         request.response.write(jsonEncode({'error': {'message': 'nope'}}));
       } else if (queuedOnly) {
-        // DeepSeek when overloaded: 200, then only keep-alive comments while the request waits in its queue.
+        // DeepSeek during an outage: 200, then only keep-alive comments and no answer.
         request.response.headers.contentType = ContentType('text', 'event-stream', charset: 'utf-8');
         for (var i = 0; i < 20; i++) {
           request.response.write(': keep-alive\n\n');

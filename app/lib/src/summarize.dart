@@ -298,11 +298,11 @@ Stream<String> streamSummary(String apiKey, PageText page,
 /// How long DeepSeek may keep a request queued (sending only ": keep-alive" lines) before we give up.
 const deepSeekBusyLimit = Duration(seconds: 90);
 
-const deepSeekBusyMessage = 'DeepSeek kept the request waiting in its queue for 90 seconds without starting on it, '
-    'which it does when it\'s overloaded. Try again in a while.';
+const deepSeekBusyMessage = 'DeepSeek accepted the request but hasn\'t sent anything back in 90 seconds. It may be '
+    'having an outage: see status.deepseek.com.';
 
 /// Streams the reply to a chat completions [body] (with "stream": true) from DeepSeek, piece by piece. When
-/// DeepSeek is overloaded it holds the request in a queue, sending ": keep-alive" lines: [onQueued] is called on the
+/// DeepSeek holds a request without answering (as during its outages) it sends only ": keep-alive" lines: [onQueued] is called on the
 /// first, and after [busyLimit] without a piece the stream fails with [deepSeekBusyMessage].
 Stream<String> streamChat(String apiKey, Map<String, Object?> body,
     {Uri? endpoint, HttpClient Function()? client, void Function()? onQueued, Duration? busyLimit}) async* {
@@ -472,7 +472,7 @@ class SummaryJob extends ChangeNotifier {
       notifyListeners();
       await for (final piece in streamSummary(apiKey, page, onQueued: () {
         if (generation != _generation) return;
-        waiting = 'DeepSeek is busy and has queued the request. Waiting for it to start…';
+        waiting = 'DeepSeek hasn't started answering yet…';
         notifyListeners();
       })) {
         if (generation != _generation) return;
