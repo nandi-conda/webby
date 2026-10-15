@@ -9,7 +9,8 @@ final class Native {
     // Event kinds for event(); they match nk_event in src/nimkit/backend/android.nim.
     static final int CLICK = 0, CHANGE = 1, SUBMIT = 2, TOGGLE = 3, POINTER_DOWN = 4, POINTER_MOVE = 5,
             POINTER_UP = 6, POINTER_CANCEL = 7, HTTP_DONE = 8, VALUE = 9, SELECT = 10, CONTEXT = 11, MENU_ACTION = 12,
-            DIALOG_RESULT = 13, ENTRY_KEY = 14, FOCUS = 15, MIDDLE = 16, POPOVER_CLOSED = 17, PASTE_TEXT = 18;
+            DIALOG_RESULT = 13, ENTRY_KEY = 14, FOCUS = 15, MIDDLE = 16, POPOVER_CLOSED = 17, PASTE_TEXT = 18,
+            CANVAS_KEY = 19, TEXT_INPUT = 20, BACK = 21;
 
     /** Runs the app's Nim code (first time) or rebuilds its views (a new Activity); `host` gets the op() calls. */
     static native void start(Class<?> host, String dataDir, float density);

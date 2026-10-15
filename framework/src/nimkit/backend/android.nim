@@ -60,6 +60,7 @@ const   # Host.java's ops
   opHidePopover = 36
   opCopyText = 37    # text: what to put on the clipboard
   opPasteText = 38   # id: the request, answered by evPasteText
+  opTextField = 40   # id: a canvas; arg: 1 to show the keyboard now; text: JSON {before, after}, "" for no field
   opToast = 39       # text: the message
 
   kindHScroll = 30   # Host's kind for a sideways scroll view (past WidgetKind's)
@@ -226,6 +227,9 @@ const   # Native.java's event kinds
   evMiddle = 16
   evPopoverClosed = 17  # id: the popover's number; the user closed a modal one
   evPasteText = 18      # id: the opPasteText request; text: the clipboard's text
+  evCanvasKey = 19      # a canvas's key: x the Windows key code, y modifiers, pointer the character; text "up" on release
+  evTextInput = 20      # a canvas's keyboard text: text, replacing y units from x (relative to the caret)
+  evBack = 21           # id 0: the back gesture; answered with opKeyHandled (id 0) when the app used it
 
 var
   httpPending: Table[int, proc (r: Response)]
@@ -259,6 +263,9 @@ proc nk_event(id, kind: cint, text: cstring, x, y: cfloat, pointer: cint) {.expo
   if kind == evPasteText:
     var done: proc (text: string)
     if pastePending.pop(int(id), done): done($text)
+    return
+  if kind == evBack:
+    if onBack != nil and onBack(): op(opKeyHandled, 0)
     return
   if kind == evPopoverClosed:
     let p = popovers.getOrDefault(id)
@@ -297,13 +304,21 @@ proc nk_event(id, kind: cint, text: cstring, x, y: cfloat, pointer: cint) {.expo
     if onWindowKey != nil: handled = onWindowKey(e)
     if not handled and w.onEntryKey != nil: handled = w.onEntryKey(e)
     if handled: op(opKeyHandled, w.id)
+  of evCanvasKey:
+    let e = KeyEvent(down: $text != "up", code: int(x), text: uint32(max(pointer, 0)), mods: int(y))
+    var handled = e.down and onWindowKey != nil and onWindowKey(e)
+    if not handled and w.onKey != nil: handled = w.onKey(w, e)
+    if handled: op(opKeyHandled, w.id)
+  of evTextInput:
+    if w.onTextInput != nil: w.onTextInput(w, $text, int(x), int(y))
   of evFocus:
     if w.kind == wkCanvas:
       if w.onFocus != nil: w.onFocus(w, x != 0)
     elif w.onFocusChange != nil: w.onFocusChange(x != 0)
   of evPointerDown .. evPointerDown + 3:
     if w.onPointer != nil:
-      w.onPointer(w, PointerEvent(kind: PointerKind(kind - evPointerDown), x: x, y: y, pointer: pointer))
+      w.onPointer(w, PointerEvent(kind: PointerKind(kind - evPointerDown), x: x, y: y, pointer: pointer,
+                                  touch: true))
   else: discard
 
 proc nk_surface(id, width, height, isAttached: cint) {.exportc, cdecl.} =
@@ -378,6 +393,8 @@ serviceImpl.hostCall = proc (name, arg: string): string =
     result = $r
     c_free(r)
 backend.toast = proc (text: string) = op(opToast, text = text)
+backend.textField = proc (c: Canvas, f: TextField) =
+  op(opTextField, c.id, ord(f.show), if f.active: $(%*{"before": f.before, "after": f.after}) else: "")
 serviceImpl.copyText = proc (text: string) = op(opCopyText, text = text)
 serviceImpl.pasteText = proc (onDone: proc (text: string)) =
   let id = nextTimer   # any unused number

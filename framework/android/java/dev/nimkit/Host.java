@@ -21,7 +21,6 @@ import android.util.Log;
 import android.util.SparseArray;
 import android.view.Gravity;
 import android.view.MotionEvent;
-import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
@@ -63,7 +62,7 @@ public class Host extends Activity {
             QUIT = 15, FORGET = 16, ITEMS = 17, SELECTED = 18, RANGE = 19, VALUE = 20, VISIBLE = 21, TOOLTIP = 22,
             CLASSES = 23, ICON = 24, PASSWORD = 25, FOCUS = 26, SELECT_ALL = 27, MOVE = 28, MENU = 29, DIALOG = 30,
             CLOSE_DIALOG = 31, KEY_HANDLED = 32, MAX_CHARS = 33, IMAGE = 34, POPOVER = 35,
-            HIDE_POPOVER = 36, COPY_TEXT = 37, PASTE_TEXT = 38, TOAST = 39;
+            HIDE_POPOVER = 36, COPY_TEXT = 37, PASTE_TEXT = 38, TOAST = 39, TEXT_FIELD = 40;
     // Widget kinds (WidgetKind in src/nimkit/core.nim).
     static final int COLUMN = 0, ROW = 1, SCROLL = 2, LABEL = 3, BUTTON = 4, ENTRY = 5, CHECK = 6, CANVAS = 7,
             SLIDER = 8, DROPDOWN = 9, PROGRESS = 10, TOGGLE = 11, ICON_KIND = 12, ITEM = 13, SEPARATOR = 14,
@@ -131,6 +130,13 @@ public class Host extends Activity {
 
     static String hostCall(String name, String arg) {
         return current == null ? null : current.onHostCall(name, arg);
+    }
+
+    @Override
+    public void onBackPressed() {
+        keyHandled = false;
+        Native.event(0, Native.BACK, "", 0, 0, 0);
+        if (!keyHandled) super.onBackPressed();
     }
 
     @Override
@@ -362,6 +368,7 @@ public class Host extends Activity {
                 break;
                 case TITLE: setTitle(text); break;
                 case TOAST: android.widget.Toast.makeText(this, text, android.widget.Toast.LENGTH_LONG).show(); break;
+                case TEXT_FIELD: if (v instanceof CanvasView) ((CanvasView) v).setField(text, arg != 0); break;
                 case COPY_TEXT: {
                     android.content.ClipboardManager cm = getSystemService(android.content.ClipboardManager.class);
                     if (cm != null) cm.setPrimaryClip(android.content.ClipData.newPlainText("text", text));
@@ -575,40 +582,7 @@ public class Host extends Activity {
                 line.setMinimumWidth(1);
                 return line;
             }
-            case CANVAS: {
-                SurfaceView s = new SurfaceView(this);
-                s.getHolder().addCallback(new SurfaceHolder.Callback() {
-                    public void surfaceCreated(SurfaceHolder h) {}
-                    public void surfaceChanged(SurfaceHolder h, int format, int w, int hh) {
-                        Native.surface(id, h.getSurface(), w, hh);
-                    }
-                    public void surfaceDestroyed(SurfaceHolder h) { Native.surface(id, null, 0, 0); }
-                });
-                // After the keyboard closes the view can grow without a fresh frame; hand the surface over again at
-                // the view's size so the canvas is redrawn to fill it.
-                s.addOnLayoutChangeListener((x, l, top, r, b, ol, ot, or, ob) -> {
-                    if ((r - l != or - ol || b - top != ob - ot) && s.getHolder().getSurface().isValid())
-                        Native.surface(id, s.getHolder().getSurface(), r - l, b - top);
-                });
-                s.setOnTouchListener((x, ev) -> {
-                    int kind2;
-                    switch (ev.getActionMasked()) {
-                        case MotionEvent.ACTION_DOWN: case MotionEvent.ACTION_POINTER_DOWN: kind2 = Native.POINTER_DOWN; break;
-                        case MotionEvent.ACTION_UP: case MotionEvent.ACTION_POINTER_UP: kind2 = Native.POINTER_UP; break;
-                        case MotionEvent.ACTION_CANCEL: kind2 = Native.POINTER_CANCEL; break;
-                        default: kind2 = Native.POINTER_MOVE;
-                    }
-                    if (kind2 == Native.POINTER_MOVE) {
-                        for (int i = 0; i < ev.getPointerCount(); i++)
-                            Native.event(id, kind2, "", ev.getX(i), ev.getY(i), ev.getPointerId(i));
-                    } else {
-                        int i = ev.getActionIndex();
-                        Native.event(id, kind2, "", ev.getX(i), ev.getY(i), ev.getPointerId(i));
-                    }
-                    return true;
-                });
-                return s;
-            }
+            case CANVAS: return new CanvasView(this, id);
         }
         throw new IllegalArgumentException("kind " + kind);
     }

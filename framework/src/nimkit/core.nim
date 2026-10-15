@@ -23,6 +23,7 @@ type
     buttons*: int        ## the mouse buttons held after the event: 1 left, 2 right, 4 middle (DOM `buttons`)
     mods*: int           ## modAlt, modCtrl, modShift, modSuper
     clicks*: int         ## pkDown: 1, 2 for a double click, 3 for a triple...
+    touch*: bool         ## a finger on a touch screen rather than the mouse
 
   WheelEvent* = object
     x*, y*: float        ## in the canvas's pixels
@@ -89,6 +90,9 @@ type
     onMiddle*: proc ()               ## items: middle-click
     onDoubleClick*: proc ()          ## items: a double click with the mouse (onClick comes first)
     onEntryKey*: proc (e: KeyEvent): bool   ## entries: a key pressed while it has the focus; true: handled
+    onTextInput*: proc (c: Canvas, text: string, replaceStart, replaceLength: int)
+      ## canvases with a text field (textField): the on-screen keyboard's text, replacing `replaceLength` UTF-16
+      ## units from `replaceStart` (relative to the caret; negative: before it)
     onFocusChange*: proc (focused: bool)    ## entries
     onLink*: proc (url: string): bool       ## rich labels: a link clicked; true: handled (else the platform opens it)
     onFrame*: proc (c: Canvas): tuple[data: pointer, width, height, stride: int]
@@ -121,6 +125,13 @@ type
     hidePopover*: proc (p: Popover)
     chooseFiles*: proc (r: FileRequest, onDone: proc (paths: seq[string]))
     toast*: proc (text: string)
+    textField*: proc (c: Canvas, f: TextField)
+
+  TextField* = object
+    ## The text field a canvas draws and has the focus in (a web page's <input>), for on-screen keyboards.
+    active*: bool                    ## false: none (the keyboard goes away)
+    before*, after*: string          ## the field's text before and after the caret
+    show*: bool                      ## bring the keyboard up now (the user just tapped the field)
 
   FileRequest* = object
     ## What `chooseFile`/`chooseFiles` ask the system's file chooser for.
@@ -168,6 +179,7 @@ const
 var
   onWindowKey*: proc (e: KeyEvent): bool   ## every key pressed in the window, before the focused widget; true: handled
   onCloseRequest*: proc (): bool           ## the window's close button (desktop); false keeps it open
+  onBack*: proc (): bool                   ## Android's back gesture or button; false lets the system have it
   backend*: Backend
   pixelRatio* = 1.0                  ## canvas pixels per logical pixel (the screen density on Android)
   widgets*: Table[int, Widget]       ## by id, so native callbacks can find their widget
@@ -803,3 +815,8 @@ proc setTitle*(title: string) =
 
 proc quitApp*() =
   if backend.quit != nil: backend.quit()
+
+proc textField*(c: Canvas, f: TextField) =
+  ## Tells the platform's on-screen keyboard about the text field `c` has the focus in (`active` false: none).
+  ## What the keyboard types comes back through onTextInput, keys through onKey. Desktops ignore this.
+  if c.realized and backend.textField != nil: backend.textField(c, f)

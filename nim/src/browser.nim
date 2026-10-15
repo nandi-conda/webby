@@ -560,6 +560,23 @@ template mark*(what: string) =
   ## WEBBY_TRACE=1: when each step of startup happened, in ms since the process started.
   if trace: stderr.writeLine "webby-startup ", (getMonoTime() - startedAt).inMilliseconds, " ms ", what
 
+var shownField = ""   ## the page's focused text field as the on-screen keyboard knows it (webby_view_ime_state)
+
+proc syncTextField(t: Tab) =
+  ## Tells the on-screen keyboard about the active page's focused text field (Android; desktops type directly).
+  var json = if t == nil or t.view == nil: "" else: str(webby_view_ime_state(t.view))
+  var f = kit.TextField()
+  try:
+    let j = parseJson(json)
+    f.active = j{"enabled"}.getBool
+    f.before = j{"before"}.getStr
+    f.after = j{"after"}.getStr
+  except CatchableError: discard
+  if not f.active: json = ""
+  if json == shownField: return
+  shownField = json
+  kit.textField(page, f)
+
 proc pumpTab(t: Tab, isActive: bool): bool =
   if t.view == nil: return false
   var busy = t.loading
@@ -582,6 +599,8 @@ proc pumpTab(t: Tab, isActive: bool): bool =
         for h in findHooks: h(t)
     let changed = (t.url, t.title, t.loading) != before
     if changed: runPageScripts(t)
+    when defined(android):
+      if isActive: syncTextField(t)
     updateTabButton(t)
     answerRequests(t)
     while true:
@@ -629,6 +648,116 @@ proc pumpTab(t: Tab, isActive: bool): bool =
       kit.invalidate(page)
   busy
 
+# ---------------------------------------------------------------------------------------------------------------
+# Touch: a tap clicks, a drag scrolls (sent as precise wheel events, at most one per 16 ms), a quick lift flings,
+# and a long press is a right-click (the page's context menu). As nim/android's core did, in canvas pixels.
+
+type TouchSample = tuple[at: MonoTime, x, y: float]
+
+var
+  touchId = -1                 ## the finger being followed, -1 for none
+  touchStart, touchLast: tuple[x, y: float]
+  touchDownAt: MonoTime
+  touchScrolling, touchLongPressed: bool
+  touchSamples: seq[TouchSample]
+  touchScrollAt: tuple[x, y: float]
+  touchDX, touchDY = 0.0       ## scrolling not sent yet
+  touchSentAt: MonoTime
+  flingVX, flingVY = 0.0
+  flingLast: MonoTime
+  flinging = false
+
+const longPressMs = 500
+
+proc touchSlop(): float = 8.0 * viewRatio
+
+proc sendTouchScroll(force = false) =
+  let t = currentTab()
+  if t == nil or t.view == nil or (touchDX == 0 and touchDY == 0): return
+  if not force and getMonoTime() - touchSentAt < initDuration(milliseconds = 16): return
+  webby_view_wheel_event(t.view, cint(touchScrollAt.x), cint(touchScrollAt.y), touchDX, touchDY, 1, 0)
+  touchDX = 0
+  touchDY = 0
+  touchSentAt = getMonoTime()
+
+proc touchClick(t: Tab, x, y: float, button: cint) =
+  ## button: Ladybird's (1 primary, 2 secondary).
+  let (ix, iy) = (cint(x), cint(y))
+  webby_view_set_focus(t.view, 1)
+  webby_view_mouse_event(t.view, mouseMove, ix, iy, 0, 0, 0, 0)
+  webby_view_mouse_event(t.view, mouseDown, ix, iy, button, button, 0, 1)
+  webby_view_mouse_event(t.view, mouseUp, ix, iy, button, 0, 0, 1)
+
+proc stepTouch() =
+  ## Each pump tick: pending scrolling, the fling, and the long-press timer.
+  let now = getMonoTime()
+  if touchId >= 0 and not touchScrolling and not touchLongPressed and
+      now - touchDownAt >= initDuration(milliseconds = longPressMs):
+    touchLongPressed = true
+    let t = currentTab()
+    if t != nil and t.view != nil: touchClick(t, touchStart.x, touchStart.y, 2)
+  if flinging:
+    let dt = (now - flingLast).inMicroseconds.float / 1e6
+    if dt >= 0.012:
+      flingLast = now
+      let decay = pow(0.95, dt / 0.016)
+      flingVX *= decay
+      flingVY *= decay
+      if hypot(flingVX, flingVY) < 60 * viewRatio: flinging = false
+      else:
+        touchDX += flingVX * dt
+        touchDY += flingVY * dt
+  sendTouchScroll()
+
+proc touchActive(): bool = touchId >= 0 or flinging or touchDX != 0 or touchDY != 0
+
+proc pageTouch(t: Tab, e: kit.PointerEvent) =
+  let (x, y) = (e.x, e.y)
+  let now = getMonoTime()
+  case e.kind
+  of kit.pkDown:
+    if touchId >= 0: return
+    flinging = false
+    touchId = e.pointer
+    touchStart = (x, y)
+    touchLast = (x, y)
+    touchDownAt = now
+    touchScrolling = false
+    touchLongPressed = false
+    touchSamples = @[(now, x, y)]
+  of kit.pkMove:
+    if e.pointer != touchId or touchLongPressed: return
+    touchSamples.add (now, x, y)
+    while touchSamples.len > 2 and now - touchSamples[0].at > initDuration(milliseconds = 100): touchSamples.delete(0)
+    if not touchScrolling and hypot(x - touchStart.x, y - touchStart.y) < touchSlop(): return
+    touchScrolling = true
+    touchScrollAt = (x, y)
+    touchDX += touchLast.x - x
+    touchDY += touchLast.y - y
+    touchLast = (x, y)
+  of kit.pkUp:
+    if e.pointer != touchId: return
+    touchId = -1
+    if touchLongPressed: return
+    if touchScrolling:
+      sendTouchScroll(force = true)
+      let s0 = touchSamples[0]
+      let dt = (now - s0.at).inMicroseconds.float / 1e6
+      if dt > 0.005:
+        let vx = (x - s0.x) / dt
+        let vy = (y - s0.y) / dt
+        if hypot(vx, vy) > 200 * viewRatio:
+          # The page moves with the finger, so it scrolls against the finger's direction.
+          flingVX = -vx
+          flingVY = -vy
+          flingLast = now
+          flinging = true
+    else:
+      touchClick(t, touchStart.x, touchStart.y, 1)
+  of kit.pkCancel, kit.pkLeave:
+    if e.pointer == touchId: touchId = -1
+  wake()
+
 proc pumpAll() =
   inc pumps
   pumping = true
@@ -652,7 +781,8 @@ proc pumpAll() =
     wheelInFlight = false
     flushWheel()
   stepSmooth()
-  if wheelQ.pending or smooth.active: busy = true
+  stepTouch()
+  if wheelQ.pending or smooth.active or touchActive(): busy = true
   pumping = false
   quietTicks =
     if busy or wokeInPump: 0
@@ -812,6 +942,9 @@ proc pagePointer(c: kit.Canvas, e: kit.PointerEvent) =
   if t == nil or t.view == nil: return
   for h in pagePointerHooks:
     if h(t, e): return
+  if e.touch:
+    pageTouch(t, e)
+    return
   let x = cint(e.x)
   let y = cint(e.y)
   case e.kind
@@ -1065,6 +1198,22 @@ proc buildWindow() =
   page.onWheel = pageWheel
   page.onKey = pageKey
   page.onFocus = pageFocus
+  page.onTextInput = proc (c: kit.Canvas, text: string, start, length: int) =
+    let t = currentTab()
+    if t != nil and t.view != nil:
+      webby_view_ime_commit(t.view, text.cstring, start.cint, length.cint)
+      wake()
+  kit.onBack = proc (): bool =
+    # Android's back gesture: closes the sidebar, else goes back in the page's history; at its start the system
+    # has it (leaving the app).
+    if sidePanelShowing():
+      closeSidePanel()
+      return true
+    let t = currentTab()
+    if t != nil and t.canBack:
+      goBack()
+      return true
+    false
   # The hovered-link bubble floats over the page's bottom-left corner: packed beside it, showing it shrank the
   # page view, which re-laid out the page and flickered on every hover.
   statusBubble = kit.addClass(kit.label(""), "webby-link-status")
@@ -1174,6 +1323,7 @@ proc run*() =
     if launched.len > 0: commandLineUrls.add launched
     hostEventHooks.add proc (name, data: string) =
       if name == "openUrl" and data.len > 0: discard openTab(data)
+    activeTabHooks.add syncTextField
   let urls = if appUrl.len > 0: @[appUrl] else: commandLineUrls
   var opened = false
   if appUrl.len == 0:
