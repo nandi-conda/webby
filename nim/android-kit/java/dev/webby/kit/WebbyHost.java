@@ -80,6 +80,7 @@ public class WebbyHost extends Host {
             fatal("Could not set up Ladybird: " + e);
             return;
         }
+        Downloads.start(this, new java.io.File(getFilesDir(), "downloads"));
         new Thread(() -> {
             try {
                 String prefix = LadybirdRuntime.prepare(this);
@@ -142,6 +143,9 @@ public class WebbyHost extends Host {
                 }
                 case "colorScheme": return colorScheme();
                 case "openFile": return Services.openFile(this, arg);
+                case "showDownloads":
+                    startActivity(new Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS));
+                    return "ok";
                 case "locationStart": return Site.locationStart(this);
                 case "locationStop":
                     Site.locationStop(this);

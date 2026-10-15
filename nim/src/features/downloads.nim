@@ -2,10 +2,11 @@
 ## show, blob: URLs) into the Downloads folder by itself; this shows them: a toolbar button that appears with the
 ## first download (its icon says whether one is running, its tooltip how far along), a short note when one starts
 ## and finishes, and the Downloads sidebar (Ctrl+J) with progress, pause/resume/cancel, open and show in folder.
-## The list comes from webby_downloads_json (runtimes since 2026.10.15); older runtimes still save the files, and
-## Ctrl+J then opens the Downloads folder.
+## The list comes from webby_downloads_json (runtimes since 2026.10.15); on Android, whose engine build doesn't have
+## it, from "download" host events of the app's folder watcher (android-kit Downloads.java: bytes so far, no total,
+## no cancel). Older desktop runtimes still save the files, and Ctrl+J then opens the Downloads folder.
 
-import std/[json, os, strutils, tables, uri]
+import std/[json, os, sequtils, strutils, tables, uri]
 import ../browser
 from nimkit/core as kit import nil
 import tabs/common
@@ -25,6 +26,7 @@ type
   Download = object
     id: uint64
     url, path, status, error: string
+    fileName: string               ## the name to show when `path` doesn't end in it (an Android content:// URI)
     received, total, rate, remaining: int64
     canResume, private: bool
   Row = object
@@ -36,6 +38,9 @@ var
   downloads: seq[Download]
   known: Table[uint64, string]   ## id -> status last seen, to notice new and finished downloads
   button: kit.Widget             ## toolbar button; hidden until the first download
+  percent: kit.Widget            ## next to it while something downloads: "45%" (or the bytes so far)
+  hostIds: Table[string, uint64] ## Android: file name -> its list entry's id
+  hostSerial: uint64             ## Android: the last id given out
   panelOpen = false
   panelList: kit.Widget
   rows: Table[uint64, Row]
@@ -43,6 +48,7 @@ var
   primed = false                 ## the first list was read (downloads Ladybird restored aren't announced)
 
 proc hasApi(): bool = webby_downloads_serial != nil and webby_downloads_json != nil
+proc listed(): bool = hasApi() or defined(android)   ## whether there is a list to show
 
 # ---------------------------------------------------------------------------------------------------------------
 # Where downloads go
@@ -103,6 +109,11 @@ else:
       if err != nil: g_error_free(err)
     openPath(path.parentDir)
 
+proc openDownloadsFolder() =
+  when defined(android):
+    if hostCall("showDownloads", "") != "ok": toast("No app shows downloads")
+  else: openPath(downloadsDir())
+
 # ---------------------------------------------------------------------------------------------------------------
 # The list
 
@@ -117,7 +128,8 @@ proc parse(text: string): seq[Download] =
   except CatchableError: discard
 
 proc active(d: Download): bool = d.status in ["in_progress", "paused"]
-proc name(d: Download): string = d.path.extractFilename
+proc name(d: Download): string = (if d.fileName.len > 0: d.fileName else: d.path.extractFilename)
+proc available(d: Download): bool = d.path.startsWith("content://") or fileExists(d.path)
 
 proc size(n: int64): string =
   if n < 1000: $n & " B"
@@ -143,7 +155,7 @@ proc detail(d: Download): string =
       if d.remaining >= 0: parts.add duration(d.remaining)
     parts.join(" · ")
   of "completed":
-    (if fileExists(d.path): size(d.received) else: "Deleted") & (let h = host(d.url); if h.len > 0: " · " & h else: "")
+    (if d.available: size(d.received) else: "Deleted") & (let h = host(d.url); if h.len > 0: " · " & h else: "")
   of "canceled": "Canceled"
   else: "Failed" & (if d.error.len > 0: ": " & d.error else: "")
 
@@ -170,7 +182,7 @@ proc smallButton(icon, tooltip: string, action: proc ()): kit.Widget = kit.iconB
 
 proc updateRow(r: var Row, d: Download) =
   kit.`text=`(r.detail, d.detail)
-  kit.`visible=`(r.bar, d.active)
+  kit.`visible=`(r.bar, d.active and d.total > 0)   # without a size, the bytes so far say it
   if d.active: kit.`value=`(r.bar, d.fraction)
   # Ladybird pauses only downloads it can resume (the server takes Range requests).
   kit.`visible=`(r.pauseButton, d.status == "paused" or d.status == "in_progress" and d.canResume)
@@ -180,7 +192,7 @@ proc updateRow(r: var Row, d: Download) =
     kit.`tooltip=`(r.pauseButton, if d.status == "paused": "Resume" else: "Pause")
     kit.`iconName=`(r.actionButton, if d.active: "close" else: "folder_open")
     kit.`tooltip=`(r.actionButton, if d.active: "Cancel" else: "Show in folder")
-    kit.`enabled=`(r.actionButton, d.active or d.status == "completed" and fileExists(d.path))
+    kit.`enabled=`(r.actionButton, d.active and webby_downloads_cancel != nil or d.status == "completed" and d.available)
 
 proc pauseOrResume(id: uint64) =
   let i = find(id)
@@ -191,7 +203,8 @@ proc pauseOrResume(id: uint64) =
 proc cancelOrShow(id: uint64) =
   let i = find(id)
   if i < 0: return
-  if downloads[i].active: webby_downloads_cancel(id); wake()
+  if downloads[i].active:
+    if webby_downloads_cancel != nil: webby_downloads_cancel(id); wake()
   else: showInFolder(downloads[i].path)
 
 proc rowMenu(id: uint64) =
@@ -200,7 +213,7 @@ proc rowMenu(id: uint64) =
   if at < 0: return
   let d = downloads[at]
   var items: seq[kit.MenuItem]
-  if d.status == "completed" and fileExists(d.path):
+  if d.status == "completed" and d.available:
     items.add kit.menuItem("Open", proc () = openPath(d.path))
     items.add kit.menuItem("Show in folder", proc () = showInFolder(d.path))
     items.add kit.menuSeparator()
@@ -214,7 +227,7 @@ proc rowMenu(id: uint64) =
 
 proc openIfDone(id: uint64) =
   let at = find(id)
-  if at >= 0 and downloads[at].status == "completed" and fileExists(downloads[at].path): openPath(downloads[at].path)
+  if at >= 0 and downloads[at].status == "completed" and downloads[at].available: openPath(downloads[at].path)
 
 proc entryRow(d: Download): (kit.Widget, Row) =
   var r: Row
@@ -241,7 +254,7 @@ proc fillPanel() =
   kit.clear(panelList)
   rows.clear
   if downloads.len == 0:
-    let l = kit.addClass(dim(if hasApi(): "Files you download show up here."
+    let l = kit.addClass(dim(if listed(): "Files you download show up here."
                              else: "This version of the engine doesn't list downloads."), "webby-downloads-empty")
     kit.`maxChars=`(l, 0)
     kit.add(panelList, l)
@@ -261,12 +274,17 @@ proc refreshPanel() =
   if not same: fillPanel(); return
   for d in downloads: updateRow(rows[d.id], d)
 
+proc refreshAll()
+
 proc clearList() =
   if webby_downloads_clear != nil: webby_downloads_clear()
+  else:
+    downloads.keepItIf(it.active)
+    refreshAll()
   wake()
 
 proc toggleDownloads*() =
-  if not hasApi():
+  if not listed():
     openPath(downloadsDir())
     return
   if panelOpen:
@@ -274,7 +292,7 @@ proc toggleDownloads*() =
     return
   let where = dim(downloadsDir().replace(getHomeDir().strip(leading = false, chars = {'/'}), "~"))
   let top = kit.addClass(kit.row(kit.expand(where),
-    kit.iconButton("folder_open", "Open the Downloads folder", proc () = openPath(downloadsDir())),
+    kit.iconButton("folder_open", "Open the Downloads folder", openDownloadsFolder),
     kit.iconButton("delete_sweep_outlined", "Clear finished downloads from the list", clearList)), "webby-panel-top")
   top.spacing = 4
   panelList = kit.column()
@@ -306,6 +324,9 @@ proc refreshButton() =
       if d.total > 0: total += d.total else: sized = false
     tip = (if running == 1: "1 download" else: $running & " downloads") &
       (if sized and total > 0: ", " & $int(got.float * 100 / total.float) & "%" else: ", " & size(got))
+    if percent != nil:
+      kit.`text=`(percent, if sized and total > 0: $int(got.float * 100 / total.float) & "%" else: size(got))
+  if percent != nil: kit.`visible=`(percent, running > 0)
   kit.`tooltip=`(button, tip)
 
 proc announce() =
@@ -319,6 +340,36 @@ proc announce() =
     elif d.status == "completed": toast(d.name & " downloaded")
     elif d.status == "failed": toast("Couldn't download " & d.name)
 
+proc refreshAll() =
+  if primed: announce()
+  else:
+    for d in downloads: known[d.id] = d.status
+    primed = true
+  refreshButton()
+  refreshPanel()
+
+proc onHostEvent(name, data: string) =
+  ## Android: the folder watcher's {name, status, received, path} for one file.
+  if name != "download": return
+  try:
+    let e = parseJson(data)
+    let file = e{"name"}.getStr
+    var id = hostIds.getOrDefault(file, 0)
+    var at = find(id)
+    if at < 0 or not downloads[at].active and e{"status"}.getStr == "in_progress":
+      inc hostSerial
+      id = hostSerial
+      hostIds[file] = id
+      downloads.add Download(id: id, fileName: file, path: downloadsDir() / file, total: -1, rate: -1, remaining: -1)
+      at = downloads.high
+    downloads[at].status = e{"status"}.getStr
+    let received = e{"received"}.getBiggestInt
+    if received > 0 or downloads[at].status != "in_progress": downloads[at].received = received
+    if e{"path"}.getStr.len > 0: downloads[at].path = e{"path"}.getStr
+    primed = true
+    refreshAll()
+  except CatchableError: discard
+
 proc poll() =
   let s = webby_downloads_serial()
   if s == serial or refreshQueued: return
@@ -329,12 +380,7 @@ proc poll() =
     refreshQueued = false
     serial = webby_downloads_serial()
     downloads = parse($webby_downloads_json())
-    if primed: announce()
-    else:
-      for d in downloads: known[d.id] = d.status
-      primed = true
-    refreshButton()
-    refreshPanel())
+    refreshAll())
 
 proc install*() =
   startupHooks.add setUpDirectory
@@ -344,8 +390,15 @@ proc install*() =
     addMenuItem("Downloads", toggleDownloads, "Ctrl+J")
     loadCss("button.webby-download-row { padding: 6px 4px 6px 10px; }\n" &
       ".webby-download-row button { padding: 2px; min-height: 0; }\n" &
+      ".webby-download-percent { margin: 0 6px 0 -2px; }\n" &
       ".webby-downloads-empty { margin-top: 24px; }\n.webby-panel-top { margin: 0 4px 0 8px; }")
-    if not hasApi(): return
+    if not listed(): return
     button = addToolbarButton("download", "Downloads (Ctrl+J)", toggleDownloads, "download", "Downloads")
     kit.`visible=`(button, false)
-    pumpHooks.add poll
+    when not defined(android):
+      percent = kit.addClass(kit.addClass(kit.label(""), "small"), "webby-download-percent")
+      kit.add(toolbarEndRow, percent)
+      kit.`visible=`(percent, false)
+    if hasApi(): pumpHooks.add poll
+    else:
+      when defined(android): hostEventHooks.add onHostEvent

@@ -96,6 +96,15 @@ final class Services {
 
     static String openFile(android.app.Activity a, String path) {
         try {
+            if (path.startsWith("content://")) {
+                // A finished download Downloads.java already moved into the public Downloads collection.
+                android.net.Uri uri = android.net.Uri.parse(path);
+                String type = a.getContentResolver().getType(uri);
+                a.startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW)
+                    .setDataAndType(uri, type == null ? "application/octet-stream" : type)
+                    .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION));
+                return "ok";
+            }
             java.io.File f = new java.io.File(path);
             String ext = android.webkit.MimeTypeMap.getFileExtensionFromUrl(f.getName());
             String mime = ext == null ? null : android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext.toLowerCase());
