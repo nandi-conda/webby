@@ -4,7 +4,7 @@
 #
 # Usage: framework/android/build.sh <app.nim> <app-id> <label> [version-name] [version-code]
 # Output: framework/android/build/<name>.apk (arm64 and x86_64, Android 11+), signed with webby's
-# nim/android/debug.keystore (password "android"; not a secret).
+# nim/android-kit/debug.keystore (password "android"; not a secret).
 #
 # Needs: ANDROID_HOME with ndk;$NDK_VERSION, platforms;android-36, build-tools;36.0.0; Nim 2.x as $NIM; a JDK 17+.
 set -euo pipefail
@@ -55,7 +55,7 @@ with zipfile.ZipFile(apk, "a", zipfile.ZIP_DEFLATED) as z:
         for name in sorted(os.listdir(os.path.join(libs, abi))):
             z.write(os.path.join(libs, abi, name), f"lib/{abi}/{name}", zipfile.ZIP_STORED)
 PY
-KEYSTORE="${NIMKIT_KEYSTORE:-$HERE/../../nim/android/debug.keystore}"
+KEYSTORE="${NIMKIT_KEYSTORE:-$HERE/../../nim/android-kit/debug.keystore}"
 APK="$HERE/build/$NAME.apk"
 "$BUILD_TOOLS/zipalign" -f -P 16 4 "$OUT/base.apk" "$OUT/aligned.apk"
 "$BUILD_TOOLS/apksigner" sign --ks "$KEYSTORE" --ks-pass pass:android --key-pass pass:android \

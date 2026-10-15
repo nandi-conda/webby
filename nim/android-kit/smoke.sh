@@ -4,7 +4,7 @@
 # died or never drew a page. Needs an arm64 phone: x86_64 emulators' ARM translation can't run Ladybird's libraries
 # (they use LSE atomics). Needs python3 with Pillow for the blank-page check.
 #
-# Usage: nim/android/smoke.sh <apk> <out dir>
+# Usage: nim/android-kit/smoke.sh <apk> <out dir>
 set -uo pipefail
 APK="$1"
 OUT="$2"
@@ -19,11 +19,11 @@ adb shell wm size 1080x2280
 adb shell wm density 420
 adb install -r "$APK" || exit 1
 adb logcat -c
-adb shell am start -W -a android.intent.action.VIEW -d "https://example.com/" -n "$PKG/.MainActivity"
+adb shell am start -W -a android.intent.action.VIEW -d "https://example.com/" -n "$PKG/dev.webby.kit.WebbyHost"
 # First start unpacks Ladybird's resources and starts its helpers under ARM translation: give it time.
 for i in $(seq 1 60); do
     sleep 2
-    adb logcat -d -s webby-nim | grep -q "Ladybird started" && break
+    adb logcat -d -s webby | grep -q "Ladybird prepared" && break
 done
 sleep 25
 shot 1-example
@@ -32,7 +32,7 @@ adb shell ps -A -o PID,RSS,NAME | grep -iE "webby|WebContent|RequestServer|Image
 SIZE=$(adb shell wm size | grep -oE '[0-9]+x[0-9]+' | tail -1)
 W=${SIZE%x*}
 H=${SIZE#*x}
-adb shell "am start -a android.intent.action.VIEW -d 'https://en.wikipedia.org/wiki/Nim_(programming_language)' -n $PKG/.MainActivity"
+adb shell "am start -a android.intent.action.VIEW -d 'https://en.wikipedia.org/wiki/Nim_(programming_language)' -n $PKG/dev.webby.kit.WebbyHost"
 sleep 40
 shot 2-wikipedia
 for i in 1 2 3; do adb shell input swipe $((W / 2)) $((H * 3 / 4)) $((W / 2)) $((H / 4)) 200; sleep 2; done
@@ -54,8 +54,8 @@ shot 5-typed-url
 adb logcat -d > "$OUT/logcat.txt"
 adb logcat -d -b crash > "$OUT/crash.txt"
 
-echo "---- webby-nim log"
-grep -E " webby-nim" "$OUT/logcat.txt" | tail -60
+echo "---- webby log"
+grep -E " (webby|nimkit) *:" "$OUT/logcat.txt" | tail -60
 echo "---- app, linker and translation messages"
 grep -iE "dev\.webby\.nim|libwebby|UnsatisfiedLink|linker|ndk_translation|houdini|FATAL|Fatal signal|has died|WebContent|RequestServer" "$OUT/logcat.txt" | tail -120
 echo "---- crashes"

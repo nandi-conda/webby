@@ -1,7 +1,7 @@
 // nimkit's JNI glue on Android: dev.nimkit.Native's native methods call into the Nim backend
 // (src/nimkit/backend/android.nim, procs prefixed nk_), and the backend reaches Java through nk_op / nk_http, which
 // call dev.nimkit.Host's static methods. Canvases are SurfaceViews whose ANativeWindows are kept here by widget id.
-// Everything runs on the main thread. Taken from webby's nim/android/src/glue.c.
+// Everything runs on the main thread. First written for webby's Java-shell Android app.
 #include <android/log.h>
 #include <android/native_window.h>
 #include <android/native_window_jni.h>

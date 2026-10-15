@@ -655,7 +655,7 @@ proc pumpTab(t: Tab, isActive: bool): bool =
 
 # ---------------------------------------------------------------------------------------------------------------
 # Touch: a tap clicks, a drag scrolls (sent as precise wheel events, at most one per 16 ms), a quick lift flings,
-# and a long press is a right-click (the page's context menu). As nim/android's core did, in canvas pixels.
+# and a long press is a right-click (the page's context menu). In canvas pixels.
 
 type TouchSample = tuple[at: MonoTime, x, y: float]
 

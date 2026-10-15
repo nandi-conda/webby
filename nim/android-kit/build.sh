@@ -5,8 +5,8 @@
 # zipalign and apksigner from the Android SDK, and the NDK's clang for Nim.
 #
 # Usage: nim/android-kit/build.sh <native.tar.zst> [version-name] [version-code]
-# Output: nim/android-kit/build/webby-kit-android-arm64.apk (arm64, Android 11 or newer), signed with
-# nim/android/debug.keystore (password "android"; not a secret).
+# Output: nim/android-kit/build/webby-nim-android-arm64.apk (arm64, Android 11 or newer), signed with
+# nim/android-kit/debug.keystore (password "android"; not a secret).
 #
 # Needs: ANDROID_HOME with ndk;$NDK_VERSION, platforms;android-36, build-tools;36.0.0; Nim 2.x as $NIM (or on PATH);
 # a JDK 17+; python3, zstd; rsvg-convert for the launcher icon.
@@ -51,7 +51,7 @@ done
 "$BUILD_TOOLS/aapt2" compile --dir "$OUT/res" -o "$OUT/res.zip"
 "$BUILD_TOOLS/aapt2" link -o "$OUT/base.apk" -I "$ANDROID_JAR" --manifest "$HERE/AndroidManifest.xml" \
     --min-sdk-version 30 --target-sdk-version 34 \
-    --version-code "$VERSION_CODE" --version-name "$VERSION_NAME" -A "$OUT/apk/assets" --java "$OUT/gen" "$OUT/res.zip"
+    --version-code "$VERSION_CODE" --version-name "$VERSION_NAME" --rename-manifest-package dev.webby.nim -A "$OUT/apk/assets" --java "$OUT/gen" "$OUT/res.zip"
 
 # nimkit's Host and webby's subclass.
 javac -source 11 -target 11 -Xlint:-options -encoding UTF-8 -cp "$ANDROID_JAR" -d "$OUT/classes" \
@@ -67,8 +67,8 @@ with zipfile.ZipFile(apk, "a", zipfile.ZIP_DEFLATED) as z:
     for name in sorted(os.listdir(libs)):
         z.write(os.path.join(libs, name), "lib/arm64-v8a/" + name)
 PY
-KEYSTORE="${WEBBY_ANDROID_KEYSTORE:-$ROOT/nim/android/debug.keystore}"
-APK="$OUT/webby-kit-android-arm64.apk"
+KEYSTORE="${WEBBY_ANDROID_KEYSTORE:-$HERE/debug.keystore}"
+APK="$OUT/webby-nim-android-arm64.apk"
 "$BUILD_TOOLS/zipalign" -f -P 16 4 "$OUT/base.apk" "$OUT/aligned.apk"
 "$BUILD_TOOLS/apksigner" sign --ks "$KEYSTORE" --ks-pass pass:android --key-pass pass:android \
     --ks-key-alias androiddebugkey --out "$APK" "$OUT/aligned.apk"

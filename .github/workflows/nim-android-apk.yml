@@ -1,16 +1,15 @@
-# Builds webby-nim for Android (nim/android/build.sh) when the Nim front end changes on main, and publishes it as the
-# prerelease `webby-nim-android-<version>`. The same release carries webby-kit-android-arm64.apk: the desktop's Nim
-# front end on nimkit's Android host (nim/android-kit/build.sh), which is to replace the Java-shell app. Ladybird's
-# native part is the same prebuilt Release the Flutter APK uses (scripts/android/native.env); only the Nim code and
-# the Java hosts are built here.
+# Builds webby-nim for Android (nim/android-kit/build.sh: the desktop's Nim front end on nimkit's Android host) when
+# the Nim front end changes on main, and publishes it as the prerelease `webby-nim-android-<version>`. It installs as
+# dev.webby.nim, over the Java-shell app that id used to be. Ladybird's native part is the same prebuilt Release the
+# Flutter APK uses (scripts/android/native.env); only the Nim code and the Java host are built here.
 #
 # Version: commit date plus (100 + run number), e.g. 2026.10.14.101; the versionCode is the run number offset the
-# same way, so each APK installs over the last. Signing: nim/android/debug.keystore, a debug key kept in the repo, so
+# same way, so each APK installs over the last. Signing: nim/android-kit/debug.keystore, a debug key kept in the repo, so
 # every build has the same signature.
 # workflow_dispatch on another branch builds without publishing.
 #
 # No emulator test: x86_64 images run arm64 apps through ndk_translation, which stops at the LSE atomics (CASAL) in
-# Ladybird's libraries ("Undefined instruction 0xc8e9fd48"). Test on an arm64 phone with nim/android/smoke.sh.
+# Ladybird's libraries ("Undefined instruction 0xc8e9fd48"). Test on an arm64 phone with nim/android-kit/smoke.sh.
 name: nim-android-apk
 
 on:
@@ -19,6 +18,7 @@ on:
     paths:
       - nim/**
       - framework/src/**
+      - framework/android/**
       - app/lib/src/page_compat.dart
       - app/lib/src/context_menu.dart
       - scripts/android/native.env
@@ -64,12 +64,9 @@ jobs:
           RUN=$((100 + ${{ github.run_number }}))
           VERSION="$(git show -s --format=%cd --date=format:%Y.%m.%d HEAD).$RUN"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          nim/android/build.sh native.tar.zst "$VERSION" "$RUN"
-          cp nim/android/build/webby-nim-android-arm64.apk .
-          sha256sum webby-nim-android-arm64.apk | tee webby-nim-android-arm64.apk.sha256
           nim/android-kit/build.sh native.tar.zst "$VERSION" "$RUN"
-          cp nim/android-kit/build/webby-kit-android-arm64.apk .
-          sha256sum webby-kit-android-arm64.apk | tee webby-kit-android-arm64.apk.sha256
+          cp nim/android-kit/build/webby-nim-android-arm64.apk .
+          sha256sum webby-nim-android-arm64.apk | tee webby-nim-android-arm64.apk.sha256
       - name: Publish release
         if: github.ref == 'refs/heads/main'
         env:
@@ -78,7 +75,6 @@ jobs:
           source scripts/android/native.env
           gh release create "webby-nim-android-$VERSION" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
             --title "webby-nim for Android $VERSION" \
-            --notes "The Nim front end (nim/android) on Android, built by CI from $GITHUB_SHA with native part $NATIVE_VERSION. Installs as \"Webby Nim\" next to the Flutter app. webby-kit-android-arm64.apk is the desktop's Nim front end on nimkit (nim/android-kit), installed as \"Webby\" (dev.webby.kit). For arm64 phones on Android 11 or newer (debug-signed)." \
-            webby-nim-android-arm64.apk webby-nim-android-arm64.apk.sha256 \
-            webby-kit-android-arm64.apk webby-kit-android-arm64.apk.sha256
+            --notes "The desktop's Nim front end on nimkit's Android host (nim/android-kit), built by CI from $GITHUB_SHA with native part $NATIVE_VERSION. Installs as \"Webby Nim\" (dev.webby.nim) next to the Flutter app, updating the earlier Java-shell Webby Nim in place. For arm64 phones on Android 11 or newer (debug-signed)." \
+            webby-nim-android-arm64.apk webby-nim-android-arm64.apk.sha256
 

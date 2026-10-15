@@ -1,7 +1,7 @@
 # nimkit (prototype)
 
 One Nim source for a Linux desktop app (GTK 3), an Android app and a web page, grown out of webby's two Nim
-front ends (`nim/` on GTK, `nim/android` with a Java shell). The app builds a tree of plain Nim widgets; a backend
+front ends (`nim/` on GTK and a Java-shell Android app since replaced by `nim/android-kit`). The app builds a tree of plain Nim widgets; a backend
 picked at compile time turns it into native widgets: GtkWidgets, Android Views, or DOM elements.
 
 ```nim
@@ -54,7 +54,7 @@ Web (static files to serve from any web server):
 framework/web/build.sh framework/demo/demo.nim out/   # out/index.html + out/app.js
 ```
 
-Android (the same SDK, NDK and Nim as `nim/android/build.sh`; arm64 and x86_64 in one APK):
+Android (the same SDK, NDK and Nim as `nim/android-kit/build.sh`; arm64 and x86_64 in one APK):
 
 ```
 ANDROID_HOME=... framework/android/build.sh framework/demo/demo.nim dev.nimkit.demo "nimkit demo"

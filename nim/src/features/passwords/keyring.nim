@@ -2,7 +2,7 @@
 ## "dev.webby.Vault", attributes {application: webby, profile: <profile>}, label "Webby password vault (<profile>)".
 ## libsecret is loaded at run time so the browser still starts without it (the vault then keeps its key in a file).
 ## Calls block on D-Bus (and may show an unlock prompt).
-## On Android the key goes to the Android Keystore instead, through `androidKeyring` (set by nim/android).
+## On Android the key goes to the Android Keystore instead, through `androidKeyring` (set by features/android.nim).
 
 type KeyringError* = object of CatchableError  ## no keyring to talk to, or it refused
 

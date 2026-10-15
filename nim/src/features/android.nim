@@ -2,10 +2,29 @@
 ## the app's Java host instead (WebbyHost.onHostCall, Services.java): the password vault's key in the Android
 ## Keystore, streamed HTTP for summaries, the device's name for sync, and pages following the system's dark theme.
 
-import std/[base64, json, strutils, tables]
+import std/[base64, json, os, strutils, tables]
 import ../browser
 import passwords/keyring
 import site/permstore
+import tabs/store as tabStore
+
+proc migrateJavaShellTabs() =
+  ## This app replaced the Java-shell Webby Nim under its app id (nim/android-kit/AndroidManifest.xml). Everything
+  ## else of that app's profile was already in this one's place (both kept it under XDG_DATA_HOME); only its open
+  ## tabs were its own: files/profile/nim-android-tabs.json, {"tabs": [url...], "active": n, "pinned": n}.
+  let prefix = getEnv("WEBBY_LADYBIRD_PREFIX")
+  if prefix.len == 0 or incognito: return
+  let old = prefix.parentDir / "profile" / "nim-android-tabs.json"
+  if not fileExists(old): return
+  let j = readJsonFile(old)
+  if j != nil and j.kind == JObject and not fileExists(openTabsFile()):
+    var tabs: seq[DeviceTab]
+    for u in j{"tabs"}.getElems:
+      if u.kind == JString and u.getStr.len > 0: tabs.add DeviceTab(title: u.getStr, url: u.getStr)
+    if tabs.len > 0:
+      try: createDir(openTabsFile().parentDir) except OSError: discard
+      writeOpenTabs(tabs, clamp(j{"active"}.getInt, 0, tabs.high), clamp(j{"pinned"}.getInt, 0, tabs.len))
+  try: moveFile(old, old & ".migrated") except OSError: discard
 
 # Pages follow the system's light or dark theme (as site/colorscheme.nim follows the desktop's).
 
@@ -86,6 +105,7 @@ proc install*() =
   httpStreamCancel = cancelStream
   hostEventHooks.add onHostEvent
   startupHooks.add proc () =
+    migrateJavaShellTabs()
     deviceDescription = hostCall("device")
     setScheme(hostCall("colorScheme"))
   tabCreatedHooks.add applyScheme

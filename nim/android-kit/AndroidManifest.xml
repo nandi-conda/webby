@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- webby on nimkit for Android: the desktop's Nim front end under nimkit's Host. Its own app id while the Java-shell
-     app (nim/android, dev.webby.nim) is still around, so both can be installed. -->
+<!-- webby on nimkit for Android: the desktop's Nim front end under nimkit's Host. The Java classes live in
+     dev.webby.kit, but build.sh installs it as dev.webby.nim (aapt2 rename-manifest-package), the id of the Java-shell
+     app it replaced, so it updates that app in place and keeps its Ladybird data, passwords key and settings. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.webby.kit">
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
@@ -10,7 +11,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <application
-        android:label="Webby"
+        android:label="Webby Nim"
         android:icon="@mipmap/ic_launcher"
         android:theme="@style/Webby"
         android:allowBackup="false"
@@ -37,6 +38,11 @@
                 <data android:scheme="https"/>
             </intent-filter>
         </activity>
+        <!-- The replaced app's activity: home screen shortcuts it pinned for web apps open through this name. -->
+        <activity-alias
+            android:name="dev.webby.nim.MainActivity"
+            android:targetActivity="dev.webby.kit.WebbyHost"
+            android:exported="true"/>
         <!-- Incognito windows: their own process (so the engine and the Nim front end start fresh, as with
              the desktop's incognito flag) and their own task in Recents. -->
         <activity

@@ -1,16 +1,11 @@
 ## Markdown for the summary panel (app/lib/src/markdown_view.dart): the same block parser, which copes with
 ## half-written text so a streaming answer can be shown as it comes, and inline markup as Pango markup on GtkLabels
-## (in nim/android's Java shell, built with -d:webbyJavaShell, as the HTML subset TextView's Html.fromHtml shows:
-## markdownHtml).
+## (nimkit's rich labels: Pango markup on GTK, the same tags as HTML on Android).
 
 import std/strutils
 from std/unicode import validateUtf8
-when defined(webbyJavaShell):
-  proc escapeMarkup(s: string): string =
-    s.multiReplace(("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ("\"", "&quot;"))
-else:
-  import ../../browser
-  from nimkit/core as kit import nil
+import ../../browser
+from nimkit/core as kit import nil
 
 type
   MdKind* = enum mdHeading, mdParagraph, mdListItem, mdQuote, mdCode, mdRule
@@ -167,8 +162,8 @@ proc anchorWords*(target: string): string =
       if result.endsWith(q): (result = result[0 ..< result.len - q.len]; changed = true)
   result = result.splitWhitespace.join(" ")
 
-const codeSpan = when defined(webbyJavaShell): "<tt>" else: "<span font_family=\"monospace\" background=\"#808080\" bgalpha=\"22%\">"
-const codeSpanEnd = when defined(webbyJavaShell): "</tt>" else: "</span>"
+const codeSpan = "<span font_family=\"monospace\" background=\"#808080\" bgalpha=\"22%\">"
+const codeSpanEnd = "</span>"
 
 proc inlineMarkup*(text: string): string =
   ## `text` with its inline markdown as Pango markup (escaped otherwise).
@@ -227,83 +222,67 @@ proc inlineMarkup*(text: string): string =
     inc i
   emit ""
 
-when defined(webbyJavaShell):
-  proc markdownHtml*(source: string): string =
-    ## `source` as HTML for Html.fromHtml (anchor links keep anchorPrefix hrefs; Java jumps to their words).
-    for b in parseMarkdown(source):
-      case b.kind
-      of mdHeading:
-        let h = "h" & $min(b.level + 2, 6)
-        result.add "<" & h & ">" & inlineMarkup(b.text) & "</" & h & ">"
-      of mdParagraph: result.add "<p>" & inlineMarkup(b.text) & "</p>"
-      of mdListItem:
-        result.add "<p>" & repeat("&nbsp;&nbsp;&nbsp;&nbsp;", b.depth) & escapeMarkup(b.marker) & "&nbsp;" &
-          inlineMarkup(b.text) & "</p>"
-      of mdQuote: result.add "<blockquote>" & inlineMarkup(b.text) & "</blockquote>"
-      of mdCode: result.add "<p><tt>" & escapeMarkup(b.text).replace("\n", "<br>") & "</tt></p>"
-      of mdRule: result.add "<p>―――</p>"
-else:
-  # ---------------------------------------------------------------------------------------------------------------
-  # Widgets
+# ---------------------------------------------------------------------------------------------------------------
+# Widgets
 
-  const markdownCss* = """
-  .webby-md-code { background-color: alpha(currentColor, 0.08); border-radius: 6px; padding: 8px; }
-  .webby-md-quote { border-left: 3px solid alpha(currentColor, 0.25); padding-left: 10px; }
-  .webby-md-list { margin-left: 4px; }
-  .webby-md-depth-1 { margin-left: 20px; } .webby-md-depth-2 { margin-left: 36px; }
-  .webby-md-depth-3 { margin-left: 52px; } .webby-md-depth-4 { margin-left: 68px; }
-  """
+const markdownCss* = """
+.webby-md-code { background-color: alpha(currentColor, 0.08); border-radius: 6px; padding: 8px; }
+.webby-md-quote { border-left: 3px solid alpha(currentColor, 0.25); padding-left: 10px; }
+.webby-md-list { margin-left: 4px; }
+.webby-md-depth-1 { margin-left: 20px; } .webby-md-depth-2 { margin-left: 36px; }
+.webby-md-depth-3 { margin-left: 52px; } .webby-md-depth-4 { margin-left: 68px; }
+"""
 
-  var linkHandler*: proc (url: string)  ## a link clicked in rendered markdown; nil = the platform's default
+var linkHandler*: proc (url: string)  ## a link clicked in rendered markdown; nil = the platform's default
 
-  proc spaced(markup: string): string =
-    ## Body text at markdown_view.dart's 1.45 line height.
-    "<span line_height=\"1.45\">" & markup & "</span>"
+proc spaced(markup: string): string =
+  ## Body text at markdown_view.dart's 1.45 line height.
+  "<span line_height=\"1.45\">" & markup & "</span>"
 
-  proc markupLabel*(markup: string, selectable = true): kit.Widget =
-    ## A wrapping label showing `markup` (see kit.richLabel); its links go to linkHandler.
-    result = kit.richLabel(markup, selectable)
-    result.onLink = proc (url: string): bool =
-      if linkHandler == nil: return false
-      linkHandler(url)
-      true
+proc markupLabel*(markup: string, selectable = true): kit.Widget =
+  ## A wrapping label showing `markup` (see kit.richLabel); its links go to linkHandler.
+  result = kit.richLabel(markup, selectable)
+  result.onLink = proc (url: string): bool =
+    if linkHandler == nil: return false
+    linkHandler(url)
+    true
 
-  proc markdownView*(source: string): kit.Widget =
-    ## A column of labels rendering `source`.
-    result = kit.column()
-    result.spacing = 0
-    var previous = -1
-    for b in parseMarkdown(source):
-      let gap =
-        if previous < 0: 0
-        elif previous == ord(mdListItem) and b.kind == mdListItem: 3
-        elif b.kind == mdHeading: 14
-        else: 8
-      previous = ord(b.kind)
-      if gap > 0: kit.add(result, kit.sized(kit.column(), 0, gap))
-      var w: kit.Widget
-      case b.kind
-      of mdHeading:
-        w = markupLabel("<b>" & inlineMarkup(b.text) & "</b>")
-        kit.addClass(w, "webby-md-h" & $min(b.level, 4))   # sizes in the panel's CSS
-      of mdParagraph:
-        w = markupLabel(spaced(inlineMarkup(b.text)))
-      of mdListItem:
-        let marker = kit.addClass(kit.label(b.marker), "dim")
-        discard kit.sized(marker, if b.marker == "•": 14 else: 22)
-        w = kit.row(marker, kit.expand(markupLabel(spaced(inlineMarkup(b.text)))))
-        w.spacing = 0
-        kit.addClass(w, "webby-md-list")
-        if b.depth > 0: kit.addClass(w, "webby-md-depth-" & $min(b.depth, 4))
-      of mdQuote:
-        w = markupLabel(spaced(inlineMarkup(b.text)))
-        kit.addClass(w, "webby-md-quote")
-        kit.addClass(w, "dim")
-      of mdCode:
-        let label = kit.addClass(kit.label(b.text), "mono")
-        kit.`maxChars=`(label, 10000)   # one line per line, scrolled sideways
-        kit.`selectable=`(label, true)
-        w = kit.addClass(kit.scroll(label, horizontal = true), "webby-md-code")
-      of mdRule:
-        w = kit.separator()
-      kit.add(result, w)
+proc markdownView*(source: string): kit.Widget =
+  ## A column of labels rendering `source`.
+  result = kit.column()
+  result.spacing = 0
+  var previous = -1
+  for b in parseMarkdown(source):
+    let gap =
+      if previous < 0: 0
+      elif previous == ord(mdListItem) and b.kind == mdListItem: 3
+      elif b.kind == mdHeading: 14
+      else: 8
+    previous = ord(b.kind)
+    if gap > 0: kit.add(result, kit.sized(kit.column(), 0, gap))
+    var w: kit.Widget
+    case b.kind
+    of mdHeading:
+      w = markupLabel("<b>" & inlineMarkup(b.text) & "</b>")
+      kit.addClass(w, "webby-md-h" & $min(b.level, 4))   # sizes in the panel's CSS
+    of mdParagraph:
+      w = markupLabel(spaced(inlineMarkup(b.text)))
+    of mdListItem:
+      let marker = kit.addClass(kit.label(b.marker), "dim")
+      discard kit.sized(marker, if b.marker == "•": 14 else: 22)
+      w = kit.row(marker, kit.expand(markupLabel(spaced(inlineMarkup(b.text)))))
+      w.spacing = 0
+      kit.addClass(w, "webby-md-list")
+      if b.depth > 0: kit.addClass(w, "webby-md-depth-" & $min(b.depth, 4))
+    of mdQuote:
+      w = markupLabel(spaced(inlineMarkup(b.text)))
+      kit.addClass(w, "webby-md-quote")
+      kit.addClass(w, "dim")
+    of mdCode:
+      let label = kit.addClass(kit.label(b.text), "mono")
+      kit.`maxChars=`(label, 10000)   # one line per line, scrolled sideways
+      kit.`selectable=`(label, true)
+      w = kit.addClass(kit.scroll(label, horizontal = true), "webby-md-code")
+    of mdRule:
+      w = kit.separator()
+    kit.add(result, w)

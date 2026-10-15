@@ -1,6 +1,6 @@
 ## The parts of the browser core that know nothing about a window: the profile's files, the process's mode, and
-## hooks a store may call. browser.nim (the GTK front end) and nim/android build on it; feature stores import only
-## this so both front ends can use them.
+## hooks a store may call. browser.nim (the front end, on GTK and Android) builds on it; feature stores import
+## only this.
 
 import std/[json, os, tables]
 export json, tables

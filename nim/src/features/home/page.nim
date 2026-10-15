@@ -1,5 +1,5 @@
-## The start page's script and data (app/lib/src/home_page.dart), shared by the desktop (features/home.nim) and
-## Android (nim/android/src/features/home.nim) front ends.
+## The start page's script and data (app/lib/src/home_page.dart), used by the Nim front end (features/home.nim) on
+## the desktop and Android.
 
 import std/[json, strutils]
 import ../../base

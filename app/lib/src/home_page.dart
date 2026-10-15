@@ -7,7 +7,7 @@ import 'bookmarks/bookmark_store.dart';
 ///
 /// The tab stays on about:blank and this page script draws the page into that document, so everything that already
 /// treats about:blank as a blank tab (the empty address bar, "New tab" titles, history, sessions, closed tabs) keeps
-/// working. The Nim front ends (nim/src/features/home.nim, nim/android) read [homePageSource] from this file at
+/// working. The Nim front ends (nim/src/features/home.nim) read [homePageSource] from this file at
 /// compile time, so all three show the same page; each fills in `__WEBBY_HOME_DATA__` with
 /// `{"bookmarks": [{"title", "url"}]}`.
 String homePageScript(Map<String, Object?> data) => homePageSource.replaceFirst('__WEBBY_HOME_DATA__', jsonEncode(data));
