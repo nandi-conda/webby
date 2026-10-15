@@ -978,6 +978,9 @@ const css = """
 .webby-active-tab { background-color: alpha(@theme_selected_bg_color, 0.18); }
 .webby-tab-close { padding: 0; min-height: 16px; min-width: 16px; }
 .webby-side-panel { border-left: 1px solid alpha(currentColor, 0.15); }
+.webby-link-status { background-color: @theme_bg_color; padding: 2px 8px; font-size: smaller;
+  border-top: 1px solid alpha(currentColor, 0.15); border-right: 1px solid alpha(currentColor, 0.15);
+  border-radius: 0 6px 0 0; }
 """
 
 proc buildWindow() =
@@ -1039,14 +1042,23 @@ proc buildWindow() =
   page.onKey = pageKey
   page.onFocus = pageFocus
   area = nkgtk.gtkWidget(page)
-  gtk_box_pack_start(pageColumn, area, 1, 1, 0)
-  findSlot = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
-  gtk_box_pack_start(pageColumn, findSlot, 0, 0, 0)
+  # The hovered-link bubble floats over the page's bottom-left corner: packed in the box, showing it shrank the
+  # page view, which re-laid out the page and flickered on every hover.
+  let pageOverlay = gtk_overlay_new()
+  gtk_container_add(pageOverlay, area)
   status = gtk_label_new("")
   gtk_label_set_xalign(status, 0)
   gtk_label_set_ellipsize(status, PANGO_ELLIPSIZE_END)
+  gtk_label_set_max_width_chars(status, 80)
+  gtk_widget_set_halign(status, GTK_ALIGN_START)
+  gtk_widget_set_valign(status, GTK_ALIGN_END)
+  addClass(status, "webby-link-status")
   gtk_widget_set_no_show_all(status, 1)
-  gtk_box_pack_start(pageColumn, status, 0, 0, 2)
+  gtk_overlay_add_overlay(pageOverlay, status)
+  gtk_overlay_set_overlay_pass_through(pageOverlay, status, 1)
+  gtk_box_pack_start(pageColumn, pageOverlay, 1, 1, 0)
+  findSlot = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
+  gtk_box_pack_start(pageColumn, findSlot, 0, 0, 0)
   gtk_box_pack_end(pageBox, pageColumn, 1, 1, 0)
   gtk_paned_pack1(pagePane, pageBox, 1, 0)
 

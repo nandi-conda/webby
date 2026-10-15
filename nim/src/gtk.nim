@@ -132,6 +132,7 @@ proc gtk_scrolled_window_set_min_content_width*(s: Widget, w: cint)
 proc gtk_scrolled_window_set_min_content_height*(s: Widget, h: cint)
 proc gtk_overlay_new*(): Widget
 proc gtk_overlay_add_overlay*(o, w: Widget)
+proc gtk_overlay_set_overlay_pass_through*(o, w: Widget, pass: gboolean)
 proc gtk_grid_new*(): Widget
 proc gtk_grid_attach*(g, child: Widget, left, top, width, height: cint)
 proc gtk_grid_set_row_spacing*(g: Widget, s: cuint)
