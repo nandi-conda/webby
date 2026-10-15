@@ -26,24 +26,46 @@
     ? Array.from(root.elements).filter((el) => el instanceof HTMLInputElement)
     : Array.from((root || document).querySelectorAll('input'));
   const passwordFields = (root) => inputsOf(root).filter((el) => el.type === 'password' && usable(el));
+  // Typed-in passwords, also in fields a page has just made read-only for the login it's starting.
+  const filledPasswords = (root) => inputsOf(root).filter((el) => el.type === 'password' && el.value && visible(el));
+  const autocompleteOf = (el) => (el.getAttribute('autocomplete') || '').toLowerCase();
   const isTextLike = (el) => el.tagName === 'INPUT' &&
     ['text', 'email', 'tel', ''].includes((el.getAttribute('type') || '').toLowerCase());
 
+  // Fields that name themselves as the account: tagged username/email, or called user/login/email/handle.
+  const ACCOUNT_NAME = /user|login|e-?mail|handle|account|identifier/i;
+  const isUsernameLike = (el) => isTextLike(el) && (/\busername\b|\bemail\b/.test(autocompleteOf(el)) ||
+    el.type === 'email' || ACCOUNT_NAME.test([el.name, el.id, el.getAttribute('aria-label'), el.placeholder].join(' ')));
+
+  // The username field of a password's form. Single-page apps (bsky.app) have no <form>, and they often make their
+  // fields read-only while a login runs, so a field with a value counts even when it can't be typed in any more.
   function usernameFieldFor(password) {
-    const inputs = inputsOf(password.form).filter(usable);
-    const tagged = inputs.find((el) => isTextLike(el) && /\busername\b|\bemail\b/.test(el.getAttribute('autocomplete') || ''));
-    if (tagged) return tagged;
+    const inputs = inputsOf(password.form).filter((el) => el === password || (isTextLike(el) && (usable(el) || el.value)));
     const index = inputs.indexOf(password);
-    for (let i = index - 1; i >= 0; i--) {
-      if (isTextLike(inputs[i])) return inputs[i];
-    }
-    return inputs.find(isTextLike) || null;
+    const before = inputs.slice(0, Math.max(index, 0)).reverse();
+    const tagged = inputs.filter((el) => el !== password && /\busername\b|\bemail\b/.test(autocompleteOf(el)));
+    return tagged.find((el) => el.value) || tagged[0] ||
+      before.find((el) => isUsernameLike(el) && el.value) || before.find((el) => el.value) ||
+      inputs.find((el) => el !== password && isUsernameLike(el)) || before[0] ||
+      inputs.find((el) => el !== password) || null;
   }
+
+  // What the user last typed into a username field on this page. Login pages that ask for the username first and the
+  // password on a later step, or swap the field out, still save under the right account.
+  let filling = false;
+  let typedUsername = '';
+  const noteUsername = (event) => {
+    const el = event.target;
+    if (filling || !(el instanceof HTMLInputElement) || !isUsernameLike(el)) return;
+    const value = el.value.trim();
+    if (value) typedUsername = value;
+  };
+  document.addEventListener('input', noteUsername, true);
+  document.addEventListener('change', noteUsername, true);
 
   // A field for choosing a password rather than entering one. Tagged new-password, or untagged and one of several
   // password fields in its form: next to a tagged one (the confirm field, or the new one beside current-password),
   // as password + confirm, or as the 2nd/3rd of current + new + confirm.
-  const autocompleteOf = (el) => (el.getAttribute('autocomplete') || '').toLowerCase();
   function isNewPasswordField(el) {
     if (!(el instanceof HTMLInputElement) || el.type !== 'password') return false;
     const autocomplete = autocompleteOf(el);
@@ -58,12 +80,12 @@
 
   let lastSent = '';
   function capture(root) {
-    const filled = passwordFields(root).filter((el) => el.value);
+    const filled = filledPasswords(root);
     if (!filled.length) return;
     // Sign-up and change-password forms: the new password is the one to keep.
     const password = filled.find((el) => el.getAttribute('autocomplete') === 'new-password') || filled[filled.length - 1];
     const usernameField = usernameFieldFor(filled[0]);
-    const username = usernameField ? usernameField.value.trim() : '';
+    const username = (usernameField && usernameField.value.trim()) || typedUsername;
     const key = username + '\u0000' + password.value;
     if (key === lastSent) return;
     lastSent = key;
@@ -79,9 +101,8 @@
     const button = event.target instanceof Element && event.target.closest('button, input[type=submit], input[type=button], [role=button]');
     if (!button) return;
     const form = button.form || button.closest('form');
-    if (passwordFields(form).some((el) => el.value)) capture(form);
+    if (filledPasswords(form).length) capture(form);
   }, true);
-  let filling = false;
   document.addEventListener('focusin', (event) => {
     const el = event.target;
     if (filling) return;
@@ -127,6 +148,7 @@
         filling = true;
         try {
           if (usernameField && username) setValue(usernameField, username);
+          if (username) typedUsername = username;
           setValue(target, password);
         } finally {
           filling = false;
