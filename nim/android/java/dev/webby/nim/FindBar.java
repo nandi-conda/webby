@@ -47,6 +47,10 @@ final class FindBar {
         if (!showing()) return;
         InputMethodManager imm = (InputMethodManager) bar.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
         imm.hideSoftInputFromWindow(query.getWindowToken(), 0);
+        // Hand focus to the page first: removing the focused query would pass it to the URL field, which then
+        // keeps its text selected and stops following the page.
+        query.clearFocus();
+        if (bar.getContext() instanceof MainActivity) ((MainActivity) bar.getContext()).leaveUrlField();
         ((ViewGroup) bar.getParent()).removeView(bar);
         Native.cmd("find.end");
     }
