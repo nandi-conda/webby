@@ -21,7 +21,7 @@ Icons are the Flutter app's (Material Icons, compiled in from `src/icondata.nim`
 rather than the desktop icon theme's: `icon("arrow_back")` / `setIcon(image, name)` in `src/icons.nim`, with
 `scripts/material_icons.py <flutter-sdk>` adding more names. The window icon is `icons/webby*.svg`, also compiled in.
 
-`pixi run webby-nim [url]` builds it with the pixi env's Nim and GTK (again only when the sources change) and runs it
+`pixi run webby [url]` (also `webby-nim`) builds it with the pixi env's Nim and GTK (again only when the sources change) and runs it
 against the webby-ladybird package. By hand:
 
 ```
