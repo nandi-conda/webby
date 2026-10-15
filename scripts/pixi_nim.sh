@@ -12,9 +12,10 @@ export WEBBY_LADYBIRD_PREFIX="${WEBBY_LADYBIRD_PREFIX:-$CONDA_PREFIX/lib/webby-l
 if [ ! -x "$BIN" ] || [ -n "$(find "$ROOT/nim" "$ROOT/framework/src" "$ROOT/app/lib" "$ROOT/icons" \( -name '*.nim' -o -name '*.dart' -o -name '*.svg' \) -newer "$BIN" -print -quit)" ]; then
   echo "Building nim/webby..." >&2
   # No -d:ssl: Nim's OpenSSL setup would load a libcrypto before libwebby's own. The rpath makes the binary use the
-  # env's GTK at run time.
+  # env's GTK at run time. libstdc++ is linked in so the env's (new enough for Ladybird's C++23) loads first:
+  # otherwise a system library GTK pulls in can load the system's older one, and libwebby.so then fails to load.
   nim c -d:release --hints:off --warnings:off --cc:clang --nimcache:"$ROOT/.pixi/nimcache" \
-    --passL:"-fuse-ld=lld -L$CONDA_PREFIX/lib -Wl,-rpath,$CONDA_PREFIX/lib" -o:"$BIN" "$ROOT/nim/webby.nim"
+    --passL:"-fuse-ld=lld -L$CONDA_PREFIX/lib -Wl,-rpath,$CONDA_PREFIX/lib -Wl,--no-as-needed -lstdc++ -Wl,--as-needed" -o:"$BIN" "$ROOT/nim/webby.nim"
 fi
 # A fontconfig file Ladybird's sandboxed helpers can read, as conda/webby's launcher sets up: they may only read
 # share/Lagom/fonts, so without it each one prints "Cannot load default config file".

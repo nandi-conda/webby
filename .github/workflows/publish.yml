@@ -179,6 +179,8 @@ jobs:
           timeout 600 xvfb-run -a pixi run webby https://example.com < /dev/null > nim.log 2>&1 &
           for i in $(seq 120); do
             pgrep -f WebContent >/dev/null && break
+            # Stop waiting once it has exited (e.g. couldn't load libwebby.so).
+            pgrep -f "pixi run webby" >/dev/null || break
             sleep 5
           done
           sleep 5
