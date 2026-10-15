@@ -21,8 +21,7 @@ NAMES = """
 account_circle add arrow_back arrow_forward block bookmarks bookmarks_outlined close cloud_off computer
 cookie_outlined copy create_new_folder_outlined delete_outline delete_sweep_outlined edit_outlined folder_open
 folder_outlined
-help_outline history info_outline install_desktop key key_outlined keyboard_arrow_down keyboard_arrow_up language layers
-layers_outlined
+help_outline history info_outline install_desktop key key_outlined language layers layers_outlined
 location_on_outlined lock_open lock_outline mic_none more_vert move_to_inbox_outlined notifications_outlined
 open_in_browser open_in_new person_outline public refresh search send smartphone star star_border summarize
 summarize_outlined tab tune visibility visibility_off visibility_off_outlined

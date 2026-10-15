@@ -12,7 +12,8 @@ const manifestScript = """
 (() => {
   if (document.readyState === 'loading') return;  // prompt() while parsing can wedge the load
   const link = document.querySelector('link[rel~="manifest"][href]');
-  try { window.prompt(PREFIX + JSON.stringify({ type: 'manifest', href: link ? link.href : '' })); } catch (e) {}
+  const msg = { type: 'manifest', page: location.href, href: link ? link.href : '' };
+  try { window.prompt(PREFIX + JSON.stringify(msg)); } catch (e) {}
 })();
 """
 
@@ -74,6 +75,8 @@ proc load(t: Tab, href: string) =
 proc onMessage(t: Tab, j: JsonNode): bool =
   if j{"type"}.getStr != "manifest": return false
   let href = j{"href"}.getStr
+  # Around a navigation the script can still run in the page being left: only the tab's current page counts.
+  if j{"page"}.getStr.split('#')[0] != t.url.split('#')[0]: return true
   let a = agent(t)
   if href == a.href and (a.manifest != nil or a.fetching or href.len == 0): return true
   log "pwa: page " & t.url & " reports manifest " & (if href.len == 0: "(none)" else: href)
@@ -125,5 +128,5 @@ proc install*() =
   tabClosedHooks.add proc (t: Tab) = agents.del t.id
   stateHooks.add proc (t: Tab, state: JsonNode) =
     let m = if t == nil: nil else: agents.getOrDefault(t.id, Agent()).manifest
-    state["app"] = if m == nil: %"" else: %m.title
+    state["app"] = if m == nil or not inScope(m.scope, t.url): %"" else: %m.title
   commands["pwa.install"] = installCmd

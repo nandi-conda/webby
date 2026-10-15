@@ -174,13 +174,6 @@ View::View(Core::AnonymousBuffer theme, Web::DevicePixelSize size)
         state_changed();
     };
 
-    on_find_in_page = [this](size_t current_match_index, Optional<size_t> const& total_match_count) {
-        // No count comes back for an empty query or a page without a document.
-        m_find_total = static_cast<int>(total_match_count.value_or(0));
-        m_find_current = m_find_total == 0 ? 0 : static_cast<int>(current_match_index) + 1;
-        state_changed();
-    };
-
     on_cursor_change = [this](Gfx::Cursor const& cursor) {
         m_cursor = cursor_to_int(cursor);
         state_changed();

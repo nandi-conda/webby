@@ -63,7 +63,7 @@ proc finish(a: Ask, allowed, remember: bool) =
   if remember: set(a.origin, a.permission, if allowed: allow else: blocked)
   elif allowed: allowOnce(a.tab, a.origin, a.permission)
   if a.engineId >= 0:
-    if not a.tab.closed: webby_view_permission_respond(a.tab.view, uint64(a.engineId), allowed.cint)
+    if not a.tab.closed and not a.tab.asleep: webby_view_permission_respond(a.tab.view, uint64(a.engineId), allowed.cint)
     wake()
   for d in a.done: d(allowed)
   let i = asks.find(a)

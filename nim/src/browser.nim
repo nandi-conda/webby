@@ -31,7 +31,6 @@ type
     loading*, canBack*, canForward*: bool
     cursor*: int
     pinned*: bool
-    findCurrent*, findTotal*: int  ## native find in page: the 1-based active match (0 = none) and the match count
     messagePrefix*: string   ## page scripts send messages with prompt(messagePrefix + text)
     props*: Table[string, string]  ## per-tab scratch space for features
     frameSerial, stateSerial: uint64
@@ -49,7 +48,6 @@ var
   # Widgets
   window*, mainBox*, tabStrip*, tabStripBox*, toolbar*, toolbarEnd*, urlEntry*, area*, status*: Widget
   barSlot*: Widget             ## a box under the toolbar (the bookmark bar goes here)
-  findSlot*: Widget            ## a box under the page (the find bar goes here)
   pagePane*: Widget            ## GtkPaned: the page on the left, the side panel on the right
   pageBox*: Widget             ## holds the vertical tab list (if any) and the page area
   sidePanel*: Widget           ## the side panel's box (hidden when nothing shows)
@@ -69,7 +67,6 @@ var
   tabClosedHooks*: seq[proc (t: Tab)]             ## before the view is destroyed
   activeTabHooks*: seq[proc (t: Tab)]
   tabStateHooks*: seq[proc (t: Tab)]              ## url, title, loading or history changed
-  findHooks*: seq[proc (t: Tab)]                  ## a native find-in-page result arrived (findCurrent/findTotal)
   navigationHooks*: seq[proc (t: Tab)]            ## a page finished loading (url + title final)
   pageMessageHooks*: seq[proc (t: Tab, msg: string): bool]  ## true = handled
   pageScriptHooks*: seq[proc (t: Tab): string]    ## JS run with the compat shims on every page
@@ -582,11 +579,6 @@ proc pumpTab(t: Tab, isActive: bool): bool =
     t.canBack = webby_view_can_go_back(t.view) != 0
     t.canForward = webby_view_can_go_forward(t.view) != 0
     t.cursor = webby_view_cursor(t.view)
-    if hasNativeFind():
-      let found = (int(webby_view_find_current(t.view)), int(webby_view_find_total(t.view)))
-      if found != (t.findCurrent, t.findTotal):
-        (t.findCurrent, t.findTotal) = found
-        for h in findHooks: h(t)
     let changed = (t.url, t.title, t.loading) != before
     if changed: runPageScripts(t)
     updateTabButton(t)
@@ -1123,8 +1115,6 @@ proc buildWindow() =
   connect(area, "focus-in-event", onFocus, cast[pointer](1))
   connect(area, "focus-out-event", onFocus, cast[pointer](0))
   gtk_box_pack_start(pageColumn, area, 1, 1, 0)
-  findSlot = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
-  gtk_box_pack_start(pageColumn, findSlot, 0, 0, 0)
   status = gtk_label_new("")
   gtk_label_set_xalign(status, 0)
   gtk_label_set_ellipsize(status, PANGO_ELLIPSIZE_END)

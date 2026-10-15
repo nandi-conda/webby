@@ -13,7 +13,6 @@ import 'src/bookmarks/bookmark_dialog.dart';
 import 'src/bookmarks/bookmark_store.dart';
 import 'src/bookmarks/bookmarks_page.dart';
 import 'src/color_scheme.dart';
-import 'src/find_in_page.dart';
 import 'src/frame_bench.dart';
 import 'src/history/history_page.dart';
 import 'src/history/history_store.dart';
@@ -297,7 +296,6 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
   void _closeTab(int index) {
     if (index < 0 || index >= _tabs.length) return;
     final tab = _tabs[index];
-    if (_findTab == tab) _findTab = null;
     final url = tab.controller.url;
     if (url.isNotEmpty && url != _blankUrl) {
       _closedTabs.add(DeviceTab(tabTitle(tab.controller.title, url), url));
@@ -637,10 +635,7 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
 
   void _selectTab(int index, {bool force = false}) {
     if (index < 0 || index >= _tabs.length || (index == _active && !force)) return;
-    setState(() {
-      _active = index;
-      if (_findTab != null && _findTab != _tabs[index]) _findTab = null;
-    });
+    setState(() => _active = index);
     _syncVisibility();
     if (_restoresTabs) OpenTabsStore.instance.save(_sessionTabs(), _active, pinned: _pinnedCount);
     final tab = _tabs[index];
@@ -751,36 +746,6 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     if (await showClearBrowsingData(context, data) && mounted) showKitToast(context, 'Browsing data cleared');
   }
 
-  /// The tab whose find bar shows (null when it is closed); the bar closes when another tab comes forward.
-  _BrowserTab? _findTab;
-  final _findBar = GlobalKey<FindBarState>();
-
-  void _openFind() {
-    final tab = _tab;
-    if (tab == null) return;
-    if (_findTab == tab) {
-      _findBar.currentState?.focus();
-      return;
-    }
-    setState(() => _findTab = tab);
-  }
-
-  void _closeFind() {
-    final tab = _findTab;
-    if (tab == null) return;
-    setState(() => _findTab = null);
-    if (_tab == tab) tab.focus.requestFocus();
-  }
-
-  void _findStep({required bool forward}) {
-    final bar = _findBar.currentState;
-    if (_findTab != _tab || bar == null) {
-      _openFind();
-    } else {
-      bar.step(forward: forward);
-    }
-  }
-
   void _toggleBookmarkBar() => BookmarkStore.instance.showBar = !BookmarkStore.instance.showBar;
 
   static const _shortcuts = <ShortcutActivator, String>{
@@ -788,11 +753,6 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     SingleActivator(LogicalKeyboardKey.keyB, control: true, shift: true): 'bar',
     SingleActivator(LogicalKeyboardKey.keyO, control: true, shift: true): 'manager',
     SingleActivator(LogicalKeyboardKey.keyH, control: true): 'history',
-    SingleActivator(LogicalKeyboardKey.keyF, control: true): 'find',
-    SingleActivator(LogicalKeyboardKey.keyG, control: true): 'findNext',
-    SingleActivator(LogicalKeyboardKey.keyG, control: true, shift: true): 'findPrevious',
-    SingleActivator(LogicalKeyboardKey.f3): 'findNext',
-    SingleActivator(LogicalKeyboardKey.f3, shift: true): 'findPrevious',
     SingleActivator(LogicalKeyboardKey.keyT, control: true): 'newTab',
     SingleActivator(LogicalKeyboardKey.keyT, control: true, shift: true): 'reopenTab',
     SingleActivator(LogicalKeyboardKey.keyN, control: true, shift: true): 'incognito',
@@ -828,13 +788,11 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
   /// Whether [event] is one of [_shortcuts]' keys (down, repeat or up), so the page doesn't get it.
   static bool _isBrowserShortcut(KeyEvent event) {
     final keyboard = HardwareKeyboard.instance;
-    if (event.logicalKey == LogicalKeyboardKey.f3 && !keyboard.isControlPressed && !keyboard.isAltPressed) return true;
     if (!keyboard.isControlPressed || keyboard.isAltPressed || keyboard.isMetaPressed) return false;
     final key = event.logicalKey;
-    if (key == LogicalKeyboardKey.keyT || key == LogicalKeyboardKey.tab || key == LogicalKeyboardKey.keyG) return true;
+    if (key == LogicalKeyboardKey.keyT || key == LogicalKeyboardKey.tab) return true;
     if (key == LogicalKeyboardKey.keyD ||
         key == LogicalKeyboardKey.keyH ||
-        key == LogicalKeyboardKey.keyF ||
         key == LogicalKeyboardKey.keyW ||
         key == LogicalKeyboardKey.pageUp ||
         key == LogicalKeyboardKey.pageDown ||
@@ -858,12 +816,6 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
         _openBookmarks();
       case 'history':
         _openHistory();
-      case 'find':
-        _openFind();
-      case 'findNext':
-        _findStep(forward: true);
-      case 'findPrevious':
-        _findStep(forward: false);
       case 'newTab':
         _newTab();
       case 'reopenTab':
@@ -1088,7 +1040,6 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
                       const KitMenuDivider(),
                       KitMenuItem('Bookmark manager', shortcut: 'Ctrl+Shift+O', onSelected: _openBookmarks),
                       KitMenuItem('History', shortcut: 'Ctrl+H', onSelected: _openHistory),
-                      KitMenuItem('Find in page…', shortcut: 'Ctrl+F', onSelected: _openFind),
                       ..._recentlyClosedItems(),
                       if (!Incognito.active) ...[
                         const KitMenuDivider(),
@@ -1181,8 +1132,6 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
               ),
               ),
             ),
-            if (_findTab == tab)
-              FindBar(key: _findBar, controller: controller, onClose: _closeFind),
             // The sidebar sits under the page on narrow windows.
             if (panel != null && !panelWide) SizedBox(height: size.height * 0.5, child: _sidePanel(panel, wide: false)),
               ],

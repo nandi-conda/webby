@@ -63,7 +63,7 @@ requirements:
     - expat
     - zlib
   run:
-    - webby-ladybird >=2026.10.14.2
+    - webby-ladybird >=2026.10.14.1
     # The password vault's key goes in the desktop keyring through libsecret (loaded at runtime).
     - libsecret
     - gtk3

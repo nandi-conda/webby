@@ -35,9 +35,9 @@ proc restore(urls: seq[string], front = 0) =
     var t: Tab
     if i == 0 and isBlank(cur) and cur != nil:
       t = cur
-      webby_view_load(t.view, url.cstring)
-    else:
-      t = openTab(url, focus = false, at = at)
+      loadIn(t, url)
+    elif i == front: t = openTab(url, focus = false, at = at)
+    else: t = openAsleep(url, at)
     inc at
     if i == front: frontTab = t
   if frontTab != nil: activate(tabs.find(frontTab))
@@ -71,7 +71,7 @@ proc saveOpen(args: JsonNode): JsonNode =
     if not tabs.anyIt(not it.pinned): openTab(homePage)
     elif not isBlank(current()):
       let t = tabs[tabs.high]
-      if not t.pinned: webby_view_load(t.view, homePage)
+      if not t.pinned: loadIn(t, homePage)
   %true
 
 proc restoreCmd(args: JsonNode): JsonNode =

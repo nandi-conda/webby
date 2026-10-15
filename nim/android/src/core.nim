@@ -69,6 +69,9 @@ type
     props*: Table[string, string]  ## per-tab scratch space for features
     closed*: bool
     pinned*: bool            ## kept at the front of the tab list and across restarts
+    hiddenSince: MonoTime    ## when it last stopped being the active tab
+    ## A tab can be asleep (view = nil, url and title kept): restored tabs until first shown, and background tabs
+    ## put to sleep after a while or when Android is short of memory (as the desktop discards hidden tabs).
 
 var
   tabs*: seq[Tab]
@@ -108,6 +111,8 @@ var
   nextTimerId = 1
 
 proc current*(): Tab = (if active in 0 ..< tabs.len: tabs[active] else: nil)
+
+proc asleep*(t: Tab): bool = t.view == nil
 
 proc wake*() =
   quietTicks = 0
@@ -210,14 +215,20 @@ proc blitActive() =
 proc applySize(t: Tab) =
   if viewW > 0 and viewH > 0: webby_view_resize(t.view, viewW.cint, viewH.cint, density.cdouble)
 
+proc wakeTab(t: Tab)
+
 proc activate*(i: int) =
   if i notin 0 ..< tabs.len: return
   if active in 0 ..< tabs.len and active != i:
-    webby_view_set_focus(tabs[active].view, 0)
-    webby_view_set_visible(tabs[active].view, 0)
-    webby_view_collect_garbage(tabs[active].view)
+    let old = tabs[active]
+    old.hiddenSince = getMonoTime()
+    if not old.asleep:
+      webby_view_set_focus(old.view, 0)
+      webby_view_set_visible(old.view, 0)
+      webby_view_collect_garbage(old.view)
   active = i
   let t = tabs[i]
+  wakeTab(t)
   applySize(t)
   webby_view_set_visible(t.view, shown.cint)
   webby_view_set_focus(t.view, 1)
@@ -228,11 +239,16 @@ proc activate*(i: int) =
   sendIme()
   wake()
 
-proc adopt(view: View, focus: bool, at = -1): Tab =
-  let t = Tab(id: nextTabId, view: view, lastCompat: getMonoTime(), messagePrefix: randomPrefix())
-  inc nextTabId
+proc setUp(t: Tab, view: View) =
+  t.view = view
+  t.lastCompat = getMonoTime()
   webby_view_set_message_prefix(view, t.messagePrefix.cstring)
   webby_view_set_color_scheme(view, (if dark: colorSchemeDark else: colorSchemeLight).cint)
+
+proc adopt(view: View, focus: bool, at = -1): Tab =
+  let t = Tab(id: nextTabId, messagePrefix: randomPrefix(), hiddenSince: getMonoTime())
+  inc nextTabId
+  setUp(t, view)
   let i = if at in 0 .. tabs.len: at else: tabs.len
   tabs.insert(t, i)
   if i <= active: inc active
@@ -250,6 +266,53 @@ proc openTab*(url: string, focus = true, at = -1): Tab {.discardable.} =
   result = adopt(newView(), focus, at)
   webby_view_load(result.view, (if url.len > 0: url else: homePage).cstring)
   wake()
+
+proc openAsleep*(url: string, at = -1): Tab =
+  ## A restored tab: no view (no WebContent process) until it is first shown.
+  result = Tab(id: nextTabId, messagePrefix: randomPrefix(), url: url, title: url, hiddenSince: getMonoTime())
+  inc nextTabId
+  let i = if at in 0 .. tabs.len: at else: tabs.len
+  tabs.insert(result, i)
+  if active >= 0 and i <= active: inc active
+
+proc wakeTab(t: Tab) =
+  if not t.asleep: return
+  setUp(t, newView())
+  t.frameSerial = 0
+  t.stateSerial = 0
+  applySize(t)
+  webby_view_set_visible(t.view, 0)
+  webby_view_load(t.view, (if t.url.len > 0: t.url else: homePage).cstring)
+  wake()
+
+proc sleepTab*(t: Tab) =
+  ## Frees a background tab's page; it reloads when shown again.
+  if t.asleep or t.closed or t == current(): return
+  webby_view_destroy(t.view)
+  t.view = nil
+  t.loading = false
+  t.dialogJson = ""
+  t.webauthnJson = ""
+  t.filePickerJson = ""
+  t.permissionJson = ""
+  log "tab " & $t.id & " asleep: " & t.url
+
+proc loadIn*(t: Tab, url: string) =
+  ## Loads `url` in `t`, awake or not.
+  if t.asleep:
+    t.url = url
+    t.title = url
+  else: webby_view_load(t.view, url.cstring)
+  wake()
+
+const sleepAfter = initDuration(minutes = 10)
+
+proc sleepIdleTabs*(all = false) =
+  ## Background tabs hidden for 10 minutes (all of them when `all`) go to sleep; pinned ones only when `all`.
+  let now = getMonoTime()
+  for t in tabs:
+    if t == current() or t.asleep: continue
+    if all or (not t.pinned and now - t.hiddenSince >= sleepAfter): sleepTab(t)
 
 proc saveTabsSoon*() = saveTabs()
 
@@ -279,7 +342,7 @@ proc closeTab*(i: int) =
   for h in tabClosedHooks: h(t)
   t.closed = true
   tabs.delete(i)
-  webby_view_destroy(t.view)
+  if not t.asleep: webby_view_destroy(t.view)
   if tabs.len == 0:
     active = -1
     discard openTab(homePage)
@@ -300,7 +363,7 @@ proc tabIndex*(id: int): int =
 # Page scripts and requests
 
 proc runJs*(t: Tab, js: string) =
-  if not t.closed: webby_view_run_javascript(t.view, js.cstring)
+  if not t.closed and not t.asleep: webby_view_run_javascript(t.view, js.cstring)
 
 proc runPageScripts(t: Tab) =
   t.lastCompat = getMonoTime()
@@ -529,7 +592,7 @@ proc pump*(): int =
     call("onClipboard", str(webby_clipboard_text()))
   let snapshot = tabs   # a copy: pumpTab may add or close tabs
   for t in snapshot:
-    if not t.closed and pumpTab(t, t == current()): busy = true
+    if not t.closed and not t.asleep and pumpTab(t, t == current()): busy = true
   stepTouch()
   if touchActive(): busy = true
   let nextTimer = runTimers()
@@ -558,11 +621,15 @@ proc openInitialTabs() =
   except CatchableError: discard
   if urls.len == 0: urls = @[homePage]
   for i, u in urls:
-    let t = openTab(u, focus = false)
+    let t = openAsleep(u)
     t.pinned = i < pinned
   activate(clamp(act, 0, tabs.high))
   initialTabsOpen = true
   sendState()
+  proc idleCheck() =
+    sleepIdleTabs()
+    discard after(60_000, idleCheck)
+  discard after(60_000, idleCheck)
 
 proc nim_init(prefix, profileDir: cstring, d: cdouble, isDark: cint): cint {.exportc, cdecl.} =
   if started:
@@ -662,7 +729,7 @@ proc nim_ime_commit(text: cstring, start, length: cint) {.exportc, cdecl.} =
 
 proc nim_dialog_respond(tab: cint, id: int64, ok: cint, text: cstring) {.exportc, cdecl.} =
   let i = tabIndex(tab.int)
-  if i < 0: return
+  if i < 0 or tabs[i].asleep: return
   webby_view_dialog_respond(tabs[i].view, uint64(id), ok, text)
   wake()
 
@@ -673,11 +740,15 @@ proc nim_set_focus(on: cint) {.exportc, cdecl.} =
 
 proc nim_color_scheme(scheme: cint) {.exportc, cdecl.} =
   dark = scheme == colorSchemeDark
-  for t in tabs: webby_view_set_color_scheme(t.view, scheme)
+  for t in tabs:
+    if not t.asleep: webby_view_set_color_scheme(t.view, scheme)
   wake()
 
 proc nim_trim_memory(level: cint) {.exportc, cdecl.} =
-  for t in tabs: webby_view_collect_garbage(t.view)
+  ## ComponentCallbacks2 levels: from TRIM_MEMORY_RUNNING_LOW (10) on, background tabs go to sleep.
+  if level >= 10: sleepIdleTabs(all = true)
+  for t in tabs:
+    if not t.asleep: webby_view_collect_garbage(t.view)
   wake()
 
 proc nim_visible(on: cint) {.exportc, cdecl.} =
