@@ -5,6 +5,8 @@
 
 import std/[json, random, strutils, times]
 import ../browser
+from nimkit/core as kit import nil
+from nimkit/backend/gtk as nkgtk import nil
 import summarize/[cache, deepseek, markdown, prompts]
 
 type
@@ -28,8 +30,7 @@ type
     provider: Provider         ## who the summary was asked of
 
   Panel = object
-    root, spinner, copyButton, redoButton, content, entry, sendButton, adjustment: Widget
-    stickToBottom: bool
+    root, busyLabel, copyButton, redoButton, content, scroller, entry, sendButton: kit.Widget
 
 var
   jobs: Table[string, Job]     ## by the tab's messagePrefix
@@ -39,20 +40,6 @@ var
   panel: Panel
   switchingPanel = false
   renderQueued = false
-
-const GTK_RESPONSE_REJECT = -2.cint
-proc gtk_check_button_new_with_mnemonic(label: cstring): Widget {.importc, cdecl.}
-proc gtk_combo_box_text_new(): Widget {.importc, cdecl.}
-proc gtk_combo_box_text_append_text(c: Widget, text: cstring) {.importc, cdecl.}
-proc gtk_combo_box_set_active(c: Widget, i: cint) {.importc, cdecl.}
-proc gtk_combo_box_get_active(c: Widget): cint {.importc, cdecl.}
-proc gtk_dialog_get_widget_for_response(d: Widget, response: cint): Widget {.importc, cdecl.}
-proc gtk_box_set_spacing(b: Widget, s: cint) {.importc, cdecl.}
-proc gtk_scrolled_window_get_vadjustment(s: Widget): Widget {.importc, cdecl.}
-proc gtk_adjustment_get_value(a: Widget): cdouble {.importc, cdecl.}
-proc gtk_adjustment_set_value(a: Widget, v: cdouble) {.importc, cdecl.}
-proc gtk_adjustment_get_upper(a: Widget): cdouble {.importc, cdecl.}
-proc gtk_adjustment_get_page_size(a: Widget): cdouble {.importc, cdecl.}
 
 proc nowMs(): int64 = (epochTime() * 1000).int64
 
@@ -80,97 +67,75 @@ proc provider(): Provider = chosenProvider(secret)
 proc apiKey(): string = secret(provider().info.keySecret)
 
 
-proc onShowKey(button: Widget, entry: pointer) {.cdecl.} =
-  gtk_entry_set_visibility(entry, gtk_toggle_button_get_active(button))
-
 proc render()
 
-type SettingsDialog = object
-  dialog, providerBox, label, sync, info: Widget
-  provider: Provider
-
-proc settingsUpdate(d: ptr SettingsDialog) =
-  ## Fits the dialog to the provider picked.
-  let p = Provider(max(0, gtk_combo_box_get_active(d.providerBox)))
-  let hasKey = secret(p.info.keySecret).len > 0
-  gtk_label_set_text(d.label, cstring(if hasKey: "New " & p.name & " API key (one is saved)" else: p.name & " API key"))
-  gtk_widget_set_sensitive(gtk_dialog_get_widget_for_response(d.dialog, GTK_RESPONSE_REJECT), hasKey.gboolean)
-  if p != d.provider:
-    gtk_toggle_button_set_active(d.sync, cint(secretSyncs == nil or secretSyncs(p.info.keySecret)))
-  d.provider = p
-  let where =
-    if setSecret != nil: "It is kept encrypted in the password vault; when it syncs, it travels end-to-end " &
-      "encrypted like your passwords."
-    else: "The password vault isn't available, so the key is kept in memory until Webby quits."
-  gtk_label_set_markup(d.info, cstring("<small>" & escapeMarkup("Create a key at " & p.info.site & ". " & where &
-    " Summarize sends the page's text to " & p.name & ".") & "</small>"))
-
-proc onProviderChanged(box: Widget, d: pointer) {.cdecl.} = settingsUpdate(cast[ptr SettingsDialog](d))
-
-proc showSummarizeSettings*() =
-  ## The dialog where the provider is picked and its API key entered, replaced or removed.
+proc showSummarizeSettings*(onSaved: proc () = nil) =
+  ## The dialog where the provider is picked and its API key entered, replaced or removed. onSaved runs after Save.
   if incognito and setSecret != nil:
-    alert("Set the Summarize API key in a normal window.")
+    kit.alert("Set the Summarize API key in a normal window.")
     return
-  var s = SettingsDialog(provider: provider())
-  let d = gtk_dialog_new_with_buttons("Summarize settings", window, GTK_DIALOG_MODAL, nil)
-  s.dialog = d
-  discard gtk_dialog_add_button(d, "_Remove key", GTK_RESPONSE_REJECT)
-  discard gtk_dialog_add_button(d, "_Cancel", GTK_RESPONSE_CANCEL)
-  discard gtk_dialog_add_button(d, "_Save", GTK_RESPONSE_OK)
-  gtk_dialog_set_default_response(d, GTK_RESPONSE_OK)
-  let box = gtk_dialog_get_content_area(d)
-  gtk_container_set_border_width(box, 12)
-  gtk_box_set_spacing(box, 6)
-  let withLabel = gtk_label_new("Summarize with")
-  gtk_label_set_xalign(withLabel, 0)
-  gtk_box_pack_start(box, withLabel, 0, 0, 0)
-  s.providerBox = gtk_combo_box_text_new()
-  for p in Provider: gtk_combo_box_text_append_text(s.providerBox, p.name.cstring)
-  gtk_combo_box_set_active(s.providerBox, s.provider.ord.cint)
-  gtk_box_pack_start(box, s.providerBox, 0, 0, 0)
-  s.label = gtk_label_new("")
-  gtk_label_set_xalign(s.label, 0)
-  gtk_widget_set_margin_top(s.label, 6)
-  gtk_box_pack_start(box, s.label, 0, 0, 0)
-  let entry = gtk_entry_new()
-  gtk_entry_set_visibility(entry, 0)
-  gtk_entry_set_placeholder_text(entry, "Paste the key")
-  gtk_entry_set_activates_default(entry, 1)
-  gtk_entry_set_width_chars(entry, 44)
-  gtk_box_pack_start(box, entry, 0, 0, 0)
-  let show = gtk_check_button_new_with_mnemonic("Sho_w key")
-  connect(show, "toggled", onShowKey, entry)
-  gtk_box_pack_start(box, show, 0, 0, 0)
-  s.sync = gtk_check_button_new_with_mnemonic("S_ync this key to my other devices")
-  gtk_toggle_button_set_active(s.sync, cint(secretSyncs == nil or secretSyncs(s.provider.info.keySecret)))
-  if setSecret != nil: gtk_box_pack_start(box, s.sync, 0, 0, 0)
-  s.info = markupLabel("", selectable = false)
-  addClass(s.info, "webby-md-dim")
-  gtk_box_pack_start(box, s.info, 0, 0, 0)
-  settingsUpdate(addr s)
-  connect(s.providerBox, "changed", onProviderChanged, addr s)
-  gtk_widget_show_all(d)
-  while true:
-    let r = gtk_dialog_run(d)
-    let text = ($gtk_entry_get_text(entry)).strip
-    let syncs = gtk_toggle_button_get_active(s.sync) != 0
-    let p = s.provider
-    let name = p.info.keySecret
-    let hasKey = secret(name).len > 0
-    if r == GTK_RESPONSE_OK and text.len == 0:
-      # With a key saved, Save with the field empty just switches to the provider and changes whether it syncs.
-      if not hasKey: continue
-      storeSecret(name, secret(name), syncs)
-    elif r == GTK_RESPONSE_OK: storeSecret(name, text, syncs)
-    elif r == GTK_RESPONSE_REJECT: storeSecret(name, "", syncs)
-    if r in [GTK_RESPONSE_OK, GTK_RESPONSE_REJECT]:
+  var shownProvider = provider()
+  let box = kit.column()
+  box.spacing = 6
+  discard kit.sized(box, 420)
+  var names: seq[string]
+  for p in Provider: names.add p.name
+  let providerBox = kit.dropdown(names, shownProvider.ord)
+  let label = kit.label("")
+  let entry = kit.entry("Paste the key")
+  kit.`password=`(entry, true)
+  let show = kit.check("Show key", false, proc (on: bool) = kit.`password=`(entry, not on))
+  let sync = kit.check("Sync this key to my other devices",
+    secretSyncs == nil or secretSyncs(shownProvider.info.keySecret))
+  let info = kit.addClass(kit.addClass(kit.label(""), "dim"), "small")
+  kit.add(box, kit.label("Summarize with"))
+  kit.add(box, kit.row(providerBox))
+  kit.add(box, label)
+  kit.add(box, entry)
+  kit.add(box, show)
+  if setSecret != nil: kit.add(box, sync)
+  kit.add(box, info)
+  proc update() =
+    ## Fits the dialog to the provider picked.
+    let p = Provider(max(0, kit.selected(providerBox)))
+    let hasKey = secret(p.info.keySecret).len > 0
+    kit.`text=`(label, if hasKey: "New " & p.name & " API key (one is saved)" else: p.name & " API key")
+    if p != shownProvider:
+      kit.`checked=`(sync, secretSyncs == nil or secretSyncs(p.info.keySecret))
+    shownProvider = p
+    let where =
+      if setSecret != nil: "It is kept encrypted in the password vault; when it syncs, it travels end-to-end " &
+        "encrypted like your passwords."
+      else: "The password vault isn't available, so the key is kept in memory until Webby quits."
+    kit.`text=`(info, "Create a key at " & p.info.site & ". " & where & " Summarize sends the page's text to " &
+      p.name & ".")
+  update()
+  providerBox.onSelect = proc (i: int) = update()
+  var d: kit.Dialog
+  d = kit.dialog("Summarize settings", box, @["Remove key", "Cancel", "Save"], destructive = 0, onResult =
+    proc (r: int) =
+      if r notin [0, 2]: return
+      let text = kit.text(entry).strip
+      let syncs = kit.checked(sync)
+      let p = shownProvider
+      let name = p.info.keySecret
+      let hasKey = secret(name).len > 0
+      if r == 2 and text.len == 0:
+        # With a key saved, Save with the field empty just switches to the provider and changes whether it syncs.
+        if not hasKey:
+          kit.showDialog(d)
+          kit.focus(entry)
+          return
+        storeSecret(name, secret(name), syncs)
+      elif r == 2: storeSecret(name, text, syncs)
+      else: storeSecret(name, "", syncs)
       # The choice travels with the key: a device that gets the key also switches to it.
       if secret(providerSecret) != p.info.id or (secretSyncs != nil and secretSyncs(providerSecret) != syncs):
         storeSecret(providerSecret, p.info.id, syncs)
-    break
-  gtk_widget_destroy(d)
-  render()
+      render()
+      if r == 2 and onSaved != nil: onSaved())
+  entry.onSubmit = proc (t: string) = kit.dialogResult(d, 2)
+  kit.focus(entry)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Reading the page
@@ -367,6 +332,9 @@ proc close(job: Job) =
 
 const panelCss = markdownCss & """
 .webby-summary-question { background-color: alpha(currentColor, 0.07); border-radius: 6px; padding: 7px 10px; }
+.webby-summary-bar { margin: 2px 4px 2px 0; }
+.webby-summary-content { padding: 14px; }
+.webby-summary-ask { padding: 8px; }
 """
 
 # Text sizes: markdown_view.dart's (body, then headings 1.35/1.2/1.08x and code 0.92x), in pt so they follow the
@@ -401,18 +369,17 @@ proc setTextZoom(z: float) =
 
 proc gtk_window_get_focus(w: Widget): Widget {.importc, cdecl.}
 proc gtk_widget_is_ancestor(w, ancestor: Widget): gboolean {.importc, cdecl.}
-
 proc gtk_widget_get_pointer(w: Widget, x, y: ptr cint) {.importc, cdecl.}
 
 proc panelHasFocus(): bool =
   ## Whether the keyboard focus or the mouse pointer is in the summary panel.
   if panel.root == nil or not sidePanelShowing(): return false
+  let root = nkgtk.gtkWidget(panel.root)
   let f = gtk_window_get_focus(window)
-  if f != nil and (f == panel.root or gtk_widget_is_ancestor(f, panel.root) != 0): return true
+  if f != nil and (f == root or gtk_widget_is_ancestor(f, root) != 0): return true
   var x, y: cint
-  gtk_widget_get_pointer(panel.root, addr x, addr y)
-  x >= 0 and y >= 0 and x < gtk_widget_get_allocated_width(panel.root) and
-    y < gtk_widget_get_allocated_height(panel.root)
+  gtk_widget_get_pointer(root, addr x, addr y)
+  x >= 0 and y >= 0 and x < gtk_widget_get_allocated_width(root) and y < gtk_widget_get_allocated_height(root)
 
 proc onPanelWheel(w: Widget, e: GEvent, d: pointer): gboolean {.cdecl.} =
   if (eventState(e) and GDK_CONTROL_MASK) == 0: return 0
@@ -440,17 +407,19 @@ proc withoutSourceLinks(text: string): string =
     inc i
   result = result.strip
 
-proc dim(text: string): string = "<small>" & escapeMarkup(text) & "</small>"
-proc danger(text: string): string = "<span foreground=\"#d0393e\">" & escapeMarkup(text) & "</span>"
-
 proc whenText(ms: int64): string =
   let t = fromUnix(ms div 1000).local
   let now = now()
   if t.year == now.year and t.yearday == now.yearday: "today " & t.format("HH:mm") else: t.format("yyyy-MM-dd HH:mm")
 
-proc add(w: Widget, margin = 0) =
-  gtk_widget_set_margin_top(w, margin.cint)
-  gtk_box_pack_start(panel.content, w, 0, 0, 0)
+proc add(w: kit.Widget, margin = 0) =
+  if margin > 0: kit.add(panel.content, kit.sized(kit.column(), 0, margin))
+  kit.add(panel.content, w)
+
+proc note(text: string, small = false): kit.Widget =
+  ## Dim text; `small` as <small> markup, since the panel's text-size CSS outranks the "small" style.
+  result = kit.addClass(if small: kit.richLabel("<small>" & kit.escapeRich(text) & "</small>") else: kit.label(text),
+    "dim")
 
 proc render() =
   let job = panelJob
@@ -458,65 +427,42 @@ proc render() =
   let key = apiKey()
   let busy = job.running or job.answering
   setSidePanelTitle(if job.selection: "Summary of selection" else: "Summary")
-  gtk_widget_set_visible(panel.spinner, busy.gboolean)
-  if busy: gtk_spinner_start(panel.spinner) else: gtk_spinner_stop(panel.spinner)
-  gtk_widget_set_sensitive(panel.copyButton, (job.text.len > 0).gboolean)
-  gtk_widget_set_sensitive(panel.redoButton, (not busy and key.len > 0).gboolean)
+  kit.`visible=`(panel.busyLabel, busy)
+  kit.`text=`(panel.busyLabel, if job.answering: "Answering…" else: "Summarizing…")
+  kit.`enabled=`(panel.copyButton, job.text.len > 0)
+  kit.`enabled=`(panel.redoButton, not busy and key.len > 0)
   let canAsk = key.len > 0 and job.text.strip.len > 0 and not job.running and job.error.len == 0
-  gtk_widget_set_sensitive(panel.entry, canAsk.gboolean)
-  gtk_widget_set_sensitive(panel.sendButton, (canAsk and not job.answering).gboolean)
+  kit.`enabled=`(panel.entry, canAsk)
+  kit.`enabled=`(panel.sendButton, canAsk and not job.answering)
 
-  clearChildren(panel.content)
-  if job.title.len > 0: add markupLabel("<b>" & escapeMarkup(job.title) & "</b>")
+  kit.clear(panel.content)
+  if job.title.len > 0: add kit.addClass(kit.label(job.title), "bold")
   if job.url.len > 0:
-    let url = markupLabel(dim(job.url))
-    gtk_label_set_line_wrap(url, 0)
-    gtk_label_set_ellipsize(url, PANGO_ELLIPSIZE_END)
-    addClass(url, "webby-md-dim")
+    let url = note(job.url, small = true)
+    kit.`maxChars=`(url, 200)
     add url
   if job.savedAt != 0 and not job.running:
-    let note = markupLabel(dim("Saved summary from " & whenText(job.savedAt) & ". Summarize again for a new one."))
-    addClass(note, "webby-md-dim")
-    add note
-  if job.error.len > 0: add(markupLabel(danger(job.error)), 12)
+    add note("Saved summary from " & whenText(job.savedAt) & ". Summarize again for a new one.", small = true)
+  if job.error.len > 0: add(kit.addClass(kit.label(job.error), "error"), 12)
   elif job.text.len == 0 and job.running:
-    let reading = markupLabel(escapeMarkup(waitingText(job.hasPage, job.chat != nil and job.chat.queued, job.provider)))
-    addClass(reading, "webby-md-dim")
-    add(reading, 12)
+    add(note(waitingText(job.hasPage, job.chat != nil and job.chat.queued, job.provider)), 12)
   else: add(markdownView(job.text.strip), 12)
   for qa in job.questions:
-    let q = markupLabel("<b>" & escapeMarkup(qa.question) & "</b>")
-    addClass(q, "webby-summary-question")
-    add(q, 16)
+    add(kit.addClass(kit.addClass(kit.label(qa.question), "bold"), "webby-summary-question"), 16)
     if qa.answer.strip.len > 0: add(markdownView(qa.answer.strip), 8)
-    elif qa.running:
-      let thinking = markupLabel(escapeMarkup("Thinking…"))
-      addClass(thinking, "webby-md-dim")
-      add(thinking, 8)
-    if qa.error.len > 0: add(markupLabel(danger(qa.error)), 8)
-  gtk_widget_show_all(panel.content)
-  if not busy: gtk_widget_hide(panel.spinner)
-
-proc onAdjustmentChanged(a: Widget, data: pointer) {.cdecl.} =
-  if panel.stickToBottom:
-    gtk_adjustment_set_value(a, gtk_adjustment_get_upper(a) - gtk_adjustment_get_page_size(a))
-
-proc onScrolled(a: Widget, data: pointer) {.cdecl.} =
-  if gtk_adjustment_get_value(a) < gtk_adjustment_get_upper(a) - gtk_adjustment_get_page_size(a) - 24:
-    panel.stickToBottom = false
+    elif qa.running: add(note("Thinking…"), 8)
+    if qa.error.len > 0: add(kit.addClass(kit.label(qa.error), "error"), 8)
 
 proc askFromEntry() =
   let job = panelJob
   let key = apiKey()
-  let question = ($gtk_entry_get_text(panel.entry)).strip
+  let question = kit.text(panel.entry).strip
   if job == nil or key.len == 0 or question.len == 0 or job.running or job.answering: return
-  gtk_entry_set_text(panel.entry, "")
-  panel.stickToBottom = true
+  kit.`text=`(panel.entry, "")
   job.ask(key, question, provider())
   render()
-  onAdjustmentChanged(panel.adjustment, nil)
-
-proc onEntryActivate(e: Widget, data: pointer) {.cdecl.} = askFromEntry()
+  # The answer streams in below: keep it in view until the user scrolls back.
+  kit.`followEnd=`(panel.scroller, true)
 
 proc showPanel(job: Job) =
   ## Shows `job` in the side panel (replacing whatever was there).
@@ -524,60 +470,38 @@ proc showPanel(job: Job) =
   panelJob = nil
   if sidePanelShowing(): closeSidePanel()
   switchingPanel = false
-  let root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
-  addClass(root, "webby-md")   # markdownCss font sizes, matching the Flutter panel
-  let bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)
-  gtk_widget_set_margin_end(bar, 4)
-  panel.redoButton = iconButton("refresh", "Summarize again", proc () =
+  panel.redoButton = kit.iconButton("refresh", "Summarize again", proc () =
     let job = panelJob
     let key = apiKey()
     if job != nil and key.len > 0 and not job.running and not job.answering:
-      panel.stickToBottom = false
+      kit.`followEnd=`(panel.scroller, false)
       job.start(key, provider(), fresh = true)
       render())
-  panel.copyButton = iconButton("copy", "Copy summary", proc () =
+  panel.copyButton = kit.iconButton("copy", "Copy summary", proc () =
     if panelJob != nil and panelJob.text.len > 0:
       gtk_clipboard_set_text(systemClipboard(), withoutSourceLinks(panelJob.text).cstring, -1))
-  panel.spinner = gtk_spinner_new()
-  gtk_box_pack_end(bar, panel.redoButton, 0, 0, 0)
-  gtk_box_pack_end(bar, panel.copyButton, 0, 0, 0)
-  gtk_box_pack_end(bar, panel.spinner, 0, 0, 6)
-  gtk_box_pack_start(root, bar, 0, 0, 0)
-  gtk_box_pack_start(root, gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), 0, 0, 0)
-
-  let scroller = gtk_scrolled_window_new(nil, nil)
-  gtk_scrolled_window_set_policy(scroller, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
-  panel.content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
-  for side in [gtk_widget_set_margin_start, gtk_widget_set_margin_end, gtk_widget_set_margin_top,
-      gtk_widget_set_margin_bottom]:
-    side(panel.content, 14)
-  gtk_container_add(scroller, panel.content)
-  connect(scroller, "scroll-event", onPanelWheel)
-  gtk_box_pack_start(root, scroller, 1, 1, 0)
-  panel.adjustment = gtk_scrolled_window_get_vadjustment(scroller)
-  panel.stickToBottom = false
-  connect(panel.adjustment, "changed", onAdjustmentChanged)
-  connect(panel.adjustment, "value-changed", onScrolled)
-
-  gtk_box_pack_start(root, gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), 0, 0, 0)
-  let askRow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4)
-  for side in [gtk_widget_set_margin_start, gtk_widget_set_margin_end, gtk_widget_set_margin_top,
-      gtk_widget_set_margin_bottom]:
-    side(askRow, 8)
-  panel.entry = gtk_entry_new()
-  gtk_entry_set_placeholder_text(panel.entry, "Ask about this page")
-  connect(panel.entry, "activate", onEntryActivate)
-  panel.sendButton = iconButton("send", "Ask", askFromEntry)
-  gtk_box_pack_start(askRow, panel.entry, 1, 1, 0)
-  gtk_box_pack_start(askRow, panel.sendButton, 0, 0, 0)
-  gtk_box_pack_start(root, askRow, 0, 0, 0)
-  panel.root = root
-
-  showSidePanel("Summary", root, 380, proc () =
+  panel.busyLabel = note("", small = true)
+  let bar = kit.addClass(kit.row(kit.spacer(), panel.busyLabel, panel.copyButton, panel.redoButton),
+    "webby-summary-bar")
+  bar.spacing = 4
+  panel.content = kit.addClass(kit.column(), "webby-summary-content")
+  panel.content.spacing = 0
+  panel.scroller = kit.scroll(panel.content)
+  panel.entry = kit.entry("Ask about this page")
+  panel.entry.onSubmit = proc (t: string) = askFromEntry()
+  panel.sendButton = kit.iconButton("send", "Ask", askFromEntry)
+  let askRow = kit.addClass(kit.row(kit.expand(panel.entry), panel.sendButton), "webby-summary-ask")
+  askRow.spacing = 4
+  # markdownCss font sizes, matching the Flutter panel
+  panel.root = kit.addClass(kit.column(bar, kit.separator(), kit.expand(panel.scroller), kit.separator(), askRow),
+    "webby-md")
+  panel.root.spacing = 0
+  showSidePanel("Summary", panel.root, 380, proc () =
     let shown = panelJob
     panelJob = nil
     panel = Panel()
     if not switchingPanel and shown != nil: shown.close())
+  connect(nkgtk.gtkWidget(panel.scroller), "scroll-event", onPanelWheel)
   panelJob = job
   render()
 
@@ -605,11 +529,14 @@ proc summarizePage*() =
     job.showSaved(k, saved)
     showPanel(job)
     return
-  var key = apiKey()
+  let key = apiKey()
   if key.len == 0:
-    showSummarizeSettings()
-    key = apiKey()
-    if key.len == 0: return
+    showSummarizeSettings(proc () =
+      let key = apiKey()
+      if key.len > 0 and not t.closed:
+        job.start(key, provider())
+        showPanel(job))
+    return
   job.start(key, provider())
   showPanel(job)
 
@@ -637,11 +564,11 @@ proc install*() =
     linkHandler = proc (url: string) =
       if not url.startsWith(anchorPrefix): discard openTab(url)
       elif panelJob != nil and not panelJob.jumpTo(url[anchorPrefix.len .. ^1]):
-        alert("Go back to the summarized page to jump to that part.")
+        kit.alert("Go back to the summarized page to jump to that part.")
     discard addToolbarButton("summarize_outlined", "Summarize this page", toggleSummary, "summarize", "Summary")
     addMenuSeparator()
     addMenuItem("Summarize this page", summarizePage)
-    if not incognito or setSecret == nil: addMenuItem("Summarize settings…", showSummarizeSettings)
+    if not incognito or setSecret == nil: addMenuItem("Summarize settings…", proc () = showSummarizeSettings())
   activeTabHooks.add proc (t: Tab) =
     let job = jobs.getOrDefault(t.messagePrefix)
     let wanted = job != nil and job.open

@@ -416,6 +416,22 @@ proc onDragReceived(g: GtkWidget, ctx: pointer, x, y: cint, sel: pointer, info, 
   h(payload, x.float / max(gtk_widget_get_allocated_width(g), 1).float,
     y.float / max(gtk_widget_get_allocated_height(g), 1).float)
 
+proc onActivateLink(l: GtkWidget, uri: cstring, data: pointer): gboolean {.cdecl.} =
+  let w = byId(data)
+  if w != nil and w.onLink != nil and w.onLink($uri): 1 else: 0
+
+proc atEnd(adj: pointer): bool =
+  gtk_adjustment_get_value(adj) >= gtk_adjustment_get_upper(adj) - gtk_adjustment_get_page_size(adj) - 24
+
+proc onAdjustmentChanged(adj: pointer, data: pointer) {.cdecl.} =
+  let w = byId(data)
+  if w != nil and w.followEnd:
+    gtk_adjustment_set_value(adj, gtk_adjustment_get_upper(adj) - gtk_adjustment_get_page_size(adj))
+
+proc onAdjustmentValue(adj: pointer, data: pointer) {.cdecl.} =
+  let w = byId(data)
+  if w != nil and w.followEnd and not atEnd(adj): w.setFollowSilently(false)
+
 proc syncDrag(w: Widget) =
   let data = cast[pointer](w.id)
   if w.dragData.len > 0 and w.id notin dragSources:
@@ -437,10 +453,15 @@ proc sync(w: Widget) =
     gtk_box_set_spacing(w.native, w.spacing.cint)
     gtk_container_set_border_width(w.native, w.padding.cuint)
   of wkLabel:
-    gtk_label_set_text(w.native, w.text.cstring)
+    if w.rich: gtk_label_set_markup(w.native, w.text.cstring)
+    else: gtk_label_set_text(w.native, w.text.cstring)
+    gtk_label_set_selectable(w.native, w.selectable.gboolean)
+    if w.selectable: gtk_widget_set_can_focus(w.native, 0)
     gtk_label_set_line_wrap(w.native, (w.maxChars == 0).gboolean)
     gtk_label_set_ellipsize(w.native, if w.maxChars > 0: PANGO_ELLIPSIZE_END else: PANGO_ELLIPSIZE_NONE)
-    gtk_label_set_max_width_chars(w.native, (if w.maxChars > 0: w.maxChars else: -1).cint)
+    # A wrapping label asks for a readable line's width (not its whole text's, which would widen dialogs); one that
+    # expands asks for little and wraps to the room it gets.
+    gtk_label_set_max_width_chars(w.native, (if w.maxChars > 0: w.maxChars elif w.expanded: 1 else: 70).cint)
   of wkButton, wkCheck, wkToggle:
     # A button with only an icon has no label at all (an empty label would still take room). Only changes are
     # set: setting a GtkButton's label rebuilds its insides, and one rebuilt while the pointer is over it stops
@@ -482,6 +503,7 @@ proc sync(w: Widget) =
     if gtk_combo_box_get_active(w.native) != w.selected.cint: gtk_combo_box_set_active(w.native, w.selected.cint)
   of wkProgress: gtk_progress_bar_set_fraction(w.native, w.value.clamp(0.0, 1.0))
   of wkScroll:
+    if w.followEnd: onAdjustmentChanged(gtk_scrolled_window_get_vadjustment(w.native), cast[pointer](w.id))
     if w.horizontal: gtk_scrolled_window_set_policy(w.native, GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER)
     else: gtk_scrolled_window_set_policy(w.native, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
   if w.kind != wkIcon:
@@ -505,11 +527,16 @@ proc realize(w: Widget) =
     of wkScroll:
       let s = gtk_scrolled_window_new(nil, nil)
       gtk_scrolled_window_set_policy(s, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
+      let adj = gtk_scrolled_window_get_vadjustment(s)
+      connect(adj, "changed", onAdjustmentChanged, data)
+      connect(adj, "value-changed", onAdjustmentValue, data)
       s
     of wkLabel:
       let l = gtk_label_new("")
       gtk_label_set_xalign(l, 0)
       gtk_label_set_line_wrap(l, 1)
+      gtk_label_set_line_wrap_mode(l, PANGO_WRAP_WORD_CHAR)
+      connect(l, "activate-link", onActivateLink, data)
       l
     of wkButton:
       let b = gtk_button_new_with_label("")

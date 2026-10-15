@@ -255,3 +255,14 @@ proc gtk_file_filter_add_pattern*(f: pointer, pattern: cstring)
 proc gtk_dialog_run*(d: GtkWidget): cint
 proc g_free*(p: pointer)
 {.pop.}
+
+{.push cdecl, importc.}
+proc gtk_label_set_selectable*(l: GtkWidget, on: gboolean)
+proc gtk_label_set_line_wrap_mode*(l: GtkWidget, mode: cint)
+proc gtk_scrolled_window_get_vadjustment*(s: GtkWidget): pointer
+proc gtk_adjustment_get_value*(a: pointer): cdouble
+proc gtk_adjustment_set_value*(a: pointer, v: cdouble)
+proc gtk_adjustment_get_upper*(a: pointer): cdouble
+proc gtk_adjustment_get_page_size*(a: pointer): cdouble
+{.pop.}
+const PANGO_WRAP_WORD_CHAR* = 2.cint

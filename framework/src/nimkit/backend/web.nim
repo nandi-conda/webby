@@ -139,6 +139,47 @@ proc canvasPointer(c: Canvas, kind: PointerKind, ev: JsObject) =
 # ---------------------------------------------------------------------------------------------------------------
 # Elements
 
+proc richHtml(markup: string): string =
+  ## A richLabel's markup as HTML: the tags it allows pass, anything else is shown as text.
+  var i = 0
+  while i < markup.len:
+    if markup[i] == '<':
+      let close = markup.find('>', i)
+      if close > i:
+        let tag = markup[i + 1 ..< close]
+        let name = tag.strip(chars = {'/'}).split(' ')[0].toLowerAscii
+        if name in ["b", "i", "u", "s", "tt"] and (tag.len == name.len or tag == "/" & name):
+          result.add "<" & tag & ">"
+          i = close + 1
+          continue
+        if name == "a":
+          if tag == "/a": result.add "</a>"
+          else:
+            let h = tag.find("href=\"")
+            if h >= 0:
+              let e = tag.find('"', h + 6)
+              if e > h: result.add "<a href=\"" & tag[h + 6 ..< e] & "\">"
+            else: result.add "<a>"
+          i = close + 1
+          continue
+      result.add "&lt;"
+      inc i
+      continue
+    result.add markup[i]
+    inc i
+
+proc followAncestors(w: Widget) =
+  ## Content changed inside a scroll view that follows its end: scroll it there once the layout is done.
+  var p = w
+  while p != nil:
+    if p.kind == wkScroll and p.followEnd and p.realized:
+      let s = p
+      discard window.setTimeout(proc () =
+        if s.followEnd and s.id in elems:
+          let e = elems[s.id]
+          e.scrollTop = e.scrollHeight, 0)
+    p = p.parent
+
 var dragPayload: string   # the dragged item's dragData, while a drag from this page is on
 
 proc syncDrag(w: Widget, e: JsObject) =
@@ -173,7 +214,9 @@ proc sync(w: Widget) =
     e.style.gap = cstring($w.spacing & "px")
     e.style.padding = cstring($w.padding & "px")
   of wkLabel:
-    e.textContent = w.text.cstring
+    if w.rich: e.innerHTML = richHtml(w.text).cstring
+    else: e.textContent = w.text.cstring
+    e.style.userSelect = cstring(if w.selectable: "text" else: "")
     e.classList.toggle("nk-oneline".cstring, w.maxChars > 0)
     e.style.maxWidth = cstring(if w.maxChars > 0: $w.maxChars & "ch" else: "")
   of wkButton:
@@ -238,6 +281,7 @@ proc sync(w: Widget) =
     e.selectedIndex = w.selected
   of wkProgress: e.value = w.value.clamp(0.0, 1.0)
   of wkScroll:
+    if w.followEnd: e.scrollTop = e.scrollHeight
     e.classList.toggle("nk-scroll".cstring, not w.horizontal)
     e.classList.toggle("nk-hscroll".cstring, w.horizontal)
   if w.kind in {wkButton, wkToggle, wkEntry, wkDropdown}: e.disabled = not w.enabled
@@ -258,8 +302,22 @@ proc realize(w: Widget): JsObject =
   let e = case w.kind
     of wkColumn: el("div", "nk-column")
     of wkRow: el("div", "nk-row")
-    of wkScroll: el("div", "nk-scroll")
-    of wkLabel: el("div", "nk-label")
+    of wkScroll:
+      let d = el("div", "nk-scroll")
+      d.addEventListener("scroll", proc () =
+        if w.followEnd and d.scrollTop.to(float) + d.clientHeight.to(float) < d.scrollHeight.to(float) - 24:
+          w.setFollowSilently(false))
+      d
+    of wkLabel:
+      let l = el("div", "nk-label")
+      l.addEventListener("click", proc (ev: JsObject) =
+        let a = ev.target.closest("a".cstring)
+        if a.isNull or a.isUndefined: return
+        ev.preventDefault()
+        let url = $a.getAttribute("href".cstring).to(cstring)
+        if w.onLink != nil and w.onLink(url): return
+        if url.startsWith("http:") or url.startsWith("https:"): discard window.open(url.cstring, "_blank".cstring))
+      l
     of wkButton:
       let b = el("button")
       b.addEventListener("click", proc () =
@@ -369,8 +427,11 @@ proc unrealize(w: Widget) =
   inputs.del w.id
   w.realized = false
 
-backend.update = proc (w: Widget) = w.sync()
+backend.update = proc (w: Widget) =
+  w.sync()
+  followAncestors(w)
 backend.added = proc (parent, child: Widget, index: int) =
+  followAncestors(parent)
   let e = elems[parent.id]
   let node = child.realize()
   if index + 1 < parent.children.len: e.insertBefore(node, elems[parent.children[index + 1].id])

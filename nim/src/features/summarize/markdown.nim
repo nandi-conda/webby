@@ -9,6 +9,7 @@ when defined(android):
     s.multiReplace(("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ("\"", "&quot;"))
 else:
   import ../../browser
+  from nimkit/core as kit import nil
 
 type
   MdKind* = enum mdHeading, mdParagraph, mdListItem, mdQuote, mdCode, mdRule
@@ -244,43 +245,32 @@ else:
   # ---------------------------------------------------------------------------------------------------------------
   # Widgets
 
-  proc gtk_label_set_line_wrap_mode(l: Widget, mode: cint) {.importc, cdecl.}
-  const PANGO_WRAP_WORD_CHAR = 2.cint
-
   const markdownCss* = """
   .webby-md-code { background-color: alpha(currentColor, 0.08); border-radius: 6px; padding: 8px; }
   .webby-md-quote { border-left: 3px solid alpha(currentColor, 0.25); padding-left: 10px; }
-  .webby-md-dim { opacity: 0.65; }
+  .webby-md-list { margin-left: 4px; }
+  .webby-md-depth-1 { margin-left: 20px; } .webby-md-depth-2 { margin-left: 36px; }
+  .webby-md-depth-3 { margin-left: 52px; } .webby-md-depth-4 { margin-left: 68px; }
   """
 
-  var linkHandler*: proc (url: string)  ## a link clicked in rendered markdown; nil = GTK's default
-
-  proc onLink(label: Widget, uri: cstring, data: pointer): gboolean {.cdecl.} =
-    if linkHandler == nil: return 0
-    linkHandler($uri)
-    1
+  var linkHandler*: proc (url: string)  ## a link clicked in rendered markdown; nil = the platform's default
 
   proc spaced(markup: string): string =
     ## Body text at markdown_view.dart's 1.45 line height.
     "<span line_height=\"1.45\">" & markup & "</span>"
 
-  proc markupLabel*(markup: string, selectable = true): Widget =
-    ## A wrapping, left-aligned label showing Pango `markup`.
-    result = gtk_label_new("")
-    gtk_label_set_markup(result, markup.cstring)
-    gtk_label_set_xalign(result, 0)
-    gtk_label_set_line_wrap(result, 1)
-    gtk_label_set_line_wrap_mode(result, PANGO_WRAP_WORD_CHAR)
-    gtk_label_set_max_width_chars(result, 1)   # wrap to the panel instead of asking for a wide one
-    gtk_widget_set_hexpand(result, 1)
-    if selectable:
-      gtk_label_set_selectable(result, 1)
-      gtk_widget_set_can_focus(result, 0)
-    connect(result, "activate-link", onLink)
+  proc markupLabel*(markup: string, selectable = true): kit.Widget =
+    ## A wrapping label showing `markup` (see kit.richLabel); its links go to linkHandler.
+    result = kit.richLabel(markup, selectable)
+    result.onLink = proc (url: string): bool =
+      if linkHandler == nil: return false
+      linkHandler(url)
+      true
 
-  proc markdownView*(source: string): Widget =
-    ## A box of labels rendering `source`.
-    result = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
+  proc markdownView*(source: string): kit.Widget =
+    ## A column of labels rendering `source`.
+    result = kit.column()
+    result.spacing = 0
     var previous = -1
     for b in parseMarkdown(source):
       let gap =
@@ -289,36 +279,30 @@ else:
         elif b.kind == mdHeading: 14
         else: 8
       previous = ord(b.kind)
-      var w: Widget
+      if gap > 0: kit.add(result, kit.sized(kit.column(), 0, gap))
+      var w: kit.Widget
       case b.kind
       of mdHeading:
         w = markupLabel("<b>" & inlineMarkup(b.text) & "</b>")
-        addClass(w, "webby-md-h" & $min(b.level, 4))   # sizes in markdownCss
+        kit.addClass(w, "webby-md-h" & $min(b.level, 4))   # sizes in the panel's CSS
       of mdParagraph:
         w = markupLabel(spaced(inlineMarkup(b.text)))
       of mdListItem:
-        w = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)
-        gtk_widget_set_margin_start(w, cint(4 + b.depth * 16))
-        let marker = gtk_label_new(b.marker.cstring)
-        addClass(marker, "webby-md-dim")
-        gtk_label_set_xalign(marker, 0)
-        gtk_widget_set_valign(marker, GTK_ALIGN_START)
-        gtk_widget_set_size_request(marker, (if b.marker == "•": 14 else: 22), -1)
-        gtk_box_pack_start(w, marker, 0, 0, 0)
-        gtk_box_pack_start(w, markupLabel(spaced(inlineMarkup(b.text))), 1, 1, 0)
+        let marker = kit.addClass(kit.label(b.marker), "dim")
+        discard kit.sized(marker, if b.marker == "•": 14 else: 22)
+        w = kit.row(marker, kit.expand(markupLabel(spaced(inlineMarkup(b.text)))))
+        w.spacing = 0
+        kit.addClass(w, "webby-md-list")
+        if b.depth > 0: kit.addClass(w, "webby-md-depth-" & $min(b.depth, 4))
       of mdQuote:
         w = markupLabel(spaced(inlineMarkup(b.text)))
-        addClass(w, "webby-md-quote")
-        addClass(w, "webby-md-dim")
+        kit.addClass(w, "webby-md-quote")
+        kit.addClass(w, "dim")
       of mdCode:
-        let label = markupLabel("<span font_family=\"monospace\">" & escapeMarkup(b.text) & "</span>")
-        gtk_label_set_line_wrap(label, 0)
-        let scroller = gtk_scrolled_window_new(nil, nil)
-        gtk_scrolled_window_set_policy(scroller, GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER)
-        gtk_container_add(scroller, label)
-        addClass(scroller, "webby-md-code")
-        w = scroller
+        let label = kit.addClass(kit.label(b.text), "mono")
+        kit.`maxChars=`(label, 10000)   # one line per line, scrolled sideways
+        kit.`selectable=`(label, true)
+        w = kit.addClass(kit.scroll(label, horizontal = true), "webby-md-code")
       of mdRule:
-        w = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL)
-      gtk_widget_set_margin_top(w, gap.cint)
-      gtk_box_pack_start(result, w, 0, 0, 0)
+        w = kit.separator()
+      kit.add(result, w)

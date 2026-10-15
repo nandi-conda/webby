@@ -64,6 +64,9 @@ type
     horizontalValue: bool            ## a scroll view that scrolls sideways instead of up and down
     maxCharsValue: int               ## a label kept to one line, cut short with "…" past this many characters
     imageValue: string               ## an icon showing a picture (PNG, JPEG, GIF, ICO, WebP or SVG bytes) instead
+    richValue: bool                  ## a label whose text is markup (see `richLabel`)
+    selectableValue: bool            ## a label whose text can be selected and copied
+    followValue: bool                ## a scroll view kept scrolled to its end (see `followEnd=`)
     dragValue: string                ## items: what dragging it carries (see `dragData=`); empty: not draggable
     dropHandler: proc (data: string, x, y: float)  ## see `onDrop=`
     realized*: bool                  ## the backend has made the native widget
@@ -86,6 +89,7 @@ type
     onDoubleClick*: proc ()          ## items: a double click with the mouse (onClick comes first)
     onEntryKey*: proc (e: KeyEvent): bool   ## entries: a key pressed while it has the focus; true: handled
     onFocusChange*: proc (focused: bool)    ## entries
+    onLink*: proc (url: string): bool       ## rich labels: a link clicked; true: handled (else the platform opens it)
     onFrame*: proc (c: Canvas): tuple[data: pointer, width, height, stride: int]
       ## external canvases: asked for the buffer each time the canvas paints, for buffers that move (Ladybird's)
     # Canvas pixels
@@ -326,6 +330,25 @@ proc imageMime*(bytes: string): string =
   elif strutils.find(bytes[0 ..< min(bytes.len, 1024)], "<svg") >= 0: "image/svg+xml"
   else: ""
 
+proc rich*(w: Widget): bool = w.richValue
+proc `rich=`*(w: Widget, on: bool) =
+  if w.richValue != on:
+    w.richValue = on
+    w.changed
+
+proc selectable*(w: Widget): bool = w.selectableValue
+proc `selectable=`*(w: Widget, on: bool) =
+  if w.selectableValue != on:
+    w.selectableValue = on
+    w.changed
+
+proc followEnd*(w: Widget): bool = w.followValue
+proc `followEnd=`*(w: Widget, on: bool) =
+  ## Keeps a scroll view at its end as its content grows (a chat, a log), until the user scrolls back.
+  w.followValue = on
+  w.changed
+proc setFollowSilently*(w: Widget, on: bool) = w.followValue = on   ## for backends: the user scrolled away
+
 proc dragData*(w: Widget): string = w.dragValue
 proc `dragData=`*(w: Widget, data: string) =
   ## Makes an item draggable (within the app), carrying `data` to where it is dropped; "" stops it.
@@ -418,6 +441,23 @@ proc scroll*(child: Widget, horizontal = false): Widget =
 proc label*(text: string): Widget =
   result = newWidget(wkLabel)
   result.textValue = text
+
+proc richLabel*(markup: string, selectable = false): Widget =
+  ## A label showing a little markup: <b>, <i>, <u>, <s>, <tt>, <a href="…"> and the &amp; &lt; &gt; &quot;
+  ## escapes (Pango markup on GTK, HTML on the web and Android). Links call onLink.
+  result = label(markup)
+  result.richValue = true
+  result.selectableValue = selectable
+
+proc escapeRich*(s: string): string =
+  ## `s` as text for a richLabel.
+  for c in s:
+    case c
+    of '&': result.add "&amp;"
+    of '<': result.add "&lt;"
+    of '>': result.add "&gt;"
+    of '"': result.add "&quot;"
+    else: result.add c
 
 proc button*(text: string, onClick: proc () = nil): Widget =
   result = newWidget(wkButton)
