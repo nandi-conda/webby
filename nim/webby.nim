@@ -6,6 +6,7 @@
 
 import src/browser
 import src/features/[adblock, bookmarks, downloads, find, history, home, omnibox, passwords, tabs, site, pwa, summarize, sync]
+when defined(android): import src/features/android
 
 bookmarks.install()
 downloads.install()
@@ -20,4 +21,5 @@ adblock.install()
 pwa.install()
 summarize.install()
 sync.install()
+when defined(android): android.install()
 run()

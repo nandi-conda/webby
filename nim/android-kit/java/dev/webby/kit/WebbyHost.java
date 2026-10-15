@@ -50,6 +50,17 @@ public class WebbyHost extends Host {
         return intent.getData().toString();
     }
 
+    private String colorScheme() {
+        int night = getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
+        return night == android.content.res.Configuration.UI_MODE_NIGHT_YES ? "dark" : "light";
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration config) {
+        super.onConfigurationChanged(config);
+        if (prepared) hostEvent("colorScheme", colorScheme());
+    }
+
     @Override
     protected void beforeStart(Runnable start) {
         if (prepared) {
@@ -92,6 +103,20 @@ public class WebbyHost extends Host {
                     return url;
                 }
                 case "pinApp": return pinApp(new JSONObject(arg));
+                case "keystoreGet": {
+                    // "key:" and the key ("key:" alone: none yet), so a failure ("") can't pass for no key
+                    String key = Services.keystoreGet(this, arg);
+                    return key == null ? null : "key:" + key;
+                }
+                case "keystorePut": return Services.keystorePut(this, arg);
+                case "httpStream":
+                    Services.stream(new JSONObject(arg));
+                    return "ok";
+                case "httpStreamCancel":
+                    Services.cancelStream(Integer.parseInt(arg));
+                    return "ok";
+                case "device": return android.os.Build.MODEL;
+                case "colorScheme": return colorScheme();
                 case "toast":
                     Toast.makeText(this, arg, Toast.LENGTH_SHORT).show();
                     return "ok";
