@@ -211,7 +211,6 @@ proc ellipsize(text: string, n: int): string =
   let one = text.splitWhitespace.join(" ")
   if one.runeLen <= n: one else: $one.toRunes[0 ..< n] & "…"
 
-proc copyText(s: string) = gtk_clipboard_set_text(systemClipboard(), s.cstring, -1)
 
 proc showPageMenu*(t: Tab, info: JsonNode, x, y: float) =
   ## The menu for what `info` reports was clicked (nil when the page didn't report it): link, image and text rows
@@ -251,12 +250,8 @@ proc showPageMenu*(t: Tab, info: JsonNode, x, y: float) =
     item("Cut", proc () = (copyText(selection); t.runJs(actionScript("cut"))), has)
     item("Copy", proc () = copyText(selection), has)
     item("Paste", proc () =
-      let p = gtk_clipboard_wait_for_text(systemClipboard())
-      if p != nil:
-        let text = $p
-        g_free(p)
-        if text.len > 0: t.runJs(actionScript("paste", text)),
-      gtk_clipboard_wait_is_text_available(systemClipboard()) != 0)
+      pasteText(proc (text: string) =
+        if text.len > 0 and not t.closed: t.runJs(actionScript("paste", text))))
     item("Select all", proc () = t.runJs(actionScript("selectAll")))
   elif selection.strip.len > 0:
     group()

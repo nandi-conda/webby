@@ -7,7 +7,6 @@ proc gtk_widget_get_parent*(w: Widget): Widget {.importc, cdecl.}
 proc gdk_event_copy*(e: GEvent): GEvent {.importc, cdecl.}
 proc gtk_menu_shell_insert*(m, item: Widget, pos: cint) {.importc, cdecl.}
 proc gtk_orientable_set_orientation*(w: Widget, o: cint) {.importc, cdecl.}
-proc gtk_clipboard_wait_is_text_available*(cb: pointer): gboolean {.importc, cdecl.}
 proc g_spawn_async(dir: cstring, argv, envp: cstringArray, flags: cint, setup, data: pointer, pid: ptr cint,
   err: pointer): gboolean {.importc, cdecl.}
 proc g_child_watch_add(pid: cint, fn, data: pointer): cuint {.importc, cdecl.}

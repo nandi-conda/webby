@@ -479,7 +479,7 @@ proc showPanel(job: Job) =
       render())
   panel.copyButton = kit.iconButton("copy", "Copy summary", proc () =
     if panelJob != nil and panelJob.text.len > 0:
-      gtk_clipboard_set_text(systemClipboard(), withoutSourceLinks(panelJob.text).cstring, -1))
+      copyText(withoutSourceLinks(panelJob.text)))
   panel.busyLabel = note("", small = true)
   let bar = kit.addClass(kit.row(kit.spacer(), panel.busyLabel, panel.copyButton, panel.redoButton),
     "webby-summary-bar")

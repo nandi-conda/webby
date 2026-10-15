@@ -46,4 +46,3 @@ proc markupLabel*(markup: string, wrap = false): Widget =
   else:
     gtk_label_set_ellipsize(result, PANGO_ELLIPSIZE_END)
 
-proc copyText*(text: string) = gtk_clipboard_set_text(systemClipboard(), text.cstring, -1)

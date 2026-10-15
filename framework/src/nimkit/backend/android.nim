@@ -56,6 +56,8 @@ const   # Host.java's ops
   opImage = 34       # an icon's picture: text = the file's bytes in base64, "" for the glyph
   opPopover = 35     # id: the popover's number; arg: the anchor; text: the content's id
   opHidePopover = 36
+  opCopyText = 37    # text: what to put on the clipboard
+  opPasteText = 38   # id: the request, answered by evPasteText
 
   kindHScroll = 15   # Host's kind for a sideways scroll view (WidgetKind ends at 14)
 
@@ -212,8 +214,11 @@ const   # Native.java's event kinds
   evFocus = 15         # x: 1 focused, 0 not
   evMiddle = 16
   evPopoverClosed = 17  # id: the popover's number; the user closed a modal one
+  evPasteText = 18      # id: the opPasteText request; text: the clipboard's text
 
-var httpPending: Table[int, proc (r: Response)]
+var
+  httpPending: Table[int, proc (r: Response)]
+  pastePending: Table[int, proc (text: string)]
 
 proc httpDone(id: int, text: string) =
   let done = httpPending.getOrDefault(id)
@@ -239,6 +244,10 @@ proc nk_event(id, kind: cint, text: cstring, x, y: cfloat, pointer: cint) {.expo
     let action = menuActions.getOrDefault(id)
     menuActions.clear()
     if action != nil: action()
+    return
+  if kind == evPasteText:
+    var done: proc (text: string)
+    if pastePending.pop(int(id), done): done($text)
     return
   if kind == evPopoverClosed:
     let p = popovers.getOrDefault(id)
@@ -350,6 +359,12 @@ serviceImpl.request = proc (meth, url: string, headers: seq[(string, string)], b
   for (k, v) in headers: hs.add %*[k, v]
   nk_http(id.cint, cstring($(%*{"method": meth, "url": url, "headers": hs, "body": encode(body)})))
 serviceImpl.log = proc (text: string) = nk_log(text.cstring)
+serviceImpl.copyText = proc (text: string) = op(opCopyText, text = text)
+serviceImpl.pasteText = proc (onDone: proc (text: string)) =
+  let id = nextTimer   # any unused number
+  inc nextTimer
+  pastePending[id] = onDone
+  op(opPasteText, id)
 
 # ---------------------------------------------------------------------------------------------------------------
 

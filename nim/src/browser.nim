@@ -12,6 +12,7 @@ from nimkit/backend/gtk as nkgtk import nil   # nimkit on GTK; also fills in its
 appName = "webby"
 userAgent = "webby"
 export base, gtk, ffi, icons, json, tables
+export services.copyText, services.pasteText
 
 # The Flutter app's page shims (lib/src/page_compat.dart), read at compile time so both front ends run the same JS.
 const pageCompatScript* = block:
@@ -691,7 +692,7 @@ proc pumpAll(data: pointer): gboolean {.cdecl.} =
   let cs = webby_clipboard_serial()
   if cs != clipboardSerial:
     clipboardSerial = cs
-    gtk_clipboard_set_text(systemClipboard(), webby_clipboard_text(), -1)
+    copyText($webby_clipboard_text())
   for h in pumpHooks: h()
   var snapshot = tabs   # a copy: pumpTab may add or close tabs
   for t in snapshot:
@@ -919,6 +920,13 @@ proc pageWheel(c: kit.Canvas, e: kit.WheelEvent): bool =
   wake()
   true
 
+var pastingKeys: seq[(Tab, kit.KeyEvent, uint32)]   ## from a Ctrl+V on, until the clipboard's text is in
+
+proc sendKey(t: Tab, e: kit.KeyEvent, cp: uint32) =
+  if t.closed or t.view == nil: return
+  webby_view_key_event(t.view, e.down.cint, e.code.cint, e.mods.cint, cp, 0)
+  wake()
+
 proc pageKey(c: kit.Canvas, e: kit.KeyEvent): bool =
   let t = currentTab()
   if t == nil or t.view == nil: return false
@@ -926,13 +934,19 @@ proc pageKey(c: kit.Canvas, e: kit.KeyEvent): bool =
   if (e.mods and (modCtrl or modAlt)) != 0: cp = 0
   if e.code == 0x0D: cp = (if e.down: 0x0A'u32 else: 0)
   if e.code == 0 and cp == 0: return false
+  if pastingKeys.len > 0:
+    # Waiting for the clipboard: keys stay in order behind the Ctrl+V.
+    pastingKeys.add (t, e, cp)
+    return true
   if e.down and (e.mods and modCtrl) != 0 and e.code == 0x56:   # Ctrl+V: hand the page the system clipboard first
-    let text = gtk_clipboard_wait_for_text(systemClipboard())
-    if text != nil:
-      webby_clipboard_set_text(text)
-      g_free(text)
-  webby_view_key_event(t.view, e.down.cint, e.code.cint, e.mods.cint, cp, 0)
-  wake()
+    pastingKeys.add (t, e, cp)
+    pasteText(proc (text: string) =
+      if text.len > 0: webby_clipboard_set_text(text.cstring)
+      let keys = pastingKeys
+      pastingKeys = @[]
+      for (t, e, cp) in keys: sendKey(t, e, cp))
+    return true
+  sendKey(t, e, cp)
   true
 
 proc pageFocus(c: kit.Canvas, focused: bool) =

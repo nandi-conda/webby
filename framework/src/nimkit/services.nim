@@ -19,6 +19,8 @@ type
     store*: proc (key, value: string)
     request*: proc (meth, url: string, headers: seq[(string, string)], body: string, onDone: proc (r: Response))
     log*: proc (text: string)
+    copyText*: proc (text: string)
+    pasteText*: proc (onDone: proc (text: string))
 
 var
   serviceImpl*: Services
@@ -63,6 +65,14 @@ proc request*(meth, url: string, onDone: proc (r: Response), headers: seq[(strin
   ## An HTTP(S) request; `onDone` runs on the UI thread with the whole response. On the web this is fetch(), so
   ## the server must allow the page's origin (CORS).
   serviceImpl.request(meth, url, headers, body, onDone)
+
+proc copyText*(text: string) =
+  ## Puts `text` on the system clipboard.
+  if serviceImpl.copyText != nil: serviceImpl.copyText(text)
+
+proc pasteText*(onDone: proc (text: string)) =
+  ## The system clipboard's text ("" if none or not allowed), soon: the web asks the user's leave first.
+  if serviceImpl.pasteText != nil: serviceImpl.pasteText(onDone) else: onDone("")
 
 proc log*(text: string) =
   if serviceImpl.log != nil: serviceImpl.log(text) else: echo text

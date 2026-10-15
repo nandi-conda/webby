@@ -9,6 +9,7 @@ var
   window {.importjs: "window", nodecl.}: JsObject
   console {.importjs: "console", nodecl.}: JsObject
   localStorage {.importjs: "localStorage", nodecl.}: JsObject
+  navigator {.importjs: "navigator", nodecl.}: JsObject
 
 proc newUint8ClampedArray(n: int): JsObject {.importjs: "new Uint8ClampedArray(#)".}
 proc newImageData(data: JsObject, w, h: int): JsObject {.importjs: "new ImageData(#, #, #)".}
@@ -621,6 +622,14 @@ serviceImpl.request = proc (meth, url: string, headers: seq[(string, string)], b
   ).onError(proc (err: JsObject) =
     onDone(Response(error: $err.toString().to(cstring))))
 serviceImpl.log = proc (text: string) = console.log(text.cstring)
+serviceImpl.copyText = proc (text: string) =
+  if not navigator.clipboard.isUndefined: discard navigator.clipboard.writeText(text.cstring)
+serviceImpl.pasteText = proc (onDone: proc (text: string)) =
+  # Only secure pages have navigator.clipboard, and the browser may ask the user first.
+  if navigator.clipboard.isUndefined or navigator.clipboard.readText.isUndefined:
+    onDone("")
+    return
+  discard navigator.clipboard.readText().then(proc (t: cstring) = onDone($t)).onError(proc (e: JsObject) = onDone(""))
 
 # ---------------------------------------------------------------------------------------------------------------
 

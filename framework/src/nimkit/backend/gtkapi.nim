@@ -257,6 +257,10 @@ proc gtk_file_filter_new*(): pointer
 proc gtk_file_filter_set_name*(f: pointer, name: cstring)
 proc gtk_file_filter_add_pattern*(f: pointer, pattern: cstring)
 proc gtk_dialog_run*(d: GtkWidget): cint
+proc gtk_clipboard_get*(selection: pointer): pointer
+proc gtk_clipboard_set_text*(cb: pointer, text: cstring, len: cint)
+proc gtk_clipboard_request_text*(cb: pointer, callback: pointer, data: pointer)
+proc gdk_atom_intern*(name: cstring, onlyIfExists: gboolean): pointer
 proc gtk_file_chooser_native_new*(title: cstring, parent: GtkWidget, action: cint, accept, cancel: cstring): GtkWidget
 proc gtk_native_dialog_run*(d: GtkWidget): cint
 proc gtk_native_dialog_destroy*(d: GtkWidget)

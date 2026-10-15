@@ -924,6 +924,20 @@ serviceImpl.store = proc (key, value: string) =
 serviceImpl.request = gioRequest
 serviceImpl.log = proc (text: string) = stderr.writeLine(text)
 
+proc clipboard(): pointer = gtk_clipboard_get(gdk_atom_intern("CLIPBOARD", 0))
+
+proc onClipboardText(cb: pointer, text: cstring, data: pointer) {.cdecl.} =
+  let done = cast[ref proc (text: string)](data)
+  GC_unref(done)
+  done[](if text == nil: "" else: $text)
+
+serviceImpl.copyText = proc (text: string) = gtk_clipboard_set_text(clipboard(), text.cstring, text.len.cint)
+serviceImpl.pasteText = proc (onDone: proc (text: string)) =
+  let done = new(proc (text: string))
+  done[] = onDone
+  GC_ref(done)
+  gtk_clipboard_request_text(clipboard(), cast[pointer](onClipboardText), cast[pointer](done))
+
 # ---------------------------------------------------------------------------------------------------------------
 
 proc onDestroy(w: GtkWidget, data: pointer) {.cdecl.} = gtk_main_quit()
