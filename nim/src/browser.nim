@@ -67,7 +67,8 @@ var
   pageBox*: Widget             ## holds the vertical tab list (if any) and the page area
   page*: kit.Canvas            ## the page view: a nimkit canvas showing the active tab's frame (its GtkWidget is `area`)
   sidePanel*: Widget           ## the side panel's box (hidden when nothing shows)
-  sidePanelTitle*: Widget
+  sidePanelTitle*: kit.Widget
+  sidePanelContent*: kit.Widget  ## the side panel's nimkit body (empty while GTK content shows)
   sidePanelBody*: Widget
   starSlot*: Widget            ## a box inside the URL bar row, right of the entry (the bookmark star goes here)
   toolbarRow*: kit.Widget      ## the toolbar as nimkit sees it (`toolbar` is its GtkBox)
@@ -470,24 +471,42 @@ proc closeSidePanel*() =
     sidePanelCloseHook = nil
     h()
   clearChildren(sidePanelBody)
+  kit.clear(sidePanelContent)
   gtk_widget_hide(sidePanel)
   if openPanel.len > 0:
     openPanel = ""
     refreshPanelButtons()
 
-proc showSidePanel*(title: string, content: Widget, width = 360, onClose: proc () = nil) =
-  ## Shows `content` in the sidebar right of the page, replacing what was there.
+proc setSidePanelTitle*(title: string) = kit.`text=`(sidePanelTitle, title)
+
+proc openSidePanel(title: string, width: int, onClose: proc ()) =
   closeSidePanel()
   sidePanelCloseHook = onClose
-  gtk_label_set_text(sidePanelTitle, title.cstring)
+  setSidePanelTitle(title)
   openPanel = title
   refreshPanelButtons()
-  gtk_box_pack_start(sidePanelBody, content, 1, 1, 0)
+
+proc revealSidePanel(width: int) =
   # The panel is no_show_all (so show_all on the window leaves it hidden): show its parts, then itself.
   for c in children(sidePanel): gtk_widget_show_all(c)
+  # Only the body in use takes the room: the GTK one or the nimkit one.
+  if sidePanelContent.children.len > 0: gtk_widget_hide(sidePanelBody)
+  else: gtk_widget_hide(nkgtk.gtkWidget(sidePanelContent))
   gtk_widget_show(sidePanel)
   let total = gtk_widget_get_allocated_width(pagePane)
   if total > width: gtk_paned_set_position(pagePane, cint(total - width))
+
+proc showSidePanel*(title: string, content: Widget, width = 360, onClose: proc () = nil) =
+  ## Shows `content` in the sidebar right of the page, replacing what was there.
+  openSidePanel(title, width, onClose)
+  gtk_box_pack_start(sidePanelBody, content, 1, 1, 0)
+  revealSidePanel(width)
+
+proc showSidePanel*(title: string, content: kit.Widget, width = 360, onClose: proc () = nil) =
+  ## The same for a nimkit widget (done with once the panel closes: its events stop).
+  openSidePanel(title, width, onClose)
+  kit.add(sidePanelContent, kit.expand(content))
+  revealSidePanel(width)
 
 proc sidePanelShowing*(): bool = gtk_widget_get_visible(sidePanel) != 0
 
@@ -1001,6 +1020,7 @@ button.webby-tab { padding: 4px 6px 4px 10px; border-radius: 6px 6px 0 0; min-he
 button.webby-active-tab { background-color: alpha(@theme_selected_bg_color, 0.18); }
 .webby-tab-close { padding: 0; min-height: 16px; min-width: 16px; }
 .webby-side-panel { border-left: 1px solid alpha(currentColor, 0.15); }
+.webby-side-panel-header label.title { margin-left: 8px; }
 .webby-link-status { background-color: @theme_bg_color; padding: 2px 8px; font-size: smaller;
   border-top: 1px solid alpha(currentColor, 0.15); border-right: 1px solid alpha(currentColor, 0.15);
   border-radius: 0 6px 0 0; }
@@ -1098,16 +1118,16 @@ proc buildWindow() =
 
   sidePanel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
   addClass(sidePanel, "webby-side-panel")
-  let header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4)
-  sidePanelTitle = gtk_label_new("")
-  gtk_label_set_xalign(sidePanelTitle, 0)
-  gtk_widget_set_margin_start(sidePanelTitle, 8)
-  addClass(sidePanelTitle, "title")
-  gtk_box_pack_start(header, sidePanelTitle, 1, 1, 0)
-  gtk_box_pack_end(header, iconButton("close", "Close (Esc)", closeSidePanel, 16), 0, 0, 0)
-  gtk_box_pack_start(sidePanel, header, 0, 0, 2)
+  sidePanelTitle = kit.addClass(kit.label(""), "title")
+  kit.`maxChars=`(sidePanelTitle, 40)
+  let header = kit.row(kit.expand(sidePanelTitle), kit.iconButton("close", "Close (Esc)", closeSidePanel, 16))
+  header.spacing = 4
+  kit.addClass(header, "webby-side-panel-header")
+  gtk_box_pack_start(sidePanel, nkgtk.gtkWidget(header), 0, 0, 2)
   sidePanelBody = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
   gtk_box_pack_start(sidePanel, sidePanelBody, 1, 1, 0)
+  sidePanelContent = kit.column()
+  gtk_box_pack_start(sidePanel, nkgtk.gtkWidget(sidePanelContent), 1, 1, 0)
   gtk_widget_set_no_show_all(sidePanel, 1)
   gtk_paned_pack2(pagePane, sidePanel, 0, 0)
   gtk_box_pack_start(mainBox, pagePane, 1, 1, 0)

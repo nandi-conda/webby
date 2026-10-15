@@ -314,7 +314,7 @@ proc refresh() =
   if shown == panelNone or panelBody == nil: return
   clearChildren(panelBody)
   if shown == panelSync: fillSync(panelBody) else: fillDevices(panelBody)
-  gtk_label_set_text(sidePanelTitle, cstring(if shown == panelSync: "Sync" else: "Tabs from other devices"))
+  setSidePanelTitle(if shown == panelSync: "Sync" else: "Tabs from other devices")
   gtk_widget_show_all(panelBody)
 
 proc openPanel(kind: PanelKind) =

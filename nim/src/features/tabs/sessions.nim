@@ -3,10 +3,11 @@
 
 import ../../browser
 import store, common
+from nimkit/core as kit import nil
 
 var
   panelShowing = false
-  panelBox: Widget                                  # the panel's content, rebuilt on every change
+  panelBox: kit.Widget                              # the panel's content, rebuilt on every change
   undo: tuple[message: string, action: proc ()]     # the last delete, offered back until the next one
   lastTabs: seq[DeviceTab]                          # the last tab closed with the window, for the quit prompt
   lastActive: int
@@ -20,30 +21,10 @@ proc sessionTabCount(list: seq[DeviceTab]): int =
 
 proc plural(n: int, word: string): string = $n & " " & word & (if n == 1: "" else: "s")
 
-proc nameDialog(title, message, initial, action: string): (bool, string) =
+proc nameDialog(title, message, initial, action: string, onName: proc (name: string)) =
   ## Asks for a session name, prefilled and selected.
-  let d = gtk_dialog_new_with_buttons(title.cstring, window, GTK_DIALOG_MODAL, "_Cancel", GTK_RESPONSE_CANCEL,
-    action.cstring, GTK_RESPONSE_OK, nil)
-  gtk_dialog_set_default_response(d, GTK_RESPONSE_OK)
-  let box = gtk_dialog_get_content_area(d)
-  gtk_container_set_border_width(box, 12)
-  if message.len > 0:
-    let l = gtk_label_new(message.cstring)
-    gtk_label_set_xalign(l, 0)
-    gtk_label_set_line_wrap(l, 1)
-    gtk_box_pack_start(box, l, 0, 0, 4)
-  let n = gtk_label_new("Name")
-  gtk_label_set_xalign(n, 0)
-  gtk_box_pack_start(box, n, 0, 0, 2)
-  let e = gtk_entry_new()
-  gtk_entry_set_text(e, initial.cstring)
-  gtk_entry_set_activates_default(e, 1)
-  gtk_entry_set_width_chars(e, 36)
-  gtk_box_pack_start(box, e, 0, 0, 2)
-  gtk_widget_show_all(d)
-  let ok = gtk_dialog_run(d) == GTK_RESPONSE_OK
-  result = (ok, $gtk_entry_get_text(e))
-  gtk_widget_destroy(d)
+  kit.prompt(title, (if message.len > 0: message & "\n\nName" else: "Name"), initial,
+    proc (ok: bool, value: string) = (if ok: onName(value)), ok = action)
 
 proc restoreSession*(urls: seq[string], active = 0) =
   ## Opens a saved session's tabs next to the current one: a blank current tab takes the first page, the rest open in
@@ -81,162 +62,123 @@ proc saveOpenTabs(closeAll = false) =
   if count == 0:
     toast("There are no open pages to save")
     return
-  let (ok, name) = nameDialog(
+  nameDialog(
     if closeAll: "Close all tabs and save as session" else: "Save open tabs as session",
     "The " & plural(count, "open tab") & " can be restored later from Sessions.", defaultSessionName(),
-    if closeAll: "Save and close tabs" else: "_Save")
-  if not ok: return
-  let s = saveSession(list, name, activeIndex)
-  if s == nil: return
-  if closeAll: closeAllTabs()
-  toast("Saved session \"" & s.name & "\"")
+    if closeAll: "Save and close tabs" else: "Save", proc (name: string) =
+      let s = saveSession(list, name, activeIndex)
+      if s == nil: return
+      if closeAll: closeAllTabs()
+      toast("Saved session \"" & s.name & "\""))
 
 # ---------------------------------------------------------------------------------------------------------------
 # The panel
 
 proc rebuildPanel()
 
-proc linkButton(label: string, action: proc ()): Widget =
-  result = gtk_button_new_with_label(label.cstring)
-  gtk_button_set_relief(result, GTK_RELIEF_NONE)
-  addClass(result, "webby-link")
-  connectAction(result, "clicked", action)
+proc linkButton(label: string, action: proc ()): kit.Widget =
+  kit.addClass(kit.addClass(kit.button(label, action), "flat"), "webby-link")
 
-proc smallIconButton(icon, tooltip: string, action: proc (), size = 16): Widget =
-  result = gtk_button_new()
-  iconButtonImage(result, icon, size)
-  gtk_button_set_relief(result, GTK_RELIEF_NONE)
-  gtk_widget_set_tooltip_text(result, tooltip.cstring)
-  connectAction(result, "clicked", action)
+proc dimLabel(text: string, small = false): kit.Widget =
+  result = kit.addClass(kit.label(text), "dim-label")
+  if small: kit.addClass(result, "webby-small")
 
-proc dimLabel(text: string, small = false): Widget =
-  result = gtk_label_new(text.cstring)
-  gtk_label_set_xalign(result, 0)
-  gtk_label_set_line_wrap(result, 1)
-  addClass(result, "dim-label")
-  if small: addClass(result, "webby-small")
+proc oneLine(text: string): kit.Widget =
+  result = kit.label(text)
+  kit.`maxChars=`(result, 200)
 
 proc setUndo(message: string, action: proc ()) =
   undo = (message, action)
   rebuildPanel()
 
-proc tabRow(s: SavedSession, index: int, t: DeviceTab): Widget =
+proc tabRow(s: SavedSession, index: int, t: DeviceTab): kit.Widget =
   ## A saved tab: remove button and title, which opens it.
-  result = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2)
-  gtk_box_pack_start(result, smallIconButton("close", "Remove from session", size = 14, action = proc () =
+  let host = hostOf(t.url)
+  let open = kit.item(oneLine(if t.title.len > 0: t.title elif host.len > 0: host else: t.url),
+    onClick = proc () = restoreSession(@[t.url]))
+  kit.`tooltip=`(open, t.url)
+  result = kit.row(kit.iconButton("close", "Remove from session", size = 14, onClick = proc () =
     let (ok, removed) = removeSessionTab(s, index)
     if ok:
       let label = if removed.title.len == 0: removed.url else: removed.title
-      setUndo("Removed \"" & label & "\"", proc () = restoreSessionTab(s, removed, index))), 0, 0, 0)
-  let host = hostOf(t.url)
-  let open = gtk_button_new_with_label(cstring(if t.title.len > 0: t.title elif host.len > 0: host else: t.url))
-  gtk_button_set_relief(open, GTK_RELIEF_NONE)
-  gtk_widget_set_tooltip_text(open, t.url.cstring)
-  let l = gtk_bin_get_child(open)
-  gtk_label_set_xalign(l, 0)
-  gtk_label_set_ellipsize(l, PANGO_ELLIPSIZE_END)
-  connectAction(open, "clicked", proc () = restoreSession(@[t.url]))
-  gtk_box_pack_start(result, open, 1, 1, 0)
+      setUndo("Removed \"" & label & "\"", proc () = restoreSessionTab(s, removed, index))), kit.expand(open))
+  result.spacing = 2
 
-proc sessionGroup(s: SavedSession): Widget =
+proc sessionGroup(s: SavedSession): kit.Widget =
   ## One session the way OneTab shows a tab group: size and date, the actions, then every tab.
-  let box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2)
-  addClass(box, "webby-session")
-  let head = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12)
-  let count = gtk_label_new("")
-  gtk_label_set_markup(count, cstring("<span size='x-large' weight='light'>" & plural(s.tabs.len, "tab") & "</span>"))
-  addClass(count, "dim-label")
-  gtk_box_pack_start(head, count, 0, 0, 0)
-  let names = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
-  let name = gtk_label_new("")
-  gtk_label_set_markup(name, cstring("<b>" & escapeMarkup(s.name) & "</b>"))
-  gtk_label_set_xalign(name, 0)
-  gtk_label_set_ellipsize(name, PANGO_ELLIPSIZE_END)
-  gtk_box_pack_start(names, name, 0, 0, 0)
-  gtk_box_pack_start(names, dimLabel(sessionCreated(s.savedAt), small = true), 0, 0, 0)
-  gtk_box_pack_start(head, names, 1, 1, 0)
-  gtk_box_pack_start(box, head, 0, 0, 0)
-  let links = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6)
-  gtk_box_pack_start(links, linkButton("Restore all", proc () =
-    var urls: seq[string]
-    for t in s.tabs: urls.add t.url
-    restoreSession(urls, s.active)), 0, 0, 0)
-  gtk_box_pack_start(links, linkButton("Delete", proc () =
-    deleteSession(s)
-    setUndo("Deleted \"" & s.name & "\"", proc () = restoreDeletedSession(s))), 0, 0, 0)
-  gtk_box_pack_start(links, linkButton("Rename", proc () =
-    let (ok, n) = nameDialog("Rename session", "", s.name, "_Rename")
-    if ok: renameSession(s, n)), 0, 0, 0)
-  gtk_box_pack_start(box, links, 0, 0, 0)
-  for i, tab in s.tabs: gtk_box_pack_start(box, tabRow(s, i, tab), 0, 0, 0)
+  let box = kit.addClass(kit.column(), "webby-session")
+  box.spacing = 2
+  let names = kit.column(kit.addClass(oneLine(s.name), "webby-bold"), dimLabel(sessionCreated(s.savedAt), small = true))
+  let head = kit.row(kit.addClass(dimLabel(plural(s.tabs.len, "tab")), "webby-session-count"), kit.expand(names))
+  head.spacing = 12
+  kit.add(box, head)
+  let links = kit.row(
+    linkButton("Restore all", proc () =
+      var urls: seq[string]
+      for t in s.tabs: urls.add t.url
+      restoreSession(urls, s.active)),
+    linkButton("Delete", proc () =
+      deleteSession(s)
+      setUndo("Deleted \"" & s.name & "\"", proc () = restoreDeletedSession(s))),
+    linkButton("Rename", proc () =
+      nameDialog("Rename session", "", s.name, "Rename", proc (n: string) = renameSession(s, n))))
+  links.spacing = 6
+  kit.add(box, links)
+  for i, tab in s.tabs: kit.add(box, tabRow(s, i, tab))
   box
 
-proc fillPanel(box: Widget) =
-  let actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2)
-  gtk_widget_set_margin_start(actions, 8)
-  gtk_box_pack_start(actions, smallIconButton("add", "Save open tabs as session",
-    proc () = saveOpenTabs()), 0, 0, 0)
-  gtk_box_pack_start(actions, smallIconButton("move_to_inbox_outlined", "Close all tabs and save as session",
-    proc () = saveOpenTabs(closeAll = true)), 0, 0, 0)
+proc fillPanel(box: kit.Widget) =
+  let actions = kit.addClass(kit.row(
+    kit.iconButton("add", "Save open tabs as session", proc () = saveOpenTabs(), 16),
+    kit.iconButton("move_to_inbox_outlined", "Close all tabs and save as session",
+      proc () = saveOpenTabs(closeAll = true), 16)), "webby-panel-actions")
+  actions.spacing = 2
   let list = sessions()
   if list.len > 0:
-    gtk_box_pack_start(actions, smallIconButton("delete_sweep_outlined", "Delete all sessions", proc () =
+    kit.add(actions, kit.iconButton("delete_sweep_outlined", "Delete all sessions", size = 16, onClick = proc () =
       let n = sessions().len
-      if confirm("Delete all sessions?", "All " & plural(n, "saved session") & " will be deleted. This can't be undone."):
-        deleteAllSessions()
-        undo = ("", nil)
-        rebuildPanel()), 0, 0, 0)
-  gtk_box_pack_start(box, actions, 0, 0, 0)
+      kit.confirm("Delete all sessions?", "All " & plural(n, "saved session") & " will be deleted. This can't be undone.",
+        "Delete", destructive = true, onResult = proc (ok: bool) =
+          if not ok: return
+          deleteAllSessions()
+          undo = ("", nil)
+          rebuildPanel())))
+  kit.add(box, actions)
   if sessionLoadError.len > 0:
-    let e = gtk_label_new(sessionLoadError.cstring)
-    gtk_label_set_line_wrap(e, 1)
-    addClass(e, "webby-error")
-    gtk_box_pack_start(box, e, 0, 0, 4)
+    kit.add(box, kit.addClass(kit.label(sessionLoadError), "webby-error"))
   if undo.action != nil:
-    let strip = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4)
-    addClass(strip, "webby-undo")
-    let m = gtk_label_new(undo.message.cstring)
-    gtk_label_set_xalign(m, 0)
-    gtk_label_set_ellipsize(m, PANGO_ELLIPSIZE_END)
-    gtk_box_pack_start(strip, m, 1, 1, 0)
-    let b = gtk_button_new_with_label("Undo")
-    connectAction(b, "clicked", proc () =
-      let a = undo.action
-      undo = ("", nil)
-      a()
-      rebuildPanel())
-    gtk_box_pack_start(strip, b, 0, 0, 0)
-    gtk_box_pack_start(strip, smallIconButton("close", "Dismiss", size = 18, action = proc () =
-      undo = ("", nil)
-      rebuildPanel()), 0, 0, 0)
-    gtk_box_pack_start(box, strip, 0, 0, 0)
-  let scroller = gtk_scrolled_window_new(nil, nil)
-  gtk_scrolled_window_set_policy(scroller, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
-  let body = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
-  gtk_container_set_border_width(body, 8)
+    let strip = kit.addClass(kit.row(kit.expand(oneLine(undo.message)),
+      kit.button("Undo", proc () =
+        let a = undo.action
+        undo = ("", nil)
+        a()
+        rebuildPanel()),
+      kit.iconButton("close", "Dismiss", size = 18, onClick = proc () =
+        undo = ("", nil)
+        rebuildPanel())), "webby-undo")
+    strip.spacing = 4
+    kit.add(box, strip)
+  let body = kit.addClass(kit.column(), "webby-panel-body")
   if list.len == 0:
-    gtk_box_pack_start(body, dimLabel("No saved sessions. Save your open tabs with the + above, with \"Close all " &
-      "tabs and save as session\". Closing the window saves its tabs here too."), 0, 0, 8)
+    kit.add(body, dimLabel("No saved sessions. Save your open tabs with the + above, with \"Close all " &
+      "tabs and save as session\". Closing the window saves its tabs here too."))
   else:
     var total = 0
     for s in list: total += s.tabs.len
-    gtk_box_pack_start(body, dimLabel("Total: " & plural(total, "tab") & " in " & plural(list.len, "session"),
-      small = true), 0, 0, 2)
-  for s in list: gtk_box_pack_start(body, sessionGroup(s), 0, 0, 0)
-  gtk_container_add(scroller, body)
-  gtk_box_pack_start(box, scroller, 1, 1, 0)
+    kit.add(body, dimLabel("Total: " & plural(total, "tab") & " in " & plural(list.len, "session"), small = true))
+  for s in list: kit.add(body, sessionGroup(s))
+  kit.add(box, kit.expand(kit.scroll(body)))
 
 proc rebuildPanel() =
   if not panelShowing or panelBox == nil: return
-  clearChildren(panelBox)
+  kit.clear(panelBox)
   fillPanel(panelBox)
-  gtk_widget_show_all(panelBox)
 
 proc toggleSessionsPanel*() =
   if panelShowing:
     closeSidePanel()
     return
-  panelBox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
+  panelBox = kit.column()
   panelShowing = true
   fillPanel(panelBox)
   showSidePanel("Sessions", panelBox, 360, proc () =
@@ -271,6 +213,10 @@ proc install*() =
 .webby-small { font-size: smaller; }
 .webby-session { border-top: 1px solid alpha(currentColor, 0.15); padding-top: 8px; margin-top: 8px; }
 .webby-undo { padding: 4px 8px; background-color: alpha(currentColor, 0.06); }
+.webby-bold { font-weight: bold; }
+.webby-session-count { font-size: x-large; font-weight: 300; }
+.webby-panel-actions { margin-left: 8px; }
+.webby-panel-body { padding: 8px; }
 .webby-error { color: #e5484d; padding: 4px 8px; }
 """)
     discard addToolbarButton("layers_outlined", "Sessions", toggleSessionsPanel, "layers", "Sessions")

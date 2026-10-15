@@ -457,7 +457,7 @@ proc render() =
   if job == nil or panel.content == nil: return
   let key = apiKey()
   let busy = job.running or job.answering
-  gtk_label_set_text(sidePanelTitle, cstring(if job.selection: "Summary of selection" else: "Summary"))
+  setSidePanelTitle(if job.selection: "Summary of selection" else: "Summary")
   gtk_widget_set_visible(panel.spinner, busy.gboolean)
   if busy: gtk_spinner_start(panel.spinner) else: gtk_spinner_stop(panel.spinner)
   gtk_widget_set_sensitive(panel.copyButton, (job.text.len > 0).gboolean)

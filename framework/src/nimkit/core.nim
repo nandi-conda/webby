@@ -559,6 +559,7 @@ proc confirm*(title: string, text = "", ok = "OK", onResult: proc (ok: bool), de
     if destructive: 1 else: -1)
 
 proc focus*(w: Widget)
+proc selectAll*(w: Widget)
 
 proc prompt*(title: string, text = "", initial = "", onResult: proc (ok: bool, value: string),
              password = false, ok = "OK") =
@@ -570,6 +571,7 @@ proc prompt*(title: string, text = "", initial = "", onResult: proc (ok: bool, v
   let content = if text.len > 0: column(label(text), field) else: column(field)
   d = dialog(title, content, @["Cancel", ok], proc (i: int) = onResult(i == 1, field.text))
   field.focus()
+  field.selectAll()
 
 proc popover*(anchor, content: Widget): Popover =
   ## A popover for `content` under `anchor`, not shown yet. `content` stays live: change it while it shows.
