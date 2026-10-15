@@ -44,6 +44,9 @@ select { font: inherit; min-width: 0; padding: 4px 6px; }
 progress { width: 100%; height: 6px; }
 .nk-toggle[aria-pressed=true] { background: #c9daf2; border-color: #6b8fc4; }
 .nk-hidden { display: none !important; }
+.nk-popover { position: fixed; z-index: 9; box-sizing: border-box; background: #fff; color: #222;
+  border: 1px solid rgba(0,0,0,0.15); border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.2); padding: 4px 0; }
+@media (prefers-color-scheme: dark) { .nk-popover { background: #2a2a2c; color: #eee; } }
 .nk-icon { display: inline-block; flex: none; fill: currentColor; vertical-align: middle; }
 button > .nk-icon + span:not(:empty) { margin-left: 6px; }
 .nk-item { display: flex; align-items: center; cursor: pointer; padding: 4px 8px; border-radius: 6px; user-select: none; }
@@ -449,6 +452,29 @@ backend.closeDialog = proc (d: Dialog) =
   if d.content != nil and d.content.realized: d.content.unrealize()
   discard dl.close()
   discard dl.remove()
+
+var popoverEls: seq[(Popover, JsObject)]
+
+backend.showPopover = proc (p: Popover) =
+  var box: JsObject
+  for (q, e) in popoverEls:
+    if q == p: box = e
+  if box == nil:
+    box = el("div", "nk-popover")
+    box.appendChild(p.content.realize())
+    # A press here mustn't take the focus from the field the popover belongs to.
+    box.addEventListener("mousedown", proc (ev: JsObject) = ev.preventDefault())
+    document.body.appendChild(box)
+    popoverEls.add (p, box)
+  let r = elems[p.anchor.id].getBoundingClientRect()
+  box.style.left = cstring($r.left.to(float) & "px")
+  box.style.top = cstring($(r.bottom.to(float) + 4) & "px")
+  box.style.width = cstring($r.width.to(float) & "px")
+  box.style.display = "".cstring
+
+backend.hidePopover = proc (p: Popover) =
+  for (q, e) in popoverEls:
+    if q == p: e.style.display = "none".cstring
 
 # ---------------------------------------------------------------------------------------------------------------
 # Services

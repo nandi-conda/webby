@@ -337,6 +337,7 @@ const classCss = """
 .nk-mono { font-family: monospace; }
 .nk-error { color: #c01c28; }
 .nk-selected { background-color: alpha(@theme_selected_bg_color, 0.25); }
+.nk-popover { border: 1px solid alpha(currentColor, 0.2); }
 .nk-card { border: 1px solid alpha(currentColor, 0.15); border-radius: 6px; padding: 8px; }
 button.nk-item { padding: 2px 6px; }
 """
@@ -704,6 +705,27 @@ backend.closeDialog = proc (d: Dialog) =
     gtk_container_remove(gtk_dialog_get_content_area(g), d.content.native)
     d.content.unrealize()
   gtk_widget_destroy(g)
+
+# ---------------------------------------------------------------------------------------------------------------
+# Popovers: an undecorated popup window (it never takes the keyboard focus) under the anchor.
+
+backend.showPopover = proc (p: Popover) =
+  let top = gtk_widget_get_toplevel(p.anchor.native)
+  if p.native == nil:
+    p.native = gtk_window_new(1)   # GTK_WINDOW_POPUP
+    gtk_window_set_transient_for(p.native, top)
+    gtk_style_context_add_class(gtk_widget_get_style_context(p.native), "nk-popover")
+    if not p.content.realized: p.content.realize()
+    gtk_container_add(p.native, p.content.native)
+  var ox, oy, ax, ay: cint
+  discard gdk_window_get_origin(gtk_widget_get_window(top), addr ox, addr oy)
+  discard gtk_widget_translate_coordinates(p.anchor.native, top, 0, 0, addr ax, addr ay)
+  gtk_window_move(p.native, ox + ax, oy + ay + gtk_widget_get_allocated_height(p.anchor.native) + 4)
+  gtk_window_resize(p.native, gtk_widget_get_allocated_width(p.anchor.native), 1)
+  gtk_widget_show_all(p.native)
+
+backend.hidePopover = proc (p: Popover) =
+  if p.native != nil: gtk_widget_hide(p.native)
 
 # ---------------------------------------------------------------------------------------------------------------
 # The window

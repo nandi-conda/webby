@@ -62,7 +62,8 @@ public class Host extends Activity {
             PADDING = 7, MIN_SIZE = 8, ADD = 9, REMOVE = 10, ROOT = 11, TITLE = 12, TIMER = 13, UNTIMER = 14,
             QUIT = 15, FORGET = 16, ITEMS = 17, SELECTED = 18, RANGE = 19, VALUE = 20, VISIBLE = 21, TOOLTIP = 22,
             CLASSES = 23, ICON = 24, PASSWORD = 25, FOCUS = 26, SELECT_ALL = 27, MOVE = 28, MENU = 29, DIALOG = 30,
-            CLOSE_DIALOG = 31, KEY_HANDLED = 32, MAX_CHARS = 33, IMAGE = 34;
+            CLOSE_DIALOG = 31, KEY_HANDLED = 32, MAX_CHARS = 33, IMAGE = 34, POPOVER = 35,
+            HIDE_POPOVER = 36;
     // Widget kinds (WidgetKind in src/nimkit/core.nim).
     static final int COLUMN = 0, ROW = 1, SCROLL = 2, LABEL = 3, BUTTON = 4, ENTRY = 5, CHECK = 6, CANVAS = 7,
             SLIDER = 8, DROPDOWN = 9, PROGRESS = 10, TOGGLE = 11, ICON_KIND = 12, ITEM = 13, SEPARATOR = 14,
@@ -83,6 +84,7 @@ public class Host extends Activity {
     final SparseArray<String> icons = new SparseArray<>();       // id -> "size spec" last shown
     final SparseArray<AlertDialog> dialogs = new SparseArray<>();
     final SparseArray<Boolean> pictures = new SparseArray<>();     // icons showing a picture, not their glyph
+    final SparseArray<android.widget.PopupWindow> popovers = new SparseArray<>();
     boolean syncing;
     boolean keyHandled;          // set by KEY_HANDLED while an ENTRY_KEY event is being handled
     float touchX, touchY;        // the last touch, in content's pixels, for menus with no place given
@@ -253,6 +255,33 @@ public class Host extends Activity {
                     break;
                 }
                 case KEY_HANDLED: keyHandled = true; break;
+                case POPOVER: {
+                    // A PopupWindow under the anchor that doesn't take the focus, so the keyboard stays up.
+                    android.widget.PopupWindow pw = popovers.get(id);
+                    View body = views.get(Integer.parseInt(text));
+                    View anchor = views.get(arg);
+                    if (body == null || anchor == null || !anchor.isAttachedToWindow()) break;
+                    if (pw == null) {
+                        if (body.getParent() != null) ((ViewGroup) body.getParent()).removeView(body);
+                        pw = new android.widget.PopupWindow(body, anchor.getWidth(), ViewGroup.LayoutParams.WRAP_CONTENT, false);
+                        GradientDrawable bg = new GradientDrawable();
+                        bg.setColor(backgroundColor());
+                        bg.setCornerRadius(px(8));
+                        bg.setStroke(Math.max(1, px(1) / 2), textColor() & 0x30ffffff);
+                        pw.setBackgroundDrawable(bg);
+                        pw.setElevation(px(6));
+                        pw.setInputMethodMode(android.widget.PopupWindow.INPUT_METHOD_NEEDED);
+                        popovers.put(id, pw);
+                    }
+                    if (pw.isShowing()) pw.update(anchor, 0, px(4), anchor.getWidth(), -1);
+                    else pw.showAsDropDown(anchor, 0, px(4));
+                    break;
+                }
+                case HIDE_POPOVER: {
+                    android.widget.PopupWindow pw = popovers.get(id);
+                    if (pw != null) pw.dismiss();
+                    break;
+                }
                 case MAX_CHARS: if (v instanceof TextView) {
                     TextView t = (TextView) v;
                     t.setSingleLine(arg > 0);
@@ -515,6 +544,13 @@ public class Host extends Activity {
     int textColor() {
         android.content.res.TypedArray a = obtainStyledAttributes(new int[] {android.R.attr.textColorPrimary});
         int c = a.getColor(0, 0xff000000);
+        a.recycle();
+        return c;
+    }
+
+    int backgroundColor() {
+        android.content.res.TypedArray a = obtainStyledAttributes(new int[] {android.R.attr.colorBackground});
+        int c = a.getColor(0, 0xffffffff);
         a.recycle();
         return c;
     }

@@ -55,7 +55,9 @@ var
   commandLineUrls*: seq[string]
 
   # Widgets
-  window*, mainBox*, tabStripBox*, toolbar*, toolbarEnd*, urlEntry*, area*, status*: Widget
+  window*, mainBox*, tabStripBox*, toolbar*, toolbarEnd*, area*, status*: Widget
+  urlField*: kit.Widget        ## the URL bar (features/omnibox.nim adds its suggestions and keys)
+  urlFocused*: bool            ## the URL bar has the keyboard focus
   tabStrip*: kit.Widget        ## the tabs' row (a column with vertical tabs), inside a scroll view in tabStripBox
   tabStripSpace*: kit.Widget   ## the strip's empty space after the tabs (the last child of tabStrip)
   tabStripRoot*: kit.Widget    ## tabStripBox as nimkit sees it: the scroll view and the new-tab button
@@ -97,6 +99,7 @@ var
   tabMenuHooks*: seq[proc (t: Tab, items: var seq[kit.MenuItem])]  ## right-click on a tab: append menu items
   moreMenuHooks*: seq[proc (items: var seq[kit.MenuItem])]  ## the ⋮ menu, built each time it opens; see addMenuItem
   pagePointerHooks*: seq[proc (t: Tab, e: kit.PointerEvent): bool]  ## before the page gets it; true = handled
+  urlFocusHooks*: seq[proc (focused: bool)]       ## the URL bar got or lost the keyboard focus
   pageContextMenuHook*: proc (t: Tab, info: JsonNode, x, y: float) ## replaces the built-in page menu if set; x, y:
                                                                    ## where, in the page canvas's pixels
 
@@ -216,7 +219,7 @@ proc refreshChrome*() =
   let title = if appUrl.len > 0 and t.title.len > 0: t.title
               elif t.title.len > 0: t.title & " - " & name else: name
   gtk_window_set_title(window, title.cstring)
-  if gtk_widget_has_focus(urlEntry) == 0: gtk_entry_set_text(urlEntry, (if t.url == "about:blank": "" else: t.url).cstring)
+  if not urlFocused: kit.`text=`(urlField, if t.url == "about:blank": "" else: t.url)
   kit.`enabled=`(backButton, t.canBack)
   kit.`enabled=`(forwardButton, t.canForward)
   kit.`iconName=`(reloadButton, if t.loading: "close" else: "refresh")
@@ -332,12 +335,17 @@ proc loadUrl*(t: Tab, text: string) =
   webby_view_load(t.view, text.cstring)
   wake()
 
+proc focusUrl*() =
+  ## Puts the keyboard focus in the URL bar (its text selected).
+  kit.focus(urlField)
+  kit.selectAll(urlField)
+
 proc openTab*(url: string, focus = true, index = -1): Tab =
   let t = adoptView(newViewSized(), focus, index)
   if url.len > 0: t.loadUrl(url)
   if (url.len == 0 or url == homePage) and focus:
-    gtk_entry_set_text(urlEntry, "")
-    gtk_widget_grab_focus(urlEntry)
+    kit.`text=`(urlField, "")
+    focusUrl()
   t
 
 proc moveTab*(t: Tab, index: int) =
@@ -915,8 +923,8 @@ proc pageFocus(c: kit.Canvas, focused: bool) =
 # ---------------------------------------------------------------------------------------------------------------
 # Chrome: toolbar, URL bar, shortcuts
 
-proc onUrlActivate(e: Widget, data: pointer) {.cdecl.} =
-  let text = ($gtk_entry_get_text(urlEntry)).strip
+proc onUrlSubmit(text: string) =
+  let text = text.strip
   if text.len == 0: return
   let t = currentTab()
   if t == nil: discard openTab(text)
@@ -924,11 +932,11 @@ proc onUrlActivate(e: Widget, data: pointer) {.cdecl.} =
     t.loadUrl(text)
     gtk_widget_grab_focus(area)
 
-proc onUrlFocusIn(e: Widget, ev: GEvent, data: pointer): gboolean {.cdecl.} =
-  discard g_idle_add(proc (d: pointer): gboolean {.cdecl.} =
-    gtk_editable_select_region(urlEntry, 0, -1)
-    0, nil)
-  0
+proc onUrlFocus(focused: bool) =
+  urlFocused = focused
+  # The whole address is selected on focus, after the click that focused it has placed the cursor.
+  if focused: discard after(0, proc () = (if urlFocused: kit.selectAll(urlField)))
+  for h in urlFocusHooks: h(focused)
 
 proc focusPage*() = gtk_widget_grab_focus(area)
 
@@ -966,9 +974,9 @@ proc onDelete(w: Widget, e: GEvent, data: pointer): gboolean {.cdecl.} =
 proc defaultShortcuts() =
   addShortcut(modCtrl, 0x74, proc () = discard openTab(homePage))                       # Ctrl+T
   addShortcut(modCtrl, 0x77, proc () = (let t = currentTab(); if t != nil: closeTab(t)))  # Ctrl+W
-  addShortcut(modCtrl, 0x6c, proc () = gtk_widget_grab_focus(urlEntry))          # Ctrl+L
+  addShortcut(modCtrl, 0x6c, focusUrl)                                           # Ctrl+L
   addShortcut(modAlt, 0x66, proc () = kit.popupMenu(moreMenuItems(), moreButton))  # Alt+F, the ⋮ menu
-  addShortcut(0, 0xffc6, proc () = gtk_widget_grab_focus(urlEntry))              # F6
+  addShortcut(0, 0xffc6, focusUrl)                                               # F6
   addShortcut(modCtrl, 0x72, proc () = (let t = currentTab(); if t != nil: webby_view_reload(t.view); wake()))
   addShortcut(0, 0xffc2, proc () = (let t = currentTab(); if t != nil: webby_view_reload(t.view); wake()))  # F5
   addShortcut(modCtrl, 0xff09, proc () = (if tabs.len > 0: activateTab((activeIndex + 1) mod tabs.len)))
@@ -1040,7 +1048,10 @@ proc buildWindow() =
   forwardButton = kit.iconButton("arrow_forward", "Forward (Alt+Right)", goForward)
   reloadButton = kit.iconButton("refresh", "Reload (Ctrl+R)", reloadOrStop)
   moreButton = kit.iconButton("more_vert", "More (Alt+F)", proc () = kit.popupMenu(moreMenuItems(), moreButton))
-  urlSlotRow = kit.expand(kit.row())   # the URL entry (still GTK: features/omnibox.nim drives it)
+  urlField = kit.entry("Search or enter address")
+  urlField.onSubmit = onUrlSubmit
+  urlField.onFocusChange = onUrlFocus
+  urlSlotRow = kit.expand(kit.row(kit.expand(urlField)))
   starSlotRow = kit.row()
   toolbarEndRow = kit.row()
   for r in [starSlotRow, toolbarEndRow]: r.spacing = 0
@@ -1049,11 +1060,6 @@ proc buildWindow() =
   toolbar = nkgtk.gtkWidget(toolbarRow)
   starSlot = nkgtk.gtkWidget(starSlotRow)
   toolbarEnd = nkgtk.gtkWidget(toolbarEndRow)
-  urlEntry = gtk_entry_new()
-  gtk_entry_set_placeholder_text(urlEntry, "Search or enter address")
-  connect(urlEntry, "activate", onUrlActivate)
-  connect(urlEntry, "focus-in-event", onUrlFocusIn)
-  gtk_box_pack_start(nkgtk.gtkWidget(urlSlotRow), urlEntry, 1, 1, 4)
   gtk_box_pack_start(mainBox, toolbar, 0, 0, 2)
 
   barSlot = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)

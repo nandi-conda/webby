@@ -54,6 +54,8 @@ const   # Host.java's ops
   opKeyHandled = 32  # answers ENTRY_KEY while Host waits: the app used the key, so the field doesn't get it
   opMaxChars = 33    # a label's one-line width in characters, 0 to wrap
   opImage = 34       # an icon's picture: text = the file's bytes in base64, "" for the glyph
+  opPopover = 35     # id: the popover's number; arg: the anchor; text: the content's id
+  opHidePopover = 36
 
   kindHScroll = 15   # Host's kind for a sideways scroll view (WidgetKind ends at 14)
 
@@ -163,6 +165,18 @@ backend.showDialog = proc (d: Dialog) =
     content = d.content.id
   op(opDialog, n, text = $(%*{"title": d.title, "buttons": d.buttons, "destructive": d.destructive,
                                "content": content}))
+
+var nextPopover = 1
+
+backend.showPopover = proc (p: Popover) =
+  if p.native == nil:
+    p.native = cast[pointer](nextPopover)
+    inc nextPopover
+  if not p.content.realized: p.content.realize()
+  op(opPopover, cast[int](p.native), p.anchor.id, $p.content.id)
+
+backend.hidePopover = proc (p: Popover) =
+  if p.native != nil: op(opHidePopover, cast[int](p.native))
 
 backend.closeDialog = proc (d: Dialog) =
   let n = cast[int](d.native)

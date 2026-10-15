@@ -202,6 +202,10 @@ proc gtk_dialog_get_content_area*(d: GtkWidget): GtkWidget
 proc gtk_dialog_add_button*(d: GtkWidget, text: cstring, response: cint): GtkWidget
 proc gtk_dialog_set_default_response*(d: GtkWidget, response: cint)
 proc gtk_window_set_transient_for*(w, parent: GtkWidget)
+proc gtk_window_move*(w: GtkWidget, x, y: cint)
+proc gtk_window_resize*(w: GtkWidget, width, height: cint)
+proc gdk_window_get_origin*(w: pointer, x, y: ptr cint): cint
+proc gtk_widget_hide*(w: GtkWidget)
 proc gtk_window_set_modal*(w: GtkWidget, on: gboolean)
 proc gtk_window_set_destroy_with_parent*(w: GtkWidget, on: gboolean)
 proc gtk_window_set_resizable*(w: GtkWidget, on: gboolean)

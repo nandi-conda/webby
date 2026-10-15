@@ -110,6 +110,8 @@ type
     showDialog*: proc (d: Dialog)
     closeDialog*: proc (d: Dialog)
     selectAll*: proc (w: Widget)     ## an entry's text
+    showPopover*: proc (p: Popover)  ## show (again) under its anchor, at the anchor's width
+    hidePopover*: proc (p: Popover)
 
   MenuItem* = object
     ## One line of a pop-up menu (`popupMenu`): a command, a check item, a separator or a submenu.
@@ -120,6 +122,13 @@ type
     shortcut*: string                ## shown at the end, e.g. "Ctrl+T" (the app handles the key itself)
     separator*: bool
     submenu*: seq[MenuItem]
+
+  Popover* = ref object
+    ## A panel floating under a widget, e.g. suggestions under a text field. It takes no keyboard focus, so
+    ## typing goes on in the field; the app shows and hides it (`showPopover`, `hidePopover`).
+    anchor*, content*: Widget
+    native*: pointer                 ## the backend's handle once it has been shown
+    shown*: bool
 
   Dialog* = ref object
     ## A modal dialog over the window (`showDialog`): a title, the app's content and a row of buttons.
@@ -561,6 +570,21 @@ proc prompt*(title: string, text = "", initial = "", onResult: proc (ok: bool, v
   let content = if text.len > 0: column(label(text), field) else: column(field)
   d = dialog(title, content, @["Cancel", ok], proc (i: int) = onResult(i == 1, field.text))
   field.focus()
+
+proc popover*(anchor, content: Widget): Popover =
+  ## A popover for `content` under `anchor`, not shown yet. `content` stays live: change it while it shows.
+  Popover(anchor: anchor, content: content)
+
+proc showPopover*(p: Popover) =
+  ## Shows `p` (or moves it back under its anchor if it already shows).
+  if backend.showPopover != nil and p.anchor.realized:
+    p.shown = true
+    backend.showPopover(p)
+
+proc hidePopover*(p: Popover) =
+  if p.shown:
+    p.shown = false
+    if backend.hidePopover != nil: backend.hidePopover(p)
 
 proc selectAll*(w: Widget) =
   if w.realized and backend.selectAll != nil: backend.selectAll(w)
