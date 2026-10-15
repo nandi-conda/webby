@@ -1317,7 +1317,13 @@ proc run*() =
   parseCommandLine()
   mark "main"
   when not defined(android):
+    # The id the menu entry and icons are installed under (conda/webby), as the Wayland app id and X11 WM_CLASS so
+    # docks match the window to them; web app windows swap in their own (features/pwa.nim).
+    proc g_set_prgname(name: cstring) {.importc, cdecl.}
+    proc gdk_set_program_class(name: cstring) {.importc, cdecl.}
+    g_set_prgname("dev.webby.webby")
     gtk_init(nil, nil)
+    gdk_set_program_class("dev.webby.webby")
     mark "gtk_init"
     if incognito:
       g_object_set(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", 1.cint, nil)

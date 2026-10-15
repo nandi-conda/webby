@@ -76,4 +76,4 @@ fi
 
 echo
 echo "Ladybird prefix: $LADYBIRD_DIR/Build/release"
-echo "Run the app with: scripts/run_app.sh"
+echo "Run webby on it with: WEBBY_LADYBIRD_PREFIX=$LADYBIRD_DIR/Build/release pixi run webby"

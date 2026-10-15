@@ -1,12 +1,11 @@
-# webby-nim (experiment)
+# webby's front end
 
-The webby browser without Flutter: a Nim program on GTK 3 that drives the same `libwebby.so` (Ladybird, see
-`native/webby_ffi.h`) and draws each frame straight into a `GtkDrawingArea` with cairo. Ladybird's premultiplied
-BGRA frame is cairo's ARGB32 layout, so the frame is painted in place: no copy, no swizzle, no Flutter engine.
+A Nim program that drives `libwebby.so` (Ladybird, see `native/webby_ffi.h`), with its UI on nimkit
+(`framework/`): GTK 3 on the desktop, where each frame is drawn straight into the page canvas with cairo (Ladybird's
+premultiplied BGRA frame is cairo's ARGB32 layout, so no copy and no swizzle), and Android views on phones.
 
-It has the desktop Flutter app's features, sharing its profile files so either front end can open the same
-profile: bookmarks (bar, manager, HTML import/export), history and omnibox suggestions, the password vault with
-autofill and passkeys, end-to-end encrypted sync (compatible with Flutter devices), tabs from other devices, saved
+Features: bookmarks (bar, manager, HTML import/export), history and omnibox suggestions, the password vault with
+autofill and passkeys, end-to-end encrypted sync, tabs from other devices, saved
 sessions, pinned and vertical tabs, tab and page context menus, incognito windows, site permissions and settings,
 file inputs, notifications, geolocation (GeoClue), dark mode, favicons, installable web apps (`--app=`), offline
 mode and Summarize. On Android, `nim/android-kit` runs this same front end on nimkit's Android host
@@ -18,9 +17,9 @@ The core is `src/browser.nim` (window, tabs, input, pump, hooks); each feature i
 libcrypto before libwebby, whose own crypto library then fails to load. Features use GIO for HTTP and the runtime's
 libcrypto for cryptography.
 
-Icons are the Flutter app's (Material Icons, compiled in from `src/icondata.nim`, drawn in the theme's text colour)
+Icons are Material Icons (compiled in from `src/icondata.nim`, drawn in the theme's text colour)
 rather than the desktop icon theme's: `icon("arrow_back")` / `setIcon(image, name)` in `src/icons.nim`, with
-`scripts/material_icons.py <flutter-sdk>` adding more names. The window icon is `icons/webby*.svg`, also compiled in.
+`scripts/material_icons.py <flutter-sdk>` adding more names (the Flutter SDK ships the font). The window icon is `icons/webby*.svg`, also compiled in.
 
 `pixi run webby [url]` (also `webby-nim`) builds it with the pixi env's Nim and GTK (again only when the sources change) and runs it
 against the webby-ladybird package. By hand:
@@ -34,9 +33,9 @@ Keys: Ctrl+T new tab, Ctrl+W close, Ctrl+L URL bar, Ctrl+R / F5 reload, Alt+Left
 middle-click a tab to close it. `WEBBY_TRACE=1` prints pump, frame, draw and wheel-latency counters every 5 s, plus a `webby-cpu` line with each webby
 process's (and its busiest threads') CPU, as % of one core.
 
-## Nim vs Flutter, same engine
+## Nim vs the old Flutter front end, same engine
 
-`nim/bench.py TAG URL -- COMMAND` runs one front end on one page under X and reports CPU (% of one core, UI process
+webby's first front end was a Flutter app (removed 2026-10-15). `nim/bench.py TAG URL -- COMMAND` runs one front end on one page under X and reports CPU (% of one core, UI process
 vs Ladybird's helpers), PSS, and wheel latency (wheel event sent to the next new frame, from WEBBY_TRACE).
 2026-10-12, Xvfb 1920x1080 with llvmpipe (no GPU), window 1280x800, runtime webby-ladybird 2026.10.12.7, local pages,
 two runs each agreeing within a few percent:

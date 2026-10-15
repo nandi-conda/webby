@@ -17,8 +17,9 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 /**
- * Lays out what Ladybird expects of a Linux install inside the app's private storage, files/ladybird. The same as the
- * Flutter app's LadybirdRuntime.kt (app/android/app/src/main/kotlin/dev/webby/webby), which explains the layout.
+ * Lays out what Ladybird expects of a Linux install inside the app's private storage, files/ladybird: its resources
+ * unpacked from assets/lagom.zip, the helper processes (shipped as lib<Name>.so so they are executable files in the
+ * native library directory) linked under libexec/, and XDG directories under the same prefix.
  */
 final class LadybirdRuntime {
     private static final String[] HELPERS = {

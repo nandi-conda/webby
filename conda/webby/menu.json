@@ -5,7 +5,7 @@
   "menu_items": [
     {
       "name": "Webby",
-      "description": "Web browser with a Flutter UI on Ladybird's LibWeb and LibJS",
+      "description": "Web browser on Ladybird's LibWeb and LibJS",
       "command": ["{{ PREFIX }}/bin/webby", "%u"],
       "icon": "{{ MENU_DIR }}/webby.{{ ICON_EXT }}",
       "activate": false,

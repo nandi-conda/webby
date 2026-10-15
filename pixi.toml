@@ -1,6 +1,5 @@
-# `pixi run webby` builds and launches the app (the Nim front end, nim/); `pixi run webby-flutter` runs the Flutter app.
-# The Linux desktop toolchain comes from conda-forge; Flutter (conda/flutter, since it isn't on conda-forge) and the
-# prebuilt Ladybird runtime (conda/webby-ladybird) come from prefix.dev/nandi-testing.
+# `pixi run webby` builds and launches the app (the Nim front end, nim/). The toolchain comes from conda-forge; the
+# prebuilt Ladybird runtime (conda/webby-ladybird) from prefix.dev/nandi-testing.
 [workspace]
 name = "webby"
 # conda-forge first: nandi-testing also mirrors the conda-forge packages webby needs (scripts/mirror_deps.sh), and
@@ -10,42 +9,24 @@ channels = ["conda-forge", "https://prefix.dev/nandi-testing"]
 platforms = [{ name = "linux-64-glibc235", platform = "linux-64", glibc = "2.35" }]
 
 [dependencies]
-# `flutter` and `dart`; the first run downloads the Flutter SDK into ~/.cache/conda-flutter (conda/flutter).
-flutter = "3.35.5.*"
 # libwebby.so (LibWeb/LibJS) and the helper processes; activation sets WEBBY_LADYBIRD_PREFIX unless it's already set.
 webby-ladybird = ">=2026.10.15.1"
 # The password vault's key goes in the desktop keyring through libsecret (loaded at runtime).
 libsecret = "*"
-# Flutter's Linux desktop build: compiler, build tools, GTK 3 and the .pc files its pkg-config lookup pulls in.
+# The Nim front end (scripts/pixi_nim.sh): the compiler and its C toolchain, GTK 3, GIO's TLS module for its HTTPS
+# (sync, Summarize), the icon theme with its SVG loader for GTK's symbolic icons, and fontconfig for webby-fonts.conf.
+nim = ">=2"
 clang = ">=19"
-clangxx = ">=19"
 lld = "*"
+libstdcxx = "*"
 sysroot_linux-64 = ">=2.28"
-cmake = ">=3.30"
-ninja = "*"
-pkg-config = "*"
 gtk3 = "*"
 glib = "*"
-epoxy = "*"
-fontconfig = "*"
-expat = "*"
-zlib = "*"
-# Used by the Flutter tool.
-git = "*"
-curl = "*"
-xz = "*"
-zstd = "*"
-tar = "*"
-unzip = "*"
-which = "*"
-# The Nim front end (nim/, `pixi run webby-nim`): the compiler, plus GIO's TLS module for its HTTPS (sync,
-# Summarize) and the icon theme with its SVG loader for GTK's symbolic icons.
-nim = ">=2"
 glib-networking = "*"
 adwaita-icon-theme = "*"
 librsvg = "*"
+fontconfig = "*"
 
 [tasks]
 webby = { cmd = "scripts/pixi_nim.sh", description = "Build (when changed) and run webby's Nim front end; extra args are URLs or --incognito" }
 webby-nim = { cmd = "scripts/pixi_nim.sh", description = "Same as `webby` (the old name)" }
-webby-flutter = { cmd = "scripts/pixi_start.sh", description = "Build and run the Flutter app (extra args go to `flutter run`, e.g. -a https://example.com)" }

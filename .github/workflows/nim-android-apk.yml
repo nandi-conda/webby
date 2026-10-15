@@ -1,7 +1,7 @@
 # Builds webby-nim for Android (nim/android-kit/build.sh: the desktop's Nim front end on nimkit's Android host) when
 # the Nim front end changes on main, and publishes it as the prerelease `webby-nim-android-<version>`. It installs as
-# dev.webby.nim, over the Java-shell app that id used to be. Ladybird's native part is the same prebuilt Release the
-# Flutter APK uses (scripts/android/native.env); only the Nim code and the Java host are built here.
+# dev.webby.nim, over the Java-shell app that id used to be. Ladybird's native part is the
+# prebuilt Release named in scripts/android/native.env; only the Nim code and the Java host are built here.
 #
 # Version: commit date plus (100 + run number), e.g. 2026.10.14.101; the versionCode is the run number offset the
 # same way, so each APK installs over the last. Signing: nim/android-kit/debug.keystore, a debug key kept in the repo, so
@@ -19,8 +19,6 @@ on:
       - nim/**
       - framework/src/**
       - framework/android/**
-      - app/lib/src/page_compat.dart
-      - app/lib/src/context_menu.dart
       - scripts/android/native.env
       - .github/workflows/nim-android-apk.yml
   workflow_dispatch:
@@ -75,6 +73,6 @@ jobs:
           source scripts/android/native.env
           gh release create "webby-nim-android-$VERSION" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
             --title "webby-nim for Android $VERSION" \
-            --notes "The desktop's Nim front end on nimkit's Android host (nim/android-kit), built by CI from $GITHUB_SHA with native part $NATIVE_VERSION. Installs as \"Webby Nim\" (dev.webby.nim) next to the Flutter app, updating the earlier Java-shell Webby Nim in place. For arm64 phones on Android 11 or newer (debug-signed)." \
+            --notes "The desktop's Nim front end on nimkit's Android host (nim/android-kit), built by CI from $GITHUB_SHA with native part $NATIVE_VERSION. Installs as \"Webby Nim\" (dev.webby.nim), updating earlier Webby Nim builds in place. For arm64 phones on Android 11 or newer (debug-signed)." \
             webby-nim-android-arm64.apk webby-nim-android-arm64.apk.sha256
 

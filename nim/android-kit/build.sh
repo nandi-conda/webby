@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds webby on nimkit for Android: the desktop's Nim front end (nim/webby.nim) as libwebbykit.so under nimkit's
 # generic Host (framework/android/java) plus WebbyHost (java/dev/webby/kit), and Ladybird's native part (the same
-# prebuilt one the Flutter APK uses, scripts/android/native.env), into one APK. No Gradle: aapt2, javac, d8,
+# prebuilt Release named in scripts/android/native.env), into one APK. No Gradle: aapt2, javac, d8,
 # zipalign and apksigner from the Android SDK, and the NDK's clang for Nim.
 #
 # Usage: nim/android-kit/build.sh <native.tar.zst> [version-name] [version-code]

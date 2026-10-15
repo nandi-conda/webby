@@ -1,11 +1,5 @@
 third_party/
 .pixi/
-app/linux/
-app/.metadata
-app/pubspec.lock
-app/.dart_tool/
-app/build/
-app/.gitignore
 nim/webby
 nim/*.log
 .claude/

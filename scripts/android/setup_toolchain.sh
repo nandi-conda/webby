@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs what the Android build needs on an Ubuntu 26.04 host (the Fly build machine): Android SDK, NDK and
-# platform, Rust with the Android target, and Flutter. Everything lands under $WEBBY_ANDROID_TOOLS (default
+# platform, and Rust with the Android target. Everything lands under $WEBBY_ANDROID_TOOLS (default
 # /build/android-tools) so a restarted machine with the same volume skips the downloads.
 #
 # System packages first (as root): see the apt-get line in scripts/android/fly_build.sh.
@@ -8,7 +8,6 @@ set -euo pipefail
 
 TOOLS="${WEBBY_ANDROID_TOOLS:-/build/android-tools}"
 NDK_VERSION="${NDK_VERSION:-29.0.14206865}"
-FLUTTER_VERSION="${FLUTTER_VERSION:-3.35.5}"
 RUST_VERSION="${RUST_VERSION:-1.98.0}"
 CMDLINE_TOOLS_ZIP=commandlinetools-linux-13114758_latest.zip
 
@@ -35,12 +34,6 @@ fi
 "$CARGO_HOME/bin/rustup" toolchain install "$RUST_VERSION" --profile minimal -c rustfmt -c clippy
 "$CARGO_HOME/bin/rustup" target add --toolchain "$RUST_VERSION" aarch64-linux-android
 
-if [ ! -x "$TOOLS/flutter/bin/flutter" ]; then
-    curl -fsSL "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz" \
-        | tar -xJ -C "$TOOLS"
-fi
 git config --global --add safe.directory '*'
-"$TOOLS/flutter/bin/flutter" config --android-sdk "$ANDROID_HOME" --no-analytics > /dev/null
-"$TOOLS/flutter/bin/flutter" precache --android > /dev/null
 
 echo "Android tools ready in $TOOLS"

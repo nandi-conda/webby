@@ -9,6 +9,3 @@ default *args:
 open url:
     pixi run webby "$1"
 
-# The Flutter app; extra args go to `flutter run`
-flutter *args:
-    pixi run webby-flutter "$@"

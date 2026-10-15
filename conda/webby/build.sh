@@ -1,45 +1,13 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
-# Keep the Flutter tool's config and pub cache inside the build tree.
-export HOME="$SRC_DIR/.home" PUB_CACHE="$SRC_DIR/.pub-cache"
-mkdir -p "$HOME"
-git config --global --add safe.directory '*'
-flutter config --no-analytics --enable-linux-desktop >/dev/null
-
-# Same toolchain setup as scripts/pixi_start.sh, with the host prefix's GTK. The runner links epoxy and fontconfig
-# directly so they're loaded from the env (libflutter_linux_gtk.so needs them too).
-export CC=clang CXX=clang++
-export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/share/pkgconfig"
-export CFLAGS="-I$PREFIX/include" CXXFLAGS="-I$PREFIX/include"
-export LDFLAGS="-fuse-ld=lld -L$PREFIX/lib -Wl,-rpath,$PREFIX/lib \
-  -Wl,--push-state,--no-as-needed -lepoxy -lfontconfig -Wl,--pop-state"
-
-cd "$SRC_DIR/app"
-# The Linux runner is stock `flutter create` output, so it's generated rather than checked in.
-[ -d linux ] || flutter create --platforms=linux --project-name webby --org dev.webby .
-# Give the window the webby icon.
-runner=linux/runner/my_application.cc
-grep -q webby.png "$runner" ||
-  sed -i "/gtk_window_set_default_size(window, 1280, 720);/r $RECIPE_DIR/window_icon.inc" "$runner"
-grep -q webby.png "$runner"
-# Web apps (webby --app) get their own application id; see app_id.inc.
-if ! grep -q WEBBY_APP_ID "$runner"; then
-  sed -i "/^MyApplication\* my_application_new() {/r $RECIPE_DIR/app_id.inc" "$runner"
-  sed -i 's/g_set_prgname(APPLICATION_ID);/g_set_prgname(webby_app_id);/; s/"application-id", APPLICATION_ID,/"application-id", webby_app_id,/' "$runner"
-fi
-[ "$(grep -c webby_app_id "$runner")" -ge 4 ]
-# Hide the windows as soon as the app quits instead of when the process finally exits; see fast_close.inc.
-grep -q gtk_window_list_toplevels "$runner" || {
-  sed -i "/Perform any actions required at application shutdown./r $RECIPE_DIR/fast_close.inc" "$runner"
-  sed -i '0,/^#include "my_application.h"/s//&\n\n#include <unistd.h>/' "$runner"
-}
-grep -q "include <unistd.h>" "$runner"
-grep -q gtk_window_list_toplevels "$runner"
-flutter build linux --release
-
-mkdir -p "$PREFIX/lib/webby" "$PREFIX/bin"
-cp -a build/linux/x64/release/bundle/. "$PREFIX/lib/webby/"
+# The Nim front end, built as scripts/pixi_nim.sh builds it: no -d:ssl (Nim's OpenSSL setup would load a libcrypto
+# before libwebby's own), the env's GTK through the rpath, and libstdc++ linked in so the env's loads first.
+export HOME="$SRC_DIR/.home"
+mkdir -p "$HOME" "$PREFIX/lib/webby" "$PREFIX/bin"
+nim c -d:release --hints:off --warnings:off --cc:clang --nimcache:"$SRC_DIR/.nimcache" \
+  --passL:"-fuse-ld=lld -L$PREFIX/lib -Wl,-rpath,$PREFIX/lib -Wl,--no-as-needed -lstdc++ -Wl,--as-needed" \
+  -o:"$PREFIX/lib/webby/webby" "$SRC_DIR/nim/webby.nim"
 install -m 755 "$RECIPE_DIR/webby.sh" "$PREFIX/bin/webby"
 # The launcher's FONTCONFIG_FILE; it goes in webby-ladybird's share/Lagom/fonts so the sandboxed helpers can read it.
 mkdir -p "$PREFIX/lib/webby-ladybird/share/Lagom/fonts"
@@ -54,7 +22,6 @@ for s in 16 24 32 48 64 128 256 512; do
   rsvg-convert -w "$s" -h "$s" "$svg" -o "$icons/${s}x${s}/apps/dev.webby.webby.png"
 done
 install -Dm644 "$SRC_DIR/icons/webby.svg" "$icons/scalable/apps/dev.webby.webby.svg"
-install -Dm644 "$icons/256x256/apps/dev.webby.webby.png" "$PREFIX/lib/webby/data/webby.png"
 
 # App menu entry, installed by menuinst (pixi global install, conda install).
 install -Dm644 "$RECIPE_DIR/menu.json" "$PREFIX/Menu/webby.json"

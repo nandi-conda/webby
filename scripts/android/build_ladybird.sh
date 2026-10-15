@@ -5,8 +5,8 @@
 #        ANDROID_ABI=x86_64 scripts/android/build_ladybird.sh
 #
 # Needs the tools from scripts/android/setup_toolchain.sh. The result is $LADYBIRD_DIR/Build/android-<abi>:
-# lib/libwebby.so, libexec/<helpers> and share/Lagom, the same layout as the Linux prefix. scripts/android/build_apk.sh
-# packs it into the app.
+# lib/libwebby.so, libexec/<helpers> and share/Lagom, the same layout as the Linux prefix. scripts/android/pack_native.sh
+# packs it for the app.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

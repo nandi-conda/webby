@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds Ladybird + libwebby.so + the Flutter app inside a fresh Ubuntu 24.04 Modal sandbox.
+# Builds Ladybird + libwebby.so inside a fresh Ubuntu 24.04 Modal sandbox.
 # Persistent caches live on the volume mounted at /build (vcpkg binary cache, ccache).
 set -x
 exec > >(tee -a /build/logs/build.log) 2>&1
@@ -12,9 +12,6 @@ apt-get install -y -qq wget gnupg ca-certificates curl git python3 python3-pip p
 pip install -q --break-system-packages 'cmake>=3.30'
 curl -sSf https://sh.rustup.rs | sh -s -- -y -q --default-toolchain 1.98.0
 source $HOME/.cargo/env
-( cd /opt && curl -sSL https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.35.5-stable.tar.xz | tar xJ \
-  && git config --global --add safe.directory /opt/flutter && /opt/flutter/bin/flutter --disable-analytics \
-  && /opt/flutter/bin/flutter precache --linux ) > /build/logs/flutter.log 2>&1 &
 echo SETUP_DONE
 mkdir -p /work && cd /work
 git clone -q https://github.com/nandi-conda/webby.git

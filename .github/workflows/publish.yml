@@ -8,8 +8,6 @@
 # - webby-ladybird only repackages the prebuilt Ladybird tarball named in its recipe (a GitHub Release asset, see
 #   prebuilt-release.yml), so it's republished when conda/webby-ladybird/ changes (bump the recipe's version/sha256
 #   or build number after releasing a new prebuilt).
-# - flutter is a launcher that downloads the Flutter SDK release named in conda/flutter/recipe.yaml on first use;
-#   it's republished when that directory changes. `pixi run webby` and the webby build both take Flutter from it.
 #   Rebuilding Ladybird itself (LADYBIRD_COMMIT, native/, scripts/build_ladybird.sh) still happens on a Fly build machine.
 name: publish
 
@@ -27,7 +25,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       ladybird: ${{ steps.filter.outputs.ladybird }}
-      flutter: ${{ steps.filter.outputs.flutter }}
     steps:
       - uses: actions/checkout@v4
       - id: filter
@@ -37,8 +34,6 @@ jobs:
             ladybird:
               - 'conda/webby-ladybird/**'
               - 'scripts/publish_conda.sh'
-            flutter:
-              - 'conda/flutter/**'
 
   webby-ladybird:
     needs: changes
@@ -58,28 +53,10 @@ jobs:
         env:
           PREFIX_API_KEY: ${{ secrets.PREFIX_API_KEY }}
 
-  flutter:
-    needs: changes
-    if: needs.changes.outputs.flutter == 'true'
-    runs-on: ubuntu-latest
-    concurrency:
-      group: publish-flutter
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install pixi and rattler-build
-        run: |
-          curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=$PIXI_VERSION bash
-          echo "$HOME/.pixi/bin" >> "$GITHUB_PATH"
-          "$HOME/.pixi/bin/pixi" global install rattler-build
-      - run: scripts/publish_conda.sh flutter
-        env:
-          PREFIX_API_KEY: ${{ secrets.PREFIX_API_KEY }}
-
   webby:
-    needs: [webby-ladybird, flutter]
-    # Run after webby-ladybird and flutter when they ran, and on its own when they were skipped.
-    if: ${{ !cancelled() && needs.webby-ladybird.result != 'failure' && needs.flutter.result != 'failure' }}
+    needs: webby-ladybird
+    # Run after webby-ladybird when it ran, and on its own when it was skipped.
+    if: ${{ !cancelled() && needs.webby-ladybird.result != 'failure' }}
     runs-on: ubuntu-latest
     concurrency:
       group: publish-webby
@@ -152,13 +129,8 @@ jobs:
           pgrep -a WebContent || { cat webby.log; exit 1; }
           pgrep -a RequestServer
 
-  # `pixi run webby` (the Nim front end) and `pixi run webby-flutter` from a fresh checkout: installs the workspace
-  # and builds both, Flutter download included. Building is required; the Flutter launch is only reported: on this bare
-  # Ubuntu 22.04 runner its debug build picks up the system's older libpango (pango_font_description_get_width lookup
-  # error), unlike the packaged app.
+  # `pixi run webby` (the Nim front end) from a fresh checkout: installs the workspace, builds and starts it.
   pixi-webby:
-    needs: flutter
-    if: ${{ !cancelled() && needs.flutter.result != 'failure' }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -188,15 +160,3 @@ jobs:
           test -x nim/webby
           pgrep -a WebContent || { echo "::error::nim/webby built but didn't start Ladybird under Xvfb"; exit 1; }
           pkill -f 'nim/webby|WebContent|RequestServer' || true
-      - name: pixi run webby-flutter
-        run: |
-          timeout 900 xvfb-run -a pixi run webby-flutter -a https://example.com < /dev/null > start.log 2>&1 &
-          for i in $(seq 180); do
-            grep -qE 'Built build/linux|Error|error:' start.log && break
-            sleep 5
-          done
-          sleep 20
-          cat start.log
-          grep -q 'Built build/linux/x64/debug/bundle/webby' start.log
-          pgrep -a WebContent || echo "::warning::webby built but didn't come up under Xvfb (see log)"
-          pkill -f 'flutter|webby' || true
