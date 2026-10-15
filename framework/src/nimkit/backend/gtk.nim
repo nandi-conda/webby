@@ -98,9 +98,9 @@ proc sync(w: Widget) =
     gtk_box_set_spacing(w.native, w.spacing.cint)
     gtk_container_set_border_width(w.native, w.padding.cuint)
   of wkLabel: gtk_label_set_text(w.native, w.text.cstring)
-  of wkButton, wkCheck:
+  of wkButton, wkCheck, wkToggle:
     gtk_button_set_label(w.native, w.text.cstring)
-    if w.kind == wkCheck: gtk_toggle_button_set_active(w.native, w.checked.gboolean)
+    if w.kind in {wkCheck, wkToggle}: gtk_toggle_button_set_active(w.native, w.checked.gboolean)
   of wkEntry:
     if $gtk_entry_get_text(w.native) != w.text: gtk_entry_set_text(w.native, w.text.cstring)
     gtk_entry_set_placeholder_text(w.native, w.placeholder.cstring)
@@ -172,6 +172,10 @@ proc realize(w: Widget) =
       connect(c, "changed", onComboChanged, data)
       c
     of wkProgress: gtk_progress_bar_new()
+    of wkToggle:
+      let b = gtk_toggle_button_new_with_label("")
+      connect(b, "toggled", onToggled, data)
+      b
   discard g_object_ref(w.native)   # ours until the widget is removed, so removing it from a box doesn't free it
   w.realized = true
   w.sync()

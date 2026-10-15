@@ -8,7 +8,7 @@ import std/tables
 
 type
   WidgetKind* = enum
-    wkColumn, wkRow, wkScroll, wkLabel, wkButton, wkEntry, wkCheck, wkCanvas, wkSlider, wkDropdown, wkProgress
+    wkColumn, wkRow, wkScroll, wkLabel, wkButton, wkEntry, wkCheck, wkCanvas, wkSlider, wkDropdown, wkProgress, wkToggle
 
   PointerKind* = enum
     pkDown, pkMove, pkUp, pkCancel
@@ -42,7 +42,7 @@ type
     onClick*: proc ()                ## buttons
     onChange*: proc (text: string)   ## entries, as the text changes
     onSubmit*: proc (text: string)   ## entries, on Enter
-    onToggle*: proc (checked: bool)  ## check boxes
+    onToggle*: proc (checked: bool)  ## check boxes and toggle buttons
     onValue*: proc (value: float)    ## sliders, as the user moves them
     onSelect*: proc (index: int)     ## dropdowns, when the user picks a choice
     onDraw*: proc (c: Canvas)        ## canvases, whenever their pixels must be (re)made
@@ -223,6 +223,13 @@ proc entry*(placeholder = "", text = "", onChange: proc (text: string) = nil,
 
 proc check*(text: string, checked = false, onToggle: proc (checked: bool) = nil): Widget =
   result = newWidget(wkCheck)
+  result.textValue = text
+  result.checkedValue = checked
+  result.onToggle = onToggle
+
+proc toggle*(text: string, checked = false, onToggle: proc (checked: bool) = nil): Widget =
+  ## A button that stays pressed in while `checked`: for on/off settings, or a row of them as tabs.
+  result = newWidget(wkToggle)
   result.textValue = text
   result.checkedValue = checked
   result.onToggle = onToggle

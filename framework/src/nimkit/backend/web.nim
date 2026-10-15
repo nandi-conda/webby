@@ -40,6 +40,8 @@ button, input { font: inherit; } input[type=text] { padding: 6px 8px; min-width:
 .nk-marks > span:first-child { transform: none; }
 select { font: inherit; min-width: 0; padding: 4px 6px; }
 progress { width: 100%; height: 6px; }
+.nk-toggle[aria-pressed=true] { background: #c9daf2; border-color: #6b8fc4; }
+@media (prefers-color-scheme: dark) { .nk-toggle[aria-pressed=true] { background: #2c4a73; } }
 """
 
 proc el(tag: string, class = ""): JsObject =
@@ -89,6 +91,9 @@ proc sync(w: Widget) =
     e.style.gap = cstring($w.spacing & "px")
     e.style.padding = cstring($w.padding & "px")
   of wkLabel, wkButton: e.textContent = w.text.cstring
+  of wkToggle:
+    e.textContent = w.text.cstring
+    e.setAttribute("aria-pressed", cstring(if w.checked: "true" else: "false"))
   of wkEntry:
     if $e.value.to(cstring) != w.text: e.value = w.text.cstring
     e.placeholder = w.placeholder.cstring
@@ -125,7 +130,7 @@ proc sync(w: Widget) =
     e.selectedIndex = w.selected
   of wkProgress: e.value = w.value.clamp(0.0, 1.0)
   of wkScroll: discard
-  if w.kind in {wkButton, wkEntry, wkDropdown}: e.disabled = not w.enabled
+  if w.kind in {wkButton, wkToggle, wkEntry, wkDropdown}: e.disabled = not w.enabled
   if w.kind in {wkCheck, wkSlider}: inputs[w.id].disabled = not w.enabled
   e.classList.toggle("nk-expand".cstring, w.expanded)
 
@@ -196,6 +201,13 @@ proc realize(w: Widget): JsObject =
         w.setSelectedSilently(s.selectedIndex.to(int))
         if w.onSelect != nil and w.selected >= 0: w.onSelect(w.selected))
       s
+    of wkToggle:
+      let b = el("button", "nk-toggle")
+      b.addEventListener("click", proc () =
+        w.setCheckedSilently(not w.checked)
+        b.setAttribute("aria-pressed", cstring(if w.checked: "true" else: "false"))
+        if w.onToggle != nil: w.onToggle(w.checked))
+      b
     of wkProgress:
       let p = el("progress")
       p.max = 1

@@ -55,9 +55,9 @@ proc sync(w: Widget) =
   of wkColumn, wkRow:
     op(opSpacing, w.id, w.spacing)
     op(opPadding, w.id, w.padding)
-  of wkLabel, wkButton, wkCheck:
+  of wkLabel, wkButton, wkCheck, wkToggle:
     op(opText, w.id, text = w.text)
-    if w.kind == wkCheck: op(opChecked, w.id, ord(w.checked))
+    if w.kind in {wkCheck, wkToggle}: op(opChecked, w.id, ord(w.checked))
   of wkEntry:
     op(opText, w.id, text = w.text)
     op(opPlaceholder, w.id, text = w.placeholder)

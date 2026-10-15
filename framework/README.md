@@ -21,6 +21,7 @@ HTTP fetch (`request`) and a canvas you can draw on with the mouse or fingers.
 | column, row, scroll | GtkBox, GtkScrolledWindow | LinearLayout, ScrollView | flexbox `<div>`s |
 | label, button, entry, check | GtkLabel, GtkButton, GtkEntry, GtkCheckButton | TextView, Button, EditText, CheckBox | `<div>`, `<button>`, `<input>` |
 | slider (with labelled marks), dropdown, progress | GtkScale, GtkComboBoxText, GtkProgressBar | SeekBar (no marks), Spinner, ProgressBar | `<input type=range>`, `<select>`, `<progress>` |
+| toggle | GtkToggleButton | ToggleButton | `<button aria-pressed>` |
 | canvas (pixel buffer + pointer events) | GtkDrawingArea, cairo paints the buffer in place | SurfaceView, ANativeWindow blit | `<canvas>`, ImageData |
 | `after` / `every` timers | GLib sources | Handler.postDelayed | setTimeout |
 | `load` / `store` | files in `$XDG_DATA_HOME/<appName>/` | files in the app's files dir | localStorage |

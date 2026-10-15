@@ -21,6 +21,7 @@ import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
+import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -29,6 +30,7 @@ import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.Spinner;
 import android.widget.TextView;
+import android.widget.ToggleButton;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -52,7 +54,7 @@ public class Host extends Activity {
             QUIT = 15, FORGET = 16, ITEMS = 17, SELECTED = 18, RANGE = 19, VALUE = 20;
     // Widget kinds (WidgetKind in src/nimkit/core.nim).
     static final int COLUMN = 0, ROW = 1, SCROLL = 2, LABEL = 3, BUTTON = 4, ENTRY = 5, CHECK = 6, CANVAS = 7,
-            SLIDER = 8, DROPDOWN = 9, PROGRESS = 10;
+            SLIDER = 8, DROPDOWN = 9, PROGRESS = 10, TOGGLE = 11;
     /** A progress bar's resolution: ProgressBar counts in ints. */
     static final int PROGRESS_STEPS = 1000;
 
@@ -123,10 +125,15 @@ public class Host extends Activity {
                 case TEXT:
                     if (v instanceof EditText) {
                         if (!((EditText) v).getText().toString().equals(text)) ((EditText) v).setText(text);
+                    } else if (v instanceof ToggleButton) {
+                        ToggleButton t = (ToggleButton) v;
+                        t.setTextOn(text);
+                        t.setTextOff(text);
+                        t.setText(text);
                     } else if (v instanceof TextView) ((TextView) v).setText(text);
                     break;
                 case PLACEHOLDER: if (v instanceof EditText) ((EditText) v).setHint(text); break;
-                case CHECKED: if (v instanceof CheckBox) ((CheckBox) v).setChecked(arg != 0); break;
+                case CHECKED: if (v instanceof CompoundButton) ((CompoundButton) v).setChecked(arg != 0); break;
                 case ENABLED: if (v != null) v.setEnabled(arg != 0); break;
                 case EXPAND: expand.put(id, arg != 0); if (v != null) relayout(v, id); break;
                 case SPACING:
@@ -277,6 +284,14 @@ public class Host extends Activity {
                     if (!syncing) Native.event(id, Native.TOGGLE, "", on ? 1 : 0, 0, 0);
                 });
                 return c;
+            }
+            case TOGGLE: {
+                ToggleButton t = new ToggleButton(this);
+                t.setAllCaps(false);
+                t.setOnCheckedChangeListener((x, on) -> {
+                    if (!syncing) Native.event(id, Native.TOGGLE, "", on ? 1 : 0, 0, 0);
+                });
+                return t;
             }
             case SLIDER: {
                 SeekBar s = new SeekBar(this);

@@ -58,6 +58,7 @@ proc gtk_entry_set_text*(e: GtkWidget, text: cstring)
 proc gtk_entry_get_text*(e: GtkWidget): cstring
 proc gtk_entry_set_placeholder_text*(e: GtkWidget, text: cstring)
 proc gtk_check_button_new_with_label*(text: cstring): GtkWidget
+proc gtk_toggle_button_new_with_label*(text: cstring): GtkWidget
 proc gtk_toggle_button_set_active*(b: GtkWidget, on: gboolean)
 proc gtk_toggle_button_get_active*(b: GtkWidget): gboolean
 proc gtk_scrolled_window_new*(h, v: pointer): GtkWidget

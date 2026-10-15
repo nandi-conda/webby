@@ -77,7 +77,7 @@ let ui = column(
   fetched,
   row(volume.expand, levelText),
   level,
-  row(check("Big dots", onToggle = proc (on: bool) =
+  row(toggle("Big dots", onToggle = proc (on: bool) =
         big = on
         pad.redraw()),
       dropdown(@[inks[0][0], inks[1][0], inks[2][0]], 0, proc (i: int) =
