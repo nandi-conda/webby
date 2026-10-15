@@ -210,28 +210,29 @@ var
 proc hasDefaultRoute(): bool =
   ## Whether the kernel has a default route; true when that can't be read, so webby never goes offline by mistake.
   # Android keeps its routes in per-network tables apps can't read: ask its ConnectivityManager.
-  when defined(android): return hostCall("online") != "no"
-  var readable = false
-  try:
-    let lines = readFile("/proc/net/route").splitLines
-    readable = true
-    # Iface Destination Gateway Flags ...: destination 00000000 with the RTF_UP flag.
-    for line in lines[min(1, lines.len) .. ^1]:
-      let f = line.splitWhitespace
-      if f.len > 3 and f[1] == "00000000" and (try: (parseHexInt(f[3]) and 1) == 1 except ValueError: false):
-        return true
-  except CatchableError: discard
-  try:
-    let lines = readFile("/proc/net/ipv6_route").splitLines
-    readable = true
-    # dest prefixlen src srclen nexthop metric refcnt use flags iface: ::/0 not on loopback nor a reject route.
-    for line in lines:
-      let f = line.splitWhitespace
-      if f.len < 10 or f[0] != repeat('0', 32) or f[1] != "00": continue
-      let flags = try: parseHexInt(f[8]) except ValueError: 0
-      if f[9] != "lo" and (flags and 0x0200) == 0: return true
-  except CatchableError: discard
-  not readable
+  when defined(android): hostCall("online") != "no"
+  else:
+    var readable = false
+    try:
+      let lines = readFile("/proc/net/route").splitLines
+      readable = true
+      # Iface Destination Gateway Flags ...: destination 00000000 with the RTF_UP flag.
+      for line in lines[min(1, lines.len) .. ^1]:
+        let f = line.splitWhitespace
+        if f.len > 3 and f[1] == "00000000" and (try: (parseHexInt(f[3]) and 1) == 1 except ValueError: false):
+          return true
+    except CatchableError: discard
+    try:
+      let lines = readFile("/proc/net/ipv6_route").splitLines
+      readable = true
+      # dest prefixlen src srclen nexthop metric refcnt use flags iface: ::/0 not on loopback nor a reject route.
+      for line in lines:
+        let f = line.splitWhitespace
+        if f.len < 10 or f[0] != repeat('0', 32) or f[1] != "00": continue
+        let flags = try: parseHexInt(f[8]) except ValueError: 0
+        if f[9] != "lo" and (flags and 0x0200) == 0: return true
+    except CatchableError: discard
+    not readable
 
 proc setOffline(value: bool) =
   if value == offline: return
