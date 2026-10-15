@@ -10,7 +10,7 @@ channels = ["conda-forge", "https://prefix.dev/nandi-testing"]
 platforms = [{ name = "linux-64-glibc235", platform = "linux-64", glibc = "2.35" }]
 
 [dependencies]
-# The Flutter SDK, installed to $CONDA_PREFIX/lib/flutter with `flutter` and `dart` on PATH.
+# `flutter` and `dart`; the first run downloads the Flutter SDK into ~/.cache/conda-flutter (conda/flutter).
 flutter = "3.35.5.*"
 # libwebby.so (LibWeb/LibJS) and the helper processes; activation sets WEBBY_LADYBIRD_PREFIX unless it's already set.
 webby-ladybird = ">=2026.10.14.1"

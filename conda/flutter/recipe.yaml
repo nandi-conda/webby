@@ -1,52 +1,40 @@
-# The Flutter SDK as a conda package (Flutter isn't on conda-forge): the official Linux release tarball, which already
-# ships the Dart SDK, the prebuilt flutter tool snapshot and the linux-x64 engine artifacts, so nothing is downloaded
-# or compiled into the SDK on first use. Installed to $PREFIX/lib/flutter with bin/flutter and bin/dart linked in.
-# prefix.dev caps packages at 1 GiB, so the Android and web engine artifacts and the pub preload cache are left out,
-# along with their stamps: `flutter build apk`/`web` downloads them into the SDK when first needed.
+# The Flutter SDK for conda/pixi environments (Flutter isn't on conda-forge). The package is only a launcher: the first
+# `flutter` or `dart` run downloads the official Linux release from Google's storage, checks its sha256 and unpacks
+# it into ~/.cache/conda-flutter/<version> (or $CONDA_FLUTTER_ROOT), shared by every environment. The SDK writes into
+# its own directory (tool snapshot, stamps, artifacts it fetches later), which is fine there and wouldn't be inside a
+# hardlinked package.
 # Published to prefix.dev/nandi-testing by .github/workflows/publish.yml when this directory changes.
 context:
   version: "3.35.5"
+  sha256: 8eead69e5d84131fcfbb2cfd44164c00e9a04df725f24672ea234c6bd136353d
 
 package:
   name: flutter
   version: ${{ version }}
 
-source:
-  url: https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${{ version }}-stable.tar.xz
-  sha256: 8eead69e5d84131fcfbb2cfd44164c00e9a04df725f24672ea234c6bd136353d
-  target_directory: flutter
-
 build:
-  number: 0
+  # Build 0 was the whole SDK repackaged; this launcher supersedes it.
+  number: 1
   skip:
     - not linux64
-  # Ship the SDK byte for byte: its ELF binaries and the tool snapshot must not be patched.
-  prefix_detection:
-    ignore: true
-  dynamic_linking:
-    binary_relocation: false
-    overlinking_behavior: ignore
-    overdepending_behavior: ignore
   script:
-    - mkdir -p $PREFIX/lib $PREFIX/bin
-    - cp -a $SRC_DIR/flutter $PREFIX/lib/flutter
-    - cd $PREFIX/lib/flutter && rm -rf bin/cache/artifacts/engine/android-* bin/cache/flutter_web_sdk .pub-preload-cache
-    - cd $PREFIX/lib/flutter/bin/cache && rm -f android-sdk.stamp android-internal-build-artifacts.stamp flutter_web_sdk.stamp
-    # bin/flutter and bin/dart resolve symlinks to find the SDK root.
-    - ln -s ../lib/flutter/bin/flutter $PREFIX/bin/flutter
-    - ln -s ../lib/flutter/bin/dart $PREFIX/bin/dart
+    - mkdir -p $PREFIX/bin
+    - sed -e "s|@VERSION@|${{ version }}|" -e "s|@SHA256@|${{ sha256 }}|" $RECIPE_DIR/flutter.sh > $PREFIX/bin/flutter
+    - chmod 755 $PREFIX/bin/flutter
+    - ln -s flutter $PREFIX/bin/dart
 
 requirements:
   run:
-    # The flutter tool reads its version from the SDK's git checkout, and the shell entry points use these.
-    - git
+    # The launcher downloads and unpacks the SDK; the flutter tool reads its version from the SDK's git checkout.
     - curl
-    - unzip
-    - which
     - tar
     - xz
+    - git
+    - unzip
+    - which
 
 tests:
-  - script:
-      - flutter --version
-      - dart --version
+  - package_contents:
+      files:
+        - bin/flutter
+        - bin/dart
