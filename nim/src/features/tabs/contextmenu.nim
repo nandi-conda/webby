@@ -2,7 +2,8 @@
 ## compile time) reports what was clicked with a {"type": "contextmenu", ...} message; a GtkMenu offers what fits.
 ## `pageContextMenuHook` is set to `showPageMenu` unless another feature set its own.
 
-import std/[base64, dynlib, os, strutils, uri]
+import std/[base64, os, strutils, uri]
+when not defined(android): import std/dynlib
 from std/unicode import toRunes, runeLen, `$`
 import ../../browser
 from nimkit/core as kit import nil

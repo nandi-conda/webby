@@ -2,7 +2,8 @@
 ## (app.json and the icon) and a dev.webby.WebApp-<slug>.desktop launcher in ${XDG_DATA_HOME}/applications/ that
 ## runs `webby --app=<url>`.
 
-import std/[algorithm, base64, json, os, strutils, uri]
+import std/[algorithm, json, os, strutils, uri]
+when defined(android): import std/base64
 import ../../browser
 import manifest
 
@@ -163,18 +164,19 @@ proc refreshDesktopDatabase() =
   if findExe("update-desktop-database").len > 0: spawn(@["update-desktop-database", applicationsDir()])
 
 proc writeDesktopFile(app: InstalledApp, description: string) =
-  when defined(android): return   # launchers are home screen shortcuts there (launch)
-  createDir(applicationsDir())
-  let file = desktopFile(app.slug)
-  let tmp = file & ".tmp"
-  writeFile(tmp, desktopEntry(app, description))
-  try: setFilePermissions(tmp, {fpUserRead, fpUserWrite, fpUserExec, fpGroupRead, fpGroupExec, fpOthersRead,
-    fpOthersExec})
-  except CatchableError: discard
-  moveFile(tmp, file)
-  let old = applicationsDir() / "webby-app-" & app.slug & ".desktop"
-  if fileExists(old): removeFile(old)
-  refreshDesktopDatabase()
+  when defined(android): discard   # launchers are home screen shortcuts there (launch)
+  else:
+    createDir(applicationsDir())
+    let file = desktopFile(app.slug)
+    let tmp = file & ".tmp"
+    writeFile(tmp, desktopEntry(app, description))
+    try: setFilePermissions(tmp, {fpUserRead, fpUserWrite, fpUserExec, fpGroupRead, fpGroupExec, fpOthersRead,
+      fpOthersExec})
+    except CatchableError: discard
+    moveFile(tmp, file)
+    let old = applicationsDir() / "webby-app-" & app.slug & ".desktop"
+    if fileExists(old): removeFile(old)
+    refreshDesktopDatabase()
 
 proc refreshLaunchers*() =
   ## Rewrites every installed app's launcher, so launchers follow webby's install path and launcher format.
