@@ -84,6 +84,7 @@ var
   quitHooks*: seq[proc (): bool]                  ## false cancels quitting
   shutdownHooks*: seq[proc ()]                    ## quitting for real
   tabStripHooks*: seq[proc ()]                    ## tabs added, removed, moved or pinned
+  pumpHooks*: seq[proc ()]                        ## every pump tick, after Ladybird's events ran (keep them cheap)
   suggestionProviders*: seq[proc (text: string): seq[Suggestion]]
   tabMenuHooks*: seq[proc (t: Tab, menu: Widget)]  ## right-click on a tab: append items to the GtkMenu
   pageContextMenuHook*: proc (t: Tab, info: JsonNode, event: GEvent) ## replaces the built-in page menu if set
@@ -654,6 +655,7 @@ proc pumpAll(data: pointer): gboolean {.cdecl.} =
   if cs != clipboardSerial:
     clipboardSerial = cs
     gtk_clipboard_set_text(systemClipboard(), webby_clipboard_text(), -1)
+  for h in pumpHooks: h()
   var snapshot = tabs   # a copy: pumpTab may add or close tabs
   for t in snapshot:
     if not t.closed and pumpTab(t, t == currentTab()): busy = true

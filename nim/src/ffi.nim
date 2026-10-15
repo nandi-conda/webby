@@ -87,6 +87,15 @@ var
   webby_view_find_end*: proc (v: View) {.cdecl, gcsafe.}
   webby_view_find_current*: proc (v: View): cint {.cdecl, gcsafe.}
   webby_view_find_total*: proc (v: View): cint {.cdecl, gcsafe.}
+  # Optional (nil with a runtime older than 2026.10.15.1): the engine's download list (features/downloads).
+  webby_downloads_set_directory*: proc (path: cstring) {.cdecl, gcsafe.}
+  webby_downloads_serial*: proc (): uint64 {.cdecl, gcsafe.}
+  webby_downloads_json*: proc (): cstring {.cdecl, gcsafe.}
+  webby_downloads_start*: proc (url: cstring, private: cint): uint64 {.cdecl, gcsafe.}
+  webby_downloads_cancel*: proc (id: uint64) {.cdecl, gcsafe.}
+  webby_downloads_pause*: proc (id: uint64) {.cdecl, gcsafe.}
+  webby_downloads_resume*: proc (id: uint64) {.cdecl, gcsafe.}
+  webby_downloads_clear*: proc () {.cdecl, gcsafe.}
 
 proc ladybirdPrefix*(): string =
   ## $WEBBY_LADYBIRD_PREFIX, else a runtime bundled next to the executable (<exe dir>/lib/ladybird).
@@ -169,6 +178,14 @@ proc loadWebbyLib*(path: string) =
   optional webby_view_find_current
   optional webby_view_find_total
   optional webby_set_content_blocking
+  optional webby_downloads_set_directory
+  optional webby_downloads_serial
+  optional webby_downloads_json
+  optional webby_downloads_start
+  optional webby_downloads_cancel
+  optional webby_downloads_pause
+  optional webby_downloads_resume
+  optional webby_downloads_clear
 
 proc hasNativeFind*(): bool =
   ## Whether the runtime finds in page itself (webby_view_find); else features/find runs a page script.
