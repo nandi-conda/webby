@@ -5,7 +5,8 @@
 import std/[algorithm, json, math, monotimes, os, random, strutils, tables, times]
 import base, gtk, ffi, icons
 import nimkit/services
-from nimkit/backend/gtk as nkgtk import nil   # fills in nimkit's services (timers, HTTP, storage) for GTK
+from nimkit/core as kit import nil
+from nimkit/backend/gtk as nkgtk import nil   # nimkit on GTK; also fills in its services (timers, HTTP, storage)
 
 appName = "webby"
 userAgent = "webby"
@@ -57,6 +58,7 @@ var
   findSlot*: Widget            ## a box under the page (the find bar goes here)
   pagePane*: Widget            ## GtkPaned: the page on the left, the side panel on the right
   pageBox*: Widget             ## holds the vertical tab list (if any) and the page area
+  page*: kit.Canvas            ## the page view: a nimkit canvas showing the active tab's frame (its GtkWidget is `area`)
   sidePanel*: Widget           ## the side panel's box (hidden when nothing shows)
   sidePanelTitle*: Widget
   sidePanelBody*: Widget
@@ -99,7 +101,6 @@ var
   wokeInPump = false
   clipboardSerial: uint64
   cursors: Table[int, pointer]
-  lastClick: tuple[time: uint32, x, y: float, button: cuint, count: int]
   shortcuts: seq[tuple[mods: int, keyval: uint32, action: proc (): bool]]
   quitting = false
   # Wheel coalescing: while a sent wheel event hasn't produced a new frame yet, later ones add up here and go out
@@ -245,7 +246,7 @@ proc activateTab*(i: int) =
   resizeView(t)
   addClass(t.button, "webby-active-tab")
   refreshChrome()
-  gtk_widget_queue_draw(area)
+  kit.invalidate(page)
   for h in activeTabHooks: h(t)
   wake()
 
@@ -638,7 +639,7 @@ proc pumpTab(t: Tab, isActive: bool): bool =
         inc wheelFrames
         wheelUs += d
         maxWheelUs = max(maxWheelUs, d)
-      gtk_widget_queue_draw(area)
+      kit.invalidate(page)
   busy
 
 proc pumpAll(data: pointer): gboolean {.cdecl.} =
@@ -772,55 +773,44 @@ proc traceTick(data: pointer): gboolean {.cdecl.} =
 # ---------------------------------------------------------------------------------------------------------------
 # Drawing and input on the page area
 
-proc onDraw(w: Widget, cr: Cairo, data: pointer): gboolean {.cdecl.} =
-  let t0 = getMonoTime()
-  let t = currentTab()
-  cairo_set_source_rgb(cr, 1, 1, 1)
-  cairo_paint(cr)
-  if t != nil:
-    let fw = webby_view_frame_width(t.view)
-    let fh = webby_view_frame_height(t.view)
-    let px = webby_view_frame_pixels(t.view)
-    if fw > 0 and fh > 0 and px != nil:
-      # Ladybird's frame is premultiplied BGRA, which is cairo's ARGB32 on little-endian: drawn in place.
-      let surface = cairo_image_surface_create_for_data(px, CAIRO_FORMAT_ARGB32, fw, fh, fw * 4)
-      let s = 1.0 / max(viewScale, 1).float
-      cairo_scale(cr, s, s)
-      cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE)
-      cairo_set_source_surface(cr, surface, 0, 0)
-      cairo_paint(cr)
-      cairo_surface_destroy(surface)
-      if not firstDrawSeen:
-        firstDrawSeen = true
-        mark "first frame drawn"
-  if trace:
-    inc draws
-    drawUs += us(getMonoTime() - t0)
-  0
+proc goBack*()
+proc goForward*()
 
-proc onSizeAllocate(w: Widget, alloc: pointer, data: pointer) {.cdecl.} =
-  let nw = gtk_widget_get_allocated_width(area).int
-  let nh = gtk_widget_get_allocated_height(area).int
-  let ns = max(gtk_widget_get_scale_factor(area).int, 1)
-  if (nw, nh, ns) == (viewW, viewH, viewScale): return
-  viewW = nw; viewH = nh; viewScale = ns
+proc pageFrame(c: kit.Canvas): tuple[data: pointer, width, height, stride: int] =
+  ## The page canvas paints the active tab's current frame. Ladybird's frame is premultiplied BGRA, which is
+  ## cairo's ARGB32 on little-endian, so nimkit draws it in place.
+  if trace: inc draws
+  let t = currentTab()
+  if t == nil or t.view == nil: return
+  let fw = webby_view_frame_width(t.view)
+  let fh = webby_view_frame_height(t.view)
+  let px = webby_view_frame_pixels(t.view)
+  if fw <= 0 or fh <= 0 or px == nil: return
+  if not firstDrawSeen:
+    firstDrawSeen = true
+    mark "first frame drawn"
+  (px, fw.int, fh.int, fw.int * 4)
+
+proc pageResized(c: kit.Canvas) =
+  viewScale = c.scale
+  viewW = c.width div c.scale
+  viewH = c.height div c.scale
   let t = currentTab()
   if t != nil:
     resizeView(t)
     wake()
 
 proc modifiers*(state: uint32): int =
+  ## GDK modifier state as modAlt/modCtrl/modShift/modSuper (for the chrome's own GTK events).
   if (state and GDK_MOD1_MASK) != 0: result = result or modAlt
   if (state and GDK_CONTROL_MASK) != 0: result = result or modCtrl
   if (state and GDK_SHIFT_MASK) != 0: result = result or modShift
   if (state and GDK_SUPER_MASK) != 0: result = result or modSuper
 
-proc heldButtons(state: uint32): cint =
-  if (state and GDK_BUTTON1_MASK) != 0: result = result or 1
-  if (state and GDK_BUTTON3_MASK) != 0: result = result or 2
-  if (state and GDK_BUTTON2_MASK) != 0: result = result or 4
+proc eventState*(e: GEvent): uint32 =
+  discard gdk_event_get_state(e, addr result)
 
-proc ladybirdButton(b: cuint): cint =
+proc ladybirdButton(b: int): cint =
   case b
   of 1: 1
   of 2: 4
@@ -829,83 +819,40 @@ proc ladybirdButton(b: cuint): cint =
   of 9: 16
   else: 0
 
-proc eventPos(e: GEvent): (cint, cint, float, float) =
-  var x, y: cdouble
-  discard gdk_event_get_coords(e, addr x, addr y)
-  let s = max(viewScale, 1).float
-  (cint(x * s), cint(y * s), x.float, y.float)
+var lastClicks = 1   # the last press's click count, which its release repeats
 
-proc eventState*(e: GEvent): uint32 =
-  discard gdk_event_get_state(e, addr result)
-
-var lastButtonEvent*: GEvent  ## the press that may open a page context menu (valid during the press only)
-
-proc onButton(w: Widget, e: GEvent, data: pointer): gboolean {.cdecl.} =
+proc pagePointer(c: kit.Canvas, e: kit.PointerEvent) =
   let t = currentTab()
-  if t == nil: return 0
-  # GTK 3 also sends 2BUTTON/3BUTTON events after the presses; the click count is worked out here instead.
-  let kind = gdk_event_get_event_type(e)
-  if kind == GDK_2BUTTON_PRESS or kind == GDK_3BUTTON_PRESS: return 1
-  let down = kind == GDK_BUTTON_PRESS
-  var b: cuint
-  discard gdk_event_get_button(e, addr b)
-  let (x, y, lx, ly) = eventPos(e)
-  let state = eventState(e)
-  let button = ladybirdButton(b)
-  if down:
-    gtk_widget_grab_focus(area)
-    let now = gdk_event_get_time(e)
-    if b == lastClick.button and now - lastClick.time < 400 and abs(lx - lastClick.x) < 5 and abs(ly - lastClick.y) < 5:
-      inc lastClick.count
-    else:
-      lastClick.count = 1
-    lastClick = (now, lx, ly, b, lastClick.count)
-    if b == 8: webby_view_go_back(t.view); wake(); return 1
-    if b == 9: webby_view_go_forward(t.view); wake(); return 1
-  let held = if down: heldButtons(state) or button else: heldButtons(state) and not button
-  webby_view_mouse_event(t.view, cint(if down: mouseDown else: mouseUp), x, y, button, held,
-    modifiers(state).cint, lastClick.count.cint)
+  if t == nil or t.view == nil: return
+  let x = cint(e.x)
+  let y = cint(e.y)
+  case e.kind
+  of kit.pkDown, kit.pkUp:
+    let down = e.kind == kit.pkDown
+    if down:
+      lastClicks = e.clicks
+      if e.button == 8: goBack(); return
+      if e.button == 9: goForward(); return
+    webby_view_mouse_event(t.view, cint(if down: mouseDown else: mouseUp), x, y, ladybirdButton(e.button),
+      e.buttons.cint, e.mods.cint, lastClicks.cint)
+  of kit.pkMove: webby_view_mouse_event(t.view, mouseMove, x, y, 0, e.buttons.cint, e.mods.cint, 0)
+  of kit.pkLeave: webby_view_mouse_event(t.view, mouseLeave, 0, 0, 0, 0, 0, 0)
+  of kit.pkCancel: return
   wake()
-  1
 
-proc onMotion(w: Widget, e: GEvent, data: pointer): gboolean {.cdecl.} =
+proc pageWheel(c: kit.Canvas, e: kit.WheelEvent): bool =
   let t = currentTab()
-  if t == nil: return 0
-  let (x, y, _, _) = eventPos(e)
-  let state = eventState(e)
-  webby_view_mouse_event(t.view, mouseMove, x, y, 0, heldButtons(state), modifiers(state).cint, 0)
-  wake()
-  1
-
-proc onLeave(w: Widget, e: GEvent, data: pointer): gboolean {.cdecl.} =
-  let t = currentTab()
-  if t != nil: webby_view_mouse_event(t.view, mouseLeave, 0, 0, 0, 0, 0, 0)
-  0
-
-proc onScroll(w: Widget, e: GEvent, data: pointer): gboolean {.cdecl.} =
-  let t = currentTab()
-  if t == nil: return 0
-  let (x, y, _, _) = eventPos(e)
-  var dx, dy: cdouble
-  var dir: cint
-  var precise = 0.cint
-  if gdk_event_get_scroll_deltas(e, addr dx, addr dy) != 0:
-    precise = 1
-  elif gdk_event_get_scroll_direction(e, addr dir) != 0:
-    case dir
-    of GDK_SCROLL_UP: dy = -1
-    of GDK_SCROLL_DOWN: dy = 1
-    of GDK_SCROLL_LEFT: dx = -1
-    of GDK_SCROLL_RIGHT: dx = 1
-    else: discard
+  if t == nil or t.view == nil: return false
+  let x = cint(e.x)
+  let y = cint(e.y)
+  let (dx, dy) = (e.dx, e.dy)
+  let precise = e.precise.cint
   # 53 logical pixels per wheel step, as Flutter's Linux embedder scrolls.
   let s = 53.0 * max(viewScale, 1).float
   if trace and not wheelPending:
     wheelSent = getMonoTime()
     wheelPending = true
-  # A wheel notch arrives as a smooth delta of 1.0 under XInput 2; it's still a mouse wheel, not a touchpad.
-  if precise == 1 and (abs(dx) == 1 or abs(dy) == 1) and (dx == 0 or dy == 0): precise = 0
-  let mods = modifiers(eventState(e)).cint
+  let mods = e.mods.cint
   # A plain wheel notch joins the smooth-scroll curve; touchpads already scroll smoothly, and Ctrl+wheel zooms.
   if precise == 0 and mods == 0:
     if smooth.active and smooth.t == t:
@@ -920,7 +867,7 @@ proc onScroll(w: Widget, e: GEvent, data: pointer): gboolean {.cdecl.} =
     smooth.x = x; smooth.y = y
     stepSmooth()
     wake()
-    return 1
+    return true
   if smooth.active: smooth.active = false
   if wheelQ.pending and (wheelQ.t != t or wheelQ.precise != precise or wheelQ.mods != mods): flushWheel()
   if wheelQ.pending:
@@ -929,54 +876,27 @@ proc onScroll(w: Widget, e: GEvent, data: pointer): gboolean {.cdecl.} =
     wheelQ = (t, x, y, dx * s, dy * s, precise, mods, true)
   if not wheelInFlight or getMonoTime() - wheelSentAt >= initDuration(milliseconds = wheelHoldMs): flushWheel()
   wake()
-  1
+  true
 
-const specialKeys = {
-  0xff08: 0x08, 0xff09: 0x09, 0xfe20: 0x09, 0xff0d: 0x0D, 0xff8d: 0x0D, 0xffe1: 0x10, 0xffe2: 0xB0,
-  0xffe3: 0x11, 0xffe4: 0xB1, 0xffe9: 0x12, 0xffea: 0xB2, 0xffe5: 0x14, 0xff1b: 0x1B, 0x20: 0x20,
-  0xff55: 0x21, 0xff56: 0x22, 0xff57: 0x23, 0xff50: 0x24, 0xff51: 0x25, 0xff52: 0x26, 0xff53: 0x27,
-  0xff54: 0x28, 0xffff: 0x2E, 0xff63: 0x7E, 0xffeb: 0x92, 0xffec: 0xAC}.toTable
-
-const punctuation = {
-  ')': 0x60, '!': 0x61, '@': 0x62, '#': 0x63, '$': 0x64, '%': 0x65, '^': 0x66, '&': 0x67, '*': 0x68,
-  '(': 0x69, '+': 0x6A, '-': 0x6B, '/': 0x6C, ',': 0x6D, '.': 0x6E, ':': 0x6F, '"': 0x7C, '\'': 0x7D,
-  ';': 0x7F, '<': 0x80, '=': 0x81, '>': 0x82, '?': 0x83, '[': 0x84, ']': 0x85, '\\': 0x86, '_': 0x87,
-  '{': 0x88, '}': 0x89, '|': 0x8A, '~': 0x8B, '`': 0x8C}.toTable
-
-proc ladybirdKey(keyval: cuint): int =
-  let k = keyval.int
-  if k in specialKeys: return specialKeys[k]
-  if k in 0xffbe .. 0xffc9: return 0x70 + (k - 0xffbe)            # F1..F12
-  if k in 0x61 .. 0x7a: return k - 0x20                            # a..z
-  if k in 0x41 .. 0x5a or k in 0x30 .. 0x39: return k
-  if k < 0x80 and k.char in punctuation: return punctuation[k.char]
-  0
-
-proc onKey(w: Widget, e: GEvent, data: pointer): gboolean {.cdecl.} =
+proc pageKey(c: kit.Canvas, e: kit.KeyEvent): bool =
   let t = currentTab()
-  if t == nil: return 0
-  let down = cast[int](data) == 1
-  var keyval: cuint
-  discard gdk_event_get_keyval(e, addr keyval)
-  let mods = modifiers(eventState(e))
-  var cp = gdk_keyval_to_unicode(keyval)
-  if cp < 0x20 or cp == 0x7f or (mods and (modCtrl or modAlt)) != 0: cp = 0
-  let code = ladybirdKey(keyval)
-  if code == 0x0D: cp = (if down: 0x0A'u32 else: 0)
-  if code == 0 and cp == 0: return 0
-  if down and (mods and modCtrl) != 0 and code == 0x56:   # Ctrl+V: hand the page the system clipboard first
+  if t == nil or t.view == nil: return false
+  var cp = e.text
+  if (e.mods and (modCtrl or modAlt)) != 0: cp = 0
+  if e.code == 0x0D: cp = (if e.down: 0x0A'u32 else: 0)
+  if e.code == 0 and cp == 0: return false
+  if e.down and (e.mods and modCtrl) != 0 and e.code == 0x56:   # Ctrl+V: hand the page the system clipboard first
     let text = gtk_clipboard_wait_for_text(systemClipboard())
     if text != nil:
       webby_clipboard_set_text(text)
       g_free(text)
-  webby_view_key_event(t.view, down.cint, code.cint, mods.cint, cp, 0)
+  webby_view_key_event(t.view, e.down.cint, e.code.cint, e.mods.cint, cp, 0)
   wake()
-  1
+  true
 
-proc onFocus(w: Widget, e: GEvent, data: pointer): gboolean {.cdecl.} =
+proc pageFocus(c: kit.Canvas, focused: bool) =
   let t = currentTab()
-  if t != nil: webby_view_set_focus(t.view, cast[int](data).cint)
-  0
+  if t != nil and t.view != nil: webby_view_set_focus(t.view, focused.cint)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Chrome: toolbar, URL bar, shortcuts
@@ -1111,22 +1031,14 @@ proc buildWindow() =
   pagePane = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL)
   pageBox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)
   let pageColumn = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
-  area = gtk_drawing_area_new()
-  gtk_widget_set_can_focus(area, 1)
-  gtk_widget_add_events(area, GDK_POINTER_MOTION_MASK or GDK_BUTTON_PRESS_MASK or GDK_BUTTON_RELEASE_MASK or
-    GDK_KEY_PRESS_MASK or GDK_KEY_RELEASE_MASK or GDK_LEAVE_NOTIFY_MASK or GDK_FOCUS_CHANGE_MASK or
-    GDK_SCROLL_MASK or GDK_SMOOTH_SCROLL_MASK)
-  connect(area, "draw", onDraw)
-  connect(area, "size-allocate", onSizeAllocate)
-  connect(area, "button-press-event", onButton)
-  connect(area, "button-release-event", onButton)
-  connect(area, "motion-notify-event", onMotion)
-  connect(area, "leave-notify-event", onLeave)
-  connect(area, "scroll-event", onScroll)
-  connect(area, "key-press-event", onKey, cast[pointer](1))
-  connect(area, "key-release-event", onKey, cast[pointer](0))
-  connect(area, "focus-in-event", onFocus, cast[pointer](1))
-  connect(area, "focus-out-event", onFocus, cast[pointer](0))
+  page = kit.externalCanvas()
+  page.onFrame = pageFrame
+  page.onResize = pageResized
+  page.onPointer = pagePointer
+  page.onWheel = pageWheel
+  page.onKey = pageKey
+  page.onFocus = pageFocus
+  area = nkgtk.gtkWidget(page)
   gtk_box_pack_start(pageColumn, area, 1, 1, 0)
   findSlot = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
   gtk_box_pack_start(pageColumn, findSlot, 0, 0, 0)

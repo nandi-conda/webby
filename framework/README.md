@@ -29,7 +29,13 @@ HTTP fetch (`request`) and a canvas you can draw on with the mouse or fingers.
 
 Canvas pixels are premultiplied `0xAARRGGBB`, the layout of cairo's ARGB32 and of Ladybird's frames, so the desktop
 paints them with no copy. `pixelRatio` is canvas pixels per logical pixel (the screen density on Android, 1
-elsewhere).
+elsewhere); on the desktop each canvas's `scale` is the window's scale factor.
+
+An `externalCanvas()` shows a buffer it doesn't own instead of `pixels`: `onFrame` hands it the buffer each time it
+paints and `invalidate` asks for a repaint (webby's page view shows Ladybird's frames this way). Canvases also get
+`onWheel`, `onKey` (Windows virtual-key codes plus the typed character), `onFocus` and `onResize`; pointer events
+carry the button, held buttons, modifiers and click count. On GTK `gtkWidget(w)` gives a widget's GtkWidget for
+apps that mix nimkit widgets into their own GTK ones. So far these are GTK only.
 
 Layout is deliberately small: columns and rows stretch their children across, and `expand` (or `w.expanded = true`)
 gives a child the spare room along. Everything runs on the UI thread.

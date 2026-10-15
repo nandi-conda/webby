@@ -11,12 +11,29 @@ type
     wkColumn, wkRow, wkScroll, wkLabel, wkButton, wkEntry, wkCheck, wkCanvas, wkSlider, wkDropdown, wkProgress, wkToggle
 
   PointerKind* = enum
-    pkDown, pkMove, pkUp, pkCancel
+    pkDown, pkMove, pkUp, pkCancel, pkLeave   ## pkLeave: the mouse left the canvas
 
   PointerEvent* = object
     kind*: PointerKind
     x*, y*: float        ## in the canvas's pixels, from its top left corner
     pointer*: int        ## which finger (0 for the mouse)
+    button*: int         ## pkDown/pkUp of a mouse button: 1 left, 2 middle, 3 right, 8 back, 9 forward
+    buttons*: int        ## the mouse buttons held after the event: 1 left, 2 right, 4 middle (DOM `buttons`)
+    mods*: int           ## modAlt, modCtrl, modShift, modSuper
+    clicks*: int         ## pkDown: 1, 2 for a double click, 3 for a triple...
+
+  WheelEvent* = object
+    x*, y*: float        ## in the canvas's pixels
+    dx*, dy*: float      ## precise: the platform's smooth deltas (about a logical pixel each); else wheel notches
+    precise*: bool       ## a touchpad or smooth-scrolling device rather than a notched wheel
+    mods*: int
+
+  KeyEvent* = object
+    down*: bool
+    code*: int           ## the key, as a Windows virtual-key code (also Ladybird's KeyCode); 0 if it has none
+    text*: uint32        ## the character it types (a Unicode code point), 0 for none or a control character
+    mods*: int
+    keyval*: uint32      ## the platform's own key number (a GDK keyval on GTK)
 
   Widget* = ref object
     kind*: WidgetKind
@@ -47,9 +64,18 @@ type
     onSelect*: proc (index: int)     ## dropdowns, when the user picks a choice
     onDraw*: proc (c: Canvas)        ## canvases, whenever their pixels must be (re)made
     onPointer*: proc (c: Canvas, e: PointerEvent)
+    onWheel*: proc (c: Canvas, e: WheelEvent): bool        ## true: handled
+    onKey*: proc (c: Canvas, e: KeyEvent): bool            ## while the canvas has the focus; true: handled
+    onFocus*: proc (c: Canvas, focused: bool)
+    onResize*: proc (c: Canvas)      ## its pixel size or scale changed
+    onFrame*: proc (c: Canvas): tuple[data: pointer, width, height, stride: int]
+      ## external canvases: asked for the buffer each time the canvas paints, for buffers that move (Ladybird's)
     # Canvas pixels
     width*, height*: int             ## in pixels; the backend sets them from the widget's on-screen size
+    scale*: int                      ## pixels per logical pixel (the desktop's scale factor), at least 1
     pixels*: seq[uint32]             ## width*height premultiplied 0xAARRGGBB (cairo ARGB32, Ladybird's BGRA)
+    external*: bool                  ## shows `frame` (someone else's buffer, see present) instead of `pixels`
+    frame*: tuple[data: pointer, width, height, stride: int]
 
   Canvas* = Widget                   ## a widget of kind wkCanvas
 
@@ -60,8 +86,15 @@ type
     added*: proc (parent, child: Widget, index: int)
     removed*: proc (parent, child: Widget)
     present*: proc (c: Canvas)       ## show the canvas's current pixels
+    focus*: proc (w: Widget)         ## give `w` the keyboard focus
     setTitle*: proc (title: string)
     quit*: proc ()
+
+const
+  modAlt* = 1
+  modCtrl* = 2
+  modShift* = 4
+  modSuper* = 8
 
 var
   backend*: Backend
@@ -237,6 +270,7 @@ proc toggle*(text: string, checked = false, onToggle: proc (checked: bool) = nil
 proc canvas*(minWidth = 100, minHeight = 100, onDraw: proc (c: Canvas) = nil,
              onPointer: proc (c: Canvas, e: PointerEvent) = nil): Canvas =
   result = newWidget(wkCanvas)
+  result.scale = 1
   result.minWidth = minWidth
   result.minHeight = minHeight
   result.onDraw = onDraw
@@ -274,9 +308,35 @@ proc redraw*(c: Canvas) =
   if c.onDraw != nil: c.onDraw(c)
   if c.realized and backend.present != nil: backend.present(c)
 
-proc resized*(c: Canvas, width, height: int) =
-  ## For backends: the canvas is now `width` x `height` pixels. Keeps what fits of the old pixels.
-  if width == c.width and height == c.height: return
+proc externalCanvas*(minWidth = 1, minHeight = 1): Canvas =
+  ## A canvas that shows a buffer it doesn't own, handed over with `present(c, data, ...)` (webby's page view:
+  ## Ladybird's frames, shown without a copy). It keeps no `pixels`; onResize says when to make a new frame.
+  result = canvas(minWidth, minHeight)
+  result.external = true
+
+proc present*(c: Canvas, data: pointer, width, height, stride: int) =
+  ## Shows `width` x `height` premultiplied BGRA pixels at `data` on an external canvas, drawn at the canvas's
+  ## scale. The buffer must stay valid until the next present (the backend may paint from it at any time).
+  c.frame = (data, width, height, stride)
+  if c.realized and backend.present != nil: backend.present(c)
+
+proc invalidate*(c: Canvas) =
+  ## Paints an external canvas again (asking onFrame for its buffer).
+  if c.realized and backend.present != nil: backend.present(c)
+
+proc focus*(w: Widget) =
+  if w.realized and backend.focus != nil: backend.focus(w)
+
+proc resized*(c: Canvas, width, height: int, scale = 1) =
+  ## For backends: the canvas is now `width` x `height` pixels, `scale` per logical pixel. Keeps what fits of the
+  ## old pixels.
+  if width == c.width and height == c.height and scale == c.scale: return
+  c.scale = max(scale, 1)
+  if c.external:
+    c.width = width
+    c.height = height
+    if c.onResize != nil: c.onResize(c)
+    return
   var px = newSeq[uint32](max(width, 0) * max(height, 0))
   for y in 0 ..< min(height, c.height):
     for x in 0 ..< min(width, c.width):
@@ -284,6 +344,7 @@ proc resized*(c: Canvas, width, height: int) =
   c.pixels = move px
   c.width = width
   c.height = height
+  if c.onResize != nil: c.onResize(c)
   c.redraw()
 
 proc rgb*(r, g, b: int, a = 255): uint32 =

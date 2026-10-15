@@ -44,6 +44,7 @@ pad.onPointer = proc (c: Canvas, e: PointerEvent) =
   of pkMove:
     if e.pointer in current: strokes[current[e.pointer]].add (e.x, e.y)
   of pkUp, pkCancel: current.del e.pointer
+  of pkLeave: discard
   c.redraw()
 
 let name = entry("Your name", text = load("name"),

@@ -20,6 +20,25 @@ const
   GDK_BUTTON_PRESS_MASK* = 1.cint shl 8
   GDK_BUTTON_RELEASE_MASK* = 1.cint shl 9
   GDK_TOUCH_MASK* = 1.cint shl 22
+  GDK_KEY_PRESS_MASK* = 1.cint shl 10
+  GDK_KEY_RELEASE_MASK* = 1.cint shl 11
+  GDK_LEAVE_NOTIFY_MASK* = 1.cint shl 13
+  GDK_FOCUS_CHANGE_MASK* = 1.cint shl 14
+  GDK_SCROLL_MASK* = 1.cint shl 21
+  GDK_SMOOTH_SCROLL_MASK* = 1.cint shl 23
+  GDK_SHIFT_MASK* = 1'u32
+  GDK_CONTROL_MASK* = 1'u32 shl 2
+  GDK_MOD1_MASK* = 1'u32 shl 3
+  GDK_BUTTON1_MASK* = 1'u32 shl 8
+  GDK_BUTTON2_MASK* = 1'u32 shl 9
+  GDK_BUTTON3_MASK* = 1'u32 shl 10
+  GDK_SUPER_MASK* = 1'u32 shl 26
+  GDK_BUTTON_PRESS* = 4.cint
+  GDK_SCROLL_UP* = 0.cint
+  GDK_SCROLL_DOWN* = 1.cint
+  GDK_SCROLL_LEFT* = 2.cint
+  GDK_SCROLL_RIGHT* = 3.cint
+  CAIRO_OPERATOR_SOURCE* = 1.cint
 
 {.push cdecl, importc.}
 proc gtk_init(argc: ptr cint, argv: ptr cstringArray)
@@ -81,6 +100,16 @@ proc gtk_progress_bar_new*(): GtkWidget
 proc gtk_progress_bar_set_fraction*(p: GtkWidget, fraction: cdouble)
 proc gdk_event_get_coords*(e: pointer, x, y: ptr cdouble): gboolean
 proc gdk_event_get_button*(e: pointer, button: ptr cuint): gboolean
+proc gdk_event_get_state*(e: pointer, state: ptr uint32): gboolean
+proc gdk_event_get_event_type*(e: pointer): cint
+proc gdk_event_get_time*(e: pointer): uint32
+proc gdk_event_get_scroll_deltas*(e: pointer, dx, dy: ptr cdouble): gboolean
+proc gdk_event_get_scroll_direction*(e: pointer, dir: ptr cint): gboolean
+proc gdk_event_get_keyval*(e: pointer, keyval: ptr cuint): gboolean
+proc gdk_keyval_to_unicode*(keyval: cuint): uint32
+proc gtk_widget_get_scale_factor*(w: GtkWidget): cint
+proc cairo_scale*(cr: pointer, sx, sy: cdouble)
+proc cairo_set_operator*(cr: pointer, op: cint)
 proc g_signal_connect_data*(instance: pointer, signal: cstring, handler: pointer, data: pointer,
                             destroy: pointer, flags: cint): culong
 proc g_timeout_add*(ms: cuint, fn: proc (data: pointer): gboolean {.cdecl.}, data: pointer): cuint
