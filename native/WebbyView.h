@@ -163,6 +163,14 @@ private:
     u64 m_state_serial { 0 };
     ByteString m_url_string;
     ByteString m_title_string;
+    // Ladybird shows a load's URL as the title until the page names itself, and doesn't put the old title back when
+    // the load ends without a new page (a download, a stopped load): the address and title the page had before the
+    // load started, to restore then.
+    ByteString m_url_before_url_change;
+    ByteString m_title_before_url_change;
+    ByteString m_url_before_load;
+    ByteString m_title_before_load;
+    ByteString m_loading_url;
     ByteString m_hovered_link;
     bool m_loading { false };
     int m_cursor { 0 };

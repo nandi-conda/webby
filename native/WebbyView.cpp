@@ -142,6 +142,8 @@ View::View(Core::AnonymousBuffer theme, Web::DevicePixelSize size)
     };
 
     on_url_change = [this](URL::URL const& url) {
+        m_title_before_url_change = m_title_string;
+        m_url_before_url_change = m_url_string;
         m_url_string = ByteString::formatted("{}", url);
         state_changed();
     };
@@ -153,11 +155,16 @@ View::View(Core::AnonymousBuffer theme, Web::DevicePixelSize size)
 
     on_load_start = [this] {
         m_loading = true;
+        m_loading_url = m_url_string;
+        m_url_before_load = m_url_before_url_change;
+        m_title_before_load = m_title_before_url_change;
         state_changed();
     };
 
     on_load_finish = [this](URL::URL const& url) {
         m_url_string = ByteString::formatted("{}", url);
+        if (m_url_string != m_loading_url && m_url_string == m_url_before_load && m_title_string == m_loading_url)
+            m_title_string = m_title_before_load;
         m_loading = false;
         state_changed();
     };
