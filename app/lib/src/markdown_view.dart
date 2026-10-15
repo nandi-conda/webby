@@ -206,7 +206,7 @@ class MarkdownView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = KitTheme.of(context);
-    final body = KitText.body(context).copyWith(height: 1.45);
+    final body = KitText.body(context).copyWith(height: 1.3);
     final codeBackground = c.hover;
     Widget rich(String text, TextStyle style) => Text.rich(
       TextSpan(style: style, children: markdownSpans(text, style, codeBackground: codeBackground, linkColor: c.accent, onAnchor: onAnchor)),

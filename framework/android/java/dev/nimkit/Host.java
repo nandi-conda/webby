@@ -313,7 +313,16 @@ public class Host extends Activity {
                     break;
                 case VISIBLE: if (v != null) v.setVisibility(arg != 0 ? View.VISIBLE : View.GONE); break;
                 case TOOLTIP: if (v != null) v.setTooltipText(text.isEmpty() ? null : text); break;
-                case CLASSES: classes.put(id, text); if (v != null) style(v, id); break;
+                case CLASSES:
+                    classes.put(id, text);
+                    if (v != null) style(v, id);
+                    if (v instanceof LinearLayout)   // a "top" row's children change their alignment
+                        for (int i = 0; i < ((LinearLayout) v).getChildCount(); i++) {
+                            View c = ((LinearLayout) v).getChildAt(i);
+                            int at = views.indexOfValue(c);
+                            if (at >= 0) relayout(c, views.keyAt(at));
+                        }
+                    break;
                 case ICON: if (v != null) showIcon(v, id, arg, text); break;
                 case PASSWORD: if (v instanceof EditText) {
                     EditText e = (EditText) v;
@@ -490,7 +499,12 @@ public class Host extends Activity {
             LinearLayout.LayoutParams p = vertical
                     ? new LinearLayout.LayoutParams(-1, grow ? 0 : -2, grow ? 1 : 0)
                     : new LinearLayout.LayoutParams(grow ? 0 : -2, -2, grow ? 1 : 0);
-            if (!vertical) p.gravity = Gravity.CENTER_VERTICAL;
+            if (!vertical) {
+                // A "top" row (addClass) lines its children up at their tops: a list bullet beside wrapped text.
+                int at = views.indexOfValue(parent);
+                boolean top = at >= 0 && java.util.Arrays.asList(classes.get(views.keyAt(at), "").split(" ")).contains("top");
+                p.gravity = top ? Gravity.TOP : Gravity.CENTER_VERTICAL;
+            }
             if (!vertical && v instanceof SurfaceView) p.height = -1;
             if (isSeparator(v)) {
                 if (vertical) p.height = Math.max(1, px(1) / 2); else { p.width = Math.max(1, px(1) / 2); p.height = -1; }

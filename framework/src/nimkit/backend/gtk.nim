@@ -332,6 +332,9 @@ proc applyExpand(w: Widget) =
   let along = if w.parent != nil and w.parent.kind in {wkRow, wkItem}: GTK_ORIENTATION_HORIZONTAL else: GTK_ORIENTATION_VERTICAL
   gtk_widget_set_hexpand(w.native, (w.expanded and along == GTK_ORIENTATION_HORIZONTAL).gboolean)
   gtk_widget_set_vexpand(w.native, (w.expanded and along == GTK_ORIENTATION_VERTICAL).gboolean)
+  if w.parent != nil and w.parent.kind == wkRow:
+    # A "top" row lines its children up at their tops (a list bullet beside wrapped text); else they fill it.
+    gtk_widget_set_valign(w.native, (if "top" in w.parent.classes: 1 else: 0).cint)   # GTK_ALIGN_START / _FILL
 
 const classCss = """
 .nk-heading { font-weight: bold; font-size: 1.2em; }
@@ -375,6 +378,9 @@ proc syncClasses(w: Widget) =
   if w.kind in {wkButton, wkToggle, wkItem}:
     gtk_button_set_relief(w.native, (if "flat" in want or w.kind == wkItem: GTK_RELIEF_NONE else: 0.cint))
   shownClasses[w.id] = want
+  if w.kind == wkRow and ("top" in want) != ("top" in have):
+    for c in w.children:
+      if c.native != nil: c.applyExpand()
 
 proc syncButtonIcon(w: Widget) =
   let want = (w.iconName, w.iconSize)

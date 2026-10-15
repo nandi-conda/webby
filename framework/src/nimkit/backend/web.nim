@@ -27,6 +27,7 @@ html, body { margin: 0; height: 100%; font: 15px system-ui, sans-serif; color: #
 .nk-root { box-sizing: border-box; height: 100%; }
 .nk-column, .nk-row { display: flex; box-sizing: border-box; min-width: 0; min-height: 0; }
 .nk-column { flex-direction: column; } .nk-row { flex-direction: row; align-items: center; }
+.nk-row.nk-top { align-items: flex-start; }
 .nk-expand { flex: 1 1 0; min-width: 0; min-height: 0; }
 .nk-scroll { overflow-y: auto; min-height: 0; }
 .nk-overlay { position: relative; display: flex; min-width: 0; min-height: 0; }

@@ -236,8 +236,8 @@ const markdownCss* = """
 var linkHandler*: proc (url: string)  ## a link clicked in rendered markdown; nil = the platform's default
 
 proc spaced(markup: string): string =
-  ## Body text at markdown_view.dart's 1.45 line height.
-  "<span line_height=\"1.45\">" & markup & "</span>"
+  ## Body text at markdown_view.dart's 1.3 line height.
+  "<span line_height=\"1.3\">" & markup & "</span>"
 
 proc markupLabel*(markup: string, selectable = true): kit.Widget =
   ## A wrapping label showing `markup` (see kit.richLabel); its links go to linkHandler.
@@ -268,10 +268,13 @@ proc markdownView*(source: string): kit.Widget =
     of mdParagraph:
       w = markupLabel(spaced(inlineMarkup(b.text)))
     of mdListItem:
-      let marker = kit.addClass(kit.label(b.marker), "dim")
+      # The marker is a one-line label at the text's line height, top-aligned, so it sits on the first line and
+      # wrapped lines hang under the text rather than the bullet.
+      let marker = kit.addClass(kit.richLabel(spaced(kit.escapeRich(b.marker))), "dim")
       discard kit.sized(marker, if b.marker == "•": 14 else: 22)
       w = kit.row(marker, kit.expand(markupLabel(spaced(inlineMarkup(b.text)))))
       w.spacing = 0
+      kit.addClass(w, "top")
       kit.addClass(w, "webby-md-list")
       if b.depth > 0: kit.addClass(w, "webby-md-depth-" & $min(b.depth, 4))
     of mdQuote:
