@@ -17,12 +17,17 @@ import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
+import android.widget.Spinner;
 import android.widget.TextView;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -44,9 +49,12 @@ public class Host extends Activity {
     // Ops from nk_op (src/nimkit/backend/android.nim).
     static final int CREATE = 0, TEXT = 1, PLACEHOLDER = 2, CHECKED = 3, ENABLED = 4, EXPAND = 5, SPACING = 6,
             PADDING = 7, MIN_SIZE = 8, ADD = 9, REMOVE = 10, ROOT = 11, TITLE = 12, TIMER = 13, UNTIMER = 14,
-            QUIT = 15, FORGET = 16;
+            QUIT = 15, FORGET = 16, ITEMS = 17, SELECTED = 18, RANGE = 19, VALUE = 20;
     // Widget kinds (WidgetKind in src/nimkit/core.nim).
-    static final int COLUMN = 0, ROW = 1, SCROLL = 2, LABEL = 3, BUTTON = 4, ENTRY = 5, CHECK = 6, CANVAS = 7;
+    static final int COLUMN = 0, ROW = 1, SCROLL = 2, LABEL = 3, BUTTON = 4, ENTRY = 5, CHECK = 6, CANVAS = 7,
+            SLIDER = 8, DROPDOWN = 9, PROGRESS = 10;
+    /** A progress bar's resolution: ProgressBar counts in ints. */
+    static final int PROGRESS_STEPS = 1000;
 
     static Host current;
     static final Handler main = new Handler(Looper.getMainLooper());
@@ -55,6 +63,8 @@ public class Host extends Activity {
     final SparseArray<View> views = new SparseArray<>();
     final SparseArray<Boolean> expand = new SparseArray<>();
     final SparseArray<int[]> minSize = new SparseArray<>();
+    final SparseArray<double[]> ranges = new SparseArray<>();    // slider id -> {min, max, step, value}
+    final SparseArray<Integer> shownSelection = new SparseArray<>();  // dropdown id -> the index Nim knows about
     boolean syncing;
     FrameLayout content;
     float density;
@@ -144,7 +154,36 @@ public class Host extends Activity {
                     break;
                 }
                 case REMOVE: ((ViewGroup) v).removeView(views.get(arg)); break;
-                case FORGET: views.remove(id); expand.remove(id); minSize.remove(id); break;
+                case ITEMS: if (v instanceof Spinner) {
+                    ArrayAdapter<String> a = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item,
+                            text.isEmpty() ? new String[0] : text.split("\n", -1));
+                    a.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+                    ((Spinner) v).setAdapter(a);
+                    select((Spinner) v, id, shownSelection.get(id, -1));
+                }
+                break;
+                case SELECTED: if (v instanceof Spinner) select((Spinner) v, id, arg); break;
+                case RANGE: if (v instanceof SeekBar) {
+                    String[] p = text.split(" ");
+                    double[] r = ranges.get(id, new double[] {0, 1, 0.01, 0});
+                    r[0] = Double.parseDouble(p[0]); r[1] = Double.parseDouble(p[1]); r[2] = Double.parseDouble(p[2]);
+                    ranges.put(id, r);
+                    showValue((SeekBar) v, r);
+                }
+                break;
+                case VALUE:
+                    if (v instanceof SeekBar) {
+                        double[] r = ranges.get(id, new double[] {0, 1, 0.01, 0});
+                        r[3] = Double.parseDouble(text);
+                        ranges.put(id, r);
+                        showValue((SeekBar) v, r);
+                    } else if (v instanceof ProgressBar) {
+                        ((ProgressBar) v).setProgress((int) Math.round(Double.parseDouble(text) * PROGRESS_STEPS));
+                    }
+                    break;
+                case FORGET:
+                    views.remove(id); expand.remove(id); minSize.remove(id); ranges.remove(id); shownSelection.remove(id);
+                    break;
                 case ROOT:
                     content.removeAllViews();
                     if (v.getParent() != null) ((ViewGroup) v.getParent()).removeView(v);
@@ -156,6 +195,21 @@ public class Host extends Activity {
         } finally {
             syncing = false;
         }
+    }
+
+    /** A SeekBar counts whole steps from 0; r is {min, max, step, value}. */
+    static void showValue(SeekBar s, double[] r) {
+        double step = r[2] > 0 ? r[2] : (r[1] - r[0]) / 100;
+        s.setMax((int) Math.max(1, Math.round((r[1] - r[0]) / step)));
+        s.setProgress((int) Math.round((r[3] - r[0]) / step));
+    }
+
+    /** Spinner reports selections later, from layout, including ones we make: remember which one Nim already knows
+     * so only the user's picks go back as events. */
+    void select(Spinner s, int id, int index) {
+        // A Spinner with choices always shows one; with none chosen it shows the first, which isn't the user's pick.
+        shownSelection.put(id, index < 0 && s.getCount() > 0 ? 0 : index);
+        if (index >= 0 && index < s.getCount()) s.setSelection(index, false);
     }
 
     /** Layout params for `v` from its parent's direction and its expand flag: it fills across, and takes the spare
@@ -223,6 +277,38 @@ public class Host extends Activity {
                     if (!syncing) Native.event(id, Native.TOGGLE, "", on ? 1 : 0, 0, 0);
                 });
                 return c;
+            }
+            case SLIDER: {
+                SeekBar s = new SeekBar(this);
+                s.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    public void onProgressChanged(SeekBar b, int progress, boolean fromUser) {
+                        if (!fromUser || syncing) return;
+                        double[] r = ranges.get(id, new double[] {0, 1, 0.01, 0});
+                        double step = r[2] > 0 ? r[2] : (r[1] - r[0]) / 100;
+                        r[3] = Math.min(r[1], r[0] + progress * step);
+                        Native.event(id, Native.VALUE, "", (float) r[3], 0, 0);
+                    }
+                    public void onStartTrackingTouch(SeekBar b) {}
+                    public void onStopTrackingTouch(SeekBar b) {}
+                });
+                return s;
+            }
+            case DROPDOWN: {
+                Spinner s = new Spinner(this);
+                s.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+                    public void onItemSelected(AdapterView<?> parent, View view, int position, long rowId) {
+                        if (shownSelection.get(id, -1) == position) return;
+                        shownSelection.put(id, position);
+                        Native.event(id, Native.SELECT, "", position, 0, 0);
+                    }
+                    public void onNothingSelected(AdapterView<?> parent) {}
+                });
+                return s;
+            }
+            case PROGRESS: {
+                ProgressBar p = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+                p.setMax(PROGRESS_STEPS);
+                return p;
             }
             case CANVAS: {
                 SurfaceView s = new SurfaceView(this);

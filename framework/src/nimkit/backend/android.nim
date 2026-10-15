@@ -35,6 +35,10 @@ const   # Host.java's ops
   opUntimer = 14
   opQuit = 15
   opForget = 16
+  opItems = 17
+  opSelected = 18
+  opRange = 19
+  opValue = 20
 
 proc op(o: int, id = 0, arg = 0, text = "") = nk_op(o.cint, id.cint, arg.cint, text.cstring)
 
@@ -58,6 +62,13 @@ proc sync(w: Widget) =
     op(opText, w.id, text = w.text)
     op(opPlaceholder, w.id, text = w.placeholder)
   of wkCanvas: op(opMinSize, w.id, w.minWidth, $w.minHeight)
+  of wkSlider:
+    op(opRange, w.id, text = $w.rangeMin & " " & $w.rangeMax & " " & $w.step)
+    op(opValue, w.id, text = $w.value)
+  of wkDropdown:
+    op(opItems, w.id, text = w.items.join("\n"))
+    op(opSelected, w.id, w.selected)
+  of wkProgress: op(opValue, w.id, text = $w.value.clamp(0.0, 1.0))
   of wkScroll: discard
   op(opEnabled, w.id, ord(w.enabled))
   op(opExpand, w.id, ord(w.expanded))
@@ -100,6 +111,8 @@ const   # Native.java's event kinds
   evToggle = 3
   evPointerDown = 4
   evHttpDone = 8
+  evValue = 9
+  evSelect = 10
 
 var httpPending: Table[int, proc (r: Response)]
 
@@ -136,6 +149,12 @@ proc nk_event(id, kind: cint, text: cstring, x, y: cfloat, pointer: cint) {.expo
   of evToggle:
     w.setCheckedSilently(x != 0)
     if w.onToggle != nil: w.onToggle(w.checked)
+  of evValue:
+    w.setValueSilently(x)
+    if w.onValue != nil: w.onValue(w.value)
+  of evSelect:
+    w.setSelectedSilently(int(x))
+    if w.onSelect != nil: w.onSelect(w.selected)
   of evPointerDown .. evPointerDown + 3:
     if w.onPointer != nil:
       w.onPointer(w, PointerEvent(kind: PointerKind(kind - evPointerDown), x: x, y: y, pointer: pointer))

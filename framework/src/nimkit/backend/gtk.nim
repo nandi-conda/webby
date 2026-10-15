@@ -9,6 +9,8 @@ import gtkapi, gio_http
 var
   window: GtkWidget
   syncing = false          # true while we set a native widget's state, so its signal isn't taken as the user's
+  shownMarks: Table[int, seq[(float, string)]]   # slider id -> the marks its GtkScale has
+  shownItems: Table[int, seq[string]]            # dropdown id -> the choices its GtkComboBoxText has
 
 proc byId(data: pointer): Widget = widgets.getOrDefault(cast[int](data))
 
@@ -34,6 +36,26 @@ proc onToggled(b: GtkWidget, data: pointer) {.cdecl.} =
   if w == nil or syncing: return
   w.setCheckedSilently(gtk_toggle_button_get_active(b) != 0)
   if w.onToggle != nil: w.onToggle(w.checked)
+
+proc onValueChanged(r: GtkWidget, data: pointer) {.cdecl.} =
+  let w = byId(data)
+  if w == nil or syncing: return
+  w.setValueSilently(gtk_range_get_value(r))
+  if w.onValue != nil: w.onValue(w.value)
+
+proc onComboChanged(c: GtkWidget, data: pointer) {.cdecl.} =
+  let w = byId(data)
+  if w == nil or syncing: return
+  w.setSelectedSilently(gtk_combo_box_get_active(c).int)
+  if w.onSelect != nil and w.selected >= 0: w.onSelect(w.selected)
+
+proc escapeMarkup(s: string): string =
+  for ch in s:
+    case ch
+    of '&': result.add "&amp;"
+    of '<': result.add "&lt;"
+    of '>': result.add "&gt;"
+    else: result.add ch
 
 proc onDraw(area: GtkWidget, cr: pointer, data: pointer): gboolean {.cdecl.} =
   let c = byId(data)
@@ -83,6 +105,21 @@ proc sync(w: Widget) =
     if $gtk_entry_get_text(w.native) != w.text: gtk_entry_set_text(w.native, w.text.cstring)
     gtk_entry_set_placeholder_text(w.native, w.placeholder.cstring)
   of wkCanvas: gtk_widget_set_size_request(w.native, w.minWidth.cint, w.minHeight.cint)
+  of wkSlider:
+    gtk_range_set_range(w.native, w.rangeMin, w.rangeMax)
+    gtk_range_set_increments(w.native, w.step, w.step)
+    if gtk_range_get_value(w.native) != w.value: gtk_range_set_value(w.native, w.value)
+    if shownMarks.getOrDefault(w.id) != w.marks:
+      gtk_scale_clear_marks(w.native)
+      for (at, text) in w.marks: gtk_scale_add_mark(w.native, at, GTK_POS_BOTTOM, escapeMarkup(text).cstring)
+      shownMarks[w.id] = w.marks
+  of wkDropdown:
+    if shownItems.getOrDefault(w.id) != w.items:
+      gtk_combo_box_text_remove_all(w.native)
+      for item in w.items: gtk_combo_box_text_append_text(w.native, item.cstring)
+      shownItems[w.id] = w.items
+    if gtk_combo_box_get_active(w.native) != w.selected.cint: gtk_combo_box_set_active(w.native, w.selected.cint)
+  of wkProgress: gtk_progress_bar_set_fraction(w.native, w.value.clamp(0.0, 1.0))
   of wkScroll: discard
   gtk_widget_set_sensitive(w.native, w.enabled.gboolean)
   w.applyExpand()
@@ -125,6 +162,16 @@ proc realize(w: Widget) =
       connect(a, "motion-notify-event", onMotion, data)
       connect(a, "button-release-event", onRelease, data)
       a
+    of wkSlider:
+      let r = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 1, 0.01)
+      gtk_scale_set_draw_value(r, 0)
+      connect(r, "value-changed", onValueChanged, data)
+      r
+    of wkDropdown:
+      let c = gtk_combo_box_text_new()
+      connect(c, "changed", onComboChanged, data)
+      c
+    of wkProgress: gtk_progress_bar_new()
   discard g_object_ref(w.native)   # ours until the widget is removed, so removing it from a box doesn't free it
   w.realized = true
   w.sync()
@@ -141,6 +188,8 @@ proc unrealize(w: Widget) =
   for c in w.children: c.unrealize()
   if w.native != nil: g_object_unref(w.native)
   w.native = nil
+  shownMarks.del w.id
+  shownItems.del w.id
   w.realized = false
 
 backend.update = proc (w: Widget) = w.sync()

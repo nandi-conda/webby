@@ -14,10 +14,11 @@ proc newUint8ClampedArray(n: int): JsObject {.importjs: "new Uint8ClampedArray(#
 proc newImageData(data: JsObject, w, h: int): JsObject {.importjs: "new ImageData(#, #, #)".}
 proc newResizeObserver(cb: proc (entries: JsObject)): JsObject {.importjs: "new ResizeObserver(#)".}
 proc jsFetch(url: cstring, init: JsObject): JsObject {.importjs: "fetch(#, #)".}
+proc parseFloat(s: cstring): float {.importjs: "parseFloat(#)".}
 proc onError(p: JsObject, cb: proc (err: JsObject)): JsObject {.importjs: "#.catch(#)".}
 
 var elems: Table[int, JsObject]   # widget id -> its element (for a check box, the <label> holding the <input>)
-var inputs: Table[int, JsObject]  # check box id -> its <input>
+var inputs: Table[int, JsObject]  # check box id -> its <input>; slider id -> its <input type=range>
 
 const css = """
 html, body { margin: 0; height: 100%; font: 15px system-ui, sans-serif; color: #222; background: #f6f5f2; }
@@ -32,6 +33,13 @@ html, body { margin: 0; height: 100%; font: 15px system-ui, sans-serif; color: #
 .nk-canvas-box > canvas { position: absolute; inset: 0; }
 button, input { font: inherit; } input[type=text] { padding: 6px 8px; min-width: 0; }
 .nk-label { white-space: pre-wrap; }
+.nk-slider { display: flex; flex-direction: column; min-width: 0; }
+.nk-slider > input { width: 100%; margin: 0; }
+.nk-marks { position: relative; height: 1.4em; font-size: 11px; opacity: 0.7; }
+.nk-marks > span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.nk-marks > span:first-child { transform: none; }
+select { font: inherit; min-width: 0; padding: 4px 6px; }
+progress { width: 100%; height: 6px; }
 """
 
 proc el(tag: string, class = ""): JsObject =
@@ -90,9 +98,35 @@ proc sync(w: Widget) =
   of wkCanvas:
     e.style.minWidth = cstring($w.minWidth & "px")
     e.style.minHeight = cstring($w.minHeight & "px")
+  of wkSlider:
+    let i = inputs[w.id]
+    i.min = w.rangeMin
+    i.max = w.rangeMax
+    i.step = w.step
+    if i.value.to(cstring) != cstring($w.value): i.value = cstring($w.value)
+    let marks = e.lastChild
+    marks.textContent = "".cstring
+    marks.style.display = cstring(if w.marks.len > 0: "" else: "none")
+    for (at, text) in w.marks:
+      let m = el("span")
+      m.textContent = text.cstring
+      let span = w.rangeMax - w.rangeMin
+      m.style.left = cstring($(if span > 0: (at - w.rangeMin) / span * 100 else: 0.0) & "%")
+      if at >= w.rangeMax: m.style.transform = "translateX(-100%)".cstring
+      marks.appendChild(m)
+  of wkDropdown:
+    while e.options.length.to(int) > w.items.len: discard e.remove(e.options.length.to(int) - 1)
+    for i, item in w.items:
+      if i < e.options.length.to(int): e.options[i].text = item.cstring
+      else:
+        let o = el("option")
+        o.text = item.cstring
+        discard e.add(o)
+    e.selectedIndex = w.selected
+  of wkProgress: e.value = w.value.clamp(0.0, 1.0)
   of wkScroll: discard
-  if w.kind in {wkButton, wkEntry}: e.disabled = not w.enabled
-  if w.kind == wkCheck: inputs[w.id].disabled = not w.enabled
+  if w.kind in {wkButton, wkEntry, wkDropdown}: e.disabled = not w.enabled
+  if w.kind in {wkCheck, wkSlider}: inputs[w.id].disabled = not w.enabled
   e.classList.toggle("nk-expand".cstring, w.expanded)
 
 proc realize(w: Widget): JsObject =
@@ -145,6 +179,27 @@ proc realize(w: Widget): JsObject =
           w.resized(width, height))
       observer.observe(box)
       box
+    of wkSlider:
+      let box = el("div", "nk-slider")
+      let i = el("input")
+      i.`type` = "range".cstring
+      i.addEventListener("input", proc () =
+        w.setValueSilently(parseFloat(i.value.to(cstring)))
+        if w.onValue != nil: w.onValue(w.value))
+      box.appendChild(i)
+      box.appendChild(el("div", "nk-marks"))
+      inputs[w.id] = i
+      box
+    of wkDropdown:
+      let s = el("select")
+      s.addEventListener("change", proc () =
+        w.setSelectedSilently(s.selectedIndex.to(int))
+        if w.onSelect != nil and w.selected >= 0: w.onSelect(w.selected))
+      s
+    of wkProgress:
+      let p = el("progress")
+      p.max = 1
+      p
   elems[w.id] = e
   w.realized = true
   w.sync()

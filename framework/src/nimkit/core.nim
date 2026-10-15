@@ -8,7 +8,7 @@ import std/tables
 
 type
   WidgetKind* = enum
-    wkColumn, wkRow, wkScroll, wkLabel, wkButton, wkEntry, wkCheck, wkCanvas
+    wkColumn, wkRow, wkScroll, wkLabel, wkButton, wkEntry, wkCheck, wkCanvas, wkSlider, wkDropdown, wkProgress
 
   PointerKind* = enum
     pkDown, pkMove, pkUp, pkCancel
@@ -31,6 +31,11 @@ type
     spacing*: int                    ## between a column's or row's children (logical pixels)
     padding*: int                    ## around them
     minWidth*, minHeight*: int       ## a canvas's smallest size (logical pixels)
+    valueValue: float                ## a slider's value, a progress bar's fraction (0..1)
+    minValue, maxValue, stepValue: float  ## a slider's range and the step its keys and wheel move by
+    marksValue: seq[(float, string)] ## a slider's labelled ticks
+    itemsValue: seq[string]          ## a dropdown's choices
+    selectedValue: int               ## the chosen one's index, -1 for none
     realized*: bool                  ## the backend has made the native widget
     native*: pointer                 ## the backend's own handle, if it has one (GTK)
     # Events
@@ -38,6 +43,8 @@ type
     onChange*: proc (text: string)   ## entries, as the text changes
     onSubmit*: proc (text: string)   ## entries, on Enter
     onToggle*: proc (checked: bool)  ## check boxes
+    onValue*: proc (value: float)    ## sliders, as the user moves them
+    onSelect*: proc (index: int)     ## dropdowns, when the user picks a choice
     onDraw*: proc (c: Canvas)        ## canvases, whenever their pixels must be (re)made
     onPointer*: proc (c: Canvas, e: PointerEvent)
     # Canvas pixels
@@ -95,6 +102,49 @@ proc `checked=`*(w: Widget, on: bool) =
   w.changed
 
 proc setCheckedSilently*(w: Widget, on: bool) = w.checkedValue = on
+
+proc value*(w: Widget): float = w.valueValue
+proc `value=`*(w: Widget, v: float) =
+  if v == w.valueValue: return
+  w.valueValue = v
+  w.changed
+
+proc setValueSilently*(w: Widget, v: float) = w.valueValue = v
+
+proc rangeMin*(w: Widget): float = w.minValue
+proc rangeMax*(w: Widget): float = w.maxValue
+proc step*(w: Widget): float = w.stepValue
+
+proc setRange*(w: Widget, min, max: float, step = 0.0) =
+  ## A slider's range; `step` 0 keeps the current step.
+  let step = if step > 0: step else: w.stepValue
+  if min == w.minValue and max == w.maxValue and step == w.stepValue: return
+  w.minValue = min
+  w.maxValue = max
+  w.stepValue = step
+  w.changed
+
+proc marks*(w: Widget): seq[(float, string)] = w.marksValue
+proc `marks=`*(w: Widget, m: seq[(float, string)]) =
+  ## Labelled ticks under a slider (a value and its label, which may be ""). Not shown on Android.
+  if m == w.marksValue: return
+  w.marksValue = m
+  w.changed
+
+proc items*(w: Widget): seq[string] = w.itemsValue
+proc `items=`*(w: Widget, items: seq[string]) =
+  if items == w.itemsValue: return
+  w.itemsValue = items
+  if w.selectedValue >= items.len: w.selectedValue = -1
+  w.changed
+
+proc selected*(w: Widget): int = w.selectedValue
+proc `selected=`*(w: Widget, i: int) =
+  if i == w.selectedValue: return
+  w.selectedValue = i
+  w.changed
+
+proc setSelectedSilently*(w: Widget, i: int) = w.selectedValue = i
 
 proc enabled*(w: Widget): bool = w.enabledValue
 proc `enabled=`*(w: Widget, on: bool) =
@@ -184,6 +234,29 @@ proc canvas*(minWidth = 100, minHeight = 100, onDraw: proc (c: Canvas) = nil,
   result.minHeight = minHeight
   result.onDraw = onDraw
   result.onPointer = onPointer
+
+proc slider*(min = 0.0, max = 1.0, value = 0.0, step = 0.01, onValue: proc (value: float) = nil): Widget =
+  ## A horizontal slider from `min` to `max`. `onValue` runs as the user drags it, scrolls over it or uses its keys,
+  ## not when the app sets `value`.
+  result = newWidget(wkSlider)
+  result.minValue = min
+  result.maxValue = max
+  result.stepValue = step
+  result.valueValue = value
+  result.onValue = onValue
+
+proc dropdown*(items: seq[string] = @[], selected = -1, onSelect: proc (index: int) = nil): Widget =
+  ## A pop-up list of choices showing the selected one. `onSelect` runs when the user picks one, not when the app
+  ## sets `selected` or `items`.
+  result = newWidget(wkDropdown)
+  result.itemsValue = items
+  result.selectedValue = selected
+  result.onSelect = onSelect
+
+proc progress*(fraction = 0.0): Widget =
+  ## A horizontal bar filled to `fraction` (0..1), set through `value`: a level meter or a progress bar.
+  result = newWidget(wkProgress)
+  result.valueValue = fraction
 
 # ---------------------------------------------------------------------------------------------------------------
 # Canvas pixels

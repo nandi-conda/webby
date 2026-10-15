@@ -14,6 +14,7 @@ const
   GTK_ORIENTATION_VERTICAL* = 1.cint
   GTK_POLICY_AUTOMATIC* = 1.cint
   GTK_POLICY_NEVER* = 2.cint
+  GTK_POS_BOTTOM* = 3.cint
   CAIRO_FORMAT_ARGB32* = 0.cint
   GDK_POINTER_MOTION_MASK* = 1.cint shl 2
   GDK_BUTTON_PRESS_MASK* = 1.cint shl 8
@@ -62,6 +63,21 @@ proc gtk_toggle_button_get_active*(b: GtkWidget): gboolean
 proc gtk_scrolled_window_new*(h, v: pointer): GtkWidget
 proc gtk_scrolled_window_set_policy*(s: GtkWidget, h, v: cint)
 proc gtk_drawing_area_new*(): GtkWidget
+proc gtk_scale_new_with_range*(orientation: cint, min, max, step: cdouble): GtkWidget
+proc gtk_scale_set_draw_value*(s: GtkWidget, on: gboolean)
+proc gtk_scale_add_mark*(s: GtkWidget, value: cdouble, position: cint, markup: cstring)
+proc gtk_scale_clear_marks*(s: GtkWidget)
+proc gtk_range_set_range*(r: GtkWidget, min, max: cdouble)
+proc gtk_range_set_increments*(r: GtkWidget, step, page: cdouble)
+proc gtk_range_set_value*(r: GtkWidget, value: cdouble)
+proc gtk_range_get_value*(r: GtkWidget): cdouble
+proc gtk_combo_box_text_new*(): GtkWidget
+proc gtk_combo_box_text_append_text*(c: GtkWidget, text: cstring)
+proc gtk_combo_box_text_remove_all*(c: GtkWidget)
+proc gtk_combo_box_set_active*(c: GtkWidget, index: cint)
+proc gtk_combo_box_get_active*(c: GtkWidget): cint
+proc gtk_progress_bar_new*(): GtkWidget
+proc gtk_progress_bar_set_fraction*(p: GtkWidget, fraction: cdouble)
 proc gdk_event_get_coords*(e: pointer, x, y: ptr cdouble): gboolean
 proc gdk_event_get_button*(e: pointer, button: ptr cuint): gboolean
 proc g_signal_connect_data*(instance: pointer, signal: cstring, handler: pointer, data: pointer,
