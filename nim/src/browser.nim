@@ -409,9 +409,14 @@ proc addToolbarButton*(icon, tooltip: string, action: proc () {.closure.}, openI
   if openIcon.len > 0: panelButtons.add (result, icon, openIcon, panel)
   when defined(android):
     # No room for them on a phone's toolbar (toolbarEndRow is hidden there): they're ⋮ menu items instead.
+    # The tooltip without its desktop shortcut ("Downloads (Ctrl+J)" -> "Downloads"), so it matches the feature's
+    # own menu item and moreMenuItems shows it once.
     let b = result
+    var label = kit.tooltip(b)
+    let paren = label.find(" (")
+    if paren > 0 and label.endsWith(")"): label.setLen(paren)
     moreMenuHooks.add proc (items: var seq[kit.MenuItem]) =
-      if kit.visible(b): items.add kit.menuItem(kit.tooltip(b), action)
+      if kit.visible(b): items.add kit.menuItem(label, action)
 
 proc shortcutText*(mods: int, keyval: uint32): string =
   ## "Ctrl+Shift+T" for a shortcut's mods and GDK keyval, to show in menus.
@@ -450,8 +455,13 @@ proc addMenuSeparator*() =
 proc moreMenuItems(): seq[kit.MenuItem] =
   var all: seq[kit.MenuItem]
   for h in moreMenuHooks: h(all)
+  var seen: seq[string]
   for it in all:   # no separator first, last or twice in a row
     if it.separator and (result.len == 0 or result[^1].separator): continue
+    if not it.separator and it.submenu.len == 0:
+      # On Android the toolbar buttons are ⋮ items too, beside the features' own items of the same name: once each.
+      if it.label in seen: continue
+      seen.add it.label
     result.add it
   while result.len > 0 and result[^1].separator: result.setLen(result.len - 1)
 

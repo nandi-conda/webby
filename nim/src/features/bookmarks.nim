@@ -434,7 +434,7 @@ proc buildChrome() =
   if not incognito: addMenuItem("Bookmark this page", bookmarkPage, "Ctrl+D")
   addMenuCheck("Show bookmarks bar", showBar, proc () = setShowBar(not showBar()), "Ctrl+Shift+B")
   addMenuSeparator()
-  addMenuItem("Bookmark manager", showManager, "Ctrl+Shift+O")
+  when not defined(android): addMenuItem("Bookmark manager", showManager, "Ctrl+Shift+O")   # the Bookmarks item there
   updateStar()
 
 proc install*() =
