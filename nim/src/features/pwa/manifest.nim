@@ -87,8 +87,10 @@ proc parseManifest*(text, manifestUrl, documentUrl: string): Manifest =
   start.anchor = ""
 
   # scope must contain start_url, else it's start_url's directory.
-  var defaultScope = combine(start, parseUri("."))
-  defaultScope.query = ""
+  # (std/uri's combine(start, ".") leaves "/." on the path, which then matches no page.)
+  let dir = start.path[0 .. max(start.path.rfind('/'), 0)]
+  let defaultScope = Uri(scheme: start.scheme, hostname: start.hostname, port: start.port,
+    path: if dir.startsWith("/"): dir else: "/")
   var (hasScope, scope) = resolve(str("scope"))
   if not hasScope or not sameOrigin(scope, start) or not start.path.startsWith(scope.path): scope = defaultScope
   scope = Uri(scheme: scope.scheme, hostname: scope.hostname, port: scope.port, path: scope.path)

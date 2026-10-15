@@ -202,11 +202,21 @@ proc sendIme() =
     lastIme = msg
     call("onIme", msg)
 
+var blank: seq[uint32]
+
 proc blitActive() =
   let t = current()
   if t == nil or not surfaceAttached: return
-  let px = webby_view_frame_pixels(t.view)
-  if px == nil: return
+  let px = if t.asleep: nil else: webby_view_frame_pixels(t.view)
+  if px == nil:
+    # A tab just woken has no frame yet: clear the surface rather than leave the last tab's page on it.
+    if viewW <= 0 or viewH <= 0: return
+    blank.setLen viewW * viewH
+    let fill = if dark: 0xff202124'u32 else: 0xffffffff'u32
+    if blank[0] != fill or blank[^1] != fill:
+      for p in blank.mitems: p = fill
+    if glue_blit(blank[0].addr, viewW.cint, viewH.cint) != 0: needsBlit = false
+    return
   if glue_blit(px, webby_view_frame_width(t.view), webby_view_frame_height(t.view)) != 0: needsBlit = false
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -215,7 +225,7 @@ proc blitActive() =
 proc applySize(t: Tab) =
   if viewW > 0 and viewH > 0: webby_view_resize(t.view, viewW.cint, viewH.cint, density.cdouble)
 
-proc wakeTab(t: Tab)
+proc wakeTab(t: Tab): bool
 
 proc activate*(i: int) =
   if i notin 0 ..< tabs.len: return
@@ -228,10 +238,12 @@ proc activate*(i: int) =
       webby_view_collect_garbage(old.view)
   active = i
   let t = tabs[i]
-  wakeTab(t)
+  let woke = wakeTab(t)
   applySize(t)
   webby_view_set_visible(t.view, shown.cint)
   webby_view_set_focus(t.view, 1)
+  # As openTab does: the page loads once the view is visible (loading a hidden fresh view could leave it black).
+  if woke: webby_view_load(t.view, (if t.url.len > 0: t.url else: homePage).cstring)
   needsBlit = true
   blitActive()
   for h in activeTabHooks: h(t)
@@ -275,15 +287,14 @@ proc openAsleep*(url: string, at = -1): Tab =
   tabs.insert(result, i)
   if active >= 0 and i <= active: inc active
 
-proc wakeTab(t: Tab) =
-  if not t.asleep: return
+proc wakeTab(t: Tab): bool =
+  ## Gives an asleep tab a view again; the caller loads its page.
+  if not t.asleep: return false
   setUp(t, newView())
   t.frameSerial = 0
   t.stateSerial = 0
-  applySize(t)
-  webby_view_set_visible(t.view, 0)
-  webby_view_load(t.view, (if t.url.len > 0: t.url else: homePage).cstring)
   wake()
+  true
 
 proc sleepTab*(t: Tab) =
   ## Frees a background tab's page; it reloads when shown again.
