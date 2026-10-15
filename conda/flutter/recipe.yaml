@@ -1,6 +1,8 @@
 # The Flutter SDK as a conda package (Flutter isn't on conda-forge): the official Linux release tarball, which already
 # ships the Dart SDK, the prebuilt flutter tool snapshot and the linux-x64 engine artifacts, so nothing is downloaded
 # or compiled into the SDK on first use. Installed to $PREFIX/lib/flutter with bin/flutter and bin/dart linked in.
+# prefix.dev caps packages at 1 GiB, so the Android and web engine artifacts and the pub preload cache are left out,
+# along with their stamps: `flutter build apk`/`web` downloads them into the SDK when first needed.
 # Published to prefix.dev/nandi-testing by .github/workflows/publish.yml when this directory changes.
 context:
   version: "3.35.5"
@@ -28,6 +30,8 @@ build:
   script:
     - mkdir -p $PREFIX/lib $PREFIX/bin
     - cp -a $SRC_DIR/flutter $PREFIX/lib/flutter
+    - cd $PREFIX/lib/flutter && rm -rf bin/cache/artifacts/engine/android-* bin/cache/flutter_web_sdk .pub-preload-cache
+    - cd $PREFIX/lib/flutter/bin/cache && rm -f android-sdk.stamp android-internal-build-artifacts.stamp flutter_web_sdk.stamp
     # bin/flutter and bin/dart resolve symlinks to find the SDK root.
     - ln -s ../lib/flutter/bin/flutter $PREFIX/bin/flutter
     - ln -s ../lib/flutter/bin/dart $PREFIX/bin/dart
