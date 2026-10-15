@@ -24,7 +24,13 @@ void main() {
     endpoint = Uri.parse('http://127.0.0.1:${server.port}/chat/completions');
     server.listen((request) async {
       final body = jsonDecode(await utf8.decodeStream(request)) as Map<String, Object?>;
-      requests.add(({'authorization': request.headers.value('authorization') ?? ''}, body));
+      requests.add((
+        {
+          'authorization': request.headers.value('authorization') ?? '',
+          'api-key': request.headers.value('api-key') ?? '',
+        },
+        body,
+      ));
       request.response.statusCode = status;
       if (status != 200) {
         request.response.write(jsonEncode({'error': {'message': 'nope'}}));
@@ -58,6 +64,38 @@ void main() {
     expect(body['stream'], true);
     expect(jsonEncode(body), isNot(contains('sk-test')));
     expect(jsonEncode(body), contains('Some readable text'));
+  });
+
+  test('MiMo gets its key in the api-key header, its model and thinking off', () async {
+    final pieces =
+        await streamSummary('sk-mimo', page, provider: SummaryProvider.mimo, endpoint: endpoint).toList();
+    expect(pieces.join(), 'It is about examples.\n• One');
+    final (headers, body) = requests.single;
+    expect(headers['api-key'], 'sk-mimo');
+    expect(headers['authorization'], '');
+    expect(body['model'], 'mimo-v2.6-flash');
+    expect(body['thinking'], {'type': 'disabled'});
+    expect(body['stream'], true);
+    expect(jsonEncode(body), isNot(contains('sk-mimo')));
+    status = 401;
+    await expectLater(
+      streamSummary('bad', page, provider: SummaryProvider.mimo, endpoint: endpoint).toList(),
+      throwsA(isA<SummaryError>().having((e) => e.message, 'message', startsWith('Xiaomi MiMo'))),
+    );
+  });
+
+  test('picks the chosen provider unless only another has a key', () {
+    final secrets = <String, String>{};
+    SummaryProvider chosen() => SummaryProvider.chosen((name) => secrets[name]);
+    expect(chosen(), SummaryProvider.deepSeek);
+    secrets[mimoKeySecret] = 'k';
+    expect(chosen(), SummaryProvider.mimo);
+    secrets[deepSeekKeySecret] = 'k';
+    expect(chosen(), SummaryProvider.deepSeek);
+    secrets[providerSecret] = 'mimo';
+    expect(chosen(), SummaryProvider.mimo);
+    secrets.remove(mimoKeySecret);
+    expect(chosen(), SummaryProvider.deepSeek);
   });
 
   test('explains a rejected key', () async {

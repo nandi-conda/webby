@@ -1099,7 +1099,7 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
                       const KitMenuDivider(),
                       KitMenuItem('Summarize this page', onSelected: () => summarizePage(context, controller)),
                       if (!Incognito.active)
-                        KitMenuItem('DeepSeek API key…', onSelected: () => showSummarizeSettings(context)),
+                        KitMenuItem('Summarize settings…', onSelected: () => showSummarizeSettings(context)),
                       const KitMenuDivider(),
                       KitMenuItem('Clear browsing data…', shortcut: 'Ctrl+Shift+Del', onSelected: _clearBrowsingData),
                     ],

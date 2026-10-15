@@ -17,6 +17,76 @@ import 'web_view.dart';
 /// Name of the DeepSeek API key among the vault's secrets (synced unless the user unticks it).
 const deepSeekKeySecret = 'deepseek-api-key';
 
+/// Name of the Xiaomi MiMo API key among the vault's secrets.
+const mimoKeySecret = 'mimo-api-key';
+
+/// Name of the vault secret holding the chosen provider's [SummaryProvider.id]; it syncs along with the keys.
+const providerSecret = 'summarize-provider';
+
+/// A chat completions service Summarize can ask. Both speak OpenAI's chat completions with SSE streaming.
+enum SummaryProvider {
+  deepSeek(
+    id: 'deepseek',
+    name: 'DeepSeek',
+    keySecret: deepSeekKeySecret,
+    endpoint: 'https://api.deepseek.com/chat/completions',
+    model: 'deepseek-chat',
+    site: 'platform.deepseek.com',
+    status: 'status.deepseek.com',
+  ),
+  // platform.xiaomimimo.com (docs at mimo.mi.com): pay-as-you-go keys (sk-…) on api.xiaomimimo.com, sent in an
+  // `api-key` header. The V2.6 models think first by default; Summarize turns that off so the answer starts at once.
+  mimo(
+    id: 'mimo',
+    name: 'Xiaomi MiMo',
+    keySecret: mimoKeySecret,
+    endpoint: 'https://api.xiaomimimo.com/v1/chat/completions',
+    model: 'mimo-v2.6-flash',
+    site: 'platform.xiaomimimo.com',
+    keyHeader: 'api-key',
+    extra: {
+      'thinking': {'type': 'disabled'},
+    },
+  );
+
+  const SummaryProvider({
+    required this.id,
+    required this.name,
+    required this.keySecret,
+    required this.endpoint,
+    required this.model,
+    required this.site,
+    this.status,
+    this.keyHeader,
+    this.extra = const {},
+  });
+
+  final String id, name, keySecret, endpoint, model, site;
+
+  /// The provider's status page, named when a request hangs.
+  final String? status;
+
+  /// The header the key goes in, bare; null means `Authorization: Bearer <key>`.
+  final String? keyHeader;
+
+  /// More fields for the request body.
+  final Map<String, Object?> extra;
+
+  static SummaryProvider? byId(String? id) => values.where((p) => p.id == id).firstOrNull;
+
+  /// The provider Summarize uses given the vault's [secret]s: the chosen one, unless only another has a key.
+  static SummaryProvider chosen(String? Function(String name) secret) {
+    final picked = byId(secret(providerSecret)) ?? deepSeek;
+    bool hasKey(SummaryProvider p) => (secret(p.keySecret) ?? '').isNotEmpty;
+    if (hasKey(picked)) return picked;
+    return values.where(hasKey).firstOrNull ?? picked;
+  }
+
+  /// Message for a request accepted but held without a word for [busyLimit].
+  String get busyMessage => '$name accepted the request but hasn\'t sent anything back in 90 seconds. It may be '
+      'having an outage${status == null ? '' : ': see $status'}.';
+}
+
 /// Pages longer than this are cut before they're sent, to keep requests quick and cheap.
 const maxSummaryInputChars = 40000;
 
@@ -221,11 +291,12 @@ Future<PageText> readPageText(WebbyController controller, {Duration timeout = co
   }
 }
 
-/// The request body sent to DeepSeek's chat completions endpoint for [page].
-Map<String, Object?> summaryRequest(PageText page, {String model = 'deepseek-chat'}) => {
-  'model': model,
+/// The request body sent to [provider]'s chat completions endpoint for [page].
+Map<String, Object?> summaryRequest(PageText page, {SummaryProvider provider = SummaryProvider.deepSeek}) => {
+  'model': provider.model,
   'stream': true,
   'temperature': 0.3,
+  ...provider.extra,
   'messages': [
     {
       'role': 'system',
@@ -266,11 +337,12 @@ Map<String, Object?> questionRequest({
   required String summary,
   required List<({String question, String answer})> questions,
   required String question,
-  String model = 'deepseek-chat',
+  SummaryProvider provider = SummaryProvider.deepSeek,
 }) => {
-  'model': model,
+  'model': provider.model,
   'stream': true,
   'temperature': 0.3,
+  ...provider.extra,
   'messages': [
     {'role': 'system', 'content': _questionPrompt},
     {
@@ -289,37 +361,48 @@ Map<String, Object?> questionRequest({
   ],
 };
 
-/// Streams the summary of [page] from DeepSeek, piece by piece. [apiKey] goes only in the Authorization header.
+/// Streams the summary of [page] from [provider], piece by piece. [apiKey] goes only in the provider's key header.
 Stream<String> streamSummary(String apiKey, PageText page,
-        {Uri? endpoint, HttpClient Function()? client, void Function()? onQueued, Duration? busyLimit}) =>
-    streamChat(apiKey, summaryRequest(page),
-        endpoint: endpoint, client: client, onQueued: onQueued, busyLimit: busyLimit);
+        {SummaryProvider provider = SummaryProvider.deepSeek,
+        Uri? endpoint,
+        HttpClient Function()? client,
+        void Function()? onQueued,
+        Duration? busyLimit}) =>
+    streamChat(apiKey, summaryRequest(page, provider: provider),
+        provider: provider, endpoint: endpoint, client: client, onQueued: onQueued, busyLimit: busyLimit);
 
-/// How long DeepSeek may keep a request queued (sending only ": keep-alive" lines) before we give up.
+/// How long a provider may keep a request queued (sending only ": keep-alive" lines) before we give up.
 const deepSeekBusyLimit = Duration(seconds: 90);
 
-const deepSeekBusyMessage = 'DeepSeek accepted the request but hasn\'t sent anything back in 90 seconds. It may be '
-    'having an outage: see status.deepseek.com.';
+final deepSeekBusyMessage = SummaryProvider.deepSeek.busyMessage;
 
-/// Streams the reply to a chat completions [body] (with "stream": true) from DeepSeek, piece by piece. When
+/// Streams the reply to a chat completions [body] (with "stream": true) from [provider], piece by piece. When
 /// DeepSeek holds a request without answering (as during its outages) it sends only ": keep-alive" lines: [onQueued] is called on the
-/// first, and after [busyLimit] without a piece the stream fails with [deepSeekBusyMessage].
+/// first, and after [busyLimit] without a piece the stream fails with the provider's busyMessage.
 Stream<String> streamChat(String apiKey, Map<String, Object?> body,
-    {Uri? endpoint, HttpClient Function()? client, void Function()? onQueued, Duration? busyLimit}) async* {
+    {SummaryProvider provider = SummaryProvider.deepSeek,
+    Uri? endpoint,
+    HttpClient Function()? client,
+    void Function()? onQueued,
+    Duration? busyLimit}) async* {
   final waited = Stopwatch()..start();
   var gotPiece = false;
   var queued = false;
   final http = (client ?? HttpClient.new)()..connectionTimeout = const Duration(seconds: 15);
   try {
-    final request = await http.postUrl(endpoint ?? Uri.parse('https://api.deepseek.com/chat/completions'));
-    request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $apiKey');
+    final request = await http.postUrl(endpoint ?? Uri.parse(provider.endpoint));
+    if (provider.keyHeader case final header?) {
+      request.headers.set(header, apiKey);
+    } else {
+      request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $apiKey');
+    }
     request.headers.contentType = ContentType.json;
     request.headers.set(HttpHeaders.acceptHeader, 'text/event-stream');
     request.add(utf8.encode(jsonEncode(body)));
     final response = await request.close().timeout(const Duration(seconds: 60));
     if (response.statusCode != 200) {
       final body = await utf8.decodeStream(response).timeout(const Duration(seconds: 15), onTimeout: () => '');
-      throw SummaryError(_describeFailure(response.statusCode, body));
+      throw SummaryError(_describeFailure(provider, response.statusCode, body));
     }
     final lines = response.transform(utf8.decoder).transform(const LineSplitter());
     await for (final line in lines.timeout(const Duration(seconds: 60))) {
@@ -329,7 +412,7 @@ Stream<String> streamChat(String apiKey, Map<String, Object?> body,
           queued = true;
           onQueued?.call();
         }
-        if (waited.elapsed > (busyLimit ?? deepSeekBusyLimit)) throw SummaryError(deepSeekBusyMessage);
+        if (waited.elapsed > (busyLimit ?? deepSeekBusyLimit)) throw SummaryError(provider.busyMessage);
         continue;
       }
       if (!line.startsWith('data:')) continue;
@@ -350,25 +433,26 @@ Stream<String> streamChat(String apiKey, Map<String, Object?> body,
       }
     }
   } on SocketException catch (e) {
-    throw SummaryError('Couldn\'t reach DeepSeek (${e.message}).');
+    throw SummaryError('Couldn\'t reach ${provider.name} (${e.message}).');
   } on TimeoutException {
-    throw SummaryError('DeepSeek took too long to answer.');
+    throw SummaryError('${provider.name} took too long to answer.');
   } finally {
     http.close(force: true);
   }
 }
 
-String _describeFailure(int status, String body) {
+String _describeFailure(SummaryProvider provider, int status, String body) {
+  final name = provider.name;
   String? detail;
   try {
     final error = (jsonDecode(body) as Map<String, Object?>)['error'];
     if (error is Map<String, Object?>) detail = error['message'] as String?;
   } catch (_) {}
   return switch (status) {
-    401 => 'DeepSeek didn\'t accept the API key. Check it under Summarize settings.',
-    402 => 'The DeepSeek account is out of balance.',
-    429 => 'DeepSeek is rate limiting requests; try again in a moment.',
-    _ => 'DeepSeek answered with an error ($status)${detail == null ? '' : ': $detail'}.',
+    401 => '$name didn\'t accept the API key. Check it under Summarize settings.',
+    402 => 'The $name account is out of balance.',
+    429 => '$name is rate limiting requests; try again in a moment.',
+    _ => '$name answered with an error ($status)${detail == null ? '' : ': $detail'}.',
   };
 }
 
@@ -436,9 +520,9 @@ class SummaryJob extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Reads the page and asks DeepSeek for a summary, showing the panel. A summary saved for the same page (or the
+  /// Reads the page and asks [provider] for a summary, showing the panel. A summary saved for the same page (or the
   /// same selection) is shown instead unless [fresh].
-  Future<void> start(String apiKey, {bool fresh = false}) async {
+  Future<void> start(String apiKey, {bool fresh = false, SummaryProvider provider = SummaryProvider.deepSeek}) async {
     final generation = ++_generation;
     open = true;
     running = true;
@@ -468,18 +552,18 @@ class SummaryJob extends ChangeNotifier {
       url = page.url;
       selection = page.selection;
       if (page.text.trim().length < 40) throw SummaryError('This page has no text to summarize.');
-      waiting = 'Asking DeepSeek…';
+      waiting = 'Asking ${provider.name}…';
       notifyListeners();
-      await for (final piece in streamSummary(apiKey, page, onQueued: () {
+      await for (final piece in streamSummary(apiKey, page, provider: provider, onQueued: () {
         if (generation != _generation) return;
-        waiting = 'DeepSeek hasn\'t started answering yet…';
+        waiting = '${provider.name} hasn\'t started answering yet…';
         notifyListeners();
       })) {
         if (generation != _generation) return;
         text += piece;
         notifyListeners();
       }
-      if (text.trim().isEmpty) throw SummaryError('DeepSeek sent back an empty summary.');
+      if (text.trim().isEmpty) throw SummaryError('${provider.name} sent back an empty summary.');
       _save(DateTime.now());
     } on SummaryError catch (e) {
       if (generation == _generation) error = e.message;
@@ -508,9 +592,9 @@ class SummaryJob extends ChangeNotifier {
     ));
   }
 
-  /// Asks DeepSeek a follow-up [question] about the page, with the page text, the summary and the earlier questions
-  /// as context. The answer streams into the last of [questions] and is saved with the summary.
-  Future<void> ask(String apiKey, String question) async {
+  /// Asks [provider] a follow-up [question] about the page, with the page text, the summary and the earlier
+  /// questions as context. The answer streams into the last of [questions] and is saved with the summary.
+  Future<void> ask(String apiKey, String question, {SummaryProvider provider = SummaryProvider.deepSeek}) async {
     question = question.trim();
     if (question.isEmpty || running || answering || text.trim().isEmpty) return;
     final generation = _generation;
@@ -532,13 +616,14 @@ class SummaryJob extends ChangeNotifier {
         if (generation != _generation) return;
       }
       final body = questionRequest(
-          page: _page, title: title, url: url, summary: text, questions: earlier, question: question);
-      await for (final piece in streamChat(apiKey, body)) {
+          page: _page, title: title, url: url, summary: text, questions: earlier, question: question,
+          provider: provider);
+      await for (final piece in streamChat(apiKey, body, provider: provider)) {
         if (generation != _generation) return;
         entry.answer += piece;
         notifyListeners();
       }
-      if (entry.answer.trim().isEmpty) throw SummaryError('DeepSeek sent back an empty answer.');
+      if (entry.answer.trim().isEmpty) throw SummaryError('${provider.name} sent back an empty answer.');
     } on SummaryError catch (e) {
       entry.error = e.message;
     } catch (e) {
@@ -581,61 +666,79 @@ class SummaryQuestion {
   bool running = false;
 }
 
-/// The stored DeepSeek API key, or null.
-String? deepSeekApiKey() => PasswordManager.instance.vault?.secret(deepSeekKeySecret);
+/// The provider Summarize asks (see [SummaryProvider.chosen]).
+SummaryProvider summaryProvider() =>
+    SummaryProvider.chosen((name) => PasswordManager.instance.vault?.secret(name));
+
+/// The stored API key of [summaryProvider], or null.
+String? summaryApiKey() => PasswordManager.instance.vault?.secret(summaryProvider().keySecret);
 
 /// Summarizes [controller]'s page, asking for the API key first when there's none. A summary saved for the page is
-/// shown without asking DeepSeek again (the panel's redo button makes a new one).
+/// shown without asking the provider again (the panel's redo button makes a new one).
 Future<void> summarizePage(BuildContext context, WebbyController controller) async {
   final job = SummaryJob.of(controller);
   // The saved page summary wins over a selection here; redo reads the page again and summarizes the selection.
   if (job.showSaved()) return;
-  var key = deepSeekApiKey();
+  var key = summaryApiKey();
   if (key == null || key.isEmpty) {
     await showSummarizeSettings(context);
-    key = deepSeekApiKey();
+    key = summaryApiKey();
     if (key == null || key.isEmpty) return;
   }
-  job.start(key);
+  job.start(key, provider: summaryProvider());
 }
 
-/// The dialog where the DeepSeek API key is entered, replaced or removed.
+/// The dialog where the provider is picked and its API key entered, replaced or removed.
 Future<void> showSummarizeSettings(BuildContext context) async {
   final vault = PasswordManager.instance.vault;
   if (vault == null || Incognito.active) {
     showKitToast(
       context,
       Incognito.active
-          ? 'Set the DeepSeek API key in a normal window.'
+          ? 'Set the Summarize API key in a normal window.'
           : (PasswordManager.instance.error ?? 'The password vault isn\'t open, so the API key can\'t be stored.'),
     );
     return;
   }
-  final current = vault.secret(deepSeekKeySecret);
   final result = await showWebbyDialog<_KeyChoice>(
       context,
       (context) => _ApiKeyDialog(
-          hasKey: current != null, sync: vault.secretSyncs(deepSeekKeySecret), syncOn: vault.syncSettings != null));
+            provider: summaryProvider(),
+            hasKey: {for (final p in SummaryProvider.values) p: (vault.secret(p.keySecret) ?? '').isNotEmpty},
+            sync: {for (final p in SummaryProvider.values) p: vault.secretSyncs(p.keySecret)},
+            syncOn: vault.syncSettings != null,
+          ));
   if (result == null) return;
-  await vault.setSecret(deepSeekKeySecret, result.key ?? current, sync: result.sync);
+  final provider = result.provider;
+  await vault.setSecret(provider.keySecret, result.key ?? vault.secret(provider.keySecret), sync: result.sync);
+  // The choice travels with the key: a device that gets the key also switches to it.
+  if (vault.secret(providerSecret) != provider.id || vault.secretSyncs(providerSecret) != result.sync) {
+    await vault.setSecret(providerSecret, provider.id, sync: result.sync);
+  }
   if (!context.mounted) return;
+  final name = provider.name;
   showKitToast(
       context,
       result.key == null
-          ? (result.sync ? 'DeepSeek API key syncs to your other devices' : 'DeepSeek API key stays on this device')
-          : (result.key!.isEmpty ? 'DeepSeek API key removed' : 'DeepSeek API key saved'));
+          ? (result.sync ? 'Using $name; its API key syncs to your other devices' : 'Using $name; its API key stays on this device')
+          : (result.key!.isEmpty ? '$name API key removed' : '$name API key saved'));
 }
 
-/// What the key dialog was closed with: a new key ('' removes it, null keeps the saved one) and whether it syncs.
-typedef _KeyChoice = ({String? key, bool sync});
+/// What the key dialog was closed with: the provider, a new key for it ('' removes it, null keeps the saved one)
+/// and whether it syncs.
+typedef _KeyChoice = ({SummaryProvider provider, String? key, bool sync});
 
 class _ApiKeyDialog extends StatefulWidget {
-  const _ApiKeyDialog({required this.hasKey, required this.sync, required this.syncOn});
+  const _ApiKeyDialog({required this.provider, required this.hasKey, required this.sync, required this.syncOn});
 
-  final bool hasKey;
+  /// The provider in use as the dialog opens.
+  final SummaryProvider provider;
 
-  /// Whether the key syncs to the other devices, as the dialog opens.
-  final bool sync;
+  /// Whether each provider has a key saved.
+  final Map<SummaryProvider, bool> hasKey;
+
+  /// Whether each provider's key syncs to the other devices, as the dialog opens.
+  final Map<SummaryProvider, bool> sync;
 
   /// Whether this device syncs at all.
   final bool syncOn;
@@ -647,7 +750,10 @@ class _ApiKeyDialog extends StatefulWidget {
 class _ApiKeyDialogState extends State<_ApiKeyDialog> {
   final _key = TextEditingController();
   bool _obscure = true;
-  late bool _sync = widget.sync;
+  late SummaryProvider _provider = widget.provider;
+  late bool _sync = widget.sync[_provider] ?? true;
+
+  bool get _hasKey => widget.hasKey[_provider] ?? false;
 
   @override
   void dispose() {
@@ -657,16 +763,17 @@ class _ApiKeyDialogState extends State<_ApiKeyDialog> {
 
   void _save() {
     final key = _key.text.trim();
-    // With a key saved, Save with the field empty just changes whether it syncs.
-    if (key.isEmpty && !widget.hasKey) return;
-    Navigator.pop<_KeyChoice>(context, (key: key.isEmpty ? null : key, sync: _sync));
+    // With a key saved, Save with the field empty just switches to the provider and changes whether it syncs.
+    if (key.isEmpty && !_hasKey) return;
+    Navigator.pop<_KeyChoice>(context, (provider: _provider, key: key.isEmpty ? null : key, sync: _sync));
   }
 
   @override
   Widget build(BuildContext context) {
     final c = KitTheme.of(context);
+    final name = _provider.name;
     return KitDialog(
-      title: 'Summarize with DeepSeek',
+      title: 'Summarize settings',
       content: SizedBox(
         width: 420,
         child: Column(
@@ -674,7 +781,22 @@ class _ApiKeyDialogState extends State<_ApiKeyDialog> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             LabeledField(
-              label: widget.hasKey ? 'New API key (one is saved)' : 'DeepSeek API key',
+              label: 'Summarize with',
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: KitSelect<SummaryProvider>(
+                  value: _provider,
+                  options: [for (final p in SummaryProvider.values) (p, p.name)],
+                  onChanged: (p) => setState(() {
+                    _provider = p;
+                    _sync = widget.sync[p] ?? true;
+                    _key.clear();
+                  }),
+                ),
+              ),
+            ),
+            LabeledField(
+              label: _hasKey ? 'New $name API key (one is saved)' : '$name API key',
               child: KitTextField(
                 controller: _key,
                 autofocus: true,
@@ -696,17 +818,18 @@ class _ApiKeyDialogState extends State<_ApiKeyDialog> {
               onChanged: (value) => setState(() => _sync = value),
             ),
             Text(
-              'Create a key at platform.deepseek.com. It is kept encrypted in the password vault'
+              'Create a key at ${_provider.site}. It is kept encrypted in the password vault'
               '${_sync ? (widget.syncOn ? ' and synced end-to-end encrypted, like your passwords' : ' and synced, end-to-end encrypted, once sync is on') : ' on this device only'}. '
-              'Summarize sends the page\'s text to DeepSeek.',
+              'Summarize sends the page\'s text to $name.',
               style: KitText.small(context, color: c.textDim),
             ),
           ],
         ),
       ),
       actions: [
-        if (widget.hasKey)
-          KitButton.danger('Remove key', onPressed: () => Navigator.pop<_KeyChoice>(context, (key: '', sync: _sync))),
+        if (_hasKey)
+          KitButton.danger('Remove key',
+              onPressed: () => Navigator.pop<_KeyChoice>(context, (provider: _provider, key: '', sync: _sync))),
         KitButton('Cancel', onPressed: () => Navigator.pop(context)),
         KitButton.primary('Save', onPressed: _save),
       ],
@@ -772,11 +895,11 @@ class _SummaryPanelState extends State<_SummaryPanel> {
   }
 
   void _ask() {
-    final key = deepSeekApiKey();
+    final key = summaryApiKey();
     final question = _question.text.trim();
     if (key == null || question.isEmpty || job.running || job.answering) return;
     _question.clear();
-    job.ask(key, question);
+    job.ask(key, question, provider: summaryProvider());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) _scroll.jumpTo(_scroll.position.maxScrollExtent);
     });
@@ -789,7 +912,7 @@ class _SummaryPanelState extends State<_SummaryPanel> {
   @override
   Widget build(BuildContext context) {
     final c = KitTheme.of(context);
-    final key = deepSeekApiKey();
+    final key = summaryApiKey();
     final canAsk = key != null && job.text.trim().isNotEmpty && !job.running && job.error == null;
     return Material(
       color: c.surface,
@@ -826,7 +949,7 @@ class _SummaryPanelState extends State<_SummaryPanel> {
                     Icons.refresh,
                     tooltip: 'Summarize again',
                     size: 16,
-                    onPressed: job.running || job.answering || key == null ? null : () => job.start(key, fresh: true),
+                    onPressed: job.running || job.answering || key == null ? null : () => job.start(key, fresh: true, provider: summaryProvider()),
                   ),
                   KitIconButton(Icons.close, tooltip: 'Close', size: 16, onPressed: job.close),
                 ],
