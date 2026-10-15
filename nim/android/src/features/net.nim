@@ -2,8 +2,9 @@
 ## events answered on the main thread with the "http.done" command, and base.httpStream (summaries) as "httpStream"
 ## events answered piece by piece. Bodies travel in base64 so any bytes survive.
 
-import std/base64
+import std/[base64, strutils, uri]
 import ../core
+from nimkit/services import serviceImpl, Response
 
 type Done = proc (status: int, reason: string, headers: seq[(string, string)], body, error: string)
 
@@ -76,8 +77,23 @@ proc streamDone(args: JsonNode): JsonNode =
   s.onDone(args{"error"}.getStr)
   nil
 
+proc kitRequest(meth, url: string, headers: seq[(string, string)], body: string, onDone: proc (r: Response)) =
+  ## nimkit's `request` (the shared features' HTTP, nim/src/features/sync/http.nim) over the same Java client.
+  var u: Uri
+  try: u = parseUri(url)
+  except CatchableError:
+    onDone(Response(error: "Bad address: " & url))
+    return
+  if u.scheme notin ["http", "https"] or u.hostname.len == 0:
+    onDone(Response(error: "Bad address: " & url))
+    return
+  start(meth, url, @[("User-Agent", "webby")] & headers, body,
+    proc (status: int, reason: string, headers: seq[(string, string)], body, error: string) =
+      onDone(Response(status: status, reason: reason, headers: headers, body: body, error: error)))
+
 proc install*() =
   base.httpRequest = start
+  serviceImpl.request = kitRequest
   base.httpStream = startStream
   base.httpStreamCancel = cancelStream
   commands["http.done"] = finished

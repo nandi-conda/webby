@@ -16,6 +16,7 @@ on:
     branches: [main]
     paths:
       - nim/**
+      - framework/src/**
       - app/lib/src/page_compat.dart
       - app/lib/src/context_menu.dart
       - scripts/android/native.env

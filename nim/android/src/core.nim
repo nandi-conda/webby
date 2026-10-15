@@ -10,6 +10,7 @@
 import std/[dynlib, json, math, monotimes, os, random, strutils, tables, times]
 import ../../src/[base, ffi]
 import ../../src/features/omnibox/address
+from nimkit/services import serviceImpl, appName, userAgent
 export base, ffi, json, tables
 
 proc glue_log(text: cstring) {.importc, cdecl.}
@@ -148,6 +149,12 @@ proc runTimers(): int =
 
 base.startTimer = after
 base.stopTimer = cancelTimer
+# nimkit's timers (framework/src/nimkit/services.nim, used by the shared features) run on the same pump.
+serviceImpl.startTimer = after
+serviceImpl.stopTimer = cancelTimer
+serviceImpl.log = proc (text: string) = log text
+appName = "webby"
+userAgent = "webby"
 
 proc randomPrefix(): string =
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789"

@@ -1,6 +1,8 @@
 ## The non-widget services every backend provides, with one API: timers on the UI thread, a small key-value store
 ## for the app's data, and HTTP. The backend fills in the hooks when it is imported; apps call the procs below.
 
+import std/strutils
+
 type
   Response* = object
     status*: int                        ## 0 when the request failed; `error` says why
@@ -22,6 +24,7 @@ var
   serviceImpl*: Services
   platform*: string                     ## "gtk", "android" or "web", set by the backend
   appName* = "nimkit-app"               ## names the app's data folder (desktop) or key prefix (web)
+  userAgent* = ""                       ## the User-Agent of `request` where the backend sets it (default: appName)
 
 proc after*(ms: int, action: proc ()): Timer =
   ## Runs `action` once, `ms` from now, on the UI thread.
@@ -52,6 +55,7 @@ proc load*(key: string): string =
 proc store*(key, value: string) = serviceImpl.store(key, value)
 
 proc header*(r: Response, name: string): string =
+  let name = name.toLowerAscii
   for (k, v) in r.headers:
     if k == name: return v
 

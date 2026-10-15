@@ -4,6 +4,11 @@
 
 import std/[algorithm, json, math, monotimes, os, random, strutils, tables, times]
 import base, gtk, ffi, icons
+import nimkit/services
+from nimkit/backend/gtk as nkgtk import nil   # fills in nimkit's services (timers, HTTP, storage) for GTK
+
+appName = "webby"
+userAgent = "webby"
 export base, gtk, ffi, icons, json, tables
 
 # The Flutter app's page shims (lib/src/page_compat.dart), read at compile time so both front ends run the same JS.
@@ -171,34 +176,10 @@ proc flushWheel() =
     webby_view_wheel_event(q.t.view, q.x, q.y, q.dx, q.dy, q.precise, q.mods)
 
 # ---------------------------------------------------------------------------------------------------------------
-# Timers for base.startTimer (GLib sources)
+# Timers for base.startTimer: nimkit's (GLib sources, from its GTK backend)
 
-type TimerBox = ref object
-  action: proc ()
-  source: cuint
-
-var timerBoxes: Table[int, TimerBox]
-
-proc onTimerBox(data: pointer): gboolean {.cdecl.} =
-  let id = cast[int](data)
-  let box = timerBoxes.getOrDefault(id)
-  timerBoxes.del id
-  if box != nil: box.action()
-  0
-
-base.startTimer = proc (ms: int, action: proc ()): int =
-  var id {.global.} = 0
-  inc id
-  let box = TimerBox(action: action)
-  timerBoxes[id] = box
-  box.source = g_timeout_add(max(ms, 0).cuint, onTimerBox, cast[pointer](id))
-  id
-
-base.stopTimer = proc (id: int) =
-  let box = timerBoxes.getOrDefault(id)
-  if box == nil: return
-  timerBoxes.del id
-  discard g_source_remove(box.source)
+base.startTimer = serviceImpl.startTimer
+base.stopTimer = serviceImpl.stopTimer
 
 # ---------------------------------------------------------------------------------------------------------------
 # Tabs

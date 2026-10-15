@@ -187,7 +187,7 @@ proc gioRequest*(meth, url: string, headers: seq[(string, string)], body: string
   if u.query.len > 0: path.add "?" & u.query
   let q = Request(host: u.hostname, onDone: onDone, client: g_socket_client_new(), cancellable: g_cancellable_new())
   q.request = meth & " " & path & " HTTP/1.1\r\nHost: " & host & (if u.port.len > 0: ":" & u.port else: "") &
-    "\r\nUser-Agent: nimkit\r\nConnection: close\r\n"
+    "\r\nUser-Agent: " & (if userAgent.len > 0: userAgent else: appName) & "\r\nConnection: close\r\n"
   for (k, v) in headers: q.request.add k & ": " & v & "\r\n"
   if body.len > 0 or meth in ["PUT", "POST"]:
     q.request.add "Content-Length: " & $body.len & "\r\n"
