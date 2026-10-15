@@ -1,6 +1,6 @@
-## Keeps the vault, bookmarks, this device's open tabs, page summaries and saved sessions in sync with the other
-## devices (vault_sync.dart): at startup, a few seconds after each change, every five minutes, and when asked. Each
-## kind has its own blob under the vault's sync settings. Everything runs on the GTK loop, one request at a time.
+## Keeps the vault, its synced secrets, bookmarks, this device's open tabs, page summaries and saved sessions in sync
+## with the other devices (vault_sync.dart): at startup, a few seconds after each change, every five minutes, and when
+## asked. Each kind has its own blob under the vault's sync settings. Everything runs on the GTK loop, one request at a time.
 
 import std/[json, sets]
 import ../../base
@@ -32,6 +32,7 @@ proc notifyStatus() =
 proc syncNow*()
 
 proc vaultDoc(): JsonNode = docFromJson(theVault.toSyncDoc())
+proc secretsDoc(): JsonNode = docFromJson(theVault.secretsSyncDoc())
 proc bookmarksDoc(): JsonNode = docWith("bookmarks", bookmarkStore.toSyncRecords())
 proc summariesDoc(): JsonNode = docWith("summaries", summaryCache.toSyncRecords())
 proc sessionsDoc(): JsonNode = docWith("sessions", sessionStore.toSyncDoc())
@@ -114,6 +115,8 @@ proc syncNow*() =
   proc bookmarks() =
     stores(blobBookmarks, bookmarksDoc,
       proc (m: JsonNode) = discard bookmarkStore.applySyncRecords(m.section("bookmarks")), tabs)
+  proc secrets() =
+    stores(blobSecrets, secretsDoc, proc (m: JsonNode) = theVault.applySecretsSyncDoc(m), bookmarks)
 
   syncOnce(s, vaultDoc(), blobVault, proc (o: Outcome) =
     if o.error.len > 0: (finish(o.error); return)
@@ -135,7 +138,7 @@ proc syncNow*() =
         if id.len > 0 and id notin after: removed.add id
       passkeysSynced(removed)
     if not sameDoc(merged, o.doc): again = true
-    bookmarks())
+    secrets())
 
 proc enable*(s: JsonNode) =
   ## Starts syncing with these settings (from newSettings or fromPairing). Raises BadSyncCode.
@@ -165,6 +168,7 @@ proc start*() =
   ## Hooks the stores up once the vault is open, and syncs now and every five minutes.
   if theVault == nil or incognito or appUrl.len > 0: return
   theVault.onChange.add proc () = changedLocally(blobVault, vaultDoc)
+  theVault.onChange.add proc () = changedLocally(blobSecrets, secretsDoc)
   bookmarkStore.changeHooks.add proc () = changedLocally(blobBookmarks, bookmarksDoc)
   summaryCache.summaryListeners.add proc () = changedLocally(blobSummaries, summariesDoc)
   sessionStore.sessionListeners.add proc () = changedLocally(blobSessions, sessionsDoc)

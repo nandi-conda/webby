@@ -33,7 +33,8 @@ void main() {
       ..store('https://ladybird.org/', const CachedSummary(title: 'Ladybird', url: 'https://ladybird.org/', text: '- browser', at: 1));
     final sessions = SessionStore(File('${bookmarksDir.path}/sessions.json'))
       ..save([const DeviceTab('Ladybird', 'https://ladybird.org/')], name: 'Desk');
-    await vault.setSecret('deepseek-api-key', 'sk-never-synced');
+    await vault.setSecret('deepseek-api-key', 'sk-synced-key');
+    await vault.setSecret('device-only', 'sk-stays-here', sync: false);
     var removedPasskeys = <String>{};
     final sync = VaultSync(vault,
         onPasskeysChanged: (removed) => removedPasskeys = removed, bookmarks: bookmarks, tabs: tabs, summaries: summaries,
@@ -47,8 +48,12 @@ void main() {
     expect((await syncOnce(settings, SyncDoc())).doc.bookmarks, isEmpty);
     final serverSummaries = await syncOnce(settings, SyncDoc(), blob: SyncBlob.summaries);
     expect(serverSummaries.doc.summaries['https://ladybird.org/']!['text'], '- browser');
+    // Secrets travel only in their own blob, and device-only ones not at all.
     expect(serverSummaries.doc.toJson().toString() + (await syncOnce(settings, SyncDoc())).doc.toJson().toString(),
-        isNot(contains('sk-never-synced')));
+        allOf(isNot(contains('sk-synced')), isNot(contains('sk-stays'))));
+    final serverSecrets = await syncOnce(settings, SyncDoc(), blob: SyncBlob.secrets);
+    expect(serverSecrets.doc.secrets.keys, ['deepseek-api-key']);
+    expect(serverSecrets.doc.secrets['deepseek-api-key']!['value'], 'sk-synced-key');
     final serverSessions = await syncOnce(settings, SyncDoc(), blob: SyncBlob.sessions);
     expect(serverSessions.doc.sessions.values.single['name'], 'Desk');
     final serverTabs = await syncOnce(settings, SyncDoc(), blob: SyncBlob.tabs);
@@ -116,7 +121,18 @@ void main() {
       'updatedAt': now,
     };
     await syncOnce(settings, phoneSessions, blob: SyncBlob.sessions);
+    // The phone replaces the key, and tries to set the desktop's device-only one.
+    await syncOnce(
+        settings,
+        SyncDoc(secrets: {
+          'deepseek-api-key': {'value': 'sk-from-phone', 'updatedAt': now},
+          'device-only': {'value': 'sk-phone-copy', 'updatedAt': now},
+        }),
+        blob: SyncBlob.secrets);
     await sync.syncNow();
+    expect(vault.secret('deepseek-api-key'), 'sk-from-phone');
+    expect(vault.secret('device-only'), 'sk-stays-here');
+    expect(vault.secretSyncs('device-only'), isFalse);
     expect([for (final s in sessions.sessions) s.name], ['Phone', 'Renamed on phone']);
     expect(summaries.lookup('https://news.example/')!.questions.single.answer, 'them');
     expect(summaries.lookup('https://ladybird.org/')!.text, '- browser');
@@ -130,11 +146,33 @@ void main() {
     final serverView = await syncOnce(settings, SyncDoc());
     expect(isDeleted(serverView.doc.neverSave['https://never.example']!), isTrue);
 
+    // The phone removes the key: gone here too. Then a new key set here goes back up.
+    await syncOnce(
+        settings,
+        SyncDoc(secrets: {
+          'deepseek-api-key': {'updatedAt': now + 1, 'deleted': true}
+        }),
+        blob: SyncBlob.secrets);
+    await sync.syncNow();
+    expect(vault.secret('deepseek-api-key'), isNull);
+    // Clocks: the tombstone is from "now + 1", so let the local set be newer.
+    await Future<void>.delayed(const Duration(seconds: 8));
+    await vault.setSecret('deepseek-api-key', 'sk-newer-here');
+    await sync.syncNow();
+    expect((await syncOnce(settings, SyncDoc(), blob: SyncBlob.secrets)).doc.secrets['deepseek-api-key']!['value'],
+        'sk-newer-here');
+    // Unticking sync keeps the key here and stops it being taken from or sent to the server.
+    await vault.setSecret('deepseek-api-key', 'sk-newer-here', sync: false);
+    expect(vault.secretSyncs('deepseek-api-key'), isFalse);
+    expect(vault.secretsSyncDoc().secrets, isEmpty);
+
     // Reopen from disk: settings and tombstones persisted.
     await vault.flush();
     final again = await Vault.open();
     expect(again.syncSettings!.code, settings.code);
     expect(again.toSyncDoc(), vault.toSyncDoc());
+    expect(again.secretSyncs('deepseek-api-key'), isFalse);
+    expect(again.secret('device-only'), 'sk-stays-here');
 
     await sync.disable(erase: true);
     expect(vault.syncSettings, isNull);
@@ -143,6 +181,7 @@ void main() {
     expect(await settings.store(await settings.key.derive(), blob: SyncBlob.tabs).read(), isNull);
     expect(await settings.store(await settings.key.derive(), blob: SyncBlob.summaries).read(), isNull);
     expect(await settings.store(await settings.key.derive(), blob: SyncBlob.sessions).read(), isNull);
+    expect(await settings.store(await settings.key.derive(), blob: SyncBlob.secrets).read(), isNull);
     expect(tabs.devices, isEmpty);
     sync.dispose();
     bookmarksDir.deleteSync(recursive: true);

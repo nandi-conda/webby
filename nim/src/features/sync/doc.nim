@@ -1,7 +1,8 @@
 ## The synced form of everything and how two copies merge (app/lib/src/passwords/sync/sync_doc.dart). Pure Nim, no
 ## GTK, so tests can run it beside the Dart code.
 ##
-## A doc is a JsonNode object of sections (passwords, passkeys, neverSave, bookmarks, devices, summaries, sessions),
+## A doc is a JsonNode object of sections (passwords, passkeys, neverSave, bookmarks, devices, summaries, sessions,
+## secrets),
 ## each {key: record}. Records carry "updatedAt" (seconds); a deletion is a tombstone {updatedAt, deleted: true}.
 ## `canonical` is byte for byte Dart's `SyncDoc.canonical()` (jsonEncode with sorted keys, Dart's number and string
 ## forms, keys ordered by UTF-16 code units), since merge ties are broken by comparing those encodings.
@@ -12,7 +13,7 @@ const
   tombstoneLifetime* = 180 * 24 * 3600   ## seconds a deletion is remembered
   deviceLifetime* = 30 * 24 * 3600       ## seconds a silent device stays under "Tabs from other devices"
   summaryLimit* = 300
-  sectionNames* = ["passwords", "passkeys", "neverSave", "bookmarks", "devices", "summaries", "sessions"]
+  sectionNames* = ["passwords", "passkeys", "neverSave", "bookmarks", "devices", "summaries", "sessions", "secrets"]
   bookmarkRoots* = ["bar", "other"]
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -318,3 +319,4 @@ proc mergeDocs*(a, b: JsonNode, now: int64): JsonNode =
   trimSummaries(summaries)
   result["summaries"] = summaries.toNode
   result["sessions"] = mergeSection(a.section("sessions"), b.section("sessions"), expireBefore).toNode
+  result["secrets"] = mergeSection(a.section("secrets"), b.section("secrets"), expireBefore).toNode

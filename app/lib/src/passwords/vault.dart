@@ -116,6 +116,15 @@ class Vault extends ChangeNotifier {
         if (entry.value is String) _secrets[entry.key] = entry.value as String;
       }
     }
+    final secretsAt = contents['secretsAt'];
+    if (secretsAt is Map<String, Object?>) {
+      for (final entry in secretsAt.entries) {
+        if (entry.value is int) _secretsAt[entry.key] = entry.value as int;
+      }
+    }
+    for (final name in (contents['localSecrets'] as List<Object?>? ?? const [])) {
+      if (name is String) _localSecrets.add(name);
+    }
     final sync = contents['sync'];
     if (sync is Map<String, Object?>) {
       try {
@@ -143,11 +152,18 @@ class Vault extends ChangeNotifier {
   final Map<String, int> _neverSaveAt = {};
 
   /// When things were deleted (seconds), by section and key, so the deletions reach other devices.
-  final Map<String, Map<String, int>> _deleted = {'passwords': {}, 'passkeys': {}, 'neverSave': {}};
+  final Map<String, Map<String, int>> _deleted = {'passwords': {}, 'passkeys': {}, 'neverSave': {}, 'secrets': {}};
   SyncSettings? _sync;
 
-  /// This device's own secrets, such as API keys. Kept out of [toSyncDoc], so they never leave the device.
+  /// Secrets such as API keys. Kept out of [toSyncDoc]; the ones not in [_localSecrets] sync in their own blob
+  /// ([secretsSyncDoc]).
   final Map<String, String> _secrets = {};
+
+  /// When each secret was last set (seconds), for sync.
+  final Map<String, int> _secretsAt = {};
+
+  /// Names of secrets that stay on this device: never sent, and other devices' copies are ignored.
+  final Set<String> _localSecrets = {};
 
   List<SavedPassword> get passwords => List.unmodifiable(_passwords);
   List<Map<String, Object?>> get passkeys => List.unmodifiable(_passkeys);
@@ -304,6 +320,8 @@ class Vault extends ChangeNotifier {
         'deleted': _deleted,
         if (_sync != null) 'sync': _sync!.toJson(),
         if (_secrets.isNotEmpty) 'secrets': _secrets,
+        if (_secretsAt.isNotEmpty) 'secretsAt': _secretsAt,
+        if (_localSecrets.isNotEmpty) 'localSecrets': _localSecrets.toList()..sort(),
       }));
       final box = await _cipher.encrypt(clear, secretKey: _key, aad: utf8.encode(_aad));
       final envelope = jsonEncode({
@@ -402,19 +420,75 @@ class Vault extends ChangeNotifier {
     return _save();
   }
 
-  /// The device-only secret stored as [name], or null.
+  /// The secret stored as [name], or null.
   String? secret(String name) => _secrets[name];
 
-  /// Stores (or with null or empty [value], removes) a device-only secret. Secrets are never synced.
-  Future<void> setSecret(String name, String? value) {
+  /// Whether the secret [name] syncs to the other devices (when sync is on). Secrets sync unless the user said not to.
+  bool secretSyncs(String name) => !_localSecrets.contains(name);
+
+  /// Stores (or with null or empty [value], removes) a secret. With [sync] it also changes whether the secret syncs;
+  /// a synced secret's removal reaches the other devices too.
+  Future<void> setSecret(String name, String? value, {bool? sync}) {
+    final wasSyncing = secretSyncs(name);
+    final syncs = sync ?? wasSyncing;
+    syncs ? _localSecrets.remove(name) : _localSecrets.add(name);
+    final old = _secrets[name];
     if (value == null || value.isEmpty) {
-      if (_secrets.remove(name) == null) return _saving;
+      if (old == null && syncs == wasSyncing) return _saving;
+      _secrets.remove(name);
+      _secretsAt.remove(name);
+      if (old != null && syncs) _deleted['secrets']![name] = _now();
     } else {
-      if (_secrets[name] == value) return _saving;
-      _secrets[name] = value;
+      if (old == value && syncs == wasSyncing) return _saving;
+      if (old != value || syncs) {
+        // A new value, or one starting to sync: the newest copy wins on the other devices.
+        _secrets[name] = value;
+        _secretsAt[name] = _now();
+        _deleted['secrets']!.remove(name);
+      }
     }
     notifyListeners();
     return _save();
+  }
+
+  /// The secrets that sync, in their synced form: `{value, updatedAt}` by name, plus removals.
+  SyncDoc secretsSyncDoc() => SyncDoc(secrets: {
+        for (final entry in _deleted['secrets']!.entries)
+          if (!_localSecrets.contains(entry.key)) entry.key: {'updatedAt': entry.value, 'deleted': true},
+        for (final entry in _secrets.entries)
+          if (!_localSecrets.contains(entry.key)) entry.key: {'value': entry.value, 'updatedAt': _secretsAt[entry.key] ?? 0},
+      });
+
+  /// Takes in merged synced secrets; the ones kept on this device only are left alone.
+  void applySecretsSyncDoc(SyncDoc doc) {
+    var changed = false;
+    for (final entry in doc.secrets.entries) {
+      final name = entry.key;
+      final record = entry.value;
+      if (_localSecrets.contains(name)) continue;
+      final at = updatedAtOf(record);
+      if (isDeleted(record)) {
+        if (_secrets.remove(name) != null) changed = true;
+        _secretsAt.remove(name);
+        if (_deleted['secrets']![name] != at) {
+          _deleted['secrets']![name] = at;
+          changed = true;
+        }
+      } else if (record['value'] is String && (record['value'] as String).isNotEmpty) {
+        if (_secrets[name] != record['value'] || _secretsAt[name] != at) changed = true;
+        _secrets[name] = record['value'] as String;
+        _secretsAt[name] = at;
+        _deleted['secrets']!.remove(name);
+      }
+    }
+    // Removals too old to remember dropped out of the merged copy.
+    final kept = {for (final entry in doc.secrets.entries) if (isDeleted(entry.value)) entry.key};
+    final before = _deleted['secrets']!.length;
+    _deleted['secrets']!.removeWhere((name, _) => !kept.contains(name) && !_localSecrets.contains(name));
+    if (_deleted['secrets']!.length != before) changed = true;
+    if (!changed) return;
+    notifyListeners();
+    _save();
   }
 
   /// How sync is set up on this device, or null when it's off.

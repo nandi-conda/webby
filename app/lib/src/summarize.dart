@@ -14,7 +14,7 @@ import 'summary_cache.dart';
 import 'ui.dart';
 import 'web_view.dart';
 
-/// Name of the DeepSeek API key among the vault's device-only secrets (never synced).
+/// Name of the DeepSeek API key among the vault's secrets (synced unless the user unticks it).
 const deepSeekKeySecret = 'deepseek-api-key';
 
 /// Pages longer than this are cut before they're sent, to keep requests quick and cheap.
@@ -577,16 +577,34 @@ Future<void> showSummarizeSettings(BuildContext context) async {
     );
     return;
   }
-  final result = await showWebbyDialog<String>(context, (context) => _ApiKeyDialog(hasKey: vault.secret(deepSeekKeySecret) != null));
+  final current = vault.secret(deepSeekKeySecret);
+  final result = await showWebbyDialog<_KeyChoice>(
+      context,
+      (context) => _ApiKeyDialog(
+          hasKey: current != null, sync: vault.secretSyncs(deepSeekKeySecret), syncOn: vault.syncSettings != null));
   if (result == null) return;
-  await vault.setSecret(deepSeekKeySecret, result.trim());
-  if (context.mounted) showKitToast(context, result.trim().isEmpty ? 'DeepSeek API key removed' : 'DeepSeek API key saved');
+  await vault.setSecret(deepSeekKeySecret, result.key ?? current, sync: result.sync);
+  if (!context.mounted) return;
+  showKitToast(
+      context,
+      result.key == null
+          ? (result.sync ? 'DeepSeek API key syncs to your other devices' : 'DeepSeek API key stays on this device')
+          : (result.key!.isEmpty ? 'DeepSeek API key removed' : 'DeepSeek API key saved'));
 }
 
+/// What the key dialog was closed with: a new key ('' removes it, null keeps the saved one) and whether it syncs.
+typedef _KeyChoice = ({String? key, bool sync});
+
 class _ApiKeyDialog extends StatefulWidget {
-  const _ApiKeyDialog({required this.hasKey});
+  const _ApiKeyDialog({required this.hasKey, required this.sync, required this.syncOn});
 
   final bool hasKey;
+
+  /// Whether the key syncs to the other devices, as the dialog opens.
+  final bool sync;
+
+  /// Whether this device syncs at all.
+  final bool syncOn;
 
   @override
   State<_ApiKeyDialog> createState() => _ApiKeyDialogState();
@@ -595,6 +613,7 @@ class _ApiKeyDialog extends StatefulWidget {
 class _ApiKeyDialogState extends State<_ApiKeyDialog> {
   final _key = TextEditingController();
   bool _obscure = true;
+  late bool _sync = widget.sync;
 
   @override
   void dispose() {
@@ -603,8 +622,10 @@ class _ApiKeyDialogState extends State<_ApiKeyDialog> {
   }
 
   void _save() {
-    if (_key.text.trim().isEmpty) return;
-    Navigator.pop(context, _key.text.trim());
+    final key = _key.text.trim();
+    // With a key saved, Save with the field empty just changes whether it syncs.
+    if (key.isEmpty && !widget.hasKey) return;
+    Navigator.pop<_KeyChoice>(context, (key: key.isEmpty ? null : key, sync: _sync));
   }
 
   @override
@@ -635,16 +656,23 @@ class _ApiKeyDialogState extends State<_ApiKeyDialog> {
                 ),
               ),
             ),
+            KitCheckbox(
+              value: _sync,
+              label: 'Sync this key to my other devices',
+              onChanged: (value) => setState(() => _sync = value),
+            ),
             Text(
-              'Create a key at platform.deepseek.com. It is kept encrypted in this device\'s password vault and is '
-              'never synced. Summarize sends the page\'s text to DeepSeek.',
+              'Create a key at platform.deepseek.com. It is kept encrypted in the password vault'
+              '${_sync ? (widget.syncOn ? ' and synced end-to-end encrypted, like your passwords' : ' and synced, end-to-end encrypted, once sync is on') : ' on this device only'}. '
+              'Summarize sends the page\'s text to DeepSeek.',
               style: KitText.small(context, color: c.textDim),
             ),
           ],
         ),
       ),
       actions: [
-        if (widget.hasKey) KitButton.danger('Remove key', onPressed: () => Navigator.pop(context, '')),
+        if (widget.hasKey)
+          KitButton.danger('Remove key', onPressed: () => Navigator.pop<_KeyChoice>(context, (key: '', sync: _sync))),
         KitButton('Cancel', onPressed: () => Navigator.pop(context)),
         KitButton.primary('Save', onPressed: _save),
       ],

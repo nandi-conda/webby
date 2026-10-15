@@ -1,7 +1,7 @@
 ## Summarize (app/lib/src/summarize.dart): reads the page's text through a page script, streams a summary from
 ## DeepSeek into the side panel, answers follow-up questions about the page, and saves both (summarize/cache.nim).
-## The API key is a device-only secret in the password vault; without the vault (getSecret is nil) it is asked for
-## and kept in memory until Webby quits.
+## The API key is a secret in the password vault, synced to the other devices unless unticked; without the vault
+## (getSecret is nil) it is asked for and kept in memory until Webby quits.
 
 import std/[json, random, strutils, times]
 import ../browser
@@ -68,8 +68,8 @@ proc apiKey(): string =
     result = getSecret(deepSeekKeySecret)
   if result.len == 0: result = memoryKey
 
-proc storeKey(value: string) =
-  if setSecret != nil: setSecret(deepSeekKeySecret, value)
+proc storeKey(value: string, sync: bool) =
+  if setSecret != nil: setSecret(deepSeekKeySecret, value, sync)
   else: memoryKey = value
 
 
@@ -104,8 +104,12 @@ proc showSummarizeSettings*() =
   let show = gtk_check_button_new_with_mnemonic("Sho_w key")
   connect(show, "toggled", onShowKey, entry)
   gtk_box_pack_start(box, show, 0, 0, 0)
+  let sync = gtk_check_button_new_with_mnemonic("S_ync this key to my other devices")
+  gtk_toggle_button_set_active(sync, cint(secretSyncs == nil or secretSyncs(deepSeekKeySecret)))
+  if setSecret != nil: gtk_box_pack_start(box, sync, 0, 0, 0)
   let where =
-    if setSecret != nil: "It is kept encrypted in this device's password vault and is never synced."
+    if setSecret != nil: "It is kept encrypted in the password vault; when it syncs, it travels end-to-end " &
+      "encrypted like your passwords."
     else: "The password vault isn't available, so the key is kept in memory until Webby quits."
   let info = markupLabel("<small>" & escapeMarkup("Create a key at platform.deepseek.com. " & where &
     " Summarize sends the page's text to DeepSeek.") & "</small>", selectable = false)
@@ -115,9 +119,13 @@ proc showSummarizeSettings*() =
   while true:
     let r = gtk_dialog_run(d)
     let text = ($gtk_entry_get_text(entry)).strip
-    if r == GTK_RESPONSE_OK and text.len == 0: continue
-    if r == GTK_RESPONSE_OK: storeKey(text)
-    elif r == GTK_RESPONSE_REJECT: storeKey("")
+    let syncs = gtk_toggle_button_get_active(sync) != 0
+    if r == GTK_RESPONSE_OK and text.len == 0:
+      # With a key saved, Save with the field empty just changes whether it syncs.
+      if not hasKey: continue
+      storeKey(apiKey(), syncs)
+    elif r == GTK_RESPONSE_OK: storeKey(text, syncs)
+    elif r == GTK_RESPONSE_REJECT: storeKey("", syncs)
     break
   gtk_widget_destroy(d)
   render()

@@ -91,6 +91,7 @@ class SyncKey {
       tabsBlobId: _hex(await part('id-tabs')),
       summariesBlobId: _hex(await part('id-summaries')),
       sessionsBlobId: _hex(await part('id-sessions')),
+      secretsBlobId: _hex(await part('id-secrets')),
       authToken: base64UrlEncode(await part('auth')).replaceAll('=', ''),
       encryptionKey: SecretKey(await part('enc')),
     );
@@ -105,6 +106,7 @@ class SyncKeys {
       required this.tabsBlobId,
       required this.summariesBlobId,
       required this.sessionsBlobId,
+      required this.secretsBlobId,
       required this.authToken,
       required this.encryptionKey});
 
@@ -122,6 +124,9 @@ class SyncKeys {
 
   /// The same for the saved sessions blob.
   final String sessionsBlobId;
+
+  /// The same for the secrets blob (API keys the user lets sync).
+  final String secretsBlobId;
 
   /// Bearer token for the webby-sync server, which keeps only its hash.
   final String authToken;

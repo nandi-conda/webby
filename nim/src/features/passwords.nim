@@ -7,7 +7,7 @@
 ##   passwords/panel.nim     the "Passwords and passkeys" side panel
 ##   passwords/generator.nim strong passwords
 ## This module: the page script (read from page_script.dart at compile time), save / fill / generate offers in a bar
-## above the page, the passkey dialog (webauthnHandler) and the vault's device-only secrets (getSecret/setSecret).
+## above the page, the passkey dialog (webauthnHandler) and the vault's secrets (getSecret/setSecret/secretSyncs).
 ##
 ## For sync (a separate feature on top of this one), import features/passwords/[vault, manager, panel]:
 ##   theVault (nil if it couldn't open; read-only in incognito), theVault.onChange.add(proc), theVault.toSyncDoc()
@@ -273,9 +273,10 @@ proc onWebauthn(t: Tab, request: JsonNode) =
 
 proc install*() =
   browser.getSecret = proc (name: string): string = (if theVault == nil: "" else: vault.secret(theVault, name))
-  browser.setSecret = proc (name, value: string) =
-    if theVault != nil: vault.setSecret(theVault, name, value)
+  browser.setSecret = proc (name, value: string, sync: bool) =
+    if theVault != nil: vault.setSecret(theVault, name, value, sync)
     else: stderr.writeLine "webby: no password vault to keep ", name, " in"
+  browser.secretSyncs = proc (name: string): bool = theVault == nil or vault.secretSyncs(theVault, name)
   webauthnHandler = onWebauthn
   windowHooks.add proc () =
     startManager()

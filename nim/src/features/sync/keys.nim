@@ -18,7 +18,7 @@ type
   SyncDecryptError* = object of CatchableError ## the server's copy can't be read with this key
 
   SyncKeys* = object
-    blobId*, bookmarksBlobId*, tabsBlobId*, summariesBlobId*, sessionsBlobId*: string  ## 64 hex characters each
+    blobId*, bookmarksBlobId*, tabsBlobId*, summariesBlobId*, sessionsBlobId*, secretsBlobId*: string  ## 64 hex each
     authToken*: string       ## Bearer token for the webby-sync server, which keeps only its hash
     encryptionKey*: string   ## 32 bytes
 
@@ -130,6 +130,7 @@ proc deriveKeys*(code: string): SyncKeys =
   proc part(info: string): string = hkdf32(key, version, info)
   SyncKeys(blobId: hex(part("id")), bookmarksBlobId: hex(part("id-bookmarks")), tabsBlobId: hex(part("id-tabs")),
     summariesBlobId: hex(part("id-summaries")), sessionsBlobId: hex(part("id-sessions")),
+    secretsBlobId: hex(part("id-secrets")),
     authToken: encode(part("auth"), safe = true).strip(leading = false, chars = {'='}),
     encryptionKey: part("enc"))
 

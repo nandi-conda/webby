@@ -15,8 +15,8 @@ import 'sync_store.dart';
 int _now() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
 
 /// Keeps one [Vault], and the profile's [bookmarks], in sync with the other devices: at startup, a few seconds after
-/// each change, every few minutes, and when asked. Bookmarks, this device's open [tabs], page [summaries] and saved
-/// [sessions] use the vault's sync settings and a blob each.
+/// each change, every few minutes, and when asked. The vault's synced secrets (API keys), bookmarks, this device's
+/// open [tabs], page [summaries] and saved [sessions] use the vault's sync settings and a blob each.
 class VaultSync extends ChangeNotifier {
   VaultSync(this.vault, {required this.onPasskeysChanged, this.bookmarks, this.tabs, this.summaries, this.sessions}) {
     vault.addListener(_onVaultChanged);
@@ -45,6 +45,7 @@ class VaultSync extends ChangeNotifier {
   Timer? _debounce;
   Timer? _tabsDebounce;
   SyncDoc? _lastSynced;
+  SyncDoc? _lastSyncedSecrets;
   SyncDoc? _lastSyncedBookmarks;
   SyncDoc? _lastSyncedSummaries;
   SyncDoc? _lastSyncedSessions;
@@ -58,7 +59,12 @@ class VaultSync extends ChangeNotifier {
 
   void _onVaultChanged() {
     if (!enabled || _running) return;
-    if (_lastSynced != null && vault.toSyncDoc() == _lastSynced) return;
+    if (_lastSynced != null &&
+        vault.toSyncDoc() == _lastSynced &&
+        _lastSyncedSecrets != null &&
+        vault.secretsSyncDoc() == _lastSyncedSecrets) {
+      return;
+    }
     _debounce?.cancel();
     _debounce = Timer(const Duration(seconds: 3), syncNow);
   }
@@ -95,6 +101,7 @@ class VaultSync extends ChangeNotifier {
   Future<void> enable(SyncSettings settings) async {
     SyncKey.fromCode(settings.code);
     _lastSynced = null;
+    _lastSyncedSecrets = null;
     _lastSyncedBookmarks = null;
     _lastSyncedSummaries = null;
     _lastSyncedSessions = null;
@@ -114,10 +121,12 @@ class VaultSync extends ChangeNotifier {
       await settings.store(keys, blob: SyncBlob.tabs).delete();
       await settings.store(keys, blob: SyncBlob.summaries).delete();
       await settings.store(keys, blob: SyncBlob.sessions).delete();
+      await settings.store(keys, blob: SyncBlob.secrets).delete();
     }
     _debounce?.cancel();
     _tabsDebounce?.cancel();
     _lastSynced = null;
+    _lastSyncedSecrets = null;
     _lastSyncedBookmarks = null;
     _lastSyncedSummaries = null;
     _lastSyncedSessions = null;
@@ -151,6 +160,7 @@ class VaultSync extends ChangeNotifier {
         onPasskeysChanged(before.difference(after).whereType<String>().toSet());
       }
       if (merged != outcome.doc) _again = true;
+      await _syncSecrets(settings);
       if (bookmarks != null) await _syncBookmarks(settings, bookmarks!);
       if (tabs != null) await _syncTabs(settings, tabs!);
       if (summaries != null) await _syncSummaries(settings, summaries!);
@@ -168,6 +178,15 @@ class VaultSync extends ChangeNotifier {
         unawaited(syncNow());
       }
     }
+  }
+
+  Future<void> _syncSecrets(SyncSettings settings) async {
+    final outcome = await syncOnce(settings, vault.secretsSyncDoc(), blob: SyncBlob.secrets);
+    if (vault.syncSettings?.code != settings.code) return;
+    final merged = mergeDocs(vault.secretsSyncDoc(), outcome.doc, now: _now());
+    _lastSyncedSecrets = outcome.doc;
+    vault.applySecretsSyncDoc(merged);
+    if (merged != outcome.doc) _again = true;
   }
 
   Future<void> _syncBookmarks(SyncSettings settings, BookmarkStore bookmarks) async {

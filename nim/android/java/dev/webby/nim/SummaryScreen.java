@@ -204,7 +204,7 @@ final class SummaryScreen {
         return t;
     }
 
-    /** The DeepSeek API key: entered, replaced or removed; kept in the vault as a device-only secret. */
+    /** The DeepSeek API key: entered, replaced or removed; kept in the vault, synced unless unticked. */
     static void settings(MainActivity a, Runnable then) {
         JSONObject k = Native.obj("summarize.key");
         if (k == null) return;
@@ -227,20 +227,29 @@ final class SummaryScreen {
             key.setSelection(key.getText().length());
         });
         form.addView(show);
-        TextView info = Ui.text(a, "Create a key at platform.deepseek.com. It is kept encrypted in this device's "
-            + "password vault and is never synced. Summarize sends the page's text to DeepSeek.", 13, Ui.dim);
+        CheckBox sync = new CheckBox(a);
+        sync.setText("Sync this key to my other devices");
+        sync.setTextColor(Ui.foreground);
+        sync.setChecked(k.optBoolean("sync", true));
+        form.addView(sync);
+        TextView info = Ui.text(a, "Create a key at platform.deepseek.com. It is kept encrypted in the password "
+            + "vault; when it syncs, it travels end-to-end encrypted like your passwords. Summarize sends the page's "
+            + "text to DeepSeek.", 13, Ui.dim);
         info.setSingleLine(false);
         form.addView(info);
         AlertDialog.Builder b = new AlertDialog.Builder(a).setTitle("Summarize with DeepSeek").setView(form)
             .setPositiveButton("Save", (d, w) -> {
                 String v = key.getText().toString().trim();
-                if (v.isEmpty()) return;
-                JSONObject r = Native.obj("summarize.key", "key", v);
+                // With a key saved, Save with the field empty just changes whether it syncs.
+                if (v.isEmpty() && !hasKey) return;
+                JSONObject r = v.isEmpty() ? Native.obj("summarize.key", "sync", sync.isChecked())
+                    : Native.obj("summarize.key", "key", v, "sync", sync.isChecked());
                 if (r != null && !r.optString("error").isEmpty()) Ui.toast(a, r.optString("error"));
                 else if (then != null) then.run();
             })
             .setNegativeButton("Cancel", null);
-        if (hasKey) b.setNeutralButton("Remove key", (d, w) -> Native.cmd("summarize.key", "key", ""));
+        if (hasKey) b.setNeutralButton("Remove key",
+            (d, w) -> Native.cmd("summarize.key", "key", "", "sync", sync.isChecked()));
         b.show();
     }
 }

@@ -4,7 +4,7 @@
 import std/[json, strutils]
 
 const
-  deepSeekKeySecret* = "deepseek-api-key"   ## the key's name among the vault's device-only secrets
+  deepSeekKeySecret* = "deepseek-api-key"   ## the key's name among the vault's secrets (synced unless unticked)
   maxSummaryInputChars* = 40000             ## longer pages are cut before they're sent
 
 proc dartScript*(name: string): string {.compileTime.} =

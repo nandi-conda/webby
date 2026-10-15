@@ -240,8 +240,9 @@ proc install*() =
     let (ok, r) = callJava("keystorePut", $(%*{"profile": profile, "secret": secret}))
     if not ok or r != "ok": raise newException(KeyringError, "the Android keystore failed")
   base.getSecret = proc (name: string): string = (if theVault == nil: "" else: vault.secret(theVault, name))
-  base.setSecret = proc (name, value: string) =
-    if theVault != nil: vault.setSecret(theVault, name, value)
+  base.setSecret = proc (name, value: string, sync: bool) =
+    if theVault != nil: vault.setSecret(theVault, name, value, sync)
+  base.secretSyncs = proc (name: string): bool = theVault == nil or vault.secretSyncs(theVault, name)
   startupHooks.add proc () = startManager()
   webauthnHandler = onWebauthn
   tabStateHooks.add onTabState

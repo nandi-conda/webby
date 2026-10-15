@@ -10,7 +10,7 @@ import doc, keys, http
 const defaultSyncServer* = "https://webby-sync.fly.dev"
 
 type
-  SyncBlob* = enum blobVault, blobBookmarks, blobTabs, blobSummaries, blobSessions
+  SyncBlob* = enum blobVault, blobBookmarks, blobTabs, blobSummaries, blobSessions, blobSecrets
 
   BlobStore = object
     url, auth: string
@@ -74,6 +74,7 @@ proc store(s: JsonNode, k: SyncKeys, blob: SyncBlob): BlobStore =
     of blobTabs: k.tabsBlobId
     of blobSummaries: k.summariesBlobId
     of blobSessions: k.sessionsBlobId
+    of blobSecrets: k.secretsBlobId
   if s.isWebdav:
     BlobStore(url: base & "/webby-sync-" & id[0 ..< 32] & ".json", webdav: true,
       auth: "Basic " & encode(s{"username"}.getStr & ":" & s{"password"}.getStr))

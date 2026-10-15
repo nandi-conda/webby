@@ -89,6 +89,22 @@ void main() {
     });
   });
 
+  test('secrets: newest wins, deletions win over older values, either order', () {
+    final a = SyncDoc(secrets: {
+      'k': {'value': 'old', 'updatedAt': 10},
+      'gone': {'value': 'x', 'updatedAt': 10},
+    });
+    final b = SyncDoc(secrets: {
+      'k': {'value': 'new', 'updatedAt': 20},
+      'gone': {'updatedAt': 15, 'deleted': true},
+    });
+    final merged = mergeDocs(a, b, now: 100);
+    expect(merged, mergeDocs(b, a, now: 100));
+    expect(merged.secrets['k']!['value'], 'new');
+    expect(isDeleted(merged.secrets['gone']!), isTrue);
+    expect(SyncDoc.fromJson(merged.toJson()), merged);
+  });
+
   group('sync code', () {
     test('round-trips and tolerates sloppy typing', () {
       final key = SyncKey.generate();

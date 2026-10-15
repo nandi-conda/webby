@@ -41,7 +41,7 @@ abstract class BlobStore {
 }
 
 /// The blobs a sync key has on the server, all with the same token and encryption key.
-enum SyncBlob { vault, bookmarks, tabs, summaries, sessions }
+enum SyncBlob { vault, bookmarks, tabs, summaries, sessions, secrets }
 
 /// Which kind of storage the user picked.
 enum SyncBackend { webbySync, webdav }
@@ -146,6 +146,7 @@ class SyncSettings {
       SyncBlob.tabs => keys.tabsBlobId,
       SyncBlob.summaries => keys.summariesBlobId,
       SyncBlob.sessions => keys.sessionsBlobId,
+      SyncBlob.secrets => keys.secretsBlobId,
     };
     if (backend == SyncBackend.webdav) {
       final login = base64Encode(utf8.encode('$username:$password'));

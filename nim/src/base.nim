@@ -9,10 +9,11 @@ var
   appUrl*: string              ## --app=<url>: an installed web app's own window (no tab strip, no URL bar)
   incognito*: bool             ## --incognito: this process keeps nothing (see app/lib/src/incognito.dart)
 
-  # Device-only secrets kept in the password vault (e.g. the DeepSeek key), set by the passwords feature.
-  # nil until it installs; getSecret returns "" when there is none.
+  # Secrets kept in the password vault (e.g. the DeepSeek key), set by the passwords feature. nil until it installs;
+  # getSecret returns "" when there is none. A secret syncs to the other devices unless secretSyncs says no.
   getSecret*: proc (name: string): string
-  setSecret*: proc (name, value: string)
+  setSecret*: proc (name, value: string, sync: bool)
+  secretSyncs*: proc (name: string): bool
 
   # Timers on the front end's main loop, set by it (GLib on the desktop, the pump on Android): `action` runs once,
   # `ms` from now; the id stops it.

@@ -16,8 +16,8 @@ const summaryLimit = 300;
 ///
 /// Bookmarks travel in their own blob (see [SyncKeys.bookmarksBlobId]), so webby versions that predate bookmark
 /// sync never see them and can't drop them; in that blob only [bookmarks] is used. Open tabs are the same, in a third
-/// blob holding only [devices], page summaries in a fourth holding only [summaries], and saved sessions in a fifth
-/// holding only [sessions].
+/// blob holding only [devices], page summaries in a fourth holding only [summaries], saved sessions in a fifth
+/// holding only [sessions], and synced secrets (API keys) in a sixth holding only [secrets].
 ///
 /// Each record is a JSON map with an `updatedAt` (seconds since the epoch). A deleted item stays as a tombstone
 /// `{updatedAt, deleted: true}` (passwords also keep `id`) until [tombstoneLifetime] has passed.
@@ -30,7 +30,9 @@ class SyncDoc {
     Map<String, Map<String, Object?>>? devices,
     Map<String, Map<String, Object?>>? summaries,
     Map<String, Map<String, Object?>>? sessions,
-  })  : summaries = summaries ?? {},
+    Map<String, Map<String, Object?>>? secrets,
+  })  : secrets = secrets ?? {},
+        summaries = summaries ?? {},
         sessions = sessions ?? {},
         passwords = passwords ?? {},
         passkeys = passkeys ?? {},
@@ -55,7 +57,8 @@ class SyncDoc {
         bookmarks: section('bookmarks'),
         devices: section('devices'),
         summaries: section('summaries'),
-        sessions: section('sessions'));
+        sessions: section('sessions'),
+        secrets: section('secrets'));
   }
 
   final Map<String, Map<String, Object?>> passwords;
@@ -81,6 +84,9 @@ class SyncDoc {
   /// out rewrites the whole record, and the newest version wins.
   final Map<String, Map<String, Object?>> sessions;
 
+  /// Secrets such as API keys by name: `{value, updatedAt}`. Only the ones the user lets sync; the newest wins.
+  final Map<String, Map<String, Object?>> secrets;
+
   Map<String, Object?> toJson() => {
         'version': 1,
         'passwords': _sorted(passwords),
@@ -90,6 +96,7 @@ class SyncDoc {
         if (devices.isNotEmpty) 'devices': _sorted(devices),
         if (summaries.isNotEmpty) 'summaries': _sorted(summaries),
         if (sessions.isNotEmpty) 'sessions': _sorted(sessions),
+        if (secrets.isNotEmpty) 'secrets': _sorted(secrets),
       };
 
   /// A stable encoding: equal documents encode to equal strings.
@@ -177,6 +184,7 @@ SyncDoc mergeDocs(SyncDoc a, SyncDoc b, {required int now}) {
       ..removeWhere((_, record) => !isDeleted(record) && updatedAtOf(record) < now - deviceLifetime.inSeconds),
     summaries: _trimSummaries(_mergeSection(a.summaries, b.summaries, expireBefore)),
     sessions: _mergeSection(a.sessions, b.sessions, expireBefore),
+    secrets: _mergeSection(a.secrets, b.secrets, expireBefore),
   );
 }
 

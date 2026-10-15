@@ -1,7 +1,7 @@
 ## Summarize on Android (src/features/summarize.nim on the desktop): reads the page's text with the Dart app's page
 ## script, streams a summary from DeepSeek (summarize/deepseek.nim over base.httpStream), answers follow-up questions
 ## and saves both in summaries.json (summarize/cache.nim). Java's SummaryScreen shows the "summary" events this
-## sends: the whole state, with the markdown already turned into HTML. The API key is a device-only vault secret.
+## sends: the whole state, with the markdown already turned into HTML. The API key is a vault secret, synced unless unticked.
 
 import std/[random, strutils, times]
 import ../core
@@ -263,14 +263,17 @@ proc jumpCmd(args: JsonNode): JsonNode =
   %true
 
 proc keyCmd(args: JsonNode): JsonNode =
-  ## {} -> {hasKey, vault}; {key} stores it ("" removes it).
-  if args.hasKey("key"):
+  ## {} -> {hasKey, vault, sync}; {key, sync?} stores it ("" removes it); {sync} alone changes whether it syncs.
+  let sync = if args{"sync"}.kind == JBool: args["sync"].getBool
+             else: secretSyncs == nil or secretSyncs(deepSeekKeySecret)
+  if args.hasKey("key") or args{"sync"}.kind == JBool:
     if setSecret == nil: return %*{"error": "The password vault isn't available."}
-    let key = args{"key"}.getStr.strip
-    setSecret(deepSeekKeySecret, key)
+    let key = if args.hasKey("key"): args{"key"}.getStr.strip else: apiKey()
+    setSecret(deepSeekKeySecret, key, sync)
     if apiKey() != key: return %*{"error": "The password vault isn't open, so the key wasn't saved."}
     if shown != nil: changed(shown)
-  %*{"hasKey": apiKey().len > 0, "vault": setSecret != nil}
+  %*{"hasKey": apiKey().len > 0, "vault": setSecret != nil,
+     "sync": secretSyncs == nil or secretSyncs(deepSeekKeySecret)}
 
 proc install*() =
   pageMessageHooks.add onPageMessage
