@@ -929,15 +929,33 @@ proc reloadOrStop*() =
   if t.loading: webby_view_stop(t.view) else: webby_view_reload(t.view)
   wake()
 
-proc onWindowKey(w: Widget, e: GEvent, data: pointer): gboolean {.cdecl.} =
-  var keyval: cuint
-  discard gdk_event_get_keyval(e, addr keyval)
-  let mods = modifiers(eventState(e))
-  let k = if keyval in 0x41'u32 .. 0x5a'u32: keyval + 0x20 else: keyval
+proc shortcutKey(e: kit.KeyEvent): uint32 =
+  ## The key as shortcuts name it: a GDK keyval, letters in lower case. Backends without keyvals (Android) give
+  ## the Windows key code, mapped over.
+  if e.keyval != 0:
+    return if e.keyval in 0x41'u32 .. 0x5a'u32: e.keyval + 0x20 else: e.keyval
+  case e.code
+  of 0x41 .. 0x5a: uint32(e.code + 0x20)                                # letters
+  of 0x30 .. 0x39: uint32(e.code)                                       # digits
+  of 0x70 .. 0x7b: uint32(0xffbe + e.code - 0x70)                       # F1..F12
+  of 0x09: (if (e.mods and modShift) != 0: 0xfe20'u32 else: 0xff09'u32)  # Tab (Shift+Tab is ISO_Left_Tab)
+  of 0x1b: 0xff1b                                                       # Esc
+  of 0x21: 0xff55                                                       # Page Up
+  of 0x22: 0xff56                                                       # Page Down
+  of 0x25: 0xff51                                                       # Left
+  of 0x27: 0xff53                                                       # Right
+  of 0x2e: 0xffff                                                       # Delete
+  of 0xbb: 0x3d                                                         # =
+  of 0xbd: 0x2d                                                         # -
+  of 0x6b: 0xffab                                                       # keypad +
+  of 0x6d: 0xffad                                                       # keypad -
+  else: 0
+
+proc onShortcutKey(e: kit.KeyEvent): bool =
+  let k = shortcutKey(e)
+  if k == 0: return false
   for s in shortcuts:
-    if s.mods == mods and s.keyval == k and s.action():
-      return 1
-  0
+    if s.mods == e.mods and s.keyval == k and s.action(): return true
 
 proc quit*() =
   ## Asks the quit hooks (any may cancel), then shuts down.
@@ -948,9 +966,6 @@ proc quit*() =
   for h in shutdownHooks: h()
   gtk_main_quit()
 
-proc onDelete(w: Widget, e: GEvent, data: pointer): gboolean {.cdecl.} =
-  quit()
-  1
 
 proc defaultShortcuts() =
   addShortcut(modCtrl, 0x74, proc () = discard openTab(homePage))                       # Ctrl+T
@@ -1016,9 +1031,9 @@ proc buildWindow() =
   gtk_window_set_default_size(window, 1280, 800)
   gtk_window_set_title(window, if incognito: "Webby (Incognito)" else: "Webby")
   setAppIcon(window)
-  connect(window, "delete-event", onDelete)
-  connect(window, "key-press-event", onWindowKey)
-  nkgtk.useWindow(window)   # nimkit's menus and dialogs belong to it (its own key and close handlers do nothing)
+  kit.onWindowKey = onShortcutKey
+  kit.onCloseRequest = proc (): bool = (quit(); false)
+  nkgtk.useWindow(window)   # nimkit's menus and dialogs belong to it; keys and closing go to onWindowKey/onCloseRequest
   kit.registerIcons(idata.iconPaths, idata.iconEm)
   loadCss(css)
 
