@@ -2,6 +2,7 @@
 
 import std/[os, strutils, uri]
 import ../../browser
+from nimkit/core as kit import nil
 
 proc gtk_widget_get_parent*(w: Widget): Widget {.importc, cdecl.}
 proc gdk_event_copy*(e: GEvent): GEvent {.importc, cdecl.}
@@ -21,36 +22,9 @@ proc connectAction*(w: Widget, signal: string, action: proc () {.closure.}) =
   connect(w, signal, proc (w: Widget, d: pointer) {.cdecl.} = cast[ref proc ()](d)[](), cast[pointer](cb))
   connect(w, "destroy", proc (w: Widget, d: pointer) {.cdecl.} = GC_unref(cast[ref proc ()](d)), cast[pointer](cb))
 
-proc gtk_window_get_position(w: Widget, x, y: ptr cint) {.importc, cdecl.}
-proc gtk_window_move(w: Widget, x, y: cint) {.importc, cdecl.}
-
-var toastWindow, toastLabel: Widget
-var toastTimer: cuint
-
 proc toast*(text: string) =
   ## A message floating over the bottom of the page for a few seconds.
-  if toastWindow == nil:
-    toastWindow = gtk_window_new(1)   # GTK_WINDOW_POPUP
-    gtk_window_set_transient_for(toastWindow, window)
-    toastLabel = gtk_label_new("")
-    addClass(toastWindow, "webby-toast")
-    gtk_label_set_ellipsize(toastLabel, PANGO_ELLIPSIZE_END)
-    gtk_label_set_max_width_chars(toastLabel, 90)
-    for (f, m) in [(gtk_widget_set_margin_start, 14), (gtk_widget_set_margin_end, 14), (gtk_widget_set_margin_top, 8),
-                   (gtk_widget_set_margin_bottom, 8)]: f(toastLabel, m.cint)
-    gtk_container_add(toastWindow, toastLabel)
-  gtk_label_set_text(toastLabel, text.cstring)
-  gtk_widget_show_all(toastWindow)
-  var x, y, w, h, tw, th: cint
-  gtk_window_get_position(window, addr x, addr y)
-  gtk_window_get_size(window, addr w, addr h)
-  gtk_window_get_size(toastWindow, addr tw, addr th)
-  gtk_window_move(toastWindow, x + (w - tw) div 2, y + h - th - 32)
-  if toastTimer != 0: discard g_source_remove(toastTimer)
-  toastTimer = g_timeout_add(4000, proc (d: pointer): gboolean {.cdecl.} =
-    toastTimer = 0
-    gtk_widget_hide(toastWindow)
-    0, nil)
+  kit.toast(text)
 
 proc isBlank*(t: Tab): bool = t == nil or t.url.len == 0 or t.url == "about:blank"
 

@@ -48,6 +48,9 @@ progress { width: 100%; height: 6px; }
 .nk-popover { position: fixed; z-index: 9; box-sizing: border-box; background: #fff; color: #222;
   border: 1px solid rgba(0,0,0,0.15); border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.2); padding: 4px 0; }
 @media (prefers-color-scheme: dark) { .nk-popover { background: #2a2a2c; color: #eee; } }
+.nk-toast { position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%); z-index: 10; max-width: 80vw;
+  padding: 8px 14px; border-radius: 8px; background: rgba(32,32,32,0.9); color: #fff; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
 .nk-popover.nk-modal { padding: 12px; max-width: calc(100vw - 16px); }
 .nk-icon { display: inline-block; flex: none; fill: currentColor; vertical-align: middle; }
 button > .nk-icon + span:not(:empty) { margin-left: 6px; }
@@ -587,6 +590,19 @@ backend.showPopover = proc (p: Popover) =
 backend.hidePopover = proc (p: Popover) =
   for (q, e) in popoverEls:
     if q == p: e.style.display = "none".cstring
+
+var
+  toastEl: JsObject
+  toastTimer: JsObject
+
+backend.toast = proc (text: string) =
+  if toastEl == nil:
+    toastEl = el("div", "nk-toast")
+    document.body.appendChild(toastEl)
+  toastEl.textContent = text.cstring
+  toastEl.style.display = "".cstring
+  if toastTimer != nil: discard window.clearTimeout(toastTimer)
+  toastTimer = window.setTimeout(proc () = toastEl.style.display = "none".cstring, 4000)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Services

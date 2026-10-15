@@ -293,7 +293,6 @@ button.webby-pinned-tab { padding: 4px 0; }
 .webby-vertical-tabs { border-right: 1px solid alpha(currentColor, 0.15); }
 .webby-vertical-tabs button.webby-tab { border-radius: 6px; margin: 1px 4px; }
 .webby-strip-space, .webby-strip-space:hover { background: none; box-shadow: none; border: none; }
-.webby-toast { background-color: #323232; color: #f0f0f0; }
 """)
     # The strip's empty space: a right-click opens the strip's menu, a double click a new tab (tab_strip.dart).
     tabStripSpace.onContext = proc () =

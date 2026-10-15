@@ -512,40 +512,13 @@ proc showSidePanel*(title: string, content: kit.Widget, width = 360, onClose: pr
 proc sidePanelShowing*(): bool = gtk_widget_get_visible(sidePanel) != 0
 
 proc alert*(text: string, secondary = "") =
-  let d = gtk_message_dialog_new(window, GTK_DIALOG_MODAL, GTK_MESSAGE_INFO, GTK_BUTTONS_OK, "%s", text.cstring)
-  if secondary.len > 0: gtk_message_dialog_format_secondary_text(d, "%s", secondary.cstring)
-  discard gtk_dialog_run(d)
-  gtk_widget_destroy(d)
-
-proc confirm*(text: string, secondary = ""): bool =
-  let d = gtk_message_dialog_new(window, GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION, GTK_BUTTONS_OK_CANCEL, "%s",
-    text.cstring)
-  if secondary.len > 0: gtk_message_dialog_format_secondary_text(d, "%s", secondary.cstring)
-  result = gtk_dialog_run(d) == GTK_RESPONSE_OK
-  gtk_widget_destroy(d)
-
-proc askText*(title, prompt: string, initial = "", password = false): (bool, string) =
-  ## A small modal dialog with one text field.
-  let d = gtk_dialog_new_with_buttons(title.cstring, window, GTK_DIALOG_MODAL, "_Cancel", GTK_RESPONSE_CANCEL,
-    "_OK", GTK_RESPONSE_OK, nil)
-  gtk_dialog_set_default_response(d, GTK_RESPONSE_OK)
-  let box = gtk_dialog_get_content_area(d)
-  gtk_container_set_border_width(box, 12)
-  gtk_box_pack_start(box, gtk_label_new(prompt.cstring), 0, 0, 4)
-  let e = gtk_entry_new()
-  gtk_entry_set_text(e, initial.cstring)
-  gtk_entry_set_visibility(e, (not password).gboolean)
-  gtk_entry_set_activates_default(e, 1)
-  gtk_box_pack_start(box, e, 0, 0, 4)
-  gtk_widget_show_all(d)
-  let ok = gtk_dialog_run(d) == GTK_RESPONSE_OK
-  result = (ok, $gtk_entry_get_text(e))
-  gtk_widget_destroy(d)
+  kit.alert(text, secondary)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Page requests
 
 proc runDialog(data: pointer): gboolean {.cdecl.} =
+  ## Asks the page's alert/confirm/prompt; the tab answers no more until the user does.
   let t = cast[Tab](data)
   if t.closed: return 0
   let raw = str(webby_view_dialog(t.view))
@@ -553,19 +526,17 @@ proc runDialog(data: pointer): gboolean {.cdecl.} =
     t.answering = false
     return 0
   let j = parseJson(raw)
-  let kind = j{"type"}.getStr
-  var ok: bool
-  var text = j{"default"}.getStr
-  if kind == "prompt":
-    (ok, text) = askText("Webby", j{"message"}.getStr, text)
-  elif kind == "alert":
-    alert(j{"message"}.getStr)
-    ok = true
-  else:
-    ok = confirm(j{"message"}.getStr)
-  if not t.closed: webby_view_dialog_respond(t.view, uint64(j{"id"}.getBiggestInt), ok.cint, text.cstring)
-  t.answering = false
-  wake()
+  let id = uint64(j{"id"}.getBiggestInt)
+  let message = j{"message"}.getStr
+  let respond = proc (ok: bool, text: string) =
+    if not t.closed: webby_view_dialog_respond(t.view, id, ok.cint, text.cstring)
+    t.answering = false
+    wake()
+  const title = "This page says"
+  case j{"type"}.getStr
+  of "prompt": kit.prompt(title, message, j{"default"}.getStr, respond)
+  of "alert": kit.alert(title, message, proc () = respond(true, ""))
+  else: kit.confirm(title, message, onResult = proc (ok: bool) = respond(ok, ""))
   0
 
 proc answerRequests(t: Tab) =

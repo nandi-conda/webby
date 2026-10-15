@@ -58,6 +58,7 @@ const   # Host.java's ops
   opHidePopover = 36
   opCopyText = 37    # text: what to put on the clipboard
   opPasteText = 38   # id: the request, answered by evPasteText
+  opToast = 39       # text: the message
 
   kindHScroll = 15   # Host's kind for a sideways scroll view (WidgetKind ends at 14)
 
@@ -359,6 +360,7 @@ serviceImpl.request = proc (meth, url: string, headers: seq[(string, string)], b
   for (k, v) in headers: hs.add %*[k, v]
   nk_http(id.cint, cstring($(%*{"method": meth, "url": url, "headers": hs, "body": encode(body)})))
 serviceImpl.log = proc (text: string) = nk_log(text.cstring)
+backend.toast = proc (text: string) = op(opToast, text = text)
 serviceImpl.copyText = proc (text: string) = op(opCopyText, text = text)
 serviceImpl.pasteText = proc (onDone: proc (text: string)) =
   let id = nextTimer   # any unused number

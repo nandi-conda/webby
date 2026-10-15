@@ -119,6 +119,7 @@ type
     showPopover*: proc (p: Popover)  ## show (again) under its anchor, at the anchor's width
     hidePopover*: proc (p: Popover)
     chooseFiles*: proc (r: FileRequest, onDone: proc (paths: seq[string]))
+    toast*: proc (text: string)
 
   FileRequest* = object
     ## What `chooseFile`/`chooseFiles` ask the system's file chooser for.
@@ -658,6 +659,10 @@ proc chooseFile*(title: string, onDone: proc (path: string), save = false, name 
   let done = proc (paths: seq[string]) = onDone(if paths.len > 0: paths[0] else: "")
   if backend.chooseFiles != nil: backend.chooseFiles(r, done)
   else: done(@[])
+
+proc toast*(text: string) =
+  ## A short message floating over the bottom of the window for a few seconds.
+  if backend.toast != nil: backend.toast(text)
 
 proc popover*(anchor, content: Widget, modal = false, onClose: proc () = nil): Popover =
   ## A popover for `content` under `anchor`, not shown yet. `content` stays live: change it while it shows.

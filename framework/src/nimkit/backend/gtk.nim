@@ -338,6 +338,7 @@ const classCss = """
 .nk-error { color: #c01c28; }
 .nk-selected { background-color: alpha(@theme_selected_bg_color, 0.25); }
 .nk-popover { border: 1px solid alpha(currentColor, 0.2); }
+.nk-toast { background-color: alpha(@theme_fg_color, 0.85); color: @theme_bg_color; border-radius: 8px; }
 .nk-dialog-title { font-weight: bold; font-size: larger; }
 .nk-card { border: 1px solid alpha(currentColor, 0.15); border-radius: 6px; padding: 8px; }
 button.nk-item { padding: 2px 6px; }
@@ -754,6 +755,7 @@ backend.showDialog = proc (d: Dialog) =
   let area = gtk_dialog_get_content_area(g)
   gtk_container_set_border_width(area, 12)
   gtk_box_set_spacing(area, 8)
+  gtk_widget_set_size_request(area, 320, -1)   # a one-word message still gets a dialog-sized dialog
   # The title in the dialog too, as GTK's message dialogs show it (window managers may not draw a title bar).
   if d.title.len > 0:
     let t = gtk_label_new(d.title.cstring)
@@ -820,6 +822,38 @@ backend.chooseFiles = proc (r: FileRequest, onDone: proc (paths: seq[string])) =
     g_slist_free(list)
   gtk_native_dialog_destroy(d)
   onDone(paths)
+
+# ---------------------------------------------------------------------------------------------------------------
+# Toasts: an undecorated popup window over the bottom of the window.
+
+var
+  toastWindow, toastLabel: GtkWidget
+  toastTimer: cuint
+
+backend.toast = proc (text: string) =
+  let top = toplevel()
+  if top == nil: return
+  if toastWindow == nil:
+    toastWindow = gtk_window_new(1)   # GTK_WINDOW_POPUP
+    gtk_window_set_transient_for(toastWindow, top)
+    gtk_style_context_add_class(gtk_widget_get_style_context(toastWindow), "nk-toast")
+    toastLabel = gtk_label_new("")
+    gtk_label_set_ellipsize(toastLabel, PANGO_ELLIPSIZE_END)
+    gtk_label_set_max_width_chars(toastLabel, 90)
+    gtk_container_set_border_width(toastWindow, 10)
+    gtk_container_add(toastWindow, toastLabel)
+  gtk_label_set_text(toastLabel, text.cstring)
+  gtk_widget_show_all(toastWindow)
+  var x, y, w, h, tw, th: cint
+  gtk_window_get_position(top, addr x, addr y)
+  gtk_window_get_size(top, addr w, addr h)
+  gtk_window_get_size(toastWindow, addr tw, addr th)
+  gtk_window_move(toastWindow, x + (w - tw) div 2, y + h - th - 32)
+  if toastTimer != 0: discard g_source_remove(toastTimer)
+  toastTimer = g_timeout_add(4000, proc (d: pointer): gboolean {.cdecl.} =
+    toastTimer = 0
+    gtk_widget_hide(toastWindow)
+    0, nil)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Popovers: an undecorated popup window (it never takes the keyboard focus) under the anchor.

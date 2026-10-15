@@ -63,7 +63,7 @@ public class Host extends Activity {
             QUIT = 15, FORGET = 16, ITEMS = 17, SELECTED = 18, RANGE = 19, VALUE = 20, VISIBLE = 21, TOOLTIP = 22,
             CLASSES = 23, ICON = 24, PASSWORD = 25, FOCUS = 26, SELECT_ALL = 27, MOVE = 28, MENU = 29, DIALOG = 30,
             CLOSE_DIALOG = 31, KEY_HANDLED = 32, MAX_CHARS = 33, IMAGE = 34, POPOVER = 35,
-            HIDE_POPOVER = 36, COPY_TEXT = 37, PASTE_TEXT = 38;
+            HIDE_POPOVER = 36, COPY_TEXT = 37, PASTE_TEXT = 38, TOAST = 39;
     // Widget kinds (WidgetKind in src/nimkit/core.nim).
     static final int COLUMN = 0, ROW = 1, SCROLL = 2, LABEL = 3, BUTTON = 4, ENTRY = 5, CHECK = 6, CANVAS = 7,
             SLIDER = 8, DROPDOWN = 9, PROGRESS = 10, TOGGLE = 11, ICON_KIND = 12, ITEM = 13, SEPARATOR = 14,
@@ -331,6 +331,7 @@ public class Host extends Activity {
                 }
                 break;
                 case TITLE: setTitle(text); break;
+                case TOAST: android.widget.Toast.makeText(this, text, android.widget.Toast.LENGTH_LONG).show(); break;
                 case COPY_TEXT: {
                     android.content.ClipboardManager cm = getSystemService(android.content.ClipboardManager.class);
                     if (cm != null) cm.setPrimaryClip(android.content.ClipData.newPlainText("text", text));
