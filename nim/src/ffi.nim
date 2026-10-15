@@ -79,6 +79,13 @@ var
   webby_view_wheel_event*: proc (v: View, x, y: cint, dx, dy: cdouble, precise, modifiers: cint) {.cdecl, gcsafe.}
   webby_view_key_event*: proc (v: View, down, keyCode, modifiers: cint, codePoint: uint32, repeat: cint) {.cdecl, gcsafe.}
   webby_set_offline*: proc (offline: cint) {.cdecl, gcsafe.}
+  # Optional (nil with a runtime older than 2026.10.14.2): native find in page.
+  webby_view_find*: proc (v: View, query: cstring, caseSensitive: cint) {.cdecl, gcsafe.}
+  webby_view_find_next*: proc (v: View) {.cdecl, gcsafe.}
+  webby_view_find_previous*: proc (v: View) {.cdecl, gcsafe.}
+  webby_view_find_end*: proc (v: View) {.cdecl, gcsafe.}
+  webby_view_find_current*: proc (v: View): cint {.cdecl, gcsafe.}
+  webby_view_find_total*: proc (v: View): cint {.cdecl, gcsafe.}
 
 proc ladybirdPrefix*(): string =
   ## $WEBBY_LADYBIRD_PREFIX, else a runtime bundled next to the executable (<exe dir>/lib/ladybird).
@@ -149,6 +156,17 @@ proc loadWebbyLib*(path: string) =
   sym webby_view_wheel_event
   sym webby_view_key_event
   sym webby_set_offline
+  template optional(p: untyped) = p = cast[typeof(p)](lib.symAddr(astToStr(p)))
+  optional webby_view_find
+  optional webby_view_find_next
+  optional webby_view_find_previous
+  optional webby_view_find_end
+  optional webby_view_find_current
+  optional webby_view_find_total
+
+proc hasNativeFind*(): bool =
+  ## Whether the runtime finds in page itself (webby_view_find); else features/find runs a page script.
+  webby_view_find != nil and webby_view_find_total != nil
 
 proc loadWebby*(prefix: string) = loadWebbyLib(prefix / "lib" / "libwebby.so")
 

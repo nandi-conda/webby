@@ -107,6 +107,17 @@ public:
     // The focused text field's state for an on-screen keyboard, as JSON (see webby_view_ime_state() in webby_ffi.h).
     ByteString const& input_method_state_json();
 
+    // The last find-in-page result (see webby_view_find() in webby_ffi.h): the 1-based active match (0 for none) and
+    // the number of matches.
+    int find_current() const { return m_find_current; }
+    int find_total() const { return m_find_total; }
+    void reset_find_result()
+    {
+        m_find_current = 0;
+        m_find_total = 0;
+        state_changed();
+    }
+
 private:
     View(Core::AnonymousBuffer theme, Web::DevicePixelSize size);
 
@@ -136,6 +147,8 @@ private:
     ByteString m_hovered_link;
     bool m_loading { false };
     int m_cursor { 0 };
+    int m_find_current { 0 };
+    int m_find_total { 0 };
 
     struct PendingWebAuthn {
         RefPtr<WebView::WebContentPage> page;
