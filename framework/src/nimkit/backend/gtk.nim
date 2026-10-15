@@ -204,8 +204,12 @@ proc buttonBit(b: int): int =
   else: 0
 
 var lastClick: tuple[time: uint32, x, y: float, button, count: int]
+var heldPress: pointer  ## a copy of the canvas button press whose button is still down, for `popup`
 
 proc pointerEvent(area: GtkWidget, ev: pointer, data: pointer, kind: PointerKind): gboolean =
+  if kind in {pkDown, pkUp} and gdk_event_get_event_type(ev) in [GDK_BUTTON_PRESS, GDK_BUTTON_RELEASE]:
+    if heldPress != nil: gdk_event_free(heldPress)
+    heldPress = if kind == pkDown: gdk_event_copy(ev) else: nil
   let c = byId(data)
   if c == nil or c.onPointer == nil: return 0
   var x, y: cdouble
@@ -786,6 +790,18 @@ proc buildMenu(items: seq[MenuItem]): GtkWidget =
 
 proc toplevel(): GtkWidget = window
 
+var pressAt: tuple[x, y: cdouble]  ## where the held press that opened the current menu was, on the screen
+
+proc onMenuRelease(menu: GtkWidget, ev: pointer, data: pointer): gboolean {.cdecl.} =
+  # Releasing a long-held right button where it was pressed (beside the menu, not on it) would close the menu:
+  # past its first half second GTK reads it as a press-drag-release that missed every item. Keep the menu open
+  # instead, as browsers do; a release after the pointer moved still picks the item under it or closes the menu.
+  var x, y: cdouble
+  discard gdk_event_get_root_coords(ev, addr x, addr y)
+  let still = pressAt.x >= 0 and abs(x - pressAt.x) < 4 and abs(y - pressAt.y) < 4
+  pressAt = (-1.0, -1.0)
+  still.gboolean
+
 backend.popup = proc (items: seq[MenuItem], anchor: Widget, x, y: float) =
   if items.len == 0: return
   let menu = buildMenu(items)
@@ -798,8 +814,15 @@ backend.popup = proc (items: seq[MenuItem], anchor: Widget, x, y: float) =
     var tx, ty: cint
     discard gtk_widget_translate_coordinates(anchor.native, top, cint(x / s), cint(y / s), addr tx, addr ty)
     var r = GdkRectangle(x: tx, y: ty, width: 1, height: 1)
+    pressAt = (-1.0, -1.0)
+    if heldPress != nil:
+      discard gdk_event_get_root_coords(heldPress, addr pressAt.x, addr pressAt.y)
+      connect(menu, "button-release-event", onMenuRelease, nil)
+    # A canvas opens its menu later than the press (a page reports what was right-clicked first). If the button is
+    # still down, the press is the menu's trigger: without one, GTK takes the release for a click outside the menu
+    # and closes it at once.
     gtk_menu_popup_at_rect(menu, gtk_widget_get_window(top), addr r, GDK_GRAVITY_NORTH_WEST, GDK_GRAVITY_NORTH_WEST,
-                           nil)
+                           heldPress)
   elif anchor != nil and anchor.realized:
     gtk_menu_popup_at_widget(menu, anchor.native, GDK_GRAVITY_SOUTH_WEST, GDK_GRAVITY_NORTH_WEST, nil)
   else:

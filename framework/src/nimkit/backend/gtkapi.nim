@@ -35,6 +35,7 @@ const
   GDK_SUPER_MASK* = 1'u32 shl 26
   GDK_BUTTON_PRESS* = 4.cint
   GDK_2BUTTON_PRESS* = 5.cint
+  GDK_BUTTON_RELEASE* = 7.cint
   PANGO_ELLIPSIZE_NONE* = 0.cint
   PANGO_ELLIPSIZE_END* = 3.cint
   GDK_INTERP_BILINEAR* = 2.cint
@@ -121,6 +122,7 @@ proc gtk_combo_box_get_active*(c: GtkWidget): cint
 proc gtk_progress_bar_new*(): GtkWidget
 proc gtk_progress_bar_set_fraction*(p: GtkWidget, fraction: cdouble)
 proc gdk_event_get_coords*(e: pointer, x, y: ptr cdouble): gboolean
+proc gdk_event_get_root_coords*(e: pointer, x, y: ptr cdouble): gboolean
 proc gdk_event_get_button*(e: pointer, button: ptr cuint): gboolean
 proc gdk_event_get_state*(e: pointer, state: ptr uint32): gboolean
 proc gdk_event_get_event_type*(e: pointer): cint
@@ -201,6 +203,7 @@ proc gtk_menu_popup_at_rect*(m: GtkWidget, window: pointer, rect: ptr GdkRectang
 proc gtk_menu_attach_to_widget*(m, w: GtkWidget, detach: pointer)
 proc gtk_get_current_event*(): pointer
 proc gdk_event_free*(e: pointer)
+proc gdk_event_copy*(e: pointer): pointer
 proc gtk_dialog_new*(): GtkWidget
 proc gtk_dialog_get_content_area*(d: GtkWidget): GtkWidget
 proc gtk_dialog_add_button*(d: GtkWidget, text: cstring, response: cint): GtkWidget
