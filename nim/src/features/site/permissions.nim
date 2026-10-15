@@ -5,14 +5,9 @@
 
 import std/strutils
 import ../../browser
+from nimkit/core as kit import nil
 import permstore
 export permstore
-
-proc reveal*(w: Widget) =
-  ## Shows a widget kept out of the window's show_all (no_show_all) with all its children.
-  gtk_widget_set_no_show_all(w, 0)
-  gtk_widget_show_all(w)
-  gtk_widget_set_no_show_all(w, 1)
 
 # ---------------------------------------------------------------------------------------------------------------
 # "Allow this time" answers last as long as the tab: kept in its props as "origin permission" lines.
@@ -44,21 +39,8 @@ type Ask = ref object
 
 var
   asks: seq[Ask]
-  bar, barIcon, barLabel: Widget
+  bar, barIcon, barLabel: kit.Widget
   shownAsk: Ask
-
-{.push cdecl, importc.}
-proc gtk_info_bar_new(): Widget
-proc gtk_info_bar_get_content_area(b: Widget): Widget
-proc gtk_info_bar_add_button(b: Widget, text: cstring, response: cint): Widget
-proc gtk_info_bar_set_show_close_button(b: Widget, on: gboolean)
-proc gtk_info_bar_set_message_type(b: Widget, kind: cint)
-{.pop.}
-
-const
-  answerRemember = 1.cint
-  answerOnce = 2.cint
-  answerNever = 3.cint
 
 proc refreshBar() =
   if bar == nil: return
@@ -69,13 +51,13 @@ proc refreshBar() =
       shownAsk = a
       break
   if shownAsk == nil:
-    gtk_widget_hide(bar)
+    kit.`visible=`(bar, false)
     return
   let k = kinds[kindNamed(shownAsk.permission)]
-  setIcon(barIcon, k.icon)
-  gtk_label_set_markup(barLabel, cstring("<b>" & escapeMarkup(siteName(shownAsk.origin)) & " wants to</b>  " &
-    escapeMarkup(k.request)))
-  reveal(bar)
+  kit.`iconName=`(barIcon, k.icon)
+  kit.`text=`(barLabel, "<b>" & kit.escapeRich(siteName(shownAsk.origin)) & " wants to</b>  " &
+    kit.escapeRich(k.request))
+  kit.`visible=`(bar, true)
 
 proc finish(a: Ask, allowed, remember: bool) =
   let i = asks.find(a)
@@ -89,14 +71,10 @@ proc finish(a: Ask, allowed, remember: bool) =
   for d in a.done: d(allowed)
   refreshBar()
 
-proc onBarResponse(b: Widget, response: cint, data: pointer) {.cdecl.} =
+proc answer(allowed, remember: bool) =
+  ## The shown request's answer from the bar; closing it is a "no" for now, asked again next time.
   let a = shownAsk
-  if a == nil: return
-  case response
-  of answerRemember: finish(a, true, true)
-  of answerOnce: finish(a, true, false)
-  of answerNever: finish(a, false, true)
-  else: finish(a, false, false)   # closing it is a "no" for now, asked again next time
+  if a != nil: finish(a, allowed, remember)
 
 proc enqueue(a: Ask) =
   asks.add a
@@ -157,22 +135,18 @@ proc onTabClosed(t: Tab) =
   refreshBar()
 
 proc buildBar() =
-  bar = gtk_info_bar_new()
-  gtk_info_bar_set_message_type(bar, GTK_MESSAGE_QUESTION)
-  gtk_info_bar_set_show_close_button(bar, 1)
-  let content = gtk_info_bar_get_content_area(bar)
-  barIcon = icon("help_outline", 18)
-  barLabel = gtk_label_new("")
-  gtk_label_set_xalign(barLabel, 0)
-  gtk_label_set_ellipsize(barLabel, PANGO_ELLIPSIZE_END)
-  gtk_box_pack_start(content, barIcon, 0, 0, 0)
-  gtk_box_pack_start(content, barLabel, 1, 1, 4)
-  discard gtk_info_bar_add_button(bar, "Allow while visiting the site", answerRemember)
-  discard gtk_info_bar_add_button(bar, "Allow this time", answerOnce)
-  discard gtk_info_bar_add_button(bar, "Never allow", answerNever)
-  connect(bar, "response", onBarResponse)
-  gtk_widget_set_no_show_all(bar, 1)
-  gtk_box_pack_start(barSlot, bar, 0, 0, 0)
+  barIcon = kit.icon("help_outline", 18)
+  barLabel = kit.richLabel("")
+  kit.`maxChars=`(barLabel, 200)
+  bar = kit.row(barIcon, kit.expand(barLabel),
+    kit.button("Allow while visiting the site", proc () = answer(true, true)),
+    kit.button("Allow this time", proc () = answer(true, false)),
+    kit.button("Never allow", proc () = answer(false, true)),
+    kit.iconButton("close", "Close", proc () = answer(false, false), 16))
+  bar.spacing = 6
+  kit.addClass(bar, "webby-info-bar")
+  kit.`visible=`(bar, false)
+  kit.add(barSlot, bar)
 
 proc install*() =
   windowHooks.add buildBar

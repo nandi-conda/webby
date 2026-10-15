@@ -18,6 +18,7 @@
 
 import std/strutils
 import ../browser
+from nimkit/core as kit import nil
 import passwords/[vault, manager, generator, panel, ui]
 
 # page_script.dart's passwordPageScript(prefix), unescaped from its Dart string at compile time.
@@ -46,7 +47,7 @@ type
 
 var
   agents: seq[Agent]
-  bar: Widget
+  bar: kit.Widget
 
 proc agentFor(t: Tab): Agent =
   for a in agents:
@@ -89,52 +90,55 @@ proc useGenerated(a: Agent) =
   a.dismiss()
 
 proc showBar() =
-  clearChildren(bar)
+  kit.clear(bar)
   let t = currentTab()
   let a = if t == nil: nil else: agentFor(t)
   if a == nil or a.offer.kind == noOffer:
-    gtk_widget_hide(bar)
+    kit.`visible=`(bar, false)
     return
   let o = a.offer
-  let host = "<b>" & escapeMarkup(hostOf(o.origin)) & "</b>"
-  gtk_box_pack_start(bar, icon("key", 18), 0, 0, 0)
+  let host = "<b>" & kit.escapeRich(hostOf(o.origin)) & "</b>"
+  proc button(text: string, action: proc (), class = ""): kit.Widget =
+    result = kit.button(text, action)
+    if class.len > 0: kit.addClass(result, class)
   var message: string
-  var actions: seq[Widget]
+  var actions: seq[kit.Widget]
   case o.kind
   of saveOffer:
-    let who = "<b>" & escapeMarkup(if o.username.len == 0: "this account" else: o.username) & "</b>"
+    let who = "<b>" & kit.escapeRich(if o.username.len == 0: "this account" else: o.username) & "</b>"
     message = (if o.existing != nil: "Update the saved password for " else: "Save the password for ") & who & " on " &
       host & "?"
     if o.existing == nil:
       actions.add button("Never for this site", proc () =
         if theVault != nil: theVault.setNeverSave(o.origin, true)
-        a.dismiss(), flat = true)
+        a.dismiss(), "flat")
     actions.add button("Not now", proc () = a.dismiss())
     actions.add button(if o.existing != nil: "Update" else: "Save", proc () =
       if theVault != nil: theVault.savePassword(o.origin, o.username, o.password)
-      a.dismiss(), suggested = true)
+      a.dismiss(), "suggested")
   of generateOffer:
-    message = "Use a strong password  <b><tt>" & escapeMarkup(o.password) & "</tt></b>"
-    actions.add smallIconButton("refresh", "Another one", proc () =
-      a.setOffer(Offer(kind: generateOffer, origin: o.origin, password: generatePassword())))
+    message = "Use a strong password  <b><tt>" & kit.escapeRich(o.password) & "</tt></b>"
+    actions.add kit.iconButton("refresh", "Another one", proc () =
+      a.setOffer(Offer(kind: generateOffer, origin: o.origin, password: generatePassword())), 14)
     actions.add button("No thanks", proc () = a.dismiss())
-    actions.add button("Use password", proc () = a.useGenerated(), suggested = true)
+    actions.add button("Use password", proc () = a.useGenerated(), "suggested")
   of fillOffer:
     message = "Fill a saved password for " & host
-    proc accountButton(account: SavedPassword): Widget =
+    proc accountButton(account: SavedPassword): kit.Widget =
       # A proc per button: closures made in a loop body would share one `account`.
       result = button(if account.username.len == 0: "(no username)" else: account.username, proc () = a.fill(account))
-      gtk_button_set_image(result, icon("account_circle"))
-      gtk_button_set_always_show_image(result, 1)
+      kit.`iconName=`(result, "account_circle")
     for i, account in o.accounts:
       if i == 4: break
       actions.add accountButton(account)
-    actions.add smallIconButton("close", "Close", proc () = a.dismiss())
+    actions.add kit.iconButton("close", "Close", proc () = a.dismiss(), 14)
   of noOffer: discard
-  gtk_box_pack_start(bar, markupLabel(message), 1, 1, 0)
-  for w in actions: gtk_box_pack_start(bar, w, 0, 0, 0)
-  for w in children(bar): gtk_widget_show_all(w)
-  gtk_widget_show(bar)   # show_all skips a no_show_all widget
+  let text = kit.richLabel(message)
+  kit.`maxChars=`(text, 200)
+  kit.add(bar, kit.icon("key", 18))
+  kit.add(bar, kit.expand(text))
+  for w in actions: kit.add(bar, w)
+  kit.`visible=`(bar, true)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Page messages (see page_script.dart)
@@ -195,13 +199,13 @@ proc pageScriptFor(t: Tab): string =
 # ---------------------------------------------------------------------------------------------------------------
 # Passkeys (passkey_dialog.dart)
 
-var pendingPasskey: seq[(Tab, JsonNode)]
+var pendingPasskey: seq[(Tab, JsonNode)]   ## the first one is showing
 
-proc passkeyDialog(t: Tab, prompt: JsonNode) =
+proc passkeyDialog(t: Tab, prompt: JsonNode, onDone: proc ()) =
   let rpId = prompt{"rpId"}.getStr
-  let bold = proc (s: string): string = "<b>" & escapeMarkup(s) & "</b>"
+  let bold = proc (s: string): string = "<b>" & kit.escapeRich(s) & "</b>"
   var title, body: string
-  var buttons: seq[(string, cint)]
+  var buttons: seq[string]
   var accounts: seq[JsonNode]
   if prompt{"type"}.getStr == "create":
     let userName = prompt{"userName"}.getStr
@@ -209,65 +213,66 @@ proc passkeyDialog(t: Tab, prompt: JsonNode) =
     let account = if display.len > 0 and display != userName: display & " (" & userName & ")" else: userName
     if prompt{"alreadyRegistered"}.getBool:
       title = "Passkey already saved"
-      body = "This browser already has a passkey for your account on " & escapeMarkup(rpId) & "."
-      buttons = @[("_Cancel", GTK_RESPONSE_CANCEL), ("_OK", GTK_RESPONSE_OK)]
+      body = "This browser already has a passkey for your account on " & kit.escapeRich(rpId) & "."
+      buttons = @["Cancel", "OK"]
     else:
       title = "Create a passkey?"
       body = "Save a passkey for " & bold(if account.len == 0: "your account" else: account) & " on " & bold(rpId) &
         ". It stays in this browser and signs you in without a password."
-      buttons = @[("_Cancel", GTK_RESPONSE_CANCEL), ("C_reate", GTK_RESPONSE_OK)]
+      buttons = @["Cancel", "Create"]
   else:
     accounts = prompt{"accounts"}.getElems
     if accounts.len == 0:
       title = "No passkeys"
-      body = "This browser has no passkeys for " & escapeMarkup(rpId) & "."
-      buttons = @[("_OK", GTK_RESPONSE_CANCEL)]
+      body = "This browser has no passkeys for " & kit.escapeRich(rpId) & "."
+      buttons = @["OK"]
     else:
       title = "Sign in to " & rpId
       body = "Choose a passkey:"
-      buttons = @[("_Cancel", GTK_RESPONSE_CANCEL)]
-  let d = gtk_dialog_new_with_buttons(title.cstring, window, GTK_DIALOG_MODAL, nil)
-  for (label, response) in buttons: discard gtk_dialog_add_button(d, label.cstring, response)
-  gtk_dialog_set_default_response(d, buttons[^1][1])
-  let box = gtk_dialog_get_content_area(d)
-  gtk_container_set_border_width(box, 12)
-  gtk_box_set_spacing(box, 8)
-  gtk_box_pack_start(box, markupLabel("<big><b>" & escapeMarkup(title) & "</b></big>"), 0, 0, 0)
-  let label = markupLabel(body, wrap = true)
-  gtk_label_set_max_width_chars(label, 50)
-  gtk_box_pack_start(box, label, 0, 0, 0)
-  proc accountButton(index: cint, account: JsonNode): Widget =
+      buttons = @["Cancel"]
+  let content = kit.column(kit.richLabel(body))
+  var d: kit.Dialog
+  const accountBase = 100   ## account i answers accountBase + i
+  proc accountButton(index: int, account: JsonNode): kit.Widget =
     let name = account{"userName"}.getStr
     let display = account{"userDisplayName"}.getStr
-    result = gtk_button_new()
-    let row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8)
-    gtk_box_pack_start(row, icon("account_circle", 18), 0, 0, 0)
-    gtk_box_pack_start(row, markupLabel(bold(if display.len > 0: display else: name) &
-      (if display.len > 0: "\n<small>" & escapeMarkup(name) & "</small>" else: "")), 1, 1, 0)
-    gtk_container_add(result, row)
-    result.on("clicked", proc () = gtk_dialog_response(d, index))
-  for i, account in accounts: gtk_box_pack_start(box, accountButton(i.cint, account), 0, 0, 0)
-  gtk_widget_show_all(d)
-  let response = gtk_dialog_run(d)
-  gtk_widget_destroy(d)
-  if t.closed: return
-  if accounts.len > 0: webby_view_webauthn_respond(t.view, (response >= 0).cint, max(response, -1))
-  else: webby_view_webauthn_respond(t.view, (response == GTK_RESPONSE_OK).cint, -1)
-  wake()
+    let text = kit.column(kit.richLabel(bold(if display.len > 0: display else: name)))
+    text.spacing = 0
+    if display.len > 0: kit.add(text, kit.addClass(kit.label(name), "small"))
+    result = kit.item(kit.icon("account_circle", 18), kit.expand(text), onClick = proc () =
+      kit.dialogResult(d, accountBase + index))
+  for i, account in accounts: kit.add(content, accountButton(i, account))
+  d = kit.dialog(title, content, buttons, proc (r: int) =
+    if not t.closed:
+      if accounts.len > 0:
+        let chosen = if r >= accountBase: r - accountBase else: -1
+        webby_view_webauthn_respond(t.view, (chosen >= 0).cint, chosen.cint)
+      else: webby_view_webauthn_respond(t.view, (r == 1).cint, -1)
+      wake()
+    onDone())
 
-proc runPasskeyDialogs(data: pointer): gboolean {.cdecl.} =
+proc runPasskeyDialogs()
+
+proc nextPasskeyDialog() =
+  pendingPasskey.delete(0)
+  runPasskeyDialogs()
+
+proc runPasskeyDialogs() =
+  ## Shows the first waiting request; each answered one shows the next.
   while pendingPasskey.len > 0:
     let (t, prompt) = pendingPasskey[0]
-    pendingPasskey.delete(0)
-    if not t.closed:
-      # A site in a background tab asking for a passkey brings its tab forward.
-      if t != currentTab(): activateTab(t)
-      passkeyDialog(t, prompt)
-  0
+    if t.closed:
+      pendingPasskey.delete(0)
+      continue
+    # A site in a background tab asking for a passkey brings its tab forward.
+    if t != currentTab(): activateTab(t)
+    passkeyDialog(t, prompt, nextPasskeyDialog)
+    return
 
 proc onWebauthn(t: Tab, request: JsonNode) =
   pendingPasskey.add (t, request)
-  if pendingPasskey.len == 1: discard g_idle_add(runPasskeyDialogs, nil)
+  if pendingPasskey.len == 1:
+    discard g_idle_add(proc (d: pointer): gboolean {.cdecl.} = (runPasskeyDialogs(); 0), nil)
 
 # ---------------------------------------------------------------------------------------------------------------
 
@@ -288,10 +293,10 @@ proc install*() =
 .webby-vault-row button { padding: 2px; min-height: 0; }
 .webby-vault-note { margin: 24px 16px 0 16px; }
 .webby-vault-heading { margin-left: 8px; }""")
-    bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8)
-    addClass(bar, "webby-password-bar")
-    gtk_widget_set_no_show_all(bar, 1)
-    gtk_box_pack_end(barSlot, bar, 0, 0, 0)
+    bar = kit.row()
+    kit.addClass(bar, "webby-password-bar")
+    kit.`visible=`(bar, false)
+    kit.add(barSlot, bar)
     # The vault belongs to the normal windows; incognito ones only fill from it.
     if not incognito:
       discard addToolbarButton("key_outlined", "Passwords and passkeys", toggleVaultPanel, "key", "Passwords and passkeys")

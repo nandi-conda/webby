@@ -61,8 +61,8 @@ var
   tabStrip*: kit.Widget        ## the tabs' row (a column with vertical tabs), inside a scroll view in tabStripBox
   tabStripSpace*: kit.Widget   ## the strip's empty space after the tabs (the last child of tabStrip)
   tabStripRoot*: kit.Widget    ## tabStripBox as nimkit sees it: the scroll view and the new-tab button
-  barSlot*: Widget             ## a box under the toolbar (the bookmark bar goes here)
-  findSlot*: Widget            ## a box under the page (the find bar goes here)
+  barSlot*: kit.Widget         ## a column under the toolbar (the bookmark bar and info bars go here)
+  findSlot*: kit.Widget        ## a column under the page (the find bar goes here)
   pagePane*: Widget            ## GtkPaned: the page on the left, the side panel on the right
   pageBox*: Widget             ## holds the vertical tab list (if any) and the page area
   page*: kit.Canvas            ## the page view: a nimkit canvas showing the active tab's frame (its GtkWidget is `area`)
@@ -1022,6 +1022,8 @@ button.webby-active-tab { background-color: alpha(@theme_selected_bg_color, 0.18
 .webby-side-panel { border-left: 1px solid alpha(currentColor, 0.15); }
 .webby-side-panel-header label.title { margin-left: 8px; }
 .webby-small { font-size: smaller; }
+.webby-info-bar { background-color: alpha(@theme_selected_bg_color, 0.12); padding: 2px 6px;
+  border-bottom: 1px solid alpha(currentColor, 0.15); }
 .webby-link-status { background-color: @theme_bg_color; padding: 2px 8px; font-size: smaller;
   border-top: 1px solid alpha(currentColor, 0.15); border-right: 1px solid alpha(currentColor, 0.15);
   border-radius: 0 6px 0 0; }
@@ -1083,8 +1085,9 @@ proc buildWindow() =
   toolbarEnd = nkgtk.gtkWidget(toolbarEndRow)
   gtk_box_pack_start(mainBox, toolbar, 0, 0, 2)
 
-  barSlot = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
-  gtk_box_pack_start(mainBox, barSlot, 0, 0, 0)
+  barSlot = kit.column()
+  barSlot.spacing = 0
+  gtk_box_pack_start(mainBox, nkgtk.gtkWidget(barSlot), 0, 0, 0)
 
   pagePane = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL)
   pageBox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)
@@ -1112,8 +1115,9 @@ proc buildWindow() =
   gtk_overlay_add_overlay(pageOverlay, status)
   gtk_overlay_set_overlay_pass_through(pageOverlay, status, 1)
   gtk_box_pack_start(pageColumn, pageOverlay, 1, 1, 0)
-  findSlot = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
-  gtk_box_pack_start(pageColumn, findSlot, 0, 0, 0)
+  findSlot = kit.column()
+  findSlot.spacing = 0
+  gtk_box_pack_start(pageColumn, nkgtk.gtkWidget(findSlot), 0, 0, 0)
   gtk_box_pack_end(pageBox, pageColumn, 1, 1, 0)
   gtk_paned_pack1(pagePane, pageBox, 1, 0)
 
@@ -1134,8 +1138,8 @@ proc buildWindow() =
   gtk_box_pack_start(mainBox, pagePane, 1, 1, 0)
 
   if appUrl.len > 0:
-    gtk_widget_set_no_show_all(tabStripBox, 1)
-    gtk_widget_set_no_show_all(toolbar, 1)
+    kit.`visible=`(tabStripRoot, false)
+    kit.`visible=`(toolbarRow, false)
 
 const incognitoPrefix = "webby-incognito-"
 

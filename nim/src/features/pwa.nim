@@ -64,55 +64,36 @@ proc fetchIcon(t: Tab, m: Manifest, done: proc (bytes, ext: string)) =
 
 proc installApp(t: Tab, m: Manifest) =
   ## Asks for the app's name and installs it.
-  let d = gtk_dialog_new_with_buttons("Install app", window, GTK_DIALOG_MODAL, "_Cancel", GTK_RESPONSE_CANCEL,
-    "_Install", GTK_RESPONSE_OK, nil)
-  gtk_dialog_set_default_response(d, GTK_RESPONSE_OK)
-  let box = gtk_dialog_get_content_area(d)
-  gtk_container_set_border_width(box, 12)
-  let nameLabel = gtk_label_new("Name")
-  gtk_label_set_xalign(nameLabel, 0)
-  gtk_box_pack_start(box, nameLabel, 0, 0, 2)
-  let e = gtk_entry_new()
-  gtk_entry_set_text(e, m.title.cstring)
-  gtk_entry_set_activates_default(e, 1)
-  gtk_entry_set_width_chars(e, 36)
-  gtk_box_pack_start(box, e, 0, 0, 2)
+  let e = kit.entry(text = m.title)
+  discard kit.sized(e, 300)
   let start = parseUri(m.startUrl)
-  let info = gtk_label_new(cstring(start.hostname & (if start.port.len > 0: ":" & start.port else: "") &
-    start.path & "\nOpens in its own window and gets a launcher in your app menu."))
-  gtk_label_set_xalign(info, 0)
-  addClass(info, "dim-label")
-  gtk_box_pack_start(box, info, 0, 0, 8)
-  gtk_widget_show_all(d)
-  let ok = gtk_dialog_run(d) == GTK_RESPONSE_OK
-  let name = $gtk_entry_get_text(e)
-  gtk_widget_destroy(d)
-  if not ok: return
-  fetchIcon(t, m, proc (bytes, ext: string) =
-    try:
-      let app = store.install(m, name, (bytes, ext))
-      refreshButton()
-      launch(app)
-    except CatchableError as err:
-      alert("Could not install", err.msg))
+  let info = kit.addClass(kit.label(start.hostname & (if start.port.len > 0: ":" & start.port else: "") &
+    start.path & "\nOpens in its own window and gets a launcher in your app menu."), "dim")
+  var d: kit.Dialog
+  d = kit.dialog("Install app", kit.column(kit.label("Name"), e, info), @["Cancel", "Install"], proc (r: int) =
+    if r != 1: return
+    let name = kit.text(e)
+    fetchIcon(t, m, proc (bytes, ext: string) =
+      try:
+        let app = store.install(m, name, (bytes, ext))
+        refreshButton()
+        launch(app)
+      except CatchableError as err:
+        alert("Could not install", err.msg)))
+  e.onSubmit = proc (s: string) = kit.dialogResult(d, 1)
+  kit.focus(e)
+  kit.selectAll(e)
 
 proc manageApp(app: InstalledApp) =
   ## Open or uninstall an installed app.
-  let d = gtk_message_dialog_new(window, GTK_DIALOG_MODAL, GTK_MESSAGE_INFO, GTK_BUTTONS_NONE, "%s", app.name.cstring)
   var host = ""
   try: host = parseUri(app.startUrl).hostname except CatchableError: discard
-  gtk_message_dialog_format_secondary_text(d, "%s", cstring("Installed from " & host & "."))
-  const uninstallResponse = 1.cint
-  addClass(gtk_dialog_add_button(d, "_Uninstall", uninstallResponse), "destructive-action")
-  discard gtk_dialog_add_button(d, "_Cancel", GTK_RESPONSE_CANCEL)
-  discard gtk_dialog_add_button(d, "_Open app", GTK_RESPONSE_OK)
-  gtk_dialog_set_default_response(d, GTK_RESPONSE_OK)
-  let r = gtk_dialog_run(d)
-  gtk_widget_destroy(d)
-  if r == GTK_RESPONSE_OK: launch(app)
-  elif r == uninstallResponse:
-    try: uninstall(app) except CatchableError as e: alert("Could not uninstall", e.msg)
-    refreshButton()
+  discard kit.dialog(app.name, kit.column(kit.label("Installed from " & host & ".")),
+    @["Uninstall", "Cancel", "Open app"], destructive = 0, onResult = proc (r: int) =
+      if r == 2: launch(app)
+      elif r == 0:
+        try: uninstall(app) except CatchableError as e: alert("Could not uninstall", e.msg)
+        refreshButton())
 
 proc onInstallClicked() =
   let t = currentTab()
@@ -164,7 +145,7 @@ proc onTabState(t: Tab) =
 var
   app: InstalledApp
   hasApp = false
-  outsideBar, outsideIcon, outsideHost, backToApp: Widget
+  outsideBar, outsideIcon, outsideHost, backToApp: kit.Widget
 
 proc appInScope(url: string): bool =
   ## Whether `url` belongs to the app: its installed scope, else the start URL's origin.
@@ -176,37 +157,31 @@ proc refreshOutside() =
   let t = currentTab()
   if outsideBar == nil or t == nil: return
   if appInScope(t.url):
-    gtk_widget_hide(outsideBar)
+    kit.`visible=`(outsideBar, false)
     return
   var host = t.url
   try: host = parseUri(t.url).hostname except CatchableError: discard
-  gtk_label_set_text(outsideHost, host.cstring)
-  setIcon(outsideIcon, if t.url.startsWith("https:"): "lock_outline" else: "info_outline")
-  gtk_widget_set_sensitive(backToApp, t.canBack.gboolean)
-  gtk_widget_set_no_show_all(outsideBar, 0)
-  gtk_widget_show_all(outsideBar)
-  gtk_widget_set_no_show_all(outsideBar, 1)
+  kit.`text=`(outsideHost, host)
+  kit.`iconName=`(outsideIcon, if t.url.startsWith("https:"): "lock_outline" else: "info_outline")
+  kit.`enabled=`(backToApp, t.canBack)
+  kit.`visible=`(outsideBar, true)
 
 proc buildAppWindow() =
   let icon = getEnv("WEBBY_APP_ICON")
   if icon.len > 0: discard gtk_window_set_icon_from_file(window, icon.cstring, nil)
   # Pages outside the app's scope get a thin strip with their site and a way out to the browser.
-  outsideBar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6)
-  gtk_container_set_border_width(outsideBar, 2)
-  backToApp = iconButton("arrow_back", "Back to " & (if hasApp: app.name else: "the app"), goBack)
-  outsideIcon = icon("info_outline", 14)
-  outsideHost = gtk_label_new("")
-  gtk_label_set_xalign(outsideHost, 0)
-  gtk_label_set_ellipsize(outsideHost, PANGO_ELLIPSIZE_END)
-  addClass(outsideHost, "dim-label")
-  gtk_box_pack_start(outsideBar, backToApp, 0, 0, 0)
-  gtk_box_pack_start(outsideBar, outsideIcon, 0, 0, 0)
-  gtk_box_pack_start(outsideBar, outsideHost, 1, 1, 0)
-  gtk_box_pack_end(outsideBar, iconButton("open_in_browser", "Open in Webby", proc () =
-    let t = currentTab()
-    if t != nil: openInBrowser(t.url)), 0, 0, 0)
-  gtk_widget_set_no_show_all(outsideBar, 1)
-  gtk_box_pack_start(barSlot, outsideBar, 0, 0, 0)
+  backToApp = kit.iconButton("arrow_back", "Back to " & (if hasApp: app.name else: "the app"), goBack)
+  outsideIcon = kit.icon("info_outline", 14)
+  outsideHost = kit.addClass(kit.label(""), "dim")
+  kit.`maxChars=`(outsideHost, 200)
+  outsideBar = kit.row(backToApp, outsideIcon, kit.expand(outsideHost),
+    kit.iconButton("open_in_browser", "Open in Webby", proc () =
+      let t = currentTab()
+      if t != nil: openInBrowser(t.url)))
+  outsideBar.spacing = 6
+  kit.addClass(outsideBar, "webby-app-outside-bar")
+  kit.`visible=`(outsideBar, false)
+  kit.add(barSlot, outsideBar)
 
 proc closeLater(t: Tab) =
   ## Closes `t` outside the pump (which still uses the tab after the state hooks).
@@ -233,7 +208,7 @@ proc onAppTabState(t: Tab) =
 var
   offline = false
   offlineIcon: kit.Widget
-  offlineBanner: Widget
+  offlineBanner: kit.Widget
 
 proc hasDefaultRoute(): bool =
   ## Whether the kernel has a default route; true when that can't be read, so webby never goes offline by mistake.
@@ -264,7 +239,7 @@ proc setOffline(value: bool) =
   offline = value
   webby_set_offline(value.cint)
   if offlineIcon != nil: kit.`visible=`(offlineIcon, value)
-  if offlineBanner != nil: gtk_widget_set_visible(offlineBanner, value.gboolean)
+  if offlineBanner != nil: kit.`visible=`(offlineBanner, value)
 
 proc checkOffline(data: pointer): gboolean {.cdecl.} =
   setOffline(not hasDefaultRoute())
@@ -274,9 +249,10 @@ proc startOffline() =
   # Offline mode serves pages from the disk cache, which incognito windows don't have.
   if incognito: return
   if appUrl.len > 0:
-    offlineBanner = gtk_label_new("Offline: showing the copy saved when you last opened this.")
-    gtk_widget_set_no_show_all(offlineBanner, 1)
-    gtk_box_pack_start(barSlot, offlineBanner, 0, 0, 2)
+    offlineBanner = kit.addClass(kit.label("Offline: showing the copy saved when you last opened this."),
+      "webby-info-bar")
+    kit.`visible=`(offlineBanner, offline)
+    kit.add(barSlot, offlineBanner)
   else:
     offlineIcon = kit.icon("cloud_off")
     kit.`tooltip=`(offlineIcon, "Offline: pages come from the copies saved when you last opened them")

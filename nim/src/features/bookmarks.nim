@@ -240,7 +240,7 @@ proc buildBar() =
     else: update(d, parent = bar))
   barRoot = kit.addClass(kit.scroll(barRow, horizontal = true), "webby-bookmark-bar")
   kit.`visible=`(barRoot, false)
-  gtk_box_pack_start(barSlot, nkgtk.gtkWidget(barRoot), 0, 0, 0)
+  kit.add(barSlot, barRoot)
   fillBar()
 
 # ---------------------------------------------------------------------------------------------------------------

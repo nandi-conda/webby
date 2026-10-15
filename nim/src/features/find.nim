@@ -111,7 +111,7 @@ proc buildBar() =
   bar.spacing = 4
   kit.addClass(bar, "webby-find-bar")
   kit.`visible=`(bar, false)
-  gtk_box_pack_start(findSlot, nkgtk.gtkWidget(bar), 0, 0, 2)
+  kit.add(findSlot, bar)
 
 proc onMessage(t: Tab, text: string): bool =
   if not text.startsWith("{\"type\":\"find\""): return false
@@ -124,7 +124,7 @@ proc onMessage(t: Tab, text: string): bool =
 proc install*() =
   windowHooks.add proc () =
     buildBar()
-    loadCss(".webby-find-bar { border-top: 1px solid alpha(currentColor, 0.15); }")
+    loadCss(".webby-find-bar { border-top: 1px solid alpha(currentColor, 0.15); padding: 2px 0; }")
     addMenuItem("Find in page…", openBar)
   addShortcut(modCtrl, 0x66, openBar)                            # Ctrl+F
   addShortcut(0, 0xffc0, proc () = nextOrOpen(true))             # F3
