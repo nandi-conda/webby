@@ -63,6 +63,10 @@ proc gtk_init(argc: ptr cint, argv: ptr cstringArray)
 proc gtk_main*()
 proc gtk_main_quit*()
 proc gtk_window_new*(kind: cint): GtkWidget
+proc gtk_popover_new*(relativeTo: GtkWidget): GtkWidget
+proc gtk_popover_popup*(p: GtkWidget)
+proc gtk_popover_popdown*(p: GtkWidget)
+proc gtk_popover_set_position*(p: GtkWidget, pos: cint)
 proc gtk_window_set_title*(w: GtkWidget, title: cstring)
 proc gtk_window_set_default_size*(w: GtkWidget, width, height: cint)
 proc gtk_widget_show_all*(w: GtkWidget)

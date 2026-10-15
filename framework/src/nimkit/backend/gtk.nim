@@ -809,7 +809,22 @@ backend.chooseFile = proc (title: string, save: bool, name: string, patterns: se
 # ---------------------------------------------------------------------------------------------------------------
 # Popovers: an undecorated popup window (it never takes the keyboard focus) under the anchor.
 
+proc onPopoverClosed(w: GtkWidget, data: pointer) {.cdecl.} =
+  popoverClosed(cast[Popover](data))
+
 backend.showPopover = proc (p: Popover) =
+  if p.modal:
+    if p.native == nil:
+      p.native = gtk_popover_new(p.anchor.native)
+      gtk_popover_set_position(p.native, 3)   # GTK_POS_BOTTOM
+      if not p.content.realized: p.content.realize()
+      gtk_container_set_border_width(p.native, 12)
+      gtk_container_add(p.native, p.content.native)
+      GC_ref(p)
+      connect(p.native, "closed", onPopoverClosed, cast[pointer](p))
+    gtk_widget_show_all(p.content.native)
+    gtk_popover_popup(p.native)
+    return
   let top = gtk_widget_get_toplevel(p.anchor.native)
   if p.native == nil:
     p.native = gtk_window_new(1)   # GTK_WINDOW_POPUP
@@ -825,7 +840,8 @@ backend.showPopover = proc (p: Popover) =
   gtk_widget_show_all(p.native)
 
 backend.hidePopover = proc (p: Popover) =
-  if p.native != nil: gtk_widget_hide(p.native)
+  if p.native == nil: return
+  if p.modal: gtk_popover_popdown(p.native) else: gtk_widget_hide(p.native)
 
 # ---------------------------------------------------------------------------------------------------------------
 # The window

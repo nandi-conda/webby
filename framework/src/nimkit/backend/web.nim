@@ -47,6 +47,7 @@ progress { width: 100%; height: 6px; }
 .nk-popover { position: fixed; z-index: 9; box-sizing: border-box; background: #fff; color: #222;
   border: 1px solid rgba(0,0,0,0.15); border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.2); padding: 4px 0; }
 @media (prefers-color-scheme: dark) { .nk-popover { background: #2a2a2c; color: #eee; } }
+.nk-popover.nk-modal { padding: 12px; max-width: calc(100vw - 16px); }
 .nk-icon { display: inline-block; flex: none; fill: currentColor; vertical-align: middle; }
 button > .nk-icon + span:not(:empty) { margin-left: 6px; }
 .nk-item { display: flex; align-items: center; cursor: pointer; padding: 4px 8px; border-radius: 6px; user-select: none; }
@@ -544,22 +545,43 @@ backend.closeDialog = proc (d: Dialog) =
 
 var popoverEls: seq[(Popover, JsObject)]
 
+proc closeModalPopovers(target: JsObject, all: bool) =
+  ## Closes the modal popovers `target` (a press or Esc) is outside of.
+  for (q, e) in popoverEls:
+    if not q.modal or not q.shown: continue
+    if not all and (e.contains(target).to(bool) or elems[q.anchor.id].contains(target).to(bool)): continue
+    e.style.display = "none".cstring
+    popoverClosed(q)
+
+var modalListening = false
+
 backend.showPopover = proc (p: Popover) =
   var box: JsObject
   for (q, e) in popoverEls:
     if q == p: box = e
   if box == nil:
-    box = el("div", "nk-popover")
+    box = el("div", if p.modal: "nk-popover nk-modal" else: "nk-popover")
     box.appendChild(p.content.realize())
     # A press here mustn't take the focus from the field the popover belongs to.
-    box.addEventListener("mousedown", proc (ev: JsObject) = ev.preventDefault())
+    if not p.modal: box.addEventListener("mousedown", proc (ev: JsObject) = ev.preventDefault())
     document.body.appendChild(box)
     popoverEls.add (p, box)
+  if p.modal and not modalListening:
+    modalListening = true
+    document.addEventListener("mousedown", proc (ev: JsObject) = closeModalPopovers(ev.target, false), true)
+    document.addEventListener("keydown", proc (ev: JsObject) =
+      if ev.key.to(cstring) == "Escape": closeModalPopovers(ev.target, true), true)
   let r = elems[p.anchor.id].getBoundingClientRect()
-  box.style.left = cstring($r.left.to(float) & "px")
   box.style.top = cstring($(r.bottom.to(float) + 4) & "px")
-  box.style.width = cstring($r.width.to(float) & "px")
   box.style.display = "".cstring
+  if p.modal:
+    # As wide as its content, kept inside the window.
+    let w = box.offsetWidth.to(float)
+    let room = window.innerWidth.to(float) - 8
+    box.style.left = cstring($max(8.0, min(r.left.to(float), room - w)) & "px")
+  else:
+    box.style.left = cstring($r.left.to(float) & "px")
+    box.style.width = cstring($r.width.to(float) & "px")
 
 backend.hidePopover = proc (p: Popover) =
   for (q, e) in popoverEls:

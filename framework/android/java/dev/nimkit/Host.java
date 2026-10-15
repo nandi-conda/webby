@@ -256,24 +256,36 @@ public class Host extends Activity {
                 }
                 case KEY_HANDLED: keyHandled = true; break;
                 case POPOVER: {
-                    // A PopupWindow under the anchor that doesn't take the focus, so the keyboard stays up.
+                    // A PopupWindow under the anchor. A plain one doesn't take the focus, so the keyboard stays
+                    // up; a modal one (text ends in " modal") does, wraps its content and closes on a touch outside.
                     android.widget.PopupWindow pw = popovers.get(id);
-                    View body = views.get(Integer.parseInt(text));
+                    boolean modal = text.endsWith(" modal");
+                    View body = views.get(Integer.parseInt(modal ? text.substring(0, text.length() - 6) : text));
                     View anchor = views.get(arg);
                     if (body == null || anchor == null || !anchor.isAttachedToWindow()) break;
                     if (pw == null) {
                         if (body.getParent() != null) ((ViewGroup) body.getParent()).removeView(body);
-                        pw = new android.widget.PopupWindow(body, anchor.getWidth(), ViewGroup.LayoutParams.WRAP_CONTENT, false);
+                        if (modal) {
+                            body.setPadding(px(12), px(12), px(12), px(12));
+                            pw = new android.widget.PopupWindow(body, ViewGroup.LayoutParams.WRAP_CONTENT,
+                                ViewGroup.LayoutParams.WRAP_CONTENT, true);
+                            pw.setOutsideTouchable(true);
+                            final int n = id;
+                            // Every dismiss reports; the Nim side ignores the ones hidePopover asked for.
+                            pw.setOnDismissListener(() -> Native.event(n, Native.POPOVER_CLOSED, "", 0, 0, 0));
+                        } else {
+                            pw = new android.widget.PopupWindow(body, anchor.getWidth(), ViewGroup.LayoutParams.WRAP_CONTENT, false);
+                            pw.setInputMethodMode(android.widget.PopupWindow.INPUT_METHOD_NEEDED);
+                        }
                         GradientDrawable bg = new GradientDrawable();
                         bg.setColor(backgroundColor());
                         bg.setCornerRadius(px(8));
                         bg.setStroke(Math.max(1, px(1) / 2), textColor() & 0x30ffffff);
                         pw.setBackgroundDrawable(bg);
                         pw.setElevation(px(6));
-                        pw.setInputMethodMode(android.widget.PopupWindow.INPUT_METHOD_NEEDED);
                         popovers.put(id, pw);
                     }
-                    if (pw.isShowing()) pw.update(anchor, 0, px(4), anchor.getWidth(), -1);
+                    if (pw.isShowing()) pw.update(anchor, 0, px(4), modal ? -1 : anchor.getWidth(), -1);
                     else pw.showAsDropDown(anchor, 0, px(4));
                     break;
                 }

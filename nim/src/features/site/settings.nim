@@ -4,54 +4,45 @@
 import std/strutils
 import ../../browser
 from nimkit/core as kit import nil
-from nimkit/backend/gtk as nkgtk import nil
 import permissions
 
-{.push cdecl, importc.}
-proc gtk_combo_box_text_new(): Widget
-proc gtk_combo_box_text_append(c: Widget, id, text: cstring)
-proc gtk_combo_box_set_active(c: Widget, i: cint)
-proc gtk_combo_box_get_active(c: Widget): cint
-{.pop.}
-
 var
-  button, popover: Widget
+  popover: kit.Popover
+  content: kit.Widget       ## the popover's column, rebuilt by fill
   changedSettings = false   ## something changed since the popover opened: offer a reload
 
-proc label(text: string, dim = false, markup = false): Widget =
-  result = gtk_label_new("")
-  if markup: gtk_label_set_markup(result, text.cstring) else: gtk_label_set_text(result, text.cstring)
-  gtk_label_set_xalign(result, 0)
-  gtk_label_set_line_wrap(result, 1)
-  gtk_label_set_max_width_chars(result, 40)
-  if dim: addClass(result, "dim-label")
+proc label(text: string, dim = false, markup = false): kit.Widget =
+  result = if markup: kit.richLabel(text) else: kit.label(text)
+  if dim: kit.addClass(result, "dim")
 
-proc row(icon: string, text: Widget): Widget =
-  result = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10)
-  gtk_box_pack_start(result, icon(icon), 0, 0, 0)
-  gtk_box_pack_start(result, text, 1, 1, 0)
+proc row(icon: string, children: varargs[kit.Widget]): kit.Widget =
+  result = kit.row(kit.icon(icon, 18))
+  result.spacing = 10
+  for c in children: kit.add(result, c)
 
 proc fill()
 
-proc confirmDelete(site: string): bool =
-  let d = gtk_message_dialog_new(window, GTK_DIALOG_MODAL, GTK_MESSAGE_WARNING, GTK_BUTTONS_NONE, "%s",
-    "Delete site data?")
-  gtk_message_dialog_format_secondary_text(d, "%s", cstring("This deletes the cookies and data " & site &
-    " stored in this browser. You'll be signed out of it."))
-  discard gtk_dialog_add_button(d, "_Cancel", GTK_RESPONSE_CANCEL)
-  addClass(gtk_dialog_add_button(d, "_Delete", GTK_RESPONSE_OK), "destructive-action")
-  gtk_dialog_set_default_response(d, GTK_RESPONSE_OK)
-  result = gtk_dialog_run(d) == GTK_RESPONSE_OK
-  gtk_widget_destroy(d)
+proc later(action: proc ()) =
+  ## Runs `action` once the widget whose signal is running has let go.
+  let cb = new(proc ())
+  cb[] = action
+  GC_ref(cb)
+  discard g_idle_add(proc (d: pointer): gboolean {.cdecl.} =
+    let cb = cast[ref proc ()](d)
+    GC_unref(cb)
+    cb[]()
+    0, cast[pointer](cb))
 
 proc deleteSiteData() =
   let t = currentTab()
   if t == nil: return
   let url = t.url
-  if not confirmDelete(siteName(originOf(url))) or t.closed: return
-  webby_clear_site_data(url.cstring)
-  webby_view_reload(t.view)
-  wake()
+  kit.confirm("Delete site data?", "This deletes the cookies and data " & siteName(originOf(url)) &
+    " stored in this browser. You'll be signed out of it.", "Delete", destructive = true, onResult = proc (ok: bool) =
+      if not ok or t.closed: return
+      webby_clear_site_data(url.cstring)
+      webby_view_reload(t.view)
+      wake())
 
 proc reloadPage() =
   let t = currentTab()
@@ -59,92 +50,68 @@ proc reloadPage() =
     webby_view_reload(t.view)
     wake()
 
+proc settingChanged() =
+  changedSettings = true
+  later(fill)
+
+proc permissionRow(t: Tab, origin: string, k: Kind): kit.Widget =
+  let name = k.name
+  let choice = kit.dropdown(@["Ask (default)", "Allow", "Block"], get(origin, name).ord, proc (i: int) =
+    let setting = Setting(i)
+    set(origin, name, setting)
+    if setting != allow: forgetOnce(t, origin)
+    settingChanged())
+  row(k.icon, kit.expand(label(k.label)), choice)
+
 proc fill() =
   ## (Re)builds the popover for the current tab's page.
-  clearChildren(popover)
+  kit.clear(content)
   let t = currentTab()
   let url = if t == nil: "" else: t.url
   let origin = originOf(url)
-  let box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8)
-  gtk_container_set_border_width(box, 14)
-  gtk_widget_set_size_request(box, 360, -1)
-  gtk_container_add(popover, box)
   let title = if origin.len == 0: "Site settings" else: siteName(origin)
-  gtk_box_pack_start(box, label("<b>" & escapeMarkup(title) & "</b>", markup = true), 0, 0, 0)
+  kit.add(content, kit.addClass(kit.label(title), "bold"))
   if origin.len == 0:
-    gtk_box_pack_start(box, label("This page has no site settings.", dim = true), 0, 0, 0)
+    kit.add(content, label("This page has no site settings.", dim = true))
   else:
     let secure = origin.startsWith("https:")
-    gtk_box_pack_start(box, row(if secure: "lock_outline" else: "lock_open",
-      label(if secure: "Connection is secure" else: "Connection is not secure")), 0, 0, 0)
-    gtk_box_pack_start(box, gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), 0, 0, 4)
-    gtk_box_pack_start(box, label("Permissions", dim = true), 0, 0, 0)
-    for k in kinds:
-      let combo = gtk_combo_box_text_new()
-      for (id, text) in [("ask", "Ask (default)"), ("allow", "Allow"), ("block", "Block")]:
-        gtk_combo_box_text_append(combo, id.cstring, text.cstring)
-      gtk_combo_box_set_active(combo, get(origin, k.name).ord.cint)
-      g_object_set_data(combo, "webby-permission", cast[pointer](kindNamed(k.name)))
-      connect(combo, "changed", proc (c: Widget, d: pointer) {.cdecl.} =
-        let t = currentTab()
-        let origin = originOf(if t == nil: "" else: t.url)
-        if origin.len == 0: return
-        let setting = Setting(gtk_combo_box_get_active(c))
-        set(origin, kinds[cast[int](g_object_get_data(c, "webby-permission"))].name, setting)
-        if setting != allow: forgetOnce(t, origin)
-        changedSettings = true
-        discard g_idle_add(proc (d: pointer): gboolean {.cdecl.} = (fill(); 0), nil))
-      let r = row(k.icon, label(k.label))
-      gtk_box_pack_end(r, combo, 0, 0, 0)
-      gtk_box_pack_start(box, r, 0, 0, 0)
-    gtk_box_pack_start(box, gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), 0, 0, 4)
-    let data = row("cookie_outlined", label("Cookies and site data"))
-    let del = gtk_button_new_with_label("Delete")
-    connect(del, "clicked", proc (b: Widget, d: pointer) {.cdecl.} =
-      gtk_popover_popdown(popover)
-      # Ask once the popover has let go of the pointer.
-      discard g_idle_add(proc (d: pointer): gboolean {.cdecl.} = (deleteSiteData(); 0), nil))
-    gtk_box_pack_end(data, del, 0, 0, 0)
-    gtk_box_pack_start(box, data, 0, 0, 0)
-    if not secure:
-      gtk_box_pack_start(box, label("Pages that aren't secure can't use these.", dim = true), 0, 0, 0)
-    if changedSettings:
-      gtk_box_pack_start(box, label("Reload the page to apply the new settings.", dim = true), 0, 0, 0)
-  let actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6)
-  gtk_widget_set_halign(actions, GTK_ALIGN_END)
+    kit.add(content, row(if secure: "lock_outline" else: "lock_open",
+      kit.expand(label(if secure: "Connection is secure" else: "Connection is not secure"))))
+    kit.add(content, kit.separator())
+    kit.add(content, label("Permissions", dim = true))
+    for k in kinds: kit.add(content, permissionRow(t, origin, k))
+    kit.add(content, kit.separator())
+    kit.add(content, row("cookie_outlined", kit.expand(label("Cookies and site data")), kit.button("Delete", proc () =
+      kit.hidePopover(popover)
+      later(deleteSiteData))))
+    if not secure: kit.add(content, label("Pages that aren't secure can't use these.", dim = true))
+    if changedSettings: kit.add(content, label("Reload the page to apply the new settings.", dim = true))
+  let actions = kit.row(kit.spacer())
+  actions.spacing = 6
   if origin.len > 0 and hasSettings(origin):
-    let r = gtk_button_new_with_label("Reset permissions")
-    connect(r, "clicked", proc (b: Widget, d: pointer) {.cdecl.} =
+    kit.add(actions, kit.button("Reset permissions", proc () =
       let t = currentTab()
       let origin = originOf(if t == nil: "" else: t.url)
       if origin.len == 0: return
       reset(origin)
       forgetOnce(t, origin)
-      changedSettings = true
-      discard g_idle_add(proc (d: pointer): gboolean {.cdecl.} = (fill(); 0), nil))
-    gtk_box_pack_start(actions, r, 0, 0, 0)
+      settingChanged()))
   if changedSettings:
-    let r = gtk_button_new_with_label("Reload")
-    connect(r, "clicked", proc (b: Widget, d: pointer) {.cdecl.} =
-      gtk_popover_popdown(popover)
-      reloadPage())
-    gtk_box_pack_start(actions, r, 0, 0, 0)
-  let done = gtk_button_new_with_label("Done")
-  addClass(done, "suggested-action")
-  connect(done, "clicked", proc (b: Widget, d: pointer) {.cdecl.} = gtk_popover_popdown(popover))
-  gtk_box_pack_start(actions, done, 0, 0, 0)
-  gtk_box_pack_start(box, actions, 0, 0, 4)
-  gtk_widget_show_all(box)
+    kit.add(actions, kit.button("Reload", proc () =
+      kit.hidePopover(popover)
+      reloadPage()))
+  kit.add(actions, kit.addClass(kit.button("Done", proc () = kit.hidePopover(popover)), "suggested"))
+  kit.add(content, actions)
 
 proc showSiteSettings*() =
   changedSettings = false
   fill()
-  gtk_popover_popup(popover)
+  kit.showPopover(popover)
 
 proc install*() =
   windowHooks.add proc () =
     let b = kit.iconButton("tune", "Site settings", showSiteSettings)
     kit.insert(toolbarRow, b, toolbarRow.children.find(urlSlotRow))
-    button = nkgtk.gtkWidget(b)
-    popover = gtk_popover_new(button)
-    gtk_popover_set_position(popover, GTK_POS_BOTTOM)
+    content = kit.column()
+    discard kit.sized(content, 360)
+    popover = kit.popover(b, content, modal = true)

@@ -133,10 +133,14 @@ type
 
   Popover* = ref object
     ## A panel floating under a widget, e.g. suggestions under a text field. It takes no keyboard focus, so
-    ## typing goes on in the field; the app shows and hides it (`showPopover`, `hidePopover`).
+    ## typing goes on in the field; the app shows and hides it (`showPopover`, `hidePopover`). A `modal` one (a
+    ## settings panel under a button) is as wide as its content, takes the focus and closes on a click outside it
+    ## or Esc, calling onClose.
     anchor*, content*: Widget
     native*: pointer                 ## the backend's handle once it has been shown
     shown*: bool
+    modal*: bool
+    onClose*: proc ()                ## modal: the user closed it (not hidePopover)
 
   Dialog* = ref object
     ## A modal dialog over the window (`showDialog`): a title, the app's content and a row of buttons.
@@ -638,9 +642,9 @@ proc chooseFile*(title: string, onDone: proc (path: string), save = false, name 
   if backend.chooseFile != nil: backend.chooseFile(title, save, name, patterns, filterName, onDone)
   else: onDone("")
 
-proc popover*(anchor, content: Widget): Popover =
+proc popover*(anchor, content: Widget, modal = false, onClose: proc () = nil): Popover =
   ## A popover for `content` under `anchor`, not shown yet. `content` stays live: change it while it shows.
-  Popover(anchor: anchor, content: content)
+  Popover(anchor: anchor, content: content, modal: modal, onClose: onClose)
 
 proc showPopover*(p: Popover) =
   ## Shows `p` (or moves it back under its anchor if it already shows).
@@ -652,6 +656,12 @@ proc hidePopover*(p: Popover) =
   if p.shown:
     p.shown = false
     if backend.hidePopover != nil: backend.hidePopover(p)
+
+proc popoverClosed*(p: Popover) =
+  ## For backends: the user closed a modal popover (a click outside it, Esc).
+  if not p.shown: return
+  p.shown = false
+  if p.onClose != nil: p.onClose()
 
 proc selectAll*(w: Widget) =
   if w.realized and backend.selectAll != nil: backend.selectAll(w)

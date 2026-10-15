@@ -166,14 +166,17 @@ backend.showDialog = proc (d: Dialog) =
   op(opDialog, n, text = $(%*{"title": d.title, "buttons": d.buttons, "destructive": d.destructive,
                                "content": content}))
 
-var nextPopover = 1
+var
+  nextPopover = 1
+  popovers: Table[int, Popover]       # by number, once shown
 
 backend.showPopover = proc (p: Popover) =
   if p.native == nil:
     p.native = cast[pointer](nextPopover)
+    popovers[nextPopover] = p
     inc nextPopover
   if not p.content.realized: p.content.realize()
-  op(opPopover, cast[int](p.native), p.anchor.id, $p.content.id)
+  op(opPopover, cast[int](p.native), p.anchor.id, $p.content.id & (if p.modal: " modal" else: ""))
 
 backend.hidePopover = proc (p: Popover) =
   if p.native != nil: op(opHidePopover, cast[int](p.native))
@@ -208,6 +211,7 @@ const   # Native.java's event kinds
   evEntryKey = 14      # x: the Windows key code; y: modifiers; pointer: the character's code point, 0 for none
   evFocus = 15         # x: 1 focused, 0 not
   evMiddle = 16
+  evPopoverClosed = 17  # id: the popover's number; the user closed a modal one
 
 var httpPending: Table[int, proc (r: Response)]
 
@@ -235,6 +239,10 @@ proc nk_event(id, kind: cint, text: cstring, x, y: cfloat, pointer: cint) {.expo
     let action = menuActions.getOrDefault(id)
     menuActions.clear()
     if action != nil: action()
+    return
+  if kind == evPopoverClosed:
+    let p = popovers.getOrDefault(id)
+    if p != nil: p.popoverClosed()
     return
   if kind == evDialogResult:
     let d = dialogs.getOrDefault(id)
