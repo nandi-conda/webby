@@ -1,5 +1,5 @@
-// The window's open tabs, kept on disk as they change so they come back after the app is stopped. Android kills
-// apps in the background and on updates without asking, so there the tabs are reopened at the next start.
+// The window's open tabs, kept on disk as they change so they come back, asleep until selected, at the next start
+// (also after Android kills the app in the background or for an update).
 
 import 'dart:async';
 import 'dart:convert';
@@ -23,7 +23,8 @@ class OpenTabsStore {
 
   static OpenTabsStore? _pinned;
 
-  /// Desktop's pinned tabs, which open again at the next start, in pinned_tabs.json next to open_tabs.json.
+  /// pinned_tabs.json next to open_tabs.json: desktop's pinned tabs from before it kept all the open tabs, read once
+  /// when open_tabs.json is missing.
   static OpenTabsStore get pinned =>
       _pinned ??= OpenTabsStore(File('${SessionStore.defaultFile().parent.path}/pinned_tabs.json'));
 

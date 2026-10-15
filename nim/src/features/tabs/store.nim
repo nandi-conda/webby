@@ -1,5 +1,5 @@
 ## The tab files of a profile, in the Flutter app's formats (app/lib/src/tabs/{sessions,open_tabs,tab_layout}.dart):
-## sessions.json (saved sessions), pinned_tabs.json (pinned tabs for the next start) and tabs.json (the layout).
+## sessions.json (saved sessions), open_tabs.json (the open tabs for the next start) and tabs.json (the layout).
 ## Incognito windows write none of them except tabs.json, which is a preference.
 ##
 ## The session store is what sync uses: `toSyncDoc` gives the "sessions" section of a SyncDoc (one record per session
@@ -281,7 +281,12 @@ proc applySyncDoc*(doc: JsonNode): bool =
   true
 
 # ---------------------------------------------------------------------------------------------------------------
-# pinned_tabs.json (desktop's pinned tabs for the next start) in open_tabs.dart's format.
+# open_tabs.json (the open tabs, for the next start) in open_tabs.dart's format, and pinned_tabs.json, which held
+# only the pinned ones before open_tabs.json was kept on desktop.
+
+proc openTabsFile*(): string =
+  let o = getEnv("WEBBY_OPEN_TABS_FILE")
+  if o.len > 0: o else: sessionsFile().parentDir / "open_tabs.json"
 
 proc pinnedTabsFile*(): string = sessionsFile().parentDir / "pinned_tabs.json"
 
@@ -296,22 +301,27 @@ proc readTabsFile*(path: string): tuple[tabs: seq[DeviceTab], active, pinned: in
   result.active = clamp(j{"active"}.getInt, 0, result.tabs.high)
   result.pinned = clamp(j{"pinned"}.getInt, 0, result.tabs.len)
 
-var pinnedWritten: string
+var openTabsWritten: string
 
-proc writePinnedTabs*(tabs: seq[DeviceTab]) =
-  ## Saves the pinned tabs for the next start (all of them pinned, the first in front). Never in incognito.
+proc writeOpenTabs*(tabs: seq[DeviceTab], active, pinned: int) =
+  ## Saves the open tabs for the next start: blank ones left out, `active` the index in `tabs` of the front one and
+  ## `pinned` how many at the start are pinned. Never in incognito.
   if incognito: return
   var kept: seq[DeviceTab]
-  for t in tabs:
-    if isSessionUrl(t.url): kept.add t
-  let j = %*{"version": 1, "active": 0, "pinned": kept.len, "tabs": newJArray()}
+  var front, keptPinned = 0
+  for i, t in tabs:
+    if not isSessionUrl(t.url): continue
+    if i <= active: front = kept.len
+    if i < pinned: inc keptPinned
+    kept.add t
+  let j = %*{"version": 1, "active": front, "pinned": keptPinned, "tabs": newJArray()}
   for t in kept: j["tabs"].add t.toJson
   let s = $j
-  if s == pinnedWritten: return
+  if s == openTabsWritten: return
   try:
-    writeFileAtomic(pinnedTabsFile(), s)
-    pinnedWritten = s
-  except CatchableError as e: stderr.writeLine "webby: could not save ", pinnedTabsFile(), ": ", e.msg
+    writeFileAtomic(openTabsFile(), s)
+    openTabsWritten = s
+  except CatchableError as e: stderr.writeLine "webby: could not save ", openTabsFile(), ": ", e.msg
 
 # ---------------------------------------------------------------------------------------------------------------
 # tabs.json: the tab layout. Incognito windows read and change it too: it's a preference, not browsing data.

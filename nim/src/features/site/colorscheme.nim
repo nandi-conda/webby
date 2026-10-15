@@ -31,7 +31,7 @@ proc wanted(): int =
   else: colorSchemeLight
 
 proc apply(t: Tab) =
-  if not t.closed: webby_view_set_color_scheme(t.view, current.cint)
+  if not t.closed and t.view != nil: webby_view_set_color_scheme(t.view, current.cint)
 
 proc update() =
   # The browser's UI follows the portal too, so pages and chrome agree.
@@ -79,4 +79,5 @@ proc install*() =
     connect(s, "notify::gtk-application-prefer-dark-theme", onGtkSetting)
     if not incognito: readPortal()
   tabCreatedHooks.add apply
+  viewCreatedHooks.add apply
   tabStateHooks.add onTabState

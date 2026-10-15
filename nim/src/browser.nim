@@ -23,7 +23,7 @@ const modSuper* = 8
 
 type
   Tab* = ref object
-    view*: View
+    view*: View              ## nil while the tab sleeps (no page, no WebContent process); see ensureView
     button*: Widget          ## the tab's widget in the tab strip
     label*: Widget           ## the label inside it
     icon*: Widget            ## a GtkImage before the label (features may set a favicon)
@@ -66,6 +66,7 @@ var
   windowHooks*: seq[proc ()]                      ## once the window and its boxes exist
   initialTabsHooks*: seq[proc (urls: seq[string]): bool]  ## first one returning true opened the start tabs
   tabCreatedHooks*: seq[proc (t: Tab)]
+  viewCreatedHooks*: seq[proc (t: Tab)]           ## a sleeping tab got its view back (ensureView)
   tabClosedHooks*: seq[proc (t: Tab)]             ## before the view is destroyed
   activeTabHooks*: seq[proc (t: Tab)]
   tabStateHooks*: seq[proc (t: Tab)]              ## url, title, loading or history changed
@@ -211,7 +212,7 @@ proc tabLabel*(t: Tab): string =
   if t.url == "about:blank": "New tab" elif t.title.len > 0: t.title elif t.url.len > 0: t.url else: "New tab"
 
 proc runJs*(t: Tab, source: string) =
-  if t != nil and not t.closed: webby_view_run_javascript(t.view, source.cstring)
+  if t != nil and not t.closed and t.view != nil: webby_view_run_javascript(t.view, source.cstring)
 
 proc refreshChrome*() =
   let t = currentTab()
@@ -247,15 +248,18 @@ proc notifyTabStrip*() =
   for h in tabStripHooks: h()
 
 proc resizeView(t: Tab) =
-  if viewW > 0: webby_view_resize(t.view, cint(viewW * viewScale), cint(viewH * viewScale), viewScale.cdouble)
+  if viewW > 0 and t.view != nil: webby_view_resize(t.view, cint(viewW * viewScale), cint(viewH * viewScale), viewScale.cdouble)
+
+proc ensureView*(t: Tab)
 
 proc activateTab*(i: int) =
   if i notin 0 ..< tabs.len: return
   if activeIndex in 0 ..< tabs.len and activeIndex != i:
-    webby_view_set_visible(tabs[activeIndex].view, 0)
+    if tabs[activeIndex].view != nil: webby_view_set_visible(tabs[activeIndex].view, 0)
     removeClass(tabs[activeIndex].button, "webby-active-tab")
   activeIndex = i
   let t = tabs[i]
+  ensureView(t)
   webby_view_set_visible(t.view, 1)
   resizeView(t)
   addClass(t.button, "webby-active-tab")
@@ -300,11 +304,29 @@ proc newViewSized(): View =
   let s = max(viewScale, 1)
   webby_view_create(cint(max(viewW, 1280) * s), cint(max(viewH, 720) * s), s.cdouble)
 
+proc ensureView*(t: Tab) =
+  ## Gives a sleeping tab (view = nil) a fresh, hidden, empty view; selecting a tab or loading into it does this.
+  if t.view != nil or t.closed: return
+  t.view = newViewSized()
+  webby_view_set_message_prefix(t.view, t.messagePrefix.cstring)
+  webby_view_set_visible(t.view, 0)
+  t.stateSerial = 0
+  t.frameSerial = 0
+  for h in viewCreatedHooks: h(t)
+
+proc sleepTab*(t: Tab) =
+  ## Throws away the tab's view and its WebContent process, keeping the tab (url and title stay as they were).
+  if t.view == nil or t == currentTab(): return
+  let old = t.view
+  t.view = nil
+  webby_view_destroy(old)
+
 proc adoptView*(view: View, focus = true, index = -1): Tab =
-  ## Adds a tab around an existing view (one a page opened, or one made by newViewSized).
+  ## Adds a tab around an existing view (one a page opened, or one made by newViewSized), or a sleeping tab when
+  ## `view` is nil (it gets a view when it's selected or loads something).
   let t = Tab(view: view, lastCompat: getMonoTime(), messagePrefix: randomPrefix())
   GC_ref(t)
-  webby_view_set_message_prefix(view, t.messagePrefix.cstring)
+  if view != nil: webby_view_set_message_prefix(view, t.messagePrefix.cstring)
   let box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4)
   t.icon = icon("public", 14)
   t.label = gtk_label_new("New tab")
@@ -333,12 +355,13 @@ proc adoptView*(view: View, focus = true, index = -1): Tab =
   if at <= activeIndex: inc activeIndex
   for h in tabCreatedHooks: h(t)
   if focus or activeIndex < 0: activateTab(at)
-  else: webby_view_set_visible(view, 0)
+  elif view != nil: webby_view_set_visible(view, 0)
   notifyTabStrip()
   t
 
 proc loadUrl*(t: Tab, text: string) =
   if t == nil: return
+  ensureView(t)
   webby_view_load(t.view, text.cstring)
   wake()
 
@@ -369,7 +392,7 @@ proc closeTab*(t: Tab) =
   tabs.delete(i)
   t.closed = true
   gtk_widget_destroy(t.button)
-  webby_view_destroy(t.view)
+  if t.view != nil: webby_view_destroy(t.view)
   GC_unref(t)
   if tabs.len == 0:
     quit()
@@ -569,6 +592,7 @@ template mark*(what: string) =
   if trace: stderr.writeLine "webby-startup ", (getMonoTime() - startedAt).inMilliseconds, " ms ", what
 
 proc pumpTab(t: Tab, isActive: bool): bool =
+  if t.view == nil: return false
   var busy = t.loading
   let ss = webby_view_state_serial(t.view)
   if ss != t.stateSerial:
@@ -1211,4 +1235,5 @@ proc run*() =
   if trace: discard g_timeout_add(5000, traceTick, nil)
   wake()
   gtk_main()
-  for t in tabs: webby_view_destroy(t.view)
+  for t in tabs:
+    if t.view != nil: webby_view_destroy(t.view)

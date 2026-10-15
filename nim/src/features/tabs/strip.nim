@@ -1,5 +1,6 @@
-## The tab strip: pinned tabs (pinned_tabs.json), vertical tabs (tabs.json), the tab right-click menu, reopening
-## closed tabs, unloaded tabs and discarding long-hidden ones (main.dart, tab_strip.dart, web_view.dart).
+## The tab strip: the open tabs coming back at the next start (open_tabs.json), pinned tabs, vertical tabs
+## (tabs.json), the tab right-click menu, reopening closed tabs, unloaded tabs and discarding long-hidden ones
+## (main.dart, tab_strip.dart, web_view.dart).
 
 import std/[os, strutils, times]
 from std/unicode import toRunes, `$`
@@ -15,7 +16,8 @@ var
   fixingOrder = false
 
 # ---------------------------------------------------------------------------------------------------------------
-# Unloaded tabs: a view that shows a URL and title but loads nothing until the tab is first shown.
+# Unloaded tabs: a sleeping tab (no view, no WebContent process) that shows a URL and title but loads nothing until
+# it's first shown.
 
 proc isUnloaded*(t: Tab): bool = "pendingUrl" in t.props
 
@@ -32,13 +34,9 @@ proc makeUnloaded(t: Tab, url, title: string) =
   t.canForward = false
   showPending(t)
 
-proc newHiddenView(): View =
-  result = webby_view_create(1280, 720, 1.0)
-  webby_view_set_visible(result, 0)
-
 proc openUnloadedTab*(url, title: string, index = -1): Tab =
   ## A background tab that loads `url` once it's selected.
-  result = adoptView(newHiddenView(), focus = false, index = index)
+  result = adoptView(nil, focus = false, index = index)
   makeUnloaded(result, url, title)
 
 proc loadPending(t: Tab) =
@@ -53,10 +51,7 @@ proc discardTab(t: Tab) =
   ## afresh (scroll position, form contents and back/forward history are lost).
   let url = t.url
   let title = t.title
-  let old = t.view
-  t.view = newHiddenView()
-  webby_view_set_message_prefix(t.view, t.messagePrefix.cstring)
-  webby_view_destroy(old)
+  sleepTab(t)
   makeUnloaded(t, url, title)
 
 proc discardMinutes(): int =
@@ -88,7 +83,7 @@ proc discardIdleTabs(d: pointer): gboolean {.cdecl.} =
   1
 
 # ---------------------------------------------------------------------------------------------------------------
-# Pinned tabs: small tiles at the start of the strip that survive "Close other tabs" and come back at the next start.
+# Pinned tabs: small tiles at the start of the strip that survive "Close other tabs".
 
 proc pinnedCount*(): int =
   for t in tabs:
@@ -104,12 +99,33 @@ proc styleTab(t: Tab) =
   gtk_widget_set_halign(gtk_bin_get_child(t.button), if t.pinned and not vertical: GTK_ALIGN_CENTER else: GTK_ALIGN_FILL)
   updateTabButton(t)
 
-proc savePinned() =
-  if incognito or appUrl.len > 0: return
-  var pinned: seq[DeviceTab]
-  for t in tabs:
-    if t.pinned: pinned.add DeviceTab(title: t.title, url: t.url)
-  writePinnedTabs(pinned)
+# ---------------------------------------------------------------------------------------------------------------
+# The open tabs, kept in open_tabs.json as they change (a second after, so a burst of changes is one write) and
+# opened again, asleep, at the next start.
+
+var
+  saveSource: cuint
+  restoring = false
+
+proc keepsTabs(): bool = not incognito and appUrl.len == 0
+
+proc saveOpenTabsNow() =
+  if saveSource != 0:
+    discard g_source_remove(saveSource)
+    saveSource = 0
+  # Closing the last tab quits; what was saved before it stays for the next start.
+  if not keepsTabs() or restoring or tabs.len == 0: return
+  var list: seq[DeviceTab]
+  for t in tabs: list.add DeviceTab(title: t.title, url: t.url)
+  writeOpenTabs(list, activeIndex, pinnedCount())
+
+proc onSaveTimer(d: pointer): gboolean {.cdecl.} =
+  saveSource = 0
+  saveOpenTabsNow()
+  0
+
+proc saveOpenTabsSoon() =
+  if keepsTabs() and not restoring and saveSource == 0: saveSource = g_timeout_add(1000, onSaveTimer, nil)
 
 proc fixOrder() =
   ## Pinned tabs stay together at the start; a tab opened among them moves just after them.
@@ -286,17 +302,28 @@ proc onMoreMenuShow(w: Widget, d: pointer) {.cdecl.} =
   for item in addRecentlyClosed(moreMenu, at): g_object_set_data(item, "webby-recent", cast[pointer](1))
 
 proc startTabs(urls: seq[string]): bool =
-  ## Desktop doesn't keep the open tabs, but pinned ones come back (unloaded until selected), ahead of the start page.
-  if incognito: return false
-  let saved = readTabsFile(pinnedTabsFile())
+  ## The last run's tabs come back. Only the front one loads; the others sleep until they're selected. Addresses on
+  ## the command line open as new tabs after them, the first in front.
+  if not keepsTabs(): return false
+  var saved = readTabsFile(openTabsFile())
+  if saved.tabs.len == 0: saved = readTabsFile(pinnedTabsFile())   # from before open_tabs.json was kept
   if saved.tabs.len == 0: return false
-  for d in saved.tabs:
-    let t = openUnloadedTab(d.url, d.title)
-    t.pinned = true
+  restoring = true
+  # The front tab goes first (the first tab is always selected) and the sleeping ones are put around it.
+  let front = if urls.len > 0: openTab(urls[0]) else: openTab(saved.tabs[saved.active].url)
+  for i, d in saved.tabs:
+    if urls.len == 0 and i == saved.active:
+      front.pinned = i < saved.pinned
+      styleTab(front)
+      continue
+    let t = openUnloadedTab(d.url, d.title, index = i)
+    t.pinned = i < saved.pinned
     styleTab(t)
-  let first = openTab(if urls.len > 0: urls[0] else: homePage)
   for u in urls[min(1, urls.len) .. ^1]: discard openTab(u, focus = false)
-  activateTab(first)
+  activateTab(front)
+  restoring = false
+  fixOrder()
+  saveOpenTabsSoon()
   true
 
 proc install*() =
@@ -314,14 +341,15 @@ proc install*() =
     t.props.del("hiddenSince")
     lastActive = t
     loadPending(t)
+    saveOpenTabsSoon()
   tabStateHooks.add proc (t: Tab) =
     if t.isUnloaded: showPending(t)   # a fresh view reports an empty page; keep showing what it will load
-    if t.pinned:
-      styleTab(t)
-      savePinned()
+    if t.pinned: styleTab(t)
+    saveOpenTabsSoon()
   tabStripHooks.add proc () =
     fixOrder()
-    savePinned()
+    saveOpenTabsSoon()
+  shutdownHooks.add saveOpenTabsNow
   tabMenuHooks.add fillTabMenu
   windowHooks.add proc () =
     loadCss("""

@@ -209,19 +209,17 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     }
   }
 
-  /// Android stops apps whenever it likes (in the background, for updates), so there the open tabs are kept as they
-  /// change and come back at the next start. Desktop saves them as a session when the window closes.
-  static final bool _restoresTabs = Platform.isAndroid && !Incognito.active;
+  /// The open tabs are kept as they change and come back at the next start, asleep until selected (Android also
+  /// stops apps whenever it likes, in the background or for updates). Incognito windows keep nothing.
+  static final bool _restoresTabs = !Incognito.active;
   AppLifecycleListener? _lifecycle;
 
   void _openStartTabs() {
-    final saved = _restoresTabs ? OpenTabsStore.instance.read() : null;
+    // Desktop kept only the pinned tabs (pinned_tabs.json) before it kept all of them.
+    final saved = !_restoresTabs
+        ? null
+        : OpenTabsStore.instance.read() ?? (Platform.isAndroid ? null : OpenTabsStore.pinned.read());
     if (saved == null) {
-      // Desktop doesn't keep the open tabs, but pinned ones come back (unloaded until selected), ahead of the start page.
-      final pinned = _restoresTabs || Incognito.active ? null : OpenTabsStore.pinned.read();
-      for (final tab in pinned?.tabs ?? const <DeviceTab>[]) {
-        _insertTab(_BrowserTab.withController(WebbyController.unloaded(tab.url, title: tab.title))..pinned = true);
-      }
       _active = _tabs.length;
       _addTab(widget.initialUrl);
       // More addresses on the command line open as background tabs.
@@ -236,10 +234,17 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
       _insertTab(_BrowserTab.withController(WebbyController.unloaded(tab.url, title: tab.title))..pinned = i < saved.pinned);
     }
     _active = saved.active;
-    final launch = widget.launchUrl;
-    if (launch != null) {
-      _addTab(launch);
-      _active = _tabs.length - 1;
+    // Addresses webby was started with open as new tabs after the restored ones, the first in front.
+    final launch = Platform.isAndroid
+        ? [?widget.launchUrl]
+        : [if (widget.initialUrl != _blankUrl) widget.initialUrl, ...widget.moreUrls];
+    for (final (i, url) in launch.indexed) {
+      final tab = _addTab(url);
+      if (i == 0) {
+        _active = _tabs.length - 1;
+      } else {
+        tab.controller.visible = false;
+      }
     }
     _syncVisibility();
   }
@@ -318,14 +323,6 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
     if (Incognito.active) return;
     DeviceTabs.instance.setTabs([for (final t in _tabs) DeviceTab(t.controller.title, t.controller.url)]);
     if (_restoresTabs) OpenTabsStore.instance.save(_sessionTabs(), _active, pinned: _pinnedCount);
-    _savePinnedTabs();
-  }
-
-  /// Desktop keeps the pinned tabs for the next start (Android keeps them with the other open tabs).
-  void _savePinnedTabs() {
-    if (_restoresTabs || Incognito.active) return;
-    final pinned = [for (final t in _tabs.where((t) => t.pinned)) DeviceTab(t.controller.title, t.controller.url)];
-    OpenTabsStore.pinned.save(pinned, 0, pinned: pinned.length);
   }
 
   /// Opens a new incognito window (a separate process; desktop only).
@@ -360,6 +357,7 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
   /// with only blank tabs saves nothing ([SessionStore.save] skips those).
   Future<AppExitResponse> _onExitRequested() async {
     if (!Incognito.active) SessionStore.instance.save(_sessionTabs(), active: _active);
+    if (_restoresTabs) OpenTabsStore.instance.flush(_sessionTabs(), _active, pinned: _pinnedCount);
     return AppExitResponse.exit;
   }
 
