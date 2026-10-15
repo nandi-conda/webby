@@ -8,19 +8,6 @@ from nimkit/core as kit import nil
 import history/store
 import summarize/cache
 
-{.push cdecl, importc.}
-proc gtk_combo_box_text_new(): Widget
-proc gtk_combo_box_text_append_text(c: Widget, text: cstring)
-proc gtk_combo_box_set_active(c: Widget, i: cint)
-proc gtk_combo_box_get_active(c: Widget): cint
-proc gtk_list_box_get_row_at_y(l: Widget, y: cint): Widget
-proc gtk_list_box_row_set_activatable(r: Widget, on: gboolean)
-proc gtk_list_box_row_set_selectable(r: Widget, on: gboolean)
-proc gtk_accel_label_set_accel(l: Widget, key: cuint, mods: cuint)
-proc gtk_box_set_spacing(b: Widget, s: cint)
-proc gtk_dialog_get_widget_for_response(d: Widget, r: cint): Widget
-{.pop.}
-
 const
   ranges = [("Last hour", 3600'i64), ("Last 24 hours", 86400'i64), ("Last 7 days", 7 * 86400'i64),
     ("Last 4 weeks", 28 * 86400'i64), ("All time", 0'i64)]
@@ -32,8 +19,7 @@ const
 var
   visits: Table[pointer, tuple[url: string, visit: HistoryEntry]]  ## per tab: the address last recorded
   panelOpen = false
-  panelList, panelSearch: Widget
-  rowGroups: seq[seq[HistoryEntry]]   ## per list row: the visits it stands for (empty for day headings)
+  panelList, panelSearch: kit.Widget
   refreshQueued = false
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -67,77 +53,60 @@ proc openInBackground(url: string) =
 # ---------------------------------------------------------------------------------------------------------------
 # Dialogs
 
-proc rangeCombo(): Widget =
-  result = gtk_combo_box_text_new()
-  for r in ranges: gtk_combo_box_text_append_text(result, r[0].cstring)
-  gtk_combo_box_set_active(result, ranges.high.cint)
+proc rangeCombo(): kit.Widget =
+  var names: seq[string]
+  for r in ranges: names.add r[0]
+  kit.dropdown(names, ranges.high)
 
-proc sinceMs(combo: Widget): int64 =
+proc sinceMs(combo: kit.Widget): int64 =
   ## When clearing starts from, or 0 for all time.
-  let secs = ranges[clamp(gtk_combo_box_get_active(combo).int, 0, ranges.high)][1]
+  let secs = ranges[clamp(kit.selected(combo), 0, ranges.high)][1]
   if secs == 0: 0'i64 else: nowMs() - secs * 1000
 
-proc dimLabel(text: string): Widget =
-  result = gtk_label_new(text.cstring)
-  gtk_label_set_xalign(result, 0)
-  gtk_label_set_line_wrap(result, 1)
-  addClass(result, "dim-label")
+proc dimLabel(text: string): kit.Widget = kit.addClass(kit.label(text), "dim-label")
+
+proc oneLine(text: string): kit.Widget =
+  result = kit.label(text)
+  kit.`maxChars=`(result, 200)
+
+proc rangeRow(combo: kit.Widget): kit.Widget =
+  result = kit.row(kit.expand(kit.label("Time range")), combo)
+  result.spacing = 12
 
 proc clearHistoryDialog() =
   ## Asks how much history to delete and deletes it.
-  let d = gtk_dialog_new_with_buttons("Clear history", window, GTK_DIALOG_MODAL, "_Cancel", GTK_RESPONSE_CANCEL,
-    "C_lear", GTK_RESPONSE_OK, nil)
-  let box = gtk_dialog_get_content_area(d)
-  gtk_container_set_border_width(box, 12)
-  gtk_box_set_spacing(box, 8)
-  let row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12)
-  gtk_box_pack_start(row, gtk_label_new("Time range"), 0, 0, 0)
   let combo = rangeCombo()
-  gtk_box_pack_end(row, combo, 0, 0, 0)
-  gtk_box_pack_start(box, row, 0, 0, 0)
-  gtk_box_pack_start(box, dimLabel("The pages you visited in this time are deleted from this device."), 0, 0, 0)
-  addClass(gtk_dialog_get_widget_for_response(d, GTK_RESPONSE_OK), "destructive-action")
-  gtk_widget_show_all(d)
-  if gtk_dialog_run(d) == GTK_RESPONSE_OK: clear(sinceMs(combo))
-  gtk_widget_destroy(d)
+  let content = kit.column(rangeRow(combo),
+    dimLabel("The pages you visited in this time are deleted from this device."))
+  content.spacing = 8
+  discard kit.dialog("Clear history", content, @["Cancel", "Clear"], destructive = 1, onResult = proc (i: int) =
+    if i == 1: clear(sinceMs(combo)))
 
 proc clearBrowsingData*() =
   ## Chrome's "Clear browsing data" dialog (app/lib/src/site_data.dart).
-  let d = gtk_dialog_new_with_buttons("Clear browsing data", window, GTK_DIALOG_MODAL, "_Cancel",
-    GTK_RESPONSE_CANCEL, "C_lear data", GTK_RESPONSE_OK, nil)
-  gtk_window_set_default_size(d, 420, -1)
-  let box = gtk_dialog_get_content_area(d)
-  gtk_container_set_border_width(box, 12)
-  gtk_box_set_spacing(box, 6)
-  let row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12)
-  gtk_box_pack_start(row, gtk_label_new("Time range"), 0, 0, 0)
   let combo = rangeCombo()
-  gtk_box_pack_end(row, combo, 0, 0, 0)
-  gtk_box_pack_start(box, row, 0, 0, 4)
-  proc option(label, detail: string): Widget =
-    result = gtk_check_button_new_with_label(label.cstring)
-    gtk_toggle_button_set_active(result, 1)
-    gtk_box_pack_start(box, result, 0, 0, 0)
-    let l = dimLabel(detail)
-    gtk_widget_set_margin_start(l, 26)
-    gtk_box_pack_start(box, l, 0, 0, 0)
+  let content = kit.column(rangeRow(combo))
+  content.spacing = 6
+  discard kit.sized(content, 400)
+  proc option(label, detail: string): kit.Widget =
+    result = kit.check(label, true)
+    kit.add(content, result)
+    kit.add(content, kit.addClass(dimLabel(detail), "webby-check-detail"))
   let cookies = option("Cookies and other site data", "Signs you out of most sites.")
   let cached = option("Cached images and files", "Pages may load more slowly next time.")
   let history = option("Browsing history", "Clears the pages on the History page and in address bar suggestions.")
-  addClass(gtk_dialog_get_widget_for_response(d, GTK_RESPONSE_OK), "suggested-action")
-  gtk_widget_show_all(d)
-  if gtk_dialog_run(d) == GTK_RESPONSE_OK:
+  discard kit.dialog("Clear browsing data", content, @["Cancel", "Clear data"], proc (i: int) =
+    if i != 1: return
     let since = sinceMs(combo)
     var what = 0
-    if gtk_toggle_button_get_active(cookies) != 0: what = what or browsingDataSiteData
-    if gtk_toggle_button_get_active(cached) != 0: what = what or browsingDataCache
-    if gtk_toggle_button_get_active(history) != 0: what = what or browsingDataHistory
+    if kit.checked(cookies): what = what or browsingDataSiteData
+    if kit.checked(cached): what = what or browsingDataCache
+    if kit.checked(history): what = what or browsingDataHistory
     if what != 0:
       webby_clear_browsing_data(since, what.cint)
       if (what and browsingDataHistory) != 0:
         clear(since)
-        clearSummaries(since)
-  gtk_widget_destroy(d)
+        clearSummaries(since))
 
 # ---------------------------------------------------------------------------------------------------------------
 # The History sidebar
@@ -158,65 +127,35 @@ proc site(url: string): string =
     if result.startsWith("www."): result = result[4 .. ^1]
   except CatchableError: discard
 
-proc onRemoveClicked(b: Widget, data: pointer) {.cdecl.} =
-  let i = cast[int](data)
-  if i in 0 ..< rowGroups.len and rowGroups[i].len > 0: remove(rowGroups[i])
-
-proc entryRow(group: seq[HistoryEntry], index: int): Widget =
+proc entryRow(group: seq[HistoryEntry]): kit.Widget =
+  ## A visit (or back-to-back visits to one page): click opens it, middle-click opens it in a background tab,
+  ## right-click offers that and removing it.
   let e = group[0]
-  let box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8)
-  gtk_widget_set_margin_start(box, 10)
-  gtk_widget_set_margin_end(box, 4)
   let t = localTime(e.time)
   let clock = dimLabel(align($t.hour, 2, '0') & ":" & align($t.minute, 2, '0'))
-  gtk_label_set_line_wrap(clock, 0)
-  gtk_label_set_width_chars(clock, 5)
-  gtk_box_pack_start(box, clock, 0, 0, 0)
-  gtk_box_pack_start(box, icon("public"), 0, 0, 0)
-  let title = gtk_label_new(e.label.cstring)
-  gtk_label_set_ellipsize(title, PANGO_ELLIPSIZE_END)
-  gtk_label_set_xalign(title, 0)
-  gtk_box_pack_start(box, title, 0, 1, 0)
-  if group.len > 1:
-    let n = dimLabel("×" & $group.len)
-    gtk_label_set_line_wrap(n, 0)
-    gtk_box_pack_start(box, n, 0, 0, 0)
+  discard kit.sized(clock, 40)
+  let row = kit.item(clock, kit.icon("public"), oneLine(e.label), onClick = proc () = openUrl(e.url))
+  if group.len > 1: kit.add(row, dimLabel("×" & $group.len))
   let s = site(e.url)
-  if s.len > 0 and e.title.len > 0:
-    let l = dimLabel(s)
-    gtk_label_set_line_wrap(l, 0)
-    gtk_label_set_ellipsize(l, PANGO_ELLIPSIZE_END)
-    gtk_box_pack_start(box, l, 1, 1, 0)
-  else:
-    gtk_box_pack_start(box, gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0), 1, 1, 0)
-  let remove = gtk_button_new()
-  iconButtonImage(remove, "close", 14)
-  gtk_button_set_relief(remove, GTK_RELIEF_NONE)
-  gtk_widget_set_tooltip_text(remove, "Remove from history")
-  connect(remove, "clicked", onRemoveClicked, cast[pointer](index))
-  gtk_box_pack_end(box, remove, 0, 0, 0)
-  gtk_widget_set_tooltip_text(box, e.url.cstring)
-  box
+  kit.add(row, kit.expand(if s.len > 0 and e.title.len > 0: kit.addClass(oneLine(s), "dim-label") else: kit.spacer()))
+  kit.add(row, kit.iconButton("close", "Remove from history", proc () = remove(group), 14))
+  row.spacing = 8
+  kit.`tooltip=`(row, e.url)
+  kit.addClass(row, "webby-history-row")
+  row.onMiddle = proc () = openInBackground(e.url)
+  row.onContext = proc () =
+    kit.popupMenu(@[kit.menuItem("Open in new tab", proc () = openInBackground(e.url)),
+                    kit.menuItem("Remove from history", proc () = remove(group))])
+  row
 
 proc fillPanel() =
   if panelList == nil: return
-  clearChildren(panelList)
-  rowGroups.setLen 0
-  let query = $gtk_entry_get_text(panelSearch)
+  kit.clear(panelList)
+  let query = kit.text(panelSearch)
   let found = search(query)
-  proc addRow(child: Widget, group: seq[HistoryEntry]) =
-    let row = gtk_list_box_row_new()
-    gtk_container_add(row, child)
-    if group.len == 0:
-      gtk_list_box_row_set_activatable(row, 0)
-      gtk_list_box_row_set_selectable(row, 0)
-    gtk_container_add(panelList, row)
-    rowGroups.add group
   if found.len == 0:
-    let l = dimLabel(if query.strip.len == 0: "Pages you visit will show up here." else: "No history matches.")
-    gtk_widget_set_margin_top(l, 24)
-    gtk_label_set_xalign(l, 0.5)
-    addRow(l, @[])
+    kit.add(panelList, kit.addClass(dimLabel(if query.strip.len == 0: "Pages you visit will show up here."
+                                             else: "No history matches."), "webby-history-note"))
   # Split into days, and each day into rows: back-to-back visits to the same page are one row.
   let now = now()
   var day = ""
@@ -227,51 +166,16 @@ proc fillPanel() =
     let label = dayLabel(localTime(e.time), now)
     if label != day:
       day = label
-      let h = gtk_label_new(nil)
-      gtk_label_set_markup(h, cstring("<b>" & escapeMarkup(label) & "</b>"))
-      gtk_label_set_xalign(h, 0)
-      gtk_widget_set_margin_start(h, 10)
-      gtk_widget_set_margin_top(h, 12)
-      gtk_widget_set_margin_bottom(h, 4)
-      addRow(h, @[])
+      kit.add(panelList, kit.addClass(kit.addClass(kit.label(label), "webby-bold"), "webby-history-day"))
     var group = @[e]
     inc i
     while i < found.len and samePage(found[i].url, e.url) and dayLabel(localTime(found[i].time), now) == day:
       group.add found[i]
       inc i
-    addRow(entryRow(group, rowGroups.len), group)
+    kit.add(panelList, entryRow(group))
     inc groups
   if i < found.len:
-    let more = dimLabel("Older visits aren't listed; search to find them.")
-    gtk_widget_set_margin_top(more, 12)
-    gtk_label_set_xalign(more, 0.5)
-    addRow(more, @[])
-  gtk_widget_show_all(panelList)
-
-proc onPanelRow(l: Widget, row: Widget, data: pointer) {.cdecl.} =
-  let i = gtk_list_box_row_get_index(row)
-  if i in 0 ..< rowGroups.len and rowGroups[i].len > 0: openUrl(rowGroups[i][0].url)
-
-proc onPanelButton(l: Widget, ev: GEvent, data: pointer): gboolean {.cdecl.} =
-  ## Middle-click opens a visit in a background tab; right-click offers that and removing it.
-  var b: cuint
-  discard gdk_event_get_button(ev, addr b)
-  if b != 2 and b != 3 or gdk_event_get_event_type(ev) != GDK_BUTTON_PRESS: return 0
-  var x, y: cdouble
-  discard gdk_event_get_coords(ev, addr x, addr y)
-  let row = gtk_list_box_get_row_at_y(panelList, y.cint)
-  if row == nil: return 0
-  let i = gtk_list_box_row_get_index(row)
-  if i notin 0 ..< rowGroups.len or rowGroups[i].len == 0: return 0
-  let group = rowGroups[i]
-  if b == 2:
-    openInBackground(group[0].url)
-    return 1
-  kit.popupMenu(@[kit.menuItem("Open in new tab", proc () = openInBackground(group[0].url)),
-                  kit.menuItem("Remove from history", proc () = remove(group))])
-  1
-
-proc onSearchChanged(e: Widget, data: pointer) {.cdecl.} = fillPanel()
+    kit.add(panelList, kit.addClass(dimLabel("Older visits aren't listed; search to find them."), "webby-history-note"))
 
 proc queueRefresh() =
   if not panelOpen or refreshQueued: return
@@ -285,31 +189,20 @@ proc showHistory*() =
   closeSidePanel()
   # Other windows may have added visits since this one last read the file.
   reload()
-  let body = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4)
-  let top = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4)
-  gtk_widget_set_margin_start(top, 8)
-  gtk_widget_set_margin_end(top, 4)
-  panelSearch = gtk_search_entry_new()
-  gtk_entry_set_placeholder_text(panelSearch, "Search history")
-  connect(panelSearch, "search-changed", onSearchChanged)
-  gtk_box_pack_start(top, panelSearch, 1, 1, 0)
-  gtk_box_pack_start(top, iconButton("delete_sweep_outlined", "Clear history", clearHistoryDialog), 0, 0, 0)
-  gtk_box_pack_start(body, top, 0, 0, 0)
-  let scroller = gtk_scrolled_window_new(nil, nil)
-  gtk_scrolled_window_set_policy(scroller, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
-  panelList = gtk_list_box_new()
-  gtk_list_box_set_selection_mode(panelList, GTK_SELECTION_NONE)
-  connect(panelList, "row-activated", onPanelRow)
-  connect(panelList, "button-press-event", onPanelButton)
-  gtk_container_add(scroller, panelList)
-  gtk_box_pack_start(body, scroller, 1, 1, 0)
+  panelSearch = kit.entry("Search history", onChange = proc (s: string) = fillPanel())
+  let top = kit.addClass(kit.row(kit.expand(panelSearch),
+    kit.iconButton("delete_sweep_outlined", "Clear history", clearHistoryDialog)), "webby-panel-top")
+  top.spacing = 4
+  panelList = kit.column()
+  let body = kit.column(top, kit.expand(kit.scroll(panelList)))
+  body.spacing = 4
   panelOpen = true
   showSidePanel("History", body, 400, proc () =
     panelOpen = false
     panelList = nil
     panelSearch = nil)
   fillPanel()
-  gtk_widget_grab_focus(panelSearch)
+  kit.focus(panelSearch)
 
 # ---------------------------------------------------------------------------------------------------------------
 
@@ -329,6 +222,15 @@ proc install*() =
   addShortcut(modCtrl or modShift, 0xffff, clearBrowsingData)                # Ctrl+Shift+Delete
   windowHooks.add proc () =
     if appUrl.len > 0: return
+    loadCss("""
+button.webby-history-row { padding: 0 4px 0 10px; min-height: 0; }
+.webby-history-row button { padding: 2px; min-height: 0; }
+.webby-history-day { margin: 12px 0 4px 10px; }
+.webby-history-note { margin-top: 24px; }
+.webby-panel-top { margin: 0 4px 0 8px; }
+.webby-check-detail { margin-left: 26px; }
+.webby-bold { font-weight: bold; }
+""")
     menuWithAccel("History", 0x68, modCtrl, showHistory)
     addMenuSeparator()
     menuWithAccel("Clear browsing data…", 0xffff, modCtrl or modShift, clearBrowsingData)
