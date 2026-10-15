@@ -96,6 +96,11 @@ public class WebbyHost extends Host {
         }).start();
     }
 
+    /** The flags the Nim side would get on a command line (browser.nim parseCommandLine). */
+    protected String args() {
+        return "";
+    }
+
     private void fatal(String message) {
         new AlertDialog.Builder(this).setMessage(message).setPositiveButton("OK", null).show();
     }
@@ -104,6 +109,13 @@ public class WebbyHost extends Host {
     protected String onHostCall(String name, String arg) {
         try {
             switch (name) {
+                case "args": return args();
+                case "openIncognito": {
+                    Intent i = new Intent(this, IncognitoHost.class);
+                    if (!arg.isEmpty()) i.setAction(Intent.ACTION_VIEW).setData(Uri.parse(arg));
+                    startActivity(i);
+                    return "ok";
+                }
                 case "launchUrl": {
                     String url = launchUrl;
                     launchUrl = "";

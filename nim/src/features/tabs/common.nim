@@ -37,8 +37,8 @@ proc openInBackgroundTab*(url: string) =
 proc openIncognitoWindow*(url = "") =
   ## Starts `<this exe> --incognito [url]`, its own process with an engine that keeps nothing (incognito.dart).
   when defined(android):
-    toast("Incognito windows aren't on Android yet")
-    return
+    # IncognitoHost: the same front end in a process of its own, as its own task in Recents.
+    if hostCall("openIncognito", url) != "ok": toast("Could not open an incognito window")
   else:
     var args = @[getAppFilename(), "--incognito"]
     if url.len > 0: args.add url

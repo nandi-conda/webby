@@ -61,12 +61,17 @@ final class LadybirdRuntime {
         String stamp = info.getLongVersionCode() + " " + info.lastUpdateTime;
         File stampFile = new File(prefix, ".unpacked");
         File resources = new File(prefix, ".lagom");
+        // Only what's missing or stale: an incognito window's process (IncognitoHost) runs this too while the
+        // normal one is using these files.
+        File certificates = new File(prefix, "cacert.pem");
         if (!resources.isDirectory() || !stampFile.exists() || !read(stampFile).equals(stamp)) {
             deleteRecursively(resources);
             unzip(context, "lagom.zip", resources);
+            writeCertificates(certificates);
             Files.write(stampFile.toPath(), stamp.getBytes("UTF-8"));
+        } else if (!certificates.exists()) {
+            writeCertificates(certificates);
         }
-        writeCertificates(new File(prefix, "cacert.pem"));
 
         File libraryDirectory = new File(context.getApplicationInfo().nativeLibraryDir);
         File libexec = new File(prefix, "libexec");
@@ -74,8 +79,13 @@ final class LadybirdRuntime {
         new File(prefix, "bin").mkdirs();
         for (String helper : HELPERS) {
             File link = new File(libexec, helper);
-            link.delete();
             File binary = new File(libraryDirectory, "lib" + helper + ".so");
+            try {
+                if (Os.readlink(link.getPath()).equals(binary.getPath()) && binary.exists()) continue;
+            } catch (ErrnoException e) {
+                // no link yet
+            }
+            link.delete();
             if (binary.exists()) Os.symlink(binary.getPath(), link.getPath());
         }
         return prefix.getPath();

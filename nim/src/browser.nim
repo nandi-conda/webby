@@ -1273,34 +1273,37 @@ proc sweepIncognitoProfiles() =
     try: removeDir(path) except OSError: discard
 
 proc parseCommandLine() =
-  when defined(android): discard   # an Activity has no command line
-  else:
-    for a in commandLineParams():
-      if a.startsWith("--app="): appUrl = a[6 .. ^1]
-      elif a == "--incognito": incognito = true
-      elif not a.startsWith("--"): commandLineUrls.add a
-    if appUrl.len > 0: incognito = false
-    if incognito:
-      # Ladybird flags for an engine that forgets everything when the window closes (Incognito.engineFlags), with a
-      # throwaway profile of our own instead of --temporary-profile so features can seed it (the ad blocker's switch
-      # and lists): deleted on exit, swept at the next start if a crash left it.
-      sweepIncognitoProfiles()
-      incognitoProfile = incognitoRoot() / (incognitoPrefix & $getCurrentProcessId())
-      removeDir(incognitoProfile)
-      createDir(incognitoProfile)
-      var kept: seq[string]
-      let words = getEnv("WEBBY_LADYBIRD_ARGS").splitWhitespace
-      originalLadybirdArgs = words
-      var i = 0
-      while i < words.len:
-        let w = words[i]
-        if w in ["--profile", "--profile-path"]: inc i
-        elif not (w.startsWith("--profile=") or w.startsWith("--profile-path=") or
-                  w in ["--force-new-process", "--temporary-profile"]):
-          kept.add w
-        inc i
-      putEnv("WEBBY_LADYBIRD_ARGS", (kept & @["--profile-path=" & incognitoProfile, "--disable-sql-database",
-        "--disable-http-disk-cache"]).join(" "))
+  # An Activity has no command line: the host passes the same flags (IncognitoHost: --incognito).
+  let params = when defined(android): hostCall("args").splitWhitespace else: commandLineParams()
+  for a in params:
+    if a.startsWith("--app="): appUrl = a[6 .. ^1]
+    elif a == "--incognito": incognito = true
+    elif not a.startsWith("--"): commandLineUrls.add a
+  if appUrl.len > 0: incognito = false
+  # Android kills an incognito window's process without a word, so the normal one cleans up after it too.
+  when defined(android):
+    if not incognito: sweepIncognitoProfiles()
+  if incognito:
+    # Ladybird flags for an engine that forgets everything when the window closes (Incognito.engineFlags), with a
+    # throwaway profile of our own instead of --temporary-profile so features can seed it (the ad blocker's switch
+    # and lists): deleted on exit, swept at the next start if a crash left it.
+    sweepIncognitoProfiles()
+    incognitoProfile = incognitoRoot() / (incognitoPrefix & $getCurrentProcessId())
+    removeDir(incognitoProfile)
+    createDir(incognitoProfile)
+    var kept: seq[string]
+    let words = getEnv("WEBBY_LADYBIRD_ARGS").splitWhitespace
+    originalLadybirdArgs = words
+    var i = 0
+    while i < words.len:
+      let w = words[i]
+      if w in ["--profile", "--profile-path"]: inc i
+      elif not (w.startsWith("--profile=") or w.startsWith("--profile-path=") or
+                w in ["--force-new-process", "--temporary-profile"]):
+        kept.add w
+      inc i
+    putEnv("WEBBY_LADYBIRD_ARGS", (kept & @["--profile-path=" & incognitoProfile, "--disable-sql-database",
+      "--disable-http-disk-cache"]).join(" "))
 
 proc run*() =
   randomize()

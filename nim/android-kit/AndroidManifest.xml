@@ -36,5 +36,18 @@
                 <data android:scheme="https"/>
             </intent-filter>
         </activity>
+        <!-- Incognito windows: their own process (so the engine and the Nim front end start fresh, as with
+             `webby --incognito`) and their own task in Recents. -->
+        <activity
+            android:name="dev.webby.kit.IncognitoHost"
+            android:label="Webby (Incognito)"
+            android:process=":incognito"
+            android:taskAffinity="dev.webby.kit.incognito"
+            android:launchMode="singleTask"
+            android:exported="false"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="nimkit.lib" android:value="webbykit"/>
+        </activity>
     </application>
 </manifest>
