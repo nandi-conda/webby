@@ -38,10 +38,11 @@ just open https://example.com           # or: pixi run start -a https://example.
 - `webby-ladybird` from [prefix.dev/nandi-testing](https://prefix.dev/channels/nandi-testing): `libwebby.so`,
   LibWeb/LibJS and the other Ladybird libraries, the helper processes (`WebContent`, `RequestServer`, …) and
   `share/Lagom`. Its activation script sets `WEBBY_LADYBIRD_PREFIX` to it.
+- `flutter` 3.35.5 from the same channel (recipe `conda/flutter`, since Flutter isn't on conda-forge): the official
+  SDK release, with `flutter` and `dart` on the environment's PATH.
 - The Linux desktop toolchain (clang, lld, CMake, ninja, GTK 3…) from conda-forge.
 
-It also downloads Flutter 3.35.5 into `third_party/` (Flutter isn't on conda-forge), then builds and runs the app.
-Later runs skip the downloads.
+Then it builds and runs the app. Later runs skip the installs.
 
 ## Install the app
 

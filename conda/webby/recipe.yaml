@@ -1,11 +1,10 @@
 # conda package of the webby browser itself: a release build of app/ (the Flutter UI) plus a `webby` launcher.
 # The Ladybird engine comes from the webby-ladybird package; the launcher points the app at it.
 # Install: pixi global install -c https://prefix.dev/nandi-testing webby
-# Build + upload: scripts/publish_conda.sh webby (needs PREFIX_API_KEY; downloads the Flutter SDK while building).
+# Build + upload: scripts/publish_conda.sh webby (needs PREFIX_API_KEY; Flutter comes from the flutter package, conda/flutter).
 # CI sets WEBBY_VERSION (commit date + run number) and WEBBY_BUILD_NUMBER (run number); see .github/workflows/publish.yml.
 context:
   version: ${{ env.get("WEBBY_VERSION", default="2026.10.11") }}
-  flutter_version: "3.35.5"
 
 package:
   name: webby
@@ -16,10 +15,6 @@ source:
     target_directory: app
   - path: ../../icons
     target_directory: icons
-  # Flutter isn't on conda-forge, so the SDK is a build-time source.
-  - url: https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${{ flutter_version }}-stable.tar.xz
-    sha256: 8eead69e5d84131fcfbb2cfd44164c00e9a04df725f24672ea234c6bd136353d
-    target_directory: flutter
 
 build:
   number: ${{ env.get("WEBBY_BUILD_NUMBER", default="1") | int }}
@@ -37,6 +32,8 @@ build:
 
 requirements:
   build:
+    # The Flutter SDK (conda/flutter on nandi-testing).
+    - flutter 3.35.5.*
     - clang >=19
     - clangxx >=19
     - lld

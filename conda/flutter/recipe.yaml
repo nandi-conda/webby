@@ -1,0 +1,48 @@
+# The Flutter SDK as a conda package (Flutter isn't on conda-forge): the official Linux release tarball, which already
+# ships the Dart SDK, the prebuilt flutter tool snapshot and the linux-x64 engine artifacts, so nothing is downloaded
+# or compiled into the SDK on first use. Installed to $PREFIX/lib/flutter with bin/flutter and bin/dart linked in.
+# Published to prefix.dev/nandi-testing by .github/workflows/publish.yml when this directory changes.
+context:
+  version: "3.35.5"
+
+package:
+  name: flutter
+  version: ${{ version }}
+
+source:
+  url: https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${{ version }}-stable.tar.xz
+  sha256: 8eead69e5d84131fcfbb2cfd44164c00e9a04df725f24672ea234c6bd136353d
+  target_directory: flutter
+
+build:
+  number: 0
+  skip:
+    - not linux64
+  # Ship the SDK byte for byte: its ELF binaries and the tool snapshot must not be patched.
+  prefix_detection:
+    ignore: true
+  dynamic_linking:
+    binary_relocation: false
+    overlinking_behavior: ignore
+    overdepending_behavior: ignore
+  script:
+    - mkdir -p $PREFIX/lib $PREFIX/bin
+    - cp -a $SRC_DIR/flutter $PREFIX/lib/flutter
+    # bin/flutter and bin/dart resolve symlinks to find the SDK root.
+    - ln -s ../lib/flutter/bin/flutter $PREFIX/bin/flutter
+    - ln -s ../lib/flutter/bin/dart $PREFIX/bin/dart
+
+requirements:
+  run:
+    # The flutter tool reads its version from the SDK's git checkout, and the shell entry points use these.
+    - git
+    - curl
+    - unzip
+    - which
+    - tar
+    - xz
+
+tests:
+  - script:
+      - flutter --version
+      - dart --version

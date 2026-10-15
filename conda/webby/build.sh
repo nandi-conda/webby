@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
-export PATH="$SRC_DIR/flutter/bin:$PATH"
 # Keep the Flutter tool's config and pub cache inside the build tree.
 export HOME="$SRC_DIR/.home" PUB_CACHE="$SRC_DIR/.pub-cache"
 mkdir -p "$HOME"

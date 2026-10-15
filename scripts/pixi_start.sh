@@ -3,7 +3,6 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export PATH="$ROOT/third_party/flutter/bin:$PATH"
 export WEBBY_LADYBIRD_PREFIX="${WEBBY_LADYBIRD_PREFIX:-$CONDA_PREFIX/lib/webby-ladybird}"
 
 # Flutter's Linux build uses the pixi env's clang, lld and GTK; the rpath lets the runner find that GTK at run time.
