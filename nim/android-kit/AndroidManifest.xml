@@ -37,7 +37,7 @@
             </intent-filter>
         </activity>
         <!-- Incognito windows: their own process (so the engine and the Nim front end start fresh, as with
-             `webby --incognito`) and their own task in Recents. -->
+             the desktop's incognito flag) and their own task in Recents. -->
         <activity
             android:name="dev.webby.kit.IncognitoHost"
             android:label="Webby (Incognito)"
