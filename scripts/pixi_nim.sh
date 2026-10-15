@@ -11,6 +11,8 @@ export WEBBY_LADYBIRD_PREFIX="${WEBBY_LADYBIRD_PREFIX:-$CONDA_PREFIX/lib/webby-l
 # sources too.
 if [ ! -x "$BIN" ] || [ -n "$(find "$ROOT/nim" "$ROOT/framework/src" "$ROOT/icons" \( -name '*.nim' -o -name '*.js' -o -name '*.svg' \) -newer "$BIN" -print -quit)" ]; then
   echo "Building nim/webby..." >&2
+  # GTK's flags come from pkg-config at compile time; fail here rather than with its error text as compiler flags.
+  pkg-config --cflags --libs gtk+-3.0 > /dev/null
   # No -d:ssl: Nim's OpenSSL setup would load a libcrypto before libwebby's own. The rpath makes the binary use the
   # env's GTK at run time. libstdc++ is linked in so the env's (new enough for Ladybird's C++23) loads first:
   # otherwise a system library GTK pulls in can load the system's older one, and libwebby.so then fails to load.

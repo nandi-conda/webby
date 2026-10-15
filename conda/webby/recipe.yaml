@@ -37,11 +37,18 @@ requirements:
     # Its run export sets the glibc floor; newer sysroots would demand glibc 2.39.
     - sysroot_linux-64 2.28.*
     - patchelf
+    # The Nim build asks pkg-config for GTK's flags (gtk.nim, gtkapi.nim).
+    - pkg-config
     # rsvg-convert renders the icon PNGs.
     - librsvg
   host:
     - gtk3
     - glib
+    # .pc files GTK's pkg-config lookup reads.
+    - epoxy
+    - fontconfig
+    - expat
+    - zlib
     - libstdcxx
   run:
     - webby-ladybird >=2026.10.15.1

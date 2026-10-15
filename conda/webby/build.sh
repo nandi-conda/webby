@@ -4,6 +4,9 @@ set -euxo pipefail
 # The Nim front end, built as scripts/pixi_nim.sh builds it: no -d:ssl (Nim's OpenSSL setup would load a libcrypto
 # before libwebby's own), the env's GTK through the rpath, and libstdc++ linked in so the env's loads first.
 export HOME="$SRC_DIR/.home"
+# GTK's flags come from pkg-config at compile time (a failed lookup would end up in the C compiler's arguments).
+export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/share/pkgconfig"
+pkg-config --cflags --libs gtk+-3.0 > /dev/null
 mkdir -p "$HOME" "$PREFIX/lib/webby" "$PREFIX/bin"
 nim c -d:release --hints:off --warnings:off --cc:clang --nimcache:"$SRC_DIR/.nimcache" \
   --passL:"-fuse-ld=lld -L$PREFIX/lib -Wl,-rpath,$PREFIX/lib -Wl,--no-as-needed -lstdc++ -Wl,--as-needed" \
