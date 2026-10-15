@@ -150,7 +150,7 @@ JNIEXPORT void JNICALL Java_dev_nimkit_Native_surface(JNIEnv* e, jclass c, jint 
     (void)c;
     ANativeWindow** s = slot(id, 1);
     if (!s) return;
-    if (*s && (!surface || *s != NULL)) { ANativeWindow_release(*s); *s = NULL; }
+    if (*s) { ANativeWindow_release(*s); *s = NULL; }
     if (surface) *s = ANativeWindow_fromSurface(e, surface);
     nk_surface(id, w, h, surface != NULL);
 }

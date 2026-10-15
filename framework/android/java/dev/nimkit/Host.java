@@ -233,6 +233,12 @@ public class Host extends Activity {
                     }
                     public void surfaceDestroyed(SurfaceHolder h) { Native.surface(id, null, 0, 0); }
                 });
+                // After the keyboard closes the view can grow without a fresh frame; hand the surface over again at
+                // the view's size so the canvas is redrawn to fill it.
+                s.addOnLayoutChangeListener((x, l, top, r, b, ol, ot, or, ob) -> {
+                    if ((r - l != or - ol || b - top != ob - ot) && s.getHolder().getSurface().isValid())
+                        Native.surface(id, s.getHolder().getSurface(), r - l, b - top);
+                });
                 s.setOnTouchListener((x, ev) -> {
                     int kind2;
                     switch (ev.getActionMasked()) {
