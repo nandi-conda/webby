@@ -1,5 +1,5 @@
 ## Summarize on Android (src/features/summarize.nim on the desktop): reads the page's text with the Dart app's page
-## script, streams a summary from DeepSeek or Xiaomi MiMo (summarize/deepseek.nim over base.httpStream), answers follow-up questions
+## script, streams a summary from DeepSeek, Xiaomi MiMo or Meta (summarize/deepseek.nim over base.httpStream), answers follow-up questions
 ## and saves both in summaries.json (summarize/cache.nim). Java's SummaryScreen shows the "summary" events this
 ## sends: the whole state, with the markdown already turned into HTML. Each provider's API key is a vault secret,
 ## synced unless unticked, and so is the choice of provider.

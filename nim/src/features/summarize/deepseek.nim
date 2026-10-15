@@ -1,4 +1,4 @@
-## Chat completions from DeepSeek or Xiaomi MiMo (prompts.Provider), streamed (the HTTP half of
+## Chat completions from DeepSeek, Xiaomi MiMo or Meta (prompts.Provider), streamed (the HTTP half of
 ## app/lib/src/summarize.dart). A small HTTP/1.1 client on
 ## GIO's async sockets (TLS from glib-networking), so it runs on the GTK main loop: nothing blocks, every callback
 ## is on the GTK thread. Not std/httpclient: with -d:ssl, Nim loads the system's OpenSSL at startup, and then

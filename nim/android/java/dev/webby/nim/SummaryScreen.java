@@ -23,7 +23,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * Summarize (summarize.dart's panel): the page's summary from DeepSeek or Xiaomi MiMo as it streams in, follow-up questions under
+ * Summarize (summarize.dart's panel): the page's summary from DeepSeek, Xiaomi MiMo or Meta as it streams in, follow-up questions under
  * it, and the API key dialog. features/summarize.nim does the work and sends "summary" events with its state.
  */
 final class SummaryScreen {
@@ -207,7 +207,7 @@ final class SummaryScreen {
     }
 
     /**
-     * The provider (DeepSeek or Xiaomi MiMo) and its API key: entered, replaced or removed; kept in the vault, synced
+     * The provider (DeepSeek, Xiaomi MiMo or Meta) and its API key: entered, replaced or removed; kept in the vault, synced
      * unless unticked. The choice syncs with the key.
      */
     static void settings(MainActivity a, Runnable then) {
@@ -233,7 +233,7 @@ final class SummaryScreen {
         form.addView(which);
         TextView keyLabel = Ui.label(a, "");
         form.addView(keyLabel);
-        EditText key = Ui.field(a, "", "sk-…");
+        EditText key = Ui.field(a, "", "Paste the key");
         key.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
         form.addView(key);
         CheckBox show = new CheckBox(a);

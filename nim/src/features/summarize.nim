@@ -1,5 +1,5 @@
 ## Summarize (app/lib/src/summarize.dart): reads the page's text through a page script, streams a summary from
-## DeepSeek or Xiaomi MiMo into the side panel, answers follow-up questions about the page, and saves both (summarize/cache.nim).
+## DeepSeek, Xiaomi MiMo or Meta into the side panel, answers follow-up questions about the page, and saves both (summarize/cache.nim).
 ## Each provider's API key is a secret in the password vault, synced to the other devices unless unticked, and so
 ## is the choice of provider; without the vault (getSecret is nil) they are kept in memory until Webby quits.
 
@@ -135,7 +135,7 @@ proc showSummarizeSettings*() =
   gtk_box_pack_start(box, s.label, 0, 0, 0)
   let entry = gtk_entry_new()
   gtk_entry_set_visibility(entry, 0)
-  gtk_entry_set_placeholder_text(entry, "sk-…")
+  gtk_entry_set_placeholder_text(entry, "Paste the key")
   gtk_entry_set_activates_default(entry, 1)
   gtk_entry_set_width_chars(entry, 44)
   gtk_box_pack_start(box, entry, 0, 0, 0)

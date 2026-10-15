@@ -20,10 +20,13 @@ const deepSeekKeySecret = 'deepseek-api-key';
 /// Name of the Xiaomi MiMo API key among the vault's secrets.
 const mimoKeySecret = 'mimo-api-key';
 
+/// Name of the Meta Model API key among the vault's secrets.
+const metaKeySecret = 'meta-api-key';
+
 /// Name of the vault secret holding the chosen provider's [SummaryProvider.id]; it syncs along with the keys.
 const providerSecret = 'summarize-provider';
 
-/// A chat completions service Summarize can ask. Both speak OpenAI's chat completions with SSE streaming.
+/// A chat completions service Summarize can ask. All speak OpenAI's chat completions with SSE streaming.
 enum SummaryProvider {
   deepSeek(
     id: 'deepseek',
@@ -47,6 +50,17 @@ enum SummaryProvider {
     extra: {
       'thinking': {'type': 'disabled'},
     },
+  ),
+  // dev.meta.ai's Model API: keys in Authorization: Bearer. Muse Spark always reasons ("none" is refused), so
+  // Summarize asks for the shortest pass; the reasoning itself is never streamed.
+  meta(
+    id: 'meta',
+    name: 'Meta',
+    keySecret: metaKeySecret,
+    endpoint: 'https://api.meta.ai/v1/chat/completions',
+    model: 'muse-spark-1.3',
+    site: 'dev.meta.ai',
+    extra: {'reasoning_effort': 'minimal'},
   );
 
   const SummaryProvider({
@@ -800,7 +814,7 @@ class _ApiKeyDialogState extends State<_ApiKeyDialog> {
               child: KitTextField(
                 controller: _key,
                 autofocus: true,
-                hint: 'sk-…',
+                hint: 'Paste the key',
                 obscureText: _obscure,
                 onSubmitted: (_) => _save(),
                 trailing: KitIconButton(

@@ -84,6 +84,16 @@ void main() {
     );
   });
 
+  test('Meta gets a bearer key, Muse Spark and the shortest reasoning', () async {
+    await streamSummary('meta-key', page, provider: SummaryProvider.meta, endpoint: endpoint).toList();
+    final (headers, body) = requests.single;
+    expect(headers['authorization'], 'Bearer meta-key');
+    expect(headers['api-key'], '');
+    expect(body['model'], 'muse-spark-1.3');
+    expect(body['reasoning_effort'], 'minimal');
+    expect(body.containsKey('thinking'), false);
+  });
+
   test('picks the chosen provider unless only another has a key', () {
     final secrets = <String, String>{};
     SummaryProvider chosen() => SummaryProvider.chosen((name) => secrets[name]);

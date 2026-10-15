@@ -6,13 +6,14 @@ import std/[json, strutils]
 const
   deepSeekKeySecret* = "deepseek-api-key"   ## the key's name among the vault's secrets (synced unless unticked)
   mimoKeySecret* = "mimo-api-key"           ## the Xiaomi MiMo key's name
+  metaKeySecret* = "meta-api-key"           ## the Meta Model API key's name
   providerSecret* = "summarize-provider"    ## the chosen provider's id, a secret that syncs along with its key
   maxSummaryInputChars* = 40000             ## longer pages are cut before they're sent
 
 type
   Provider* = enum
     ## A chat completions service Summarize can ask (SummaryProvider in summarize.dart).
-    deepSeek, mimo
+    deepSeek, mimo, meta
 
   ProviderInfo* = object
     id*, name*, keySecret*, endpoint*, model*, site*: string
@@ -27,7 +28,11 @@ const providers*: array[Provider, ProviderInfo] = [
   # models think first by default; requests turn that off so the answer starts at once.
   mimo: ProviderInfo(id: "mimo", name: "Xiaomi MiMo", keySecret: mimoKeySecret,
     endpoint: "https://api.xiaomimimo.com/v1/chat/completions", model: "mimo-v2.6-flash",
-    site: "platform.xiaomimimo.com", keyHeader: "api-key")]
+    site: "platform.xiaomimimo.com", keyHeader: "api-key"),
+  # dev.meta.ai's Model API, Bearer keys. Muse Spark always reasons ("none" is refused): requests ask for the
+  # shortest pass.
+  meta: ProviderInfo(id: "meta", name: "Meta", keySecret: metaKeySecret,
+    endpoint: "https://api.meta.ai/v1/chat/completions", model: "muse-spark-1.3", site: "dev.meta.ai")]
 
 proc info*(p: Provider): ProviderInfo = providers[p]
 proc name*(p: Provider): string = providers[p].name
@@ -129,7 +134,10 @@ proc waitingText*(hasPage, queued: bool, provider = deepSeek): string =
 
 proc withProvider(body: JsonNode, provider: Provider): JsonNode =
   body["model"] = %provider.info.model
-  if provider == mimo: body["thinking"] = %*{"type": "disabled"}
+  case provider
+  of mimo: body["thinking"] = %*{"type": "disabled"}
+  of meta: body["reasoning_effort"] = %"minimal"
+  of deepSeek: discard
   body
 
 # ---------------------------------------------------------------------------------------------------------------
