@@ -2,11 +2,12 @@
 ## D-Bus on the desktop, the app's Java host on Android (WebbyHost locationStart/locationStop, LocationManager),
 ## running only while a page that was allowed to is waiting for a position or watching.
 
-import std/[monotimes, strutils, times]
+import std/[monotimes, times]
 import ../../browser
 when defined(android):
   import std/json
 else:
+  import std/strutils
   import gio
 
 const
