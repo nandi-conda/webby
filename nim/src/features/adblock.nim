@@ -6,7 +6,6 @@ import ../browser
 import adblock/store
 import tabs/common
 
-var check: Widget
 
 proc toggle(on: bool) =
   setEnabled(on)
@@ -37,9 +36,4 @@ proc install*() =
     else: prepareEngine()
   windowHooks.add proc () =
     addMenuSeparator()
-    check = gtk_check_menu_item_new_with_label("Block ads and trackers")
-    gtk_check_menu_item_set_active(check, enabled().gboolean)
-    discard g_signal_connect_data(check, "toggled", proc (w: Widget, d: pointer) {.cdecl.} =
-      toggle(gtk_check_menu_item_get_active(w) != 0), nil, nil, 0)
-    gtk_menu_shell_append(moreMenu, check)
-    gtk_widget_show(check)
+    addMenuCheck("Block ads and trackers", enabled, proc () = toggle(not enabled()))

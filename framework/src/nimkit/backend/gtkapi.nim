@@ -158,6 +158,7 @@ proc gtk_style_context_add_provider_for_screen*(screen, provider: pointer, prior
 proc gdk_screen_get_default*(): pointer
 proc gtk_button_set_relief*(b: GtkWidget, relief: cint)
 proc gtk_button_set_image*(b, image: GtkWidget)
+proc gtk_button_get_image*(b: GtkWidget): GtkWidget
 proc gtk_button_set_always_show_image*(b: GtkWidget, on: gboolean)
 proc gtk_bin_get_child*(b: GtkWidget): GtkWidget
 proc gtk_separator_new*(orientation: cint): GtkWidget

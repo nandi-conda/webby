@@ -5,9 +5,9 @@
 import std/[os, strutils, times]
 from std/unicode import toRunes, `$`
 import ../../browser
+from nimkit/core as kit import nil
 import store, common
 
-proc gtk_accel_label_set_accel(label: Widget, key, mods: cuint) {.importc, cdecl.}
 
 var
   closedTabs*: seq[DeviceTab]   ## most recent last, for Ctrl+Shift+T and "Recently closed"
@@ -210,71 +210,42 @@ proc shorten(s: string, n: int): string =
   let r = s.toRunes
   if r.len > n: $r[0 ..< n - 1] & "…" else: s
 
-proc shortcutHint*(item: Widget, key: uint32, mods: uint32) =
-  ## Shows a key next to a menu item's label.
-  gtk_accel_label_set_accel(gtk_bin_get_child(item), key.cuint, mods.cuint)
-
-proc addRecentlyClosed*(menu: Widget, at = -1): seq[Widget] {.discardable.} =
-  ## "Recently closed" and the last ten closed tabs, newest first, appended (or inserted at `at`).
+proc addRecentlyClosed*(items: var seq[kit.MenuItem]) =
+  ## "Recently closed" and the last ten closed tabs, newest first.
   if closedTabs.len == 0: return
-  var pos = at
-  var added: seq[Widget]
-  proc put(item: Widget) =
-    added.add item
-    if pos >= 0:
-      discard g_object_ref(item)
-      gtk_container_remove(menu, item)
-      gtk_menu_shell_insert(menu, item, pos.cint)
-      g_object_unref(item)
-      inc pos
-  let sep = gtk_separator_menu_item_new()
-  gtk_menu_shell_append(menu, sep)
-  gtk_widget_show(sep)
-  put(sep)
-  let header = menuItem(menu, "Recently closed", proc () = discard)
-  gtk_widget_set_sensitive(header, 0)
-  put(header)
-  proc closedItem(c: DeviceTab): Widget =
-    menuItem(menu, "   " & shorten(c.title, 50), proc () =
+  items.add kit.menuSeparator()
+  items.add kit.menuItem("Recently closed", nil, enabled = false)
+  proc closedItem(c: DeviceTab): kit.MenuItem =
+    kit.menuItem("   " & shorten(c.title, 50), proc () =
       let j = closedTabs.find(c)
       if j >= 0: closedTabs.delete(j)
       discard openTab(c.url, index = activeIndex + 1))
-  for i in countdown(closedTabs.high, max(closedTabs.len - 10, 0)): put(closedItem(closedTabs[i]))
-  added
+  for i in countdown(closedTabs.high, max(closedTabs.len - 10, 0)): items.add closedItem(closedTabs[i])
 
-proc disabled(w: Widget, off: bool) = gtk_widget_set_sensitive(w, (not off).gboolean)
-
-proc fillTabMenu*(t: Tab, menu: Widget) =
+proc fillTabMenu*(t: Tab, items: var seq[kit.MenuItem]) =
   ## The strip's right-click menu, for `t` or for no tab (nil) on the strip's empty space.
-  shortcutHint(menuItem(menu, "New tab", newTab), 0x74, 4)
+  items.add kit.menuItem("New tab", newTab, shortcut = "Ctrl+T")
   if t != nil:
     let i = tabs.find(t)
-    menuSeparator(menu)
-    menuItem(menu, "Reload", proc () = (if t.isUnloaded: loadPending(t) else: webby_view_reload(t.view)); wake())
-    menuItem(menu, "Duplicate", proc () = duplicateTab(t))
-    menuItem(menu, if t.pinned: "Unpin tab" else: "Pin tab", proc () = togglePinned(t))
-    menuSeparator(menu)
-    let close = menuItem(menu, "Close", proc () = closeTab(t))
-    if t == currentTab(): shortcutHint(close, 0x77, 4)
+    items.add kit.menuSeparator()
+    items.add kit.menuItem("Reload", proc () = (if t.isUnloaded: loadPending(t) else: webby_view_reload(t.view)); wake())
+    items.add kit.menuItem("Duplicate", proc () = duplicateTab(t))
+    items.add kit.menuItem(if t.pinned: "Unpin tab" else: "Pin tab", proc () = togglePinned(t))
+    items.add kit.menuSeparator()
+    items.add kit.menuItem("Close", proc () = closeTab(t), shortcut = if t == currentTab(): "Ctrl+W" else: "")
     var others, right = false
     for j, x in tabs:
       if x != t and not x.pinned:
         others = true
         if j > i: right = true
-    disabled(menuItem(menu, "Close other tabs", proc () = closeOtherTabs(t)), not others)
-    disabled(menuItem(menu, if vertical: "Close tabs below" else: "Close tabs to the right",
-      proc () = closeOtherTabs(t, toTheRight = true)), not right)
-  menuSeparator(menu)
-  let reopen = menuItem(menu, "Reopen closed tab", reopenClosedTab)
-  shortcutHint(reopen, 0x74, 5)
-  disabled(reopen, closedTabs.len == 0)
-  addRecentlyClosed(menu)
-  menuSeparator(menu)
-  let v = gtk_check_menu_item_new_with_label("Vertical tabs")
-  gtk_check_menu_item_set_active(v, vertical.gboolean)
-  connectAction(v, "activate", proc () = setVertical(not vertical))
-  gtk_menu_shell_append(menu, v)
-  gtk_widget_show(v)
+    items.add kit.menuItem("Close other tabs", proc () = closeOtherTabs(t), enabled = others)
+    items.add kit.menuItem(if vertical: "Close tabs below" else: "Close tabs to the right",
+      proc () = closeOtherTabs(t, toTheRight = true), enabled = right)
+  items.add kit.menuSeparator()
+  items.add kit.menuItem("Reopen closed tab", reopenClosedTab, enabled = closedTabs.len > 0, shortcut = "Ctrl+Shift+T")
+  addRecentlyClosed(items)
+  items.add kit.menuSeparator()
+  items.add kit.checkItem("Vertical tabs", vertical, proc () = setVertical(not vertical))
 
 proc onStripPress(w: Widget, e: GEvent, d: pointer): gboolean {.cdecl.} =
   var b: cuint
@@ -284,22 +255,12 @@ proc onStripPress(w: Widget, e: GEvent, d: pointer): gboolean {.cdecl.} =
     newTab()
     return 1
   if gdk_event_get_event_type(e) != GDK_BUTTON_PRESS or b != 3: return 0
-  let menu = gtk_menu_new()
-  fillTabMenu(nil, menu)
-  gtk_widget_show_all(menu)
-  gtk_menu_popup_at_pointer(menu, e)
+  var items: seq[kit.MenuItem]
+  fillTabMenu(nil, items)
+  kit.popupMenu(items)
   1
 
 # ---------------------------------------------------------------------------------------------------------------
-
-var recentAnchor: Widget   # the ⋮ menu's "New incognito window" item
-
-proc onMoreMenuShow(w: Widget, d: pointer) {.cdecl.} =
-  # The recently closed tabs, rebuilt each time the menu opens, go before "New incognito window".
-  for c in children(moreMenu):
-    if g_object_get_data(c, "webby-recent") != nil: gtk_widget_destroy(c)
-  let at = children(moreMenu).find(recentAnchor) - 1
-  for item in addRecentlyClosed(moreMenu, at): g_object_set_data(item, "webby-recent", cast[pointer](1))
 
 proc startTabs(urls: seq[string]): bool =
   ## The last run's tabs come back. Only the front one loads; the others sleep until they're selected. Addresses on
@@ -363,10 +324,9 @@ proc install*() =
     gtk_widget_add_events(viewport, GDK_BUTTON_PRESS_MASK)
     connect(viewport, "button-press-event", onStripPress)
     if readVerticalTabs(): setVertical(true, save = false)
+    moreMenuHooks.add addRecentlyClosed   # rebuilt each time the menu opens
     addMenuSeparator()
-    recentAnchor = addMenuItem("New incognito window", proc () = openIncognitoWindow())
-    shortcutHint(recentAnchor, 0x6e, 5)
-    connect(moreMenu, "show", onMoreMenuShow)
+    addMenuItem("New incognito window", proc () = openIncognitoWindow(), "Ctrl+Shift+N")
   addShortcut(modCtrl or modShift, 0x74, reopenClosedTab)                     # Ctrl+Shift+T
   addShortcut(modCtrl or modShift, 0x6e, proc () = openIncognitoWindow())     # Ctrl+Shift+N
   discard g_timeout_add(60_000, discardIdleTabs, nil)

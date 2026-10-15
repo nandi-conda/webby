@@ -4,6 +4,7 @@
 
 import std/[os, strutils, tables, uri]
 import ../browser
+from nimkit/core as kit import nil
 import site/[http, images]
 import pwa/[manifest, store]
 
@@ -22,7 +23,7 @@ type Agent = ref object
 
 var
   agents: Table[string, Agent]   ## by the tab's message prefix
-  installButton: Widget
+  installButton: kit.Widget
 
 proc agent(t: Tab): Agent =
   agents.mgetOrPut(t.messagePrefix, Agent())
@@ -40,13 +41,12 @@ proc refreshButton() =
   let t = currentTab()
   let a = if t == nil: nil else: agent(t)
   if a == nil or a.manifest == nil:
-    gtk_widget_hide(installButton)
+    kit.`visible=`(installButton, false)
     return
   let (isInstalled, app) = installed(a)
-  setIcon(gtk_button_get_image(installButton), if isInstalled: "open_in_new" else: "install_desktop")
-  gtk_widget_set_tooltip_text(installButton,
-    cstring(if isInstalled: "Open " & app.name & " app" else: "Install " & a.manifest.title))
-  gtk_widget_show(installButton)
+  kit.`iconName=`(installButton, if isInstalled: "open_in_new" else: "install_desktop")
+  kit.`tooltip=`(installButton, if isInstalled: "Open " & app.name & " app" else: "Install " & a.manifest.title)
+  kit.`visible=`(installButton, true)
 
 proc fetchIcon(t: Tab, m: Manifest, done: proc (bytes, ext: string)) =
   ## The launcher icon: PNG (re-encoded, at most 512 px) or SVG as is; ("", "") when there is none.
@@ -232,7 +232,8 @@ proc onAppTabState(t: Tab) =
 
 var
   offline = false
-  offlineIcon, offlineBanner: Widget
+  offlineIcon: kit.Widget
+  offlineBanner: Widget
 
 proc hasDefaultRoute(): bool =
   ## Whether the kernel has a default route; true when that can't be read, so webby never goes offline by mistake.
@@ -262,8 +263,8 @@ proc setOffline(value: bool) =
   if value == offline: return
   offline = value
   webby_set_offline(value.cint)
-  for w in [offlineIcon, offlineBanner]:
-    if w != nil: gtk_widget_set_visible(w, value.gboolean)
+  if offlineIcon != nil: kit.`visible=`(offlineIcon, value)
+  if offlineBanner != nil: gtk_widget_set_visible(offlineBanner, value.gboolean)
 
 proc checkOffline(data: pointer): gboolean {.cdecl.} =
   setOffline(not hasDefaultRoute())
@@ -277,13 +278,10 @@ proc startOffline() =
     gtk_widget_set_no_show_all(offlineBanner, 1)
     gtk_box_pack_start(barSlot, offlineBanner, 0, 0, 2)
   else:
-    offlineIcon = icon("cloud_off")
-    gtk_widget_set_tooltip_text(offlineIcon, "Offline: pages come from the copies saved when you last opened them")
-    gtk_widget_set_margin_start(offlineIcon, 5)
-    gtk_widget_set_margin_end(offlineIcon, 5)
-    gtk_widget_set_no_show_all(offlineIcon, 1)
-    gtk_box_pack_start(starSlot, offlineIcon, 0, 0, 0)
-    gtk_box_reorder_child(starSlot, offlineIcon, 0)
+    offlineIcon = kit.icon("cloud_off")
+    kit.`tooltip=`(offlineIcon, "Offline: pages come from the copies saved when you last opened them")
+    kit.`visible=`(offlineIcon, offline)
+    kit.insert(starSlotRow, kit.sized(offlineIcon, 26), 0)
   case getEnv("WEBBY_OFFLINE")
   of "0": discard
   of "1": setOffline(true)
@@ -311,10 +309,9 @@ proc install*() =
     if appUrl.len > 0: buildAppWindow()
     elif not incognito:
       # Incognito windows don't install apps.
-      installButton = iconButton("install_desktop", "Install app", onInstallClicked)
-      gtk_widget_set_no_show_all(installButton, 1)
-      gtk_box_pack_start(starSlot, installButton, 0, 0, 0)
-      gtk_box_reorder_child(starSlot, installButton, 0)
+      installButton = kit.iconButton("install_desktop", "Install app", onInstallClicked)
+      kit.`visible=`(installButton, false)
+      kit.insert(starSlotRow, installButton, 0)
     startOffline()
   pageScriptHooks.add proc (t: Tab): string =
     if incognito or appUrl.len > 0 or not isWeb(t.url): ""

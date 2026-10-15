@@ -13,6 +13,7 @@ var
   shownItems: Table[int, seq[string]]            # dropdown id -> the choices its GtkComboBoxText has
   shownClasses: Table[int, seq[string]]          # widget id -> the style classes its GtkWidget has
   shownIcons: Table[int, (string, int)]          # button/toggle/item id -> the icon its image shows
+  shownLabels: Table[int, string]                # button/check/toggle id -> its label text (absent: no label)
   inner: Table[int, GtkWidget]                   # item id -> the box inside its GtkButton
 
 proc byId(data: pointer): Widget = widgets.getOrDefault(cast[int](data))
@@ -333,8 +334,13 @@ proc syncButtonIcon(w: Widget) =
   let want = (w.iconName, w.iconSize)
   if shownIcons.getOrDefault(w.id) == want: return
   shownIcons[w.id] = want
+  let old = gtk_button_get_image(w.native)
   if w.iconName.len == 0:
     gtk_button_set_image(w.native, nil)
+  elif old != nil:
+    # The image draws the widget's current icon: resize and redraw it rather than rebuild the button's insides.
+    gtk_widget_set_size_request(old, w.iconSize.cint, w.iconSize.cint)
+    gtk_widget_queue_draw(old)
   else:
     let a = glyphArea(w)
     gtk_widget_show(a)
@@ -350,9 +356,16 @@ proc sync(w: Widget) =
     gtk_container_set_border_width(w.native, w.padding.cuint)
   of wkLabel: gtk_label_set_text(w.native, w.text.cstring)
   of wkButton, wkCheck, wkToggle:
-    # A button with only an icon has no label at all (an empty label would still take room).
-    if w.text.len > 0 or w.iconName.len == 0: gtk_button_set_label(w.native, w.text.cstring)
-    elif gtk_bin_get_child(w.native) != nil and w.kind != wkCheck: gtk_button_set_label(w.native, nil)
+    # A button with only an icon has no label at all (an empty label would still take room). Only changes are
+    # set: setting a GtkButton's label rebuilds its insides, and one rebuilt while the pointer is over it stops
+    # taking clicks until the pointer leaves.
+    if w.text.len > 0 or w.iconName.len == 0 or w.kind == wkCheck:
+      if shownLabels.getOrDefault(w.id, "\0") != w.text:
+        gtk_button_set_label(w.native, w.text.cstring)
+        shownLabels[w.id] = w.text
+    elif w.id in shownLabels:
+      gtk_button_set_label(w.native, nil)
+      shownLabels.del w.id
     if w.kind in {wkButton, wkToggle}: w.syncButtonIcon()
     if w.kind in {wkCheck, wkToggle}: gtk_toggle_button_set_active(w.native, w.checked.gboolean)
   of wkItem:
@@ -411,6 +424,7 @@ proc realize(w: Widget) =
       l
     of wkButton:
       let b = gtk_button_new_with_label("")
+      shownLabels[w.id] = ""
       connect(b, "clicked", onClicked, data)
       b
     of wkEntry:
@@ -437,6 +451,7 @@ proc realize(w: Widget) =
                         else: GTK_ORIENTATION_HORIZONTAL)
     of wkCheck:
       let b = gtk_check_button_new_with_label("")
+      shownLabels[w.id] = ""
       connect(b, "toggled", onToggled, data)
       b
     of wkCanvas:
@@ -469,6 +484,7 @@ proc realize(w: Widget) =
     of wkProgress: gtk_progress_bar_new()
     of wkToggle:
       let b = gtk_toggle_button_new_with_label("")
+      shownLabels[w.id] = ""
       connect(b, "toggled", onToggled, data)
       b
   discard g_object_ref(w.native)   # ours until the widget is removed, so removing it from a box doesn't free it
@@ -493,6 +509,7 @@ proc unrealize(w: Widget) =
   shownItems.del w.id
   shownClasses.del w.id
   shownIcons.del w.id
+  shownLabels.del w.id
   inner.del w.id
   w.realized = false
 

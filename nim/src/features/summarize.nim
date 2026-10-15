@@ -639,7 +639,7 @@ proc install*() =
       elif panelJob != nil and not panelJob.jumpTo(url[anchorPrefix.len .. ^1]):
         alert("Go back to the summarized page to jump to that part.")
     discard addToolbarButton("summarize_outlined", "Summarize this page", toggleSummary, "summarize", "Summary")
-    if children(moreMenu).len > 0: addMenuSeparator()
+    addMenuSeparator()
     addMenuItem("Summarize this page", summarizePage)
     if not incognito or setSecret == nil: addMenuItem("Summarize settings…", showSummarizeSettings)
   activeTabHooks.add proc (t: Tab) =

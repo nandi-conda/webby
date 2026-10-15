@@ -4,6 +4,7 @@
 
 import std/[strutils, tables, times, uri]
 import ../browser
+from nimkit/core as kit import nil
 import history/store
 import summarize/cache
 
@@ -266,12 +267,8 @@ proc onPanelButton(l: Widget, ev: GEvent, data: pointer): gboolean {.cdecl.} =
   if b == 2:
     openInBackground(group[0].url)
     return 1
-  let menu = gtk_menu_new()
-  menuItem(menu, "Open in new tab", proc () = openInBackground(group[0].url))
-  menuItem(menu, "Remove from history", proc () = remove(group))
-  gtk_menu_attach_to_widget(menu, panelList, nil)
-  gtk_widget_show_all(menu)
-  gtk_menu_popup_at_pointer(menu, ev)
+  kit.popupMenu(@[kit.menuItem("Open in new tab", proc () = openInBackground(group[0].url)),
+                  kit.menuItem("Remove from history", proc () = remove(group))])
   1
 
 proc onSearchChanged(e: Widget, data: pointer) {.cdecl.} = fillPanel()
@@ -320,9 +317,8 @@ proc historySuggestions(text: string): seq[Suggestion] =
   for s in suggest(text):
     result.add Suggestion(title: s.title, url: s.url, kind: "history")
 
-proc menuWithAccel(label: string, key: uint32, mods: uint32, action: proc ()) =
-  let item = addMenuItem(label, action)
-  gtk_accel_label_set_accel(gtk_bin_get_child(item), key.cuint, mods.cuint)
+proc menuWithAccel(label: string, key: uint32, mods: int, action: proc ()) =
+  addMenuItem(label, action, shortcutText(mods, key))
 
 proc install*() =
   tabStateHooks.add recordVisit
@@ -333,6 +329,6 @@ proc install*() =
   addShortcut(modCtrl or modShift, 0xffff, clearBrowsingData)                # Ctrl+Shift+Delete
   windowHooks.add proc () =
     if appUrl.len > 0: return
-    menuWithAccel("History", 0x68, GDK_CONTROL_MASK, showHistory)
+    menuWithAccel("History", 0x68, modCtrl, showHistory)
     addMenuSeparator()
-    menuWithAccel("Clear browsing data…", 0xffff, GDK_CONTROL_MASK or GDK_SHIFT_MASK, clearBrowsingData)
+    menuWithAccel("Clear browsing data…", 0xffff, modCtrl or modShift, clearBrowsingData)

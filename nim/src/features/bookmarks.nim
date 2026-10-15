@@ -5,6 +5,8 @@
 
 import std/strutils
 import ../browser
+from nimkit/core as kit import nil
+from nimkit/backend/gtk as nkgtk import nil
 import bookmarks/store
 export store
 
@@ -46,8 +48,8 @@ const
 var
   dragTarget = GtkTargetEntry(target: "webby/bookmark", flags: 1, info: 0)  # GTK_TARGET_SAME_APP
   dragging: Bookmark              ## the bookmark being dragged, if any
-  starButton, barBox, barScroller, barCheck: Widget
-  barCheckHandler: culong
+  starButton: kit.Widget
+  barBox, barScroller: Widget
   managerOpen = false
   managerFolder: Bookmark
   managerSearch, managerTree, managerList: Widget
@@ -240,43 +242,38 @@ proc exportFile() =
 # ---------------------------------------------------------------------------------------------------------------
 # The bookmarks bar (bookmark_bar.dart)
 
-proc folderMenu(folder: Bookmark): Widget =
+proc folderMenu(folder: Bookmark): seq[kit.MenuItem] =
   ## Links in `folder` and its subfolders, each subfolder's links labelled with its path.
-  result = gtk_menu_new()
+  var items: seq[kit.MenuItem]
   var any = false
-  proc fill(menu: Widget, f: Bookmark, prefix: string, any: var bool) =
+  proc fill(items: var seq[kit.MenuItem], f: Bookmark, prefix: string, any: var bool) =
     for c in f.children:
       if c.isFolder:
         if links(c).len == 0: continue
-        if any: menuSeparator(menu)
-        fill(menu, c, prefix & c.label & " / ", any)
+        if any: items.add kit.menuSeparator()
+        fill(items, c, prefix & c.label & " / ", any)
       else:
-        menuItem(menu, prefix & c.label, opener(c.url))
+        items.add kit.menuItem(prefix & c.label, opener(c.url))
         any = true
-  fill(result, folder, "", any)
-  if not any: gtk_widget_set_sensitive(menuItem(result, "(empty)", proc () = discard), 0)
+  fill(items, folder, "", any)
+  if not any: items.add kit.menuItem("(empty)", proc () = discard, enabled = false)
+  items
 
-proc itemMenu(node: Bookmark): Widget =
+proc itemMenu(node: Bookmark): seq[kit.MenuItem] =
   ## Right-click on a bar item.
-  result = gtk_menu_new()
   if not node.isFolder:
     let url = node.url
-    menuItem(result, "Open in new tab", proc () = openInBackground(url))
-    menuSeparator(result)
+    result.add kit.menuItem("Open in new tab", proc () = openInBackground(url))
+    result.add kit.menuSeparator()
   else:
     let ls = links(node)
     if ls.len > 0:
-      menuItem(result, if ls.len == 1: "Open in new tab" else: "Open all " & $ls.len & " in new tabs", proc () =
+      result.add kit.menuItem(if ls.len == 1: "Open in new tab" else: "Open all " & $ls.len & " in new tabs", proc () =
         # Each new tab goes right after the current one, so add them last first to keep the folder order.
         for i in countdown(ls.high, 0): openInBackground(ls[i].url))
-      menuSeparator(result)
-  menuItem(result, "Edit…", proc () = editBookmark(node))
-  menuItem(result, "Delete", proc () = remove(node))
-
-proc popup(menu, anchor: Widget, ev: GEvent) =
-  gtk_menu_attach_to_widget(menu, anchor, nil)
-  gtk_widget_show_all(menu)
-  gtk_menu_popup_at_pointer(menu, ev)
+      result.add kit.menuSeparator()
+  result.add kit.menuItem("Edit…", proc () = editBookmark(node))
+  result.add kit.menuItem("Delete", proc () = remove(node))
 
 proc dropOnBar(target: Bookmark, x, width: int) =
   ## The left or right half of an item places the dragged one before or after it; the middle half of a folder moves
@@ -313,10 +310,7 @@ proc barItem(node: Bookmark): Widget =
     of 1:
       if node.isFolder:
         # Folders open their menu under the button on a left click.
-        let menu = folderMenu(node)
-        gtk_menu_attach_to_widget(menu, b, nil)
-        gtk_widget_show_all(menu)
-        gtk_menu_popup_at_widget(menu, b, 7, 1, ev)    # GDK_GRAVITY_SOUTH_WEST / NORTH_WEST
+        kit.popupMenu(folderMenu(node))
         return true
       false
     of 2:
@@ -324,7 +318,7 @@ proc barItem(node: Bookmark): Widget =
       if not node.isFolder: openInBackground(node.url)
       true
     of 3:
-      popup(itemMenu(node), b, ev)
+      kit.popupMenu(itemMenu(node))
       true
     else: false)
   if not node.isFolder: onAction(b, proc () = goUrl(node.url))
@@ -422,7 +416,7 @@ proc managerRow(node: Bookmark, reorderable: bool): Widget =
       openInBackground(node.url)
       return true
     if button(ev) == 3:
-      popup(itemMenu(node), events, ev)
+      kit.popupMenu(itemMenu(node))
       return true
     false)
   if reorderable:
@@ -539,22 +533,13 @@ proc showManager*() =
   gtk_box_pack_start(top, managerSearch, 1, 1, 0)
   gtk_box_pack_start(top, iconButton("create_new_folder_outlined", "New folder", proc () = newFolderIn(managerFolder)),
     0, 0, 0)
-  let more = gtk_menu_button_new()
-  gtk_button_set_relief(more, GTK_RELIEF_NONE)
-  iconButtonImage(more, "more_vert", 18)
-  gtk_widget_set_tooltip_text(more, "More")
-  let menu = gtk_menu_new()
-  gtk_widget_set_halign(menu, GTK_ALIGN_END)
-  menuItem(menu, "Import bookmarks.html…", importFile)
-  menuItem(menu, "Export bookmarks.html…", exportFile)
-  menuSeparator(menu)
-  let check = gtk_check_menu_item_new_with_label("Show bookmarks bar")
-  gtk_check_menu_item_set_active(check, showBar().gboolean)
-  onAction(check, proc () = setShowBar(gtk_check_menu_item_get_active(check) != 0), "toggled")
-  gtk_menu_shell_append(menu, check)
-  gtk_widget_show_all(menu)
-  gtk_menu_button_set_popup(more, menu)
-  gtk_box_pack_start(top, more, 0, 0, 0)
+  var more: kit.Widget
+  more = kit.iconButton("more_vert", "More", proc () =
+    kit.popupMenu(@[kit.menuItem("Import bookmarks.html…", importFile),
+                    kit.menuItem("Export bookmarks.html…", exportFile),
+                    kit.menuSeparator(),
+                    kit.checkItem("Show bookmarks bar", showBar(), proc () = setShowBar(not showBar()))], more))
+  gtk_box_pack_start(top, nkgtk.gtkWidget(more), 0, 0, 0)
   gtk_box_pack_start(body, top, 0, 0, 0)
 
   let treeScroller = gtk_scrolled_window_new(nil, nil)
@@ -587,11 +572,10 @@ proc updateStar() =
   if starButton == nil: return
   let t = currentTab()
   let marked = t != nil and bookmarkFor(t.url) != nil
-  setIcon(gtk_button_get_image(starButton), if marked: "star" else: "star_border")
-  gtk_widget_set_tooltip_text(starButton,
-    cstring(if marked: "Edit bookmark (Ctrl+D)" else: "Bookmark this page (Ctrl+D)"))
-  if marked: addClass(starButton, "webby-starred") else: removeClass(starButton, "webby-starred")
-  gtk_widget_set_sensitive(starButton, (t != nil and t.url.len > 0).gboolean)
+  kit.`iconName=`(starButton, if marked: "star" else: "star_border")
+  kit.`tooltip=`(starButton, if marked: "Edit bookmark (Ctrl+D)" else: "Bookmark this page (Ctrl+D)")
+  kit.setClass(starButton, "webby-starred", marked)
+  kit.`enabled=`(starButton, t != nil and t.url.len > 0)
 
 proc refresh() =
   ## Bookmarks changed: redraw what shows them, once per main-loop turn.
@@ -602,10 +586,6 @@ proc refresh() =
     fillBar()
     updateStar()
     if managerOpen: fillManager()
-    if barCheck != nil:
-      g_signal_handler_block(barCheck, barCheckHandler)
-      gtk_check_menu_item_set_active(barCheck, showBar().gboolean)
-      g_signal_handler_unblock(barCheck, barCheckHandler)
     0, nil)
 
 proc bookmarkSuggestions(text: string): seq[Suggestion] =
@@ -622,33 +602,24 @@ proc bookmarkSuggestions(text: string): seq[Suggestion] =
       result.add Suggestion(title: n.title, url: n.url, kind: "bookmark")
       if result.len >= 3: return
 
-proc accel(item: Widget, key: uint32, mods: uint32) =
-  gtk_accel_label_set_accel(gtk_bin_get_child(item), key.cuint, mods.cuint)
-
 proc buildChrome() =
   if appUrl.len > 0: return
   ensureLoaded()
   loadCss(".webby-star { padding: 0 4px; min-height: 0; }\n" &
-    ".webby-starred image { color: @theme_selected_bg_color; }\n" &
+    ".webby-starred * { color: @theme_selected_bg_color; }\n" &
     ".webby-bookmark { padding: 2px 6px; min-height: 0; }\n" &
     ".webby-bookmark-bar { border-bottom: 1px solid alpha(currentColor, 0.12); }")
   # Incognito windows don't bookmark pages.
   if not incognito:
-    starButton = iconButton("star_border", "Bookmark this page (Ctrl+D)", bookmarkPage, 16)
-    addClass(starButton, "webby-star")
-    gtk_box_pack_start(starSlot, starButton, 0, 0, 0)
+    starButton = kit.iconButton("star_border", "Bookmark this page (Ctrl+D)", bookmarkPage, 16)
+    kit.addClass(starButton, "webby-star")
+    kit.add(starSlotRow, starButton)
   discard addToolbarButton("bookmarks_outlined", "Bookmarks (Ctrl+Shift+O)", toggleManager, "bookmarks", "Bookmarks")
   buildBar()
-  if not incognito: addMenuItem("Bookmark this page", bookmarkPage).accel(0x64, GDK_CONTROL_MASK)
-  barCheck = gtk_check_menu_item_new_with_label("Show bookmarks bar")
-  gtk_check_menu_item_set_active(barCheck, showBar().gboolean)
-  barCheckHandler = g_signal_connect_data(barCheck, "toggled", proc (w: Widget, d: pointer) {.cdecl.} =
-    setShowBar(gtk_check_menu_item_get_active(w) != 0), nil, nil, 0)
-  barCheck.accel(0x62, GDK_CONTROL_MASK or GDK_SHIFT_MASK)
-  gtk_menu_shell_append(moreMenu, barCheck)
-  gtk_widget_show(barCheck)
+  if not incognito: addMenuItem("Bookmark this page", bookmarkPage, "Ctrl+D")
+  addMenuCheck("Show bookmarks bar", showBar, proc () = setShowBar(not showBar()), "Ctrl+Shift+B")
   addMenuSeparator()
-  addMenuItem("Bookmark manager", showManager).accel(0x6f, GDK_CONTROL_MASK or GDK_SHIFT_MASK)
+  addMenuItem("Bookmark manager", showManager, "Ctrl+Shift+O")
   updateStar()
 
 proc install*() =

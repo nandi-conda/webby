@@ -3,6 +3,8 @@
 
 import std/strutils
 import ../../browser
+from nimkit/core as kit import nil
+from nimkit/backend/gtk as nkgtk import nil
 import permissions
 
 {.push cdecl, importc.}
@@ -141,8 +143,8 @@ proc showSiteSettings*() =
 
 proc install*() =
   windowHooks.add proc () =
-    button = iconButton("tune", "Site settings", showSiteSettings)
-    gtk_box_pack_start(toolbar, button, 0, 0, 0)
-    gtk_box_reorder_child(toolbar, button, children(toolbar).find(urlEntry).cint)
+    let b = kit.iconButton("tune", "Site settings", showSiteSettings)
+    kit.insert(toolbarRow, b, toolbarRow.children.find(urlSlotRow))
+    button = nkgtk.gtkWidget(b)
     popover = gtk_popover_new(button)
     gtk_popover_set_position(popover, GTK_POS_BOTTOM)

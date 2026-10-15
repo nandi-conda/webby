@@ -5,6 +5,7 @@
 import std/[base64, dynlib, os, strutils, uri]
 from std/unicode import toRunes, runeLen, `$`
 import ../../browser
+from nimkit/core as kit import nil
 import common
 
 proc dartString(dart, head: string): string =
@@ -198,7 +199,7 @@ proc saveImage(url: string) =
 
 var
   menuTab: Tab            # the tab right-clicked, until its report arrives or the fallback fires
-  menuEvent: GEvent       # a copy of that press, to place the menu
+  menuAt: (float, float)  # where, in the page canvas's pixels
   fallback: cuint
 
 proc clearPending() =
@@ -212,7 +213,7 @@ proc ellipsize(text: string, n: int): string =
 
 proc copyText(s: string) = gtk_clipboard_set_text(systemClipboard(), s.cstring, -1)
 
-proc showPageMenu*(t: Tab, info: JsonNode, event: GEvent) =
+proc showPageMenu*(t: Tab, info: JsonNode, x, y: float) =
   ## The menu for what `info` reports was clicked (nil when the page didn't report it): link, image and text rows
   ## first, then navigation.
   let link = webUrl(info{"link"}.getStr)
@@ -221,16 +222,15 @@ proc showPageMenu*(t: Tab, info: JsonNode, event: GEvent) =
   let selection = info{"selection"}.getStr
   let editable = info{"editable"}.getBool
   let password = info{"password"}.getBool
-  let menu = gtk_menu_new()
+  var items: seq[kit.MenuItem]
   var groups = 0
   proc group() =
-    if groups > 0: menuSeparator(menu)
+    if groups > 0: items.add kit.menuSeparator()
     inc groups
   proc item(label: string, action: proc (), enabled = true) =
-    let w = menuItem(menu, label, proc () =
+    items.add kit.menuItem(label, proc () =
       action()
-      focusPage())
-    if not enabled: gtk_widget_set_sensitive(w, 0)
+      focusPage(), enabled)
   let newTabs = appUrl.len == 0
   if link.len > 0:
     group()
@@ -273,22 +273,13 @@ proc showPageMenu*(t: Tab, info: JsonNode, event: GEvent) =
     item("Copy page address", proc () = copyText(t.url))
   group()
   item("Inspect", proc () = t.runJs(inspectScript()))
-  gtk_menu_attach_to_widget(menu, area, nil)
-  # Destroyed once closed; later than "deactivate", which comes before the chosen item's "activate".
-  connect(menu, "deactivate", proc (m: Widget, d: pointer) {.cdecl.} =
-    discard g_idle_add(proc (m: pointer): gboolean {.cdecl.} = (gtk_widget_destroy(m); 0), m))
-  gtk_widget_show_all(menu)
-  if event != nil: gtk_menu_popup_at_pointer(menu, event)
-  else: gtk_menu_popup_at_pointer(menu, nil)
+  kit.popupMenu(items, page, x, y)
 
 proc show(info: JsonNode) =
   let t = menuTab
-  let e = menuEvent
-  menuEvent = nil
   clearPending()
   if t == nil or t.closed or t != currentTab(): return
-  if pageContextMenuHook != nil: pageContextMenuHook(t, info, e)
-  if e != nil: gdk_event_free(e)
+  if pageContextMenuHook != nil: pageContextMenuHook(t, info, menuAt[0], menuAt[1])
 
 proc onFallback(d: pointer): gboolean {.cdecl.} =
   # The page didn't report the click (Shift+right-click, a page the script can't run in): a menu without targets.
@@ -296,16 +287,13 @@ proc onFallback(d: pointer): gboolean {.cdecl.} =
   show(newJObject())
   0
 
-proc onAreaEvent(w: Widget, e: GEvent, d: pointer): gboolean {.cdecl.} =
-  # "event" comes before "button-press-event", which the core handles; this only watches for right-clicks.
-  var b: cuint
-  if gdk_event_get_event_type(e) == GDK_BUTTON_PRESS and gdk_event_get_button(e, addr b) != 0 and b == 3:
+proc onPagePointer(t: Tab, e: kit.PointerEvent): bool =
+  # Watches for right-clicks; the page still gets them (its script reports what was under the pointer).
+  if e.kind == kit.pkDown and e.button == 3:
     clearPending()
-    if menuEvent != nil: gdk_event_free(menuEvent)
-    menuEvent = gdk_event_copy(e)
-    menuTab = currentTab()
+    menuAt = (e.x, e.y)
+    menuTab = t
     fallback = g_timeout_add(400, onFallback, nil)
-  0
 
 proc onMessage(t: Tab, msg: string): bool =
   if not msg.startsWith("{\"type\":\"contextmenu\""): return false
@@ -323,4 +311,4 @@ proc install*() =
   pageScriptHooks.add pageScript
   pageMessageHooks.add onMessage
   if pageContextMenuHook == nil: pageContextMenuHook = showPageMenu
-  windowHooks.add proc () = connect(area, "event", onAreaEvent)
+  pagePointerHooks.add onPagePointer

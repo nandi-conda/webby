@@ -4,6 +4,7 @@
 
 import std/[algorithm, json, math, monotimes, os, random, strutils, tables, times]
 import base, gtk, ffi, icons
+from icondata as idata import nil
 import nimkit/services
 from nimkit/core as kit import nil
 from nimkit/backend/gtk as nkgtk import nil   # nimkit on GTK; also fills in its services (timers, HTTP, storage)
@@ -63,7 +64,10 @@ var
   sidePanelTitle*: Widget
   sidePanelBody*: Widget
   starSlot*: Widget            ## a box inside the URL bar row, right of the entry (the bookmark star goes here)
-  backButton*, forwardButton*, reloadButton*, moreButton*, moreMenu*: Widget
+  toolbarRow*: kit.Widget      ## the toolbar as nimkit sees it (`toolbar` is its GtkBox)
+  starSlotRow*, toolbarEndRow*: kit.Widget  ## `starSlot` and `toolbarEnd` as nimkit rows
+  urlSlotRow*: kit.Widget      ## holds the URL entry, in toolbarRow
+  backButton*, forwardButton*, reloadButton*, moreButton*: kit.Widget
 
   tabs*: seq[Tab]
   activeIndex* = -1
@@ -86,8 +90,11 @@ var
   tabStripHooks*: seq[proc ()]                    ## tabs added, removed, moved or pinned
   pumpHooks*: seq[proc ()]                        ## every pump tick, after Ladybird's events ran (keep them cheap)
   suggestionProviders*: seq[proc (text: string): seq[Suggestion]]
-  tabMenuHooks*: seq[proc (t: Tab, menu: Widget)]  ## right-click on a tab: append items to the GtkMenu
-  pageContextMenuHook*: proc (t: Tab, info: JsonNode, event: GEvent) ## replaces the built-in page menu if set
+  tabMenuHooks*: seq[proc (t: Tab, items: var seq[kit.MenuItem])]  ## right-click on a tab: append menu items
+  moreMenuHooks*: seq[proc (items: var seq[kit.MenuItem])]  ## the ⋮ menu, built each time it opens; see addMenuItem
+  pagePointerHooks*: seq[proc (t: Tab, e: kit.PointerEvent): bool]  ## before the page gets it; true = handled
+  pageContextMenuHook*: proc (t: Tab, info: JsonNode, x, y: float) ## replaces the built-in page menu if set; x, y:
+                                                                   ## where, in the page canvas's pixels
 
   # Requests from pages. nil = declined by the core.
   webauthnHandler*: proc (t: Tab, request: JsonNode)
@@ -206,9 +213,10 @@ proc refreshChrome*() =
               elif t.title.len > 0: t.title & " - " & name else: name
   gtk_window_set_title(window, title.cstring)
   if gtk_widget_has_focus(urlEntry) == 0: gtk_entry_set_text(urlEntry, (if t.url == "about:blank": "" else: t.url).cstring)
-  gtk_widget_set_sensitive(backButton, t.canBack.gboolean)
-  gtk_widget_set_sensitive(forwardButton, t.canForward.gboolean)
-  setIcon(gtk_button_get_image(reloadButton), if t.loading: "close" else: "refresh")
+  kit.`enabled=`(backButton, t.canBack)
+  kit.`enabled=`(forwardButton, t.canForward)
+  kit.`iconName=`(reloadButton, if t.loading: "close" else: "refresh")
+  kit.`tooltip=`(reloadButton, if t.loading: "Stop" else: "Reload (Ctrl+R)")
   gtk_label_set_text(status, t.hovered.cstring)
   gtk_widget_set_visible(status, (t.hovered.len > 0).gboolean)
   let win = gtk_widget_get_window(area)
@@ -264,14 +272,10 @@ proc onTabClicked(button: Widget, event: GEvent, data: pointer): gboolean {.cdec
   of 1: activateTab(t)
   of 2: closeTab(t)
   of 3:
-    let menu = gtk_menu_new()
-    for h in tabMenuHooks: h(t, menu)
-    if children(menu).len == 0:
-      let item = gtk_menu_item_new_with_label("Close tab")
-      connect(item, "activate", proc (w: Widget, d: pointer) {.cdecl.} = closeTab(cast[Tab](d)), data)
-      gtk_menu_shell_append(menu, item)
-    gtk_widget_show_all(menu)
-    gtk_menu_popup_at_pointer(menu, event)
+    var items: seq[kit.MenuItem]
+    for h in tabMenuHooks: h(t, items)
+    if items.len == 0: items.add kit.menuItem("Close tab", proc () = closeTab(t))
+    kit.popupMenu(items)
   else: discard
   1
 
@@ -391,50 +395,66 @@ proc closeTab*(t: Tab) =
 # Chrome helpers for features
 
 proc iconButton*(icon, tooltip: string, action: proc () {.closure.}, size = 18): Widget =
-  ## A flat toolbar button with one of the Flutter app's icons (an Icons.* name, see icons.nim).
-  result = gtk_button_new()
-  if icon.len > 0: iconButtonImage(result, icon, size)
-  gtk_button_set_relief(result, GTK_RELIEF_NONE)
-  gtk_widget_set_tooltip_text(result, tooltip.cstring)
-  let cb = new(proc ())
-  cb[] = action
-  GC_ref(cb)
-  connect(result, "clicked", proc (w: Widget, d: pointer) {.cdecl.} = cast[ref proc ()](d)[](), cast[pointer](cb))
+  ## A flat button with one of the Flutter app's icons (an Icons.* name, see icons.nim), as a GtkWidget for GTK
+  ## boxes; a nimkit iconButton underneath.
+  nkgtk.gtkWidget(kit.iconButton(icon, tooltip, action, size))
 
-var panelButtons: seq[tuple[button: Widget, icon, openIcon, panel: string]]
+var panelButtons: seq[tuple[button: kit.Widget, icon, openIcon, panel: string]]
 var openPanel: string   ## the side panel's title while it shows
 
 proc refreshPanelButtons() =
   for b in panelButtons:
-    setIcon(gtk_button_get_image(b.button), if b.panel == openPanel: b.openIcon else: b.icon)
+    kit.`iconName=`(b.button, if b.panel == openPanel: b.openIcon else: b.icon)
 
-proc addToolbarButton*(icon, tooltip: string, action: proc () {.closure.}, openIcon = "", panel = ""): Widget =
+proc addToolbarButton*(icon, tooltip: string, action: proc () {.closure.}, openIcon = "", panel = ""): kit.Widget
+    {.discardable.} =
   ## A button right of the URL bar, before the ⋮ menu. A button that toggles a side panel names it (its title) and
   ## the icon to show while it is open, as the Flutter app swaps Icons.key_outlined for Icons.key.
-  result = iconButton(icon, tooltip, action)
-  gtk_box_pack_start(toolbarEnd, result, 0, 0, 0)
-  gtk_widget_show_all(result)
+  result = kit.iconButton(icon, tooltip, action)
+  kit.add(toolbarEndRow, result)
   if openIcon.len > 0: panelButtons.add (result, icon, openIcon, panel)
 
-proc menuItem*(menu: Widget, label: string, action: proc () {.closure.}): Widget {.discardable.} =
-  result = gtk_menu_item_new_with_label(label.cstring)
-  let cb = new(proc ())
-  cb[] = action
-  GC_ref(cb)
-  connect(result, "activate", proc (w: Widget, d: pointer) {.cdecl.} = cast[ref proc ()](d)[](), cast[pointer](cb))
-  gtk_menu_shell_append(menu, result)
-  gtk_widget_show(result)
+proc shortcutText*(mods: int, keyval: uint32): string =
+  ## "Ctrl+Shift+T" for a shortcut's mods and GDK keyval, to show in menus.
+  if (mods and modCtrl) != 0: result.add "Ctrl+"
+  if (mods and modAlt) != 0: result.add "Alt+"
+  if (mods and modShift) != 0: result.add "Shift+"
+  if (mods and modSuper) != 0: result.add "Super+"
+  result.add(
+    if keyval in 0x61'u32 .. 0x7a'u32: $chr(keyval - 0x20)
+    elif keyval in 0x20'u32 .. 0x7e'u32: $chr(keyval)
+    elif keyval in 0xffbe'u32 .. 0xffc9'u32: "F" & $(keyval - 0xffbe + 1)
+    else:
+      case keyval
+      of 0xffff: "Delete"
+      of 0xff1b: "Esc"
+      of 0xff09: "Tab"
+      of 0xff51: "Left"
+      of 0xff53: "Right"
+      else: "")
 
-proc menuSeparator*(menu: Widget) =
-  let s = gtk_separator_menu_item_new()
-  gtk_menu_shell_append(menu, s)
-  gtk_widget_show(s)
-
-proc addMenuItem*(label: string, action: proc () {.closure.}): Widget {.discardable.} =
+proc addMenuItem*(label: string, action: proc () {.closure.}, shortcut = "") =
   ## An item in the ⋮ (More) menu.
-  menuItem(moreMenu, label, action)
+  moreMenuHooks.add proc (items: var seq[kit.MenuItem]) = items.add kit.menuItem(label, action, shortcut = shortcut)
 
-proc addMenuSeparator*() = menuSeparator(moreMenu)
+proc addMenuCheck*(label: string, checked: proc (): bool, action: proc () {.closure.}, shortcut = "") =
+  ## A check item in the ⋮ menu; `checked` is asked each time the menu opens.
+  moreMenuHooks.add proc (items: var seq[kit.MenuItem]) =
+    var it = kit.checkItem(label, checked(), action)
+    it.shortcut = shortcut
+    items.add it
+
+proc addMenuSeparator*() =
+  moreMenuHooks.add proc (items: var seq[kit.MenuItem]) =
+    if items.len > 0 and not items[^1].separator: items.add kit.menuSeparator()
+
+proc moreMenuItems(): seq[kit.MenuItem] =
+  var all: seq[kit.MenuItem]
+  for h in moreMenuHooks: h(all)
+  for it in all:   # no separator first, last or twice in a row
+    if it.separator and (result.len == 0 or result[^1].separator): continue
+    result.add it
+  while result.len > 0 and result[^1].separator: result.setLen(result.len - 1)
 
 proc addShortcut*(mods: int, keyval: uint32, action: proc () {.closure.}) =
   ## A window-wide key (mods are modCtrl etc., keyval a GDK keyval in lower case for letters).
@@ -826,6 +846,8 @@ var lastClicks = 1   # the last press's click count, which its release repeats
 proc pagePointer(c: kit.Canvas, e: kit.PointerEvent) =
   let t = currentTab()
   if t == nil or t.view == nil: return
+  for h in pagePointerHooks:
+    if h(t, e): return
   let x = cint(e.x)
   let y = cint(e.y)
   case e.kind
@@ -955,6 +977,7 @@ proc defaultShortcuts() =
   addShortcut(modCtrl, 0x74, proc () = discard openTab(homePage))                       # Ctrl+T
   addShortcut(modCtrl, 0x77, proc () = (let t = currentTab(); if t != nil: closeTab(t)))  # Ctrl+W
   addShortcut(modCtrl, 0x6c, proc () = gtk_widget_grab_focus(urlEntry))          # Ctrl+L
+  addShortcut(modAlt, 0x66, proc () = kit.popupMenu(moreMenuItems(), moreButton))  # Alt+F, the ⋮ menu
   addShortcut(0, 0xffc6, proc () = gtk_widget_grab_focus(urlEntry))              # F6
   addShortcut(modCtrl, 0x72, proc () = (let t = currentTab(); if t != nil: webby_view_reload(t.view); wake()))
   addShortcut(0, 0xffc2, proc () = (let t = currentTab(); if t != nil: webby_view_reload(t.view); wake()))  # F5
@@ -992,6 +1015,8 @@ proc buildWindow() =
   setAppIcon(window)
   connect(window, "delete-event", onDelete)
   connect(window, "key-press-event", onWindowKey)
+  nkgtk.useWindow(window)   # nimkit's menus and dialogs belong to it (its own key and close handlers do nothing)
+  kit.registerIcons(idata.iconPaths, idata.iconEm)
   loadCss(css)
 
   mainBox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
@@ -1007,27 +1032,24 @@ proc buildWindow() =
     0, 0, 0)
   gtk_box_pack_start(mainBox, tabStripBox, 0, 0, 0)
 
-  toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2)
-  backButton = iconButton("arrow_back", "Back (Alt+Left)", goBack)
-  forwardButton = iconButton("arrow_forward", "Forward (Alt+Right)", goForward)
-  reloadButton = iconButton("refresh", "Reload (Ctrl+R)", reloadOrStop)
+  backButton = kit.iconButton("arrow_back", "Back (Alt+Left)", goBack)
+  forwardButton = kit.iconButton("arrow_forward", "Forward (Alt+Right)", goForward)
+  reloadButton = kit.iconButton("refresh", "Reload (Ctrl+R)", reloadOrStop)
+  moreButton = kit.iconButton("more_vert", "More (Alt+F)", proc () = kit.popupMenu(moreMenuItems(), moreButton))
+  urlSlotRow = kit.expand(kit.row())   # the URL entry (still GTK: features/omnibox.nim drives it)
+  starSlotRow = kit.row()
+  toolbarEndRow = kit.row()
+  for r in [starSlotRow, toolbarEndRow]: r.spacing = 0
+  toolbarRow = kit.row(backButton, forwardButton, reloadButton, urlSlotRow, starSlotRow, toolbarEndRow, moreButton)
+  toolbarRow.spacing = 2
+  toolbar = nkgtk.gtkWidget(toolbarRow)
+  starSlot = nkgtk.gtkWidget(starSlotRow)
+  toolbarEnd = nkgtk.gtkWidget(toolbarEndRow)
   urlEntry = gtk_entry_new()
   gtk_entry_set_placeholder_text(urlEntry, "Search or enter address")
   connect(urlEntry, "activate", onUrlActivate)
   connect(urlEntry, "focus-in-event", onUrlFocusIn)
-  for b in [backButton, forwardButton, reloadButton]: gtk_box_pack_start(toolbar, b, 0, 0, 0)
-  gtk_box_pack_start(toolbar, urlEntry, 1, 1, 4)
-  starSlot = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)
-  gtk_box_pack_start(toolbar, starSlot, 0, 0, 0)
-  toolbarEnd = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)
-  gtk_box_pack_start(toolbar, toolbarEnd, 0, 0, 0)
-  moreMenu = gtk_menu_new()
-  moreButton = gtk_menu_button_new()
-  gtk_button_set_relief(moreButton, GTK_RELIEF_NONE)
-  iconButtonImage(moreButton, "more_vert", 18)
-  gtk_widget_set_tooltip_text(moreButton, "More")
-  gtk_menu_button_set_popup(moreButton, moreMenu)
-  gtk_box_pack_start(toolbar, moreButton, 0, 0, 0)
+  gtk_box_pack_start(nkgtk.gtkWidget(urlSlotRow), urlEntry, 1, 1, 4)
   gtk_box_pack_start(mainBox, toolbar, 0, 0, 2)
 
   barSlot = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)

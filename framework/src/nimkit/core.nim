@@ -457,6 +457,10 @@ proc registerIcons*(paths: openArray[(string, string)], em: int) =
   iconEm = em
   for (name, path) in paths: iconPaths[name] = path
 
+proc registerIcons*(paths: Table[string, string], em: int) =
+  iconEm = em
+  for name, path in paths: iconPaths[name] = path
+
 # ---------------------------------------------------------------------------------------------------------------
 # Menus and dialogs
 
