@@ -36,7 +36,7 @@ rm -rf "$OUT/jniLibs" "$OUT/assets"
 
 # The Nim core.
 "$NIM" c --app:lib --noMain --os:android --cpu:arm64 -d:androidNDK --cc:clang \
-    --clang.exe="$CC" --clang.linkerexe="$CC" -d:release --opt:speed --mm:orc --hints:off \
+    --clang.exe="$CC" --clang.linkerexe="$CC" -d:release --opt:speed --mm:orc --hints:off -d:webbyJavaShell \
     --nimcache:"$OUT/nimcache" -o:"$OUT/apk/lib/arm64-v8a/libwebbynim.so" "$HERE/src/webby_android.nim"
 "$LLVM/llvm-strip" --strip-unneeded "$OUT/apk/lib/arm64-v8a/libwebbynim.so"
 

@@ -2,7 +2,7 @@
 ## (app.json and the icon) and a dev.webby.WebApp-<slug>.desktop launcher in ${XDG_DATA_HOME}/applications/ that
 ## runs `webby --app=<url>`.
 
-import std/[algorithm, os, strutils, uri]
+import std/[algorithm, base64, json, os, strutils, uri]
 import ../../browser
 import manifest
 
@@ -85,28 +85,39 @@ proc windowEnvironment*(app: InstalledApp): seq[(string, string)] =
   result = @[("WEBBY_APP_ID", appIdFor(app.slug)), ("WEBBY_APP_NAME", app.name)]
   if app.iconPath.len > 0: result.add ("WEBBY_APP_ICON", app.iconPath)
 
-proc g_spawn_async(dir: cstring, argv, envp: cstringArray, flags: cint, setup, data: pointer, pid: pointer,
-  err: ptr pointer): cint {.importc, cdecl.}
-proc g_error_free(e: pointer) {.importc, cdecl.}
+when defined(android):
+  proc spawn(args: seq[string], extra: seq[(string, string)] = @[]) = discard   # no other processes to start
 
-proc spawn(args: seq[string], extra: seq[(string, string)] = @[]) =
-  ## Starts webby detached, with this environment minus the app-window variables plus `extra`.
-  var env: seq[string]
-  for k, v in envPairs():
-    if not k.startsWith("WEBBY_APP_"): env.add k & "=" & v
-  for (k, v) in extra: env.add k & "=" & v
-  let argv = allocCStringArray(args)
-  let envp = allocCStringArray(env)
-  var err: pointer
-  if g_spawn_async(nil, argv, envp, 4.cint, nil, nil, nil, addr err) == 0 and err != nil:   # G_SPAWN_SEARCH_PATH
-    stderr.writeLine "webby: could not start ", args.join(" ")
-    g_error_free(err)
-  deallocCStringArray(argv)
-  deallocCStringArray(envp)
+else:
+  proc g_spawn_async(dir: cstring, argv, envp: cstringArray, flags: cint, setup, data: pointer, pid: pointer,
+    err: ptr pointer): cint {.importc, cdecl.}
+  proc g_error_free(e: pointer) {.importc, cdecl.}
+
+  proc spawn(args: seq[string], extra: seq[(string, string)] = @[]) =
+    ## Starts webby detached, with this environment minus the app-window variables plus `extra`.
+    var env: seq[string]
+    for k, v in envPairs():
+      if not k.startsWith("WEBBY_APP_"): env.add k & "=" & v
+    for (k, v) in extra: env.add k & "=" & v
+    let argv = allocCStringArray(args)
+    let envp = allocCStringArray(env)
+    var err: pointer
+    if g_spawn_async(nil, argv, envp, 4.cint, nil, nil, nil, addr err) == 0 and err != nil:   # G_SPAWN_SEARCH_PATH
+      stderr.writeLine "webby: could not start ", args.join(" ")
+      g_error_free(err)
+    deallocCStringArray(argv)
+    deallocCStringArray(envp)
 
 proc launch*(app: InstalledApp) =
-  ## Starts `app` in its own window.
-  spawn(launchCommand() & @["--app=" & app.startUrl], windowEnvironment(app))
+  ## Starts `app` in its own window. On Android: asks the home screen to pin a shortcut that opens it in webby.
+  when defined(android):
+    var icon = ""
+    if app.iconPath.endsWith(".png"):
+      try: icon = encode(readFile(app.iconPath)) except CatchableError: discard
+    discard hostCall("pinApp", $(%*{"name": app.name, "url": app.startUrl, "id": app.slug, "icon": icon,
+      "color": app.themeColor}))
+  else:
+    spawn(launchCommand() & @["--app=" & app.startUrl], windowEnvironment(app))
 
 proc openInBrowser*(url: string) =
   ## Opens `url` in a normal browser window.
@@ -152,6 +163,7 @@ proc refreshDesktopDatabase() =
   if findExe("update-desktop-database").len > 0: spawn(@["update-desktop-database", applicationsDir()])
 
 proc writeDesktopFile(app: InstalledApp, description: string) =
+  when defined(android): return   # launchers are home screen shortcuts there (launch)
   createDir(applicationsDir())
   let file = desktopFile(app.slug)
   let tmp = file & ".tmp"

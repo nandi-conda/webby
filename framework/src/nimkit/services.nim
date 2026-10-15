@@ -21,12 +21,14 @@ type
     log*: proc (text: string)
     copyText*: proc (text: string)
     pasteText*: proc (onDone: proc (text: string))
+    hostCall*: proc (name, arg: string): string
 
 var
   serviceImpl*: Services
   platform*: string                     ## "gtk", "android" or "web", set by the backend
   appName* = "nimkit-app"               ## names the app's data folder (desktop) or key prefix (web)
   userAgent* = ""                       ## the User-Agent of `request` where the backend sets it (default: appName)
+  hostEventHooks*: seq[proc (name, data: string)]  ## events from the app's own platform code (see hostCall)
 
 proc after*(ms: int, action: proc ()): Timer =
   ## Runs `action` once, `ms` from now, on the UI thread.
@@ -76,3 +78,12 @@ proc pasteText*(onDone: proc (text: string)) =
 
 proc log*(text: string) =
   if serviceImpl.log != nil: serviceImpl.log(text) else: echo text
+
+proc hostCall*(name: string, arg = ""): string =
+  ## Calls app-specific platform code the app added to its host, synchronously: on Android its Host subclass's
+  ## onHostCall(name, arg). "" where there is none. The host answers later through hostEvent when it must wait.
+  if serviceImpl.hostCall != nil: serviceImpl.hostCall(name, arg) else: ""
+
+proc hostEvent*(name, data: string) =
+  ## Backends call this when the app's platform code reports something (on Android, Host.hostEvent).
+  for h in hostEventHooks: h(name, data)

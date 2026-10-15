@@ -4,10 +4,11 @@ import std/[os, strutils, uri]
 import ../../browser
 from nimkit/core as kit import nil
 
-proc g_spawn_async(dir: cstring, argv, envp: cstringArray, flags: cint, setup, data: pointer, pid: ptr cint,
-  err: pointer): gboolean {.importc, cdecl.}
-proc g_child_watch_add(pid: cint, fn, data: pointer): cuint {.importc, cdecl.}
-proc g_spawn_close_pid(pid: cint) {.importc, cdecl.}
+when not defined(android):
+  proc g_spawn_async(dir: cstring, argv, envp: cstringArray, flags: cint, setup, data: pointer, pid: ptr cint,
+    err: pointer): gboolean {.importc, cdecl.}
+  proc g_child_watch_add(pid: cint, fn, data: pointer): cuint {.importc, cdecl.}
+  proc g_spawn_close_pid(pid: cint) {.importc, cdecl.}
 
 proc toast*(text: string) =
   ## A message floating over the bottom of the page for a few seconds.
@@ -35,20 +36,24 @@ proc openInBackgroundTab*(url: string) =
 
 proc openIncognitoWindow*(url = "") =
   ## Starts `<this exe> --incognito [url]`, its own process with an engine that keeps nothing (incognito.dart).
-  var args = @[getAppFilename(), "--incognito"]
-  if url.len > 0: args.add url
-  var env: seq[string]
-  for k, v in envPairs():
-    if k.startsWith("WEBBY_APP_"): continue
-    if k == "WEBBY_LADYBIRD_ARGS" and incognito:
-      # This process swapped in its own throwaway profile; the new one makes its own from the original flags.
-      env.add k & "=" & originalLadybirdArgs.join(" ")
-    else: env.add k & "=" & v
-  let argv = allocCStringArray(args)
-  let envp = allocCStringArray(env)
-  var pid: cint
-  # G_SPAWN_DO_NOT_REAP_CHILD, then a child watch reaps it when it exits.
-  if g_spawn_async(nil, argv, envp, 2, nil, nil, addr pid, nil) == 0: toast("Could not open an incognito window")
-  else: discard g_child_watch_add(pid, proc (pid, status: cint, d: pointer) {.cdecl.} = g_spawn_close_pid(pid), nil)
-  deallocCStringArray(argv)
-  deallocCStringArray(envp)
+  when defined(android):
+    toast("Incognito windows aren't on Android yet")
+    return
+  else:
+    var args = @[getAppFilename(), "--incognito"]
+    if url.len > 0: args.add url
+    var env: seq[string]
+    for k, v in envPairs():
+      if k.startsWith("WEBBY_APP_"): continue
+      if k == "WEBBY_LADYBIRD_ARGS" and incognito:
+        # This process swapped in its own throwaway profile; the new one makes its own from the original flags.
+        env.add k & "=" & originalLadybirdArgs.join(" ")
+      else: env.add k & "=" & v
+    let argv = allocCStringArray(args)
+    let envp = allocCStringArray(env)
+    var pid: cint
+    # G_SPAWN_DO_NOT_REAP_CHILD, then a child watch reaps it when it exits.
+    if g_spawn_async(nil, argv, envp, 2, nil, nil, addr pid, nil) == 0: toast("Could not open an incognito window")
+    else: discard g_child_watch_add(pid, proc (pid, status: cint, d: pointer) {.cdecl.} = g_spawn_close_pid(pid), nil)
+    deallocCStringArray(argv)
+    deallocCStringArray(envp)

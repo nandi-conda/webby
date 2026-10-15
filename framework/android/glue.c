@@ -16,10 +16,11 @@ extern void nk_event(int id, int kind, char const* text, float x, float y, int p
 extern void nk_surface(int id, int width, int height, int attached);
 extern void nk_timer(int id);
 extern void nk_restart(void);
+extern void nk_host_event(char const* name, char const* data);
 
 static JavaVM* vm;
 static jclass host;
-static jmethodID op_method, http_method;
+static jmethodID op_method, http_method, host_call_method;
 static char data_dir[1024];
 static float density = 1;
 static int started;
@@ -72,6 +73,25 @@ void nk_op(int op, int id, int arg, char const* text) {
     (*e)->DeleteLocalRef(e, s);
 }
 
+// Host.hostCall(name, arg): the app's Host subclass answers; NULL when it returned null. free() the result.
+char* nk_host_call(char const* name, char const* arg) {
+    JNIEnv* e = env();
+    jstring n = utf8(e, name);
+    jstring a = utf8(e, arg ? arg : "");
+    jstring r = (jstring)(*e)->CallStaticObjectMethod(e, host, host_call_method, n, a);
+    (*e)->DeleteLocalRef(e, n);
+    (*e)->DeleteLocalRef(e, a);
+    if ((*e)->ExceptionCheck(e)) {
+        (*e)->ExceptionDescribe(e);
+        (*e)->ExceptionClear(e);
+        return NULL;
+    }
+    if (!r) return NULL;
+    char* s = jstr(e, r);
+    (*e)->DeleteLocalRef(e, r);
+    return s;
+}
+
 void nk_http(int id, char const* json) {
     JNIEnv* e = env();
     jstring s = utf8(e, json);
@@ -91,7 +111,7 @@ static ANativeWindow** slot(int id, int make) {
     return NULL;
 }
 
-void nk_blit(int id, uint8_t const* pixels, int w, int h) {
+void nk_blit(int id, uint8_t const* pixels, int w, int h, int stride) {
     ANativeWindow** s = slot(id, 0);
     ANativeWindow* window = s ? *s : NULL;
     if (!window || !pixels || w <= 0 || h <= 0) return;
@@ -107,7 +127,7 @@ void nk_blit(int id, uint8_t const* pixels, int w, int h) {
     int cols = w < buffer.width ? w : buffer.width;
     uint8_t* dst = buffer.bits;
     for (int y = 0; y < rows; y++) {
-        uint32_t const* src = (uint32_t const*)(pixels + (size_t)y * w * 4);
+        uint32_t const* src = (uint32_t const*)(pixels + (size_t)y * stride);
         uint32_t* d = (uint32_t*)(dst + (size_t)y * buffer.stride * 4);
         if (buffer.format == 5) memcpy(d, src, (size_t)cols * 4);
         else for (int x = 0; x < cols; x++) {
@@ -126,6 +146,7 @@ JNIEXPORT void JNICALL Java_dev_nimkit_Native_start(JNIEnv* e, jclass c, jclass 
     host = (jclass)(*e)->NewGlobalRef(e, h);
     op_method = (*e)->GetStaticMethodID(e, host, "op", "(IIILjava/lang/String;)V");
     http_method = (*e)->GetStaticMethodID(e, host, "http", "(ILjava/lang/String;)V");
+    host_call_method = (*e)->GetStaticMethodID(e, host, "hostCall", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
     char* s = jstr(e, dir);
     strncpy(data_dir, s, sizeof data_dir - 1);
     free(s);
@@ -158,4 +179,13 @@ JNIEXPORT void JNICALL Java_dev_nimkit_Native_surface(JNIEnv* e, jclass c, jint 
 JNIEXPORT void JNICALL Java_dev_nimkit_Native_timer(JNIEnv* e, jclass c, jint id) {
     (void)e; (void)c;
     nk_timer(id);
+}
+
+JNIEXPORT void JNICALL Java_dev_nimkit_Native_hostEvent(JNIEnv* e, jclass c, jstring name, jstring data) {
+    (void)c;
+    char* n = jstr(e, name);
+    char* d = jstr(e, data);
+    nk_host_event(n, d);
+    free(n);
+    free(d);
 }

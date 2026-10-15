@@ -12,10 +12,12 @@ import ../[core, services]
 
 proc nk_op(op, id, arg: cint, text: cstring) {.importc, cdecl.}
 proc nk_http(id: cint, json: cstring) {.importc, cdecl.}
-proc nk_blit(id: cint, pixels: pointer, w, h: cint) {.importc, cdecl.}
+proc nk_blit(id: cint, pixels: pointer, w, h, stride: cint) {.importc, cdecl.}
 proc nk_data_dir(): cstring {.importc, cdecl.}
 proc nk_log(text: cstring) {.importc, cdecl.}
 proc nk_density(): cfloat {.importc, cdecl.}
+proc nk_host_call(name, arg: cstring): cstring {.importc, cdecl.}
+proc c_free(p: pointer) {.importc: "free", header: "<stdlib.h>".}
 
 const   # Host.java's ops
   opCreate = 0
@@ -130,8 +132,15 @@ backend.removed = proc (parent, child: Widget) =
   op(opRemove, parent.id, child.id)
   child.unrealize()
 backend.present = proc (c: Canvas) =
-  if attached.getOrDefault(c.id) and c.pixels.len > 0:
-    nk_blit(c.id.cint, addr c.pixels[0], c.width.cint, c.height.cint)
+  if not attached.getOrDefault(c.id): return
+  if c.external:
+    # Someone else's buffer (webby's page: Ladybird's frame), asked for afresh as it may have moved.
+    if c.onFrame != nil: c.frame = c.onFrame(c)
+    let f = c.frame
+    if f.data != nil and f.width > 0 and f.height > 0:
+      nk_blit(c.id.cint, f.data, f.width.cint, f.height.cint, f.stride.cint)
+  elif c.pixels.len > 0:
+    nk_blit(c.id.cint, addr c.pixels[0], c.width.cint, c.height.cint, cint(c.width * 4))
 backend.moved = proc (parent, child: Widget, index: int) = op(opMove, parent.id, child.id, $index)
 backend.focus = proc (w: Widget) = op(opFocus, w.id)
 backend.selectAll = proc (w: Widget) = op(opSelectAll, w.id)
@@ -317,6 +326,8 @@ proc unmark(w: Widget) =
   w.realized = false
   for c in w.children: c.unmark()
 
+proc nk_host_event(name, data: cstring) {.exportc, cdecl.} = hostEvent($name, $data)
+
 proc nk_restart() {.exportc, cdecl.} =
   ## A new Activity: its views are new, so build them all again.
   if root == nil: return
@@ -361,6 +372,11 @@ serviceImpl.request = proc (meth, url: string, headers: seq[(string, string)], b
   for (k, v) in headers: hs.add %*[k, v]
   nk_http(id.cint, cstring($(%*{"method": meth, "url": url, "headers": hs, "body": encode(body)})))
 serviceImpl.log = proc (text: string) = nk_log(text.cstring)
+serviceImpl.hostCall = proc (name, arg: string): string =
+  let r = nk_host_call(name.cstring, arg.cstring)
+  if r != nil:
+    result = $r
+    c_free(r)
 backend.toast = proc (text: string) = op(opToast, text = text)
 serviceImpl.copyText = proc (text: string) = op(opCopyText, text = text)
 serviceImpl.pasteText = proc (onDone: proc (text: string)) =

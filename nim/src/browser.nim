@@ -13,6 +13,7 @@ when defined(android):
   from nimkit/backend/android as nkandroid import nil
   type Widget* = pointer
   proc loadCss*(css: string) = discard   ## GTK CSS; Android styles nimkit's classes itself
+  proc escapeMarkup*(s: string): string = kit.escapeRich(s)   ## text for a kit.richLabel
 else:
   import gtk, icons
   from nimkit/backend/gtk as nkgtk import nil   # nimkit on GTK; also fills in its services (timers, HTTP, storage)
@@ -21,7 +22,8 @@ else:
 appName = "webby"
 userAgent = "webby"
 export base, ffi, json, tables
-export services.copyText, services.pasteText, services.after, services.every, services.cancel, services.Timer
+export services.copyText, services.pasteText, services.after, services.every, services.cancel, services.Timer,
+  services.hostCall, services.hostEventHooks
 
 # The Flutter app's page shims (lib/src/page_compat.dart), read at compile time so both front ends run the same JS.
 const pageCompatScript* = block:
@@ -120,7 +122,8 @@ var
   filePickerHandler*: proc (t: Tab, request: JsonNode)
   permissionHandler*: proc (t: Tab, request: JsonNode)
 
-  viewW, viewH, viewScale = 0
+  viewPxW, viewPxH = 0         # the page canvas, in pixels
+  viewRatio = 1.0              # its pixels per CSS pixel: the desktop's scale, or the screen density on Android
   pumpTimer: Timer
   pumpDelay = 0
   quietTicks = 0
@@ -254,7 +257,7 @@ proc notifyTabStrip*() =
   for h in tabStripHooks: h()
 
 proc resizeView(t: Tab) =
-  if viewW > 0 and t.view != nil: webby_view_resize(t.view, cint(viewW * viewScale), cint(viewH * viewScale), viewScale.cdouble)
+  if viewPxW > 0 and t.view != nil: webby_view_resize(t.view, viewPxW.cint, viewPxH.cint, viewRatio.cdouble)
 
 proc ensureView*(t: Tab)
 
@@ -291,8 +294,8 @@ proc randomPrefix(): string =
   result.add ':'
 
 proc newViewSized(): View =
-  let s = max(viewScale, 1)
-  webby_view_create(cint(max(viewW, 1280) * s), cint(max(viewH, 720) * s), s.cdouble)
+  if viewPxW > 0: webby_view_create(viewPxW.cint, viewPxH.cint, viewRatio.cdouble)
+  else: webby_view_create(cint(1280 * viewRatio), cint(720 * viewRatio), viewRatio.cdouble)
 
 proc ensureView*(t: Tab) =
   ## Gives a sleeping tab (view = nil) a fresh, hidden, empty view; selecting a tab or loading into it does this.
@@ -774,9 +777,9 @@ proc pageFrame(c: kit.Canvas): tuple[data: pointer, width, height, stride: int] 
   (px, fw.int, fh.int, fw.int * 4)
 
 proc pageResized(c: kit.Canvas) =
-  viewScale = c.scale
-  viewW = c.width div c.scale
-  viewH = c.height div c.scale
+  viewRatio = when defined(android): kit.pixelRatio else: c.scale.float
+  viewPxW = c.width
+  viewPxH = c.height
   let t = currentTab()
   if t != nil:
     resizeView(t)
@@ -833,7 +836,7 @@ proc pageWheel(c: kit.Canvas, e: kit.WheelEvent): bool =
   let (dx, dy) = (e.dx, e.dy)
   let precise = e.precise.cint
   # 53 logical pixels per wheel step, as Flutter's Linux embedder scrolls.
-  let s = 53.0 * max(viewScale, 1).float
+  let s = 53.0 * viewRatio
   if trace and not wheelPending:
     wheelSent = getMonoTime()
     wheelPending = true
@@ -1180,9 +1183,9 @@ proc run*() =
   focusPage()
   if trace: discard every(5000, traceTick)
   wake()
-  when defined(android): return   # Android runs the event loop; run() is called from the library's start
-  gtk_main()
-  for t in tabs:
-    if t.view != nil: webby_view_destroy(t.view)
-  if incognitoProfile.len > 0:
-    try: removeDir(incognitoProfile) except OSError: discard
+  when not defined(android):   # on Android the Activity runs the event loop: run() returns at once
+    gtk_main()
+    for t in tabs:
+      if t.view != nil: webby_view_destroy(t.view)
+    if incognitoProfile.len > 0:
+      try: removeDir(incognitoProfile) except OSError: discard

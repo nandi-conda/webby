@@ -6,7 +6,6 @@
 import std/strutils
 import ../browser
 from nimkit/core as kit import nil
-from nimkit/backend/gtk as nkgtk import nil
 
 const findScript = block:
   let dart = staticRead("../../../app/lib/src/find_in_page.dart")

@@ -20,4 +20,7 @@ final class Native {
     static native void surface(int id, Surface surface, int width, int height);
 
     static native void timer(int id);
+
+    /** Something the app's own platform code reports (Host.hostEvent); the Nim side's hostEventHooks get it. */
+    static native void hostEvent(String name, String data);
 }

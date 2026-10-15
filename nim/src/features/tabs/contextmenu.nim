@@ -7,6 +7,7 @@ from std/unicode import toRunes, runeLen, `$`
 import ../../browser
 from nimkit/core as kit import nil
 import common
+when defined(android): import nimkit/services
 
 proc dartString(dart, head: string): string =
   ## The body of a ''' string in Dart source that follows `head`, with Dart's \\ and \$ escapes undone.
@@ -77,103 +78,116 @@ proc writeImage(url, mimeType, bytes: string): string =
 # http(s) images come through the runtime's libcurl (multi interface, polled from the GTK loop). Nim's own SSL would
 # load the system's OpenSSL ahead of the one Ladybird needs.
 
-type
-  Download = ref object
-    easy: pointer
-    url, body: string
-  CurlMsg {.bycopy.} = object
-    msg: cint
-    easy: pointer
-    result: cint   # the first member of the data union
+when defined(android):
+  # No libcurl in the APK: Java's HTTP through nimkit (Host.http).
+  proc download(url: string) =
+    request("GET", url, proc (r: Response) =
+      let mime = r.header("content-type").split(';')[0].strip
+      toast(
+        if r.status == 0: "Could not save the image: " & r.error
+        elif r.status != 200: "Could not save the image (HTTP " & $r.status & ")"
+        else:
+          try: writeImage(url, mime, r.body) except CatchableError as e: "Could not save the image: " & e.msg),
+      headers = @[("User-Agent", "webby")])
 
-var
-  curl: LibHandle
-  curlMulti: pointer
-  downloads: seq[Download]
-  curl_easy_init: proc (): pointer {.cdecl, gcsafe.}
-  curl_easy_setopt_ptr: proc (h: pointer, opt: cint, p: pointer): cint {.cdecl, gcsafe.}
-  curl_easy_setopt_long: proc (h: pointer, opt: cint, v: clong): cint {.cdecl, gcsafe.}
-  curl_easy_getinfo_ptr: proc (h: pointer, info: cint, p: pointer): cint {.cdecl, gcsafe.}
-  curl_easy_cleanup: proc (h: pointer) {.cdecl, gcsafe.}
-  curl_multi_init: proc (): pointer {.cdecl, gcsafe.}
-  curl_multi_add_handle: proc (m, h: pointer): cint {.cdecl, gcsafe.}
-  curl_multi_remove_handle: proc (m, h: pointer): cint {.cdecl, gcsafe.}
-  curl_multi_perform: proc (m: pointer, running: ptr cint): cint {.cdecl, gcsafe.}
-  curl_multi_info_read: proc (m: pointer, left: ptr cint): ptr CurlMsg {.cdecl, gcsafe.}
-  curl_easy_strerror: proc (code: cint): cstring {.cdecl, gcsafe.}
+else:
+  type
+    Download = ref object
+      easy: pointer
+      url, body: string
+    CurlMsg {.bycopy.} = object
+      msg: cint
+      easy: pointer
+      result: cint   # the first member of the data union
 
-proc loadCurl(): bool =
-  if curl != nil: return true
-  curl = loadLib(ladybirdPrefix() / "lib" / "libcurl.so.4")
-  if curl == nil: curl = loadLib("libcurl.so.4")
-  if curl == nil: return false
-  template sym(p: untyped, name: string) = p = cast[typeof(p)](curl.checkedSymAddr(name))
-  sym curl_easy_init, "curl_easy_init"
-  sym curl_easy_setopt_ptr, "curl_easy_setopt"
-  sym curl_easy_setopt_long, "curl_easy_setopt"
-  sym curl_easy_getinfo_ptr, "curl_easy_getinfo"
-  sym curl_easy_cleanup, "curl_easy_cleanup"
-  sym curl_easy_strerror, "curl_easy_strerror"
-  sym curl_multi_init, "curl_multi_init"
-  sym curl_multi_add_handle, "curl_multi_add_handle"
-  sym curl_multi_remove_handle, "curl_multi_remove_handle"
-  sym curl_multi_perform, "curl_multi_perform"
-  sym curl_multi_info_read, "curl_multi_info_read"
-  curlMulti = curl_multi_init()
-  true
+  var
+    curl: LibHandle
+    curlMulti: pointer
+    downloads: seq[Download]
+    curl_easy_init: proc (): pointer {.cdecl, gcsafe.}
+    curl_easy_setopt_ptr: proc (h: pointer, opt: cint, p: pointer): cint {.cdecl, gcsafe.}
+    curl_easy_setopt_long: proc (h: pointer, opt: cint, v: clong): cint {.cdecl, gcsafe.}
+    curl_easy_getinfo_ptr: proc (h: pointer, info: cint, p: pointer): cint {.cdecl, gcsafe.}
+    curl_easy_cleanup: proc (h: pointer) {.cdecl, gcsafe.}
+    curl_multi_init: proc (): pointer {.cdecl, gcsafe.}
+    curl_multi_add_handle: proc (m, h: pointer): cint {.cdecl, gcsafe.}
+    curl_multi_remove_handle: proc (m, h: pointer): cint {.cdecl, gcsafe.}
+    curl_multi_perform: proc (m: pointer, running: ptr cint): cint {.cdecl, gcsafe.}
+    curl_multi_info_read: proc (m: pointer, left: ptr cint): ptr CurlMsg {.cdecl, gcsafe.}
+    curl_easy_strerror: proc (code: cint): cstring {.cdecl, gcsafe.}
 
-proc onCurlData(data: ptr char, size, n: csize_t, d: pointer): csize_t {.cdecl.} =
-  let dl = cast[Download](d)
-  let len = int(size * n)
-  if len > 0:
-    let at = dl.body.len
-    dl.body.setLen(at + len)
-    copyMem(addr dl.body[at], data, len)
-  csize_t(len)
+  proc loadCurl(): bool =
+    if curl != nil: return true
+    curl = loadLib(ladybirdPrefix() / "lib" / "libcurl.so.4")
+    if curl == nil: curl = loadLib("libcurl.so.4")
+    if curl == nil: return false
+    template sym(p: untyped, name: string) = p = cast[typeof(p)](curl.checkedSymAddr(name))
+    sym curl_easy_init, "curl_easy_init"
+    sym curl_easy_setopt_ptr, "curl_easy_setopt"
+    sym curl_easy_setopt_long, "curl_easy_setopt"
+    sym curl_easy_getinfo_ptr, "curl_easy_getinfo"
+    sym curl_easy_cleanup, "curl_easy_cleanup"
+    sym curl_easy_strerror, "curl_easy_strerror"
+    sym curl_multi_init, "curl_multi_init"
+    sym curl_multi_add_handle, "curl_multi_add_handle"
+    sym curl_multi_remove_handle, "curl_multi_remove_handle"
+    sym curl_multi_perform, "curl_multi_perform"
+    sym curl_multi_info_read, "curl_multi_info_read"
+    curlMulti = curl_multi_init()
+    true
 
-proc pollDownloads(d: pointer): gboolean {.cdecl.} =
-  var running, left: cint
-  discard curl_multi_perform(curlMulti, addr running)
-  while true:
-    let m = curl_multi_info_read(curlMulti, addr left)
-    if m == nil: break
-    if m.msg != 1: continue   # CURLMSG_DONE
-    var dl: Download
-    for x in downloads:
-      if x.easy == m.easy: dl = x
-    if dl == nil: continue
-    var code: clong
-    var ctype: cstring
-    discard curl_easy_getinfo_ptr(dl.easy, 0x200002, addr code)    # CURLINFO_RESPONSE_CODE
-    discard curl_easy_getinfo_ptr(dl.easy, 0x100012, addr ctype)   # CURLINFO_CONTENT_TYPE
-    let mime = if ctype == nil: "" else: ($ctype).split(';')[0].strip
-    let message =
-      if m.result != 0: "Could not save the image: " & $curl_easy_strerror(m.result)
-      elif code != 200: "Could not save the image (HTTP " & $code & ")"
-      else:
-        try: writeImage(dl.url, mime, dl.body) except CatchableError as e: "Could not save the image: " & e.msg
-    discard curl_multi_remove_handle(curlMulti, dl.easy)
-    curl_easy_cleanup(dl.easy)
-    downloads.delete(downloads.find(dl))
-    GC_unref(dl)
-    toast(message)
-  if downloads.len == 0: 0 else: 1
+  proc onCurlData(data: ptr char, size, n: csize_t, d: pointer): csize_t {.cdecl.} =
+    let dl = cast[Download](d)
+    let len = int(size * n)
+    if len > 0:
+      let at = dl.body.len
+      dl.body.setLen(at + len)
+      copyMem(addr dl.body[at], data, len)
+    csize_t(len)
 
-proc download(url: string) =
-  if not loadCurl():
-    toast("Could not save the image: libcurl not found")
-    return
-  let dl = Download(url: url, easy: curl_easy_init())
-  GC_ref(dl)
-  downloads.add dl
-  discard curl_easy_setopt_ptr(dl.easy, 10002, url.cstring)            # CURLOPT_URL (copied by curl)
-  discard curl_easy_setopt_ptr(dl.easy, 10018, "webby".cstring)        # CURLOPT_USERAGENT
-  discard curl_easy_setopt_long(dl.easy, 52, 1)                        # CURLOPT_FOLLOWLOCATION
-  discard curl_easy_setopt_long(dl.easy, 13, 60)                       # CURLOPT_TIMEOUT
-  discard curl_easy_setopt_ptr(dl.easy, 20011, cast[pointer](onCurlData))  # CURLOPT_WRITEFUNCTION
-  discard curl_easy_setopt_ptr(dl.easy, 10001, cast[pointer](dl))     # CURLOPT_WRITEDATA
-  discard curl_multi_add_handle(curlMulti, dl.easy)
-  if downloads.len == 1: discard g_timeout_add(20, pollDownloads, nil)
+  proc pollDownloads(d: pointer): gboolean {.cdecl.} =
+    var running, left: cint
+    discard curl_multi_perform(curlMulti, addr running)
+    while true:
+      let m = curl_multi_info_read(curlMulti, addr left)
+      if m == nil: break
+      if m.msg != 1: continue   # CURLMSG_DONE
+      var dl: Download
+      for x in downloads:
+        if x.easy == m.easy: dl = x
+      if dl == nil: continue
+      var code: clong
+      var ctype: cstring
+      discard curl_easy_getinfo_ptr(dl.easy, 0x200002, addr code)    # CURLINFO_RESPONSE_CODE
+      discard curl_easy_getinfo_ptr(dl.easy, 0x100012, addr ctype)   # CURLINFO_CONTENT_TYPE
+      let mime = if ctype == nil: "" else: ($ctype).split(';')[0].strip
+      let message =
+        if m.result != 0: "Could not save the image: " & $curl_easy_strerror(m.result)
+        elif code != 200: "Could not save the image (HTTP " & $code & ")"
+        else:
+          try: writeImage(dl.url, mime, dl.body) except CatchableError as e: "Could not save the image: " & e.msg
+      discard curl_multi_remove_handle(curlMulti, dl.easy)
+      curl_easy_cleanup(dl.easy)
+      downloads.delete(downloads.find(dl))
+      GC_unref(dl)
+      toast(message)
+    if downloads.len == 0: 0 else: 1
+
+  proc download(url: string) =
+    if not loadCurl():
+      toast("Could not save the image: libcurl not found")
+      return
+    let dl = Download(url: url, easy: curl_easy_init())
+    GC_ref(dl)
+    downloads.add dl
+    discard curl_easy_setopt_ptr(dl.easy, 10002, url.cstring)            # CURLOPT_URL (copied by curl)
+    discard curl_easy_setopt_ptr(dl.easy, 10018, "webby".cstring)        # CURLOPT_USERAGENT
+    discard curl_easy_setopt_long(dl.easy, 52, 1)                        # CURLOPT_FOLLOWLOCATION
+    discard curl_easy_setopt_long(dl.easy, 13, 60)                       # CURLOPT_TIMEOUT
+    discard curl_easy_setopt_ptr(dl.easy, 20011, cast[pointer](onCurlData))  # CURLOPT_WRITEFUNCTION
+    discard curl_easy_setopt_ptr(dl.easy, 10001, cast[pointer](dl))     # CURLOPT_WRITEDATA
+    discard curl_multi_add_handle(curlMulti, dl.easy)
+    if downloads.len == 1: discard g_timeout_add(20, pollDownloads, nil)
 
 proc saveImage(url: string) =
   ## Saves the image at `url` (http(s), data: or file:) into ~/Downloads (or $XDG_DOWNLOAD_DIR).

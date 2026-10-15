@@ -168,7 +168,8 @@ proc refreshOutside() =
 
 proc buildAppWindow() =
   let icon = getEnv("WEBBY_APP_ICON")
-  if icon.len > 0: discard gtk_window_set_icon_from_file(window, icon.cstring, nil)
+  when not defined(android):
+    if icon.len > 0: discard gtk_window_set_icon_from_file(window, icon.cstring, nil)
   # Pages outside the app's scope get a thin strip with their site and a way out to the browser.
   backToApp = kit.iconButton("arrow_back", "Back to " & (if hasApp: app.name else: "the app"), goBack)
   outsideIcon = kit.icon("info_outline", 14)
@@ -259,8 +260,9 @@ proc startOffline() =
 
 # ---------------------------------------------------------------------------------------------------------------
 
-proc g_set_prgname(name: cstring) {.importc, cdecl.}
-proc gdk_set_program_class(name: cstring) {.importc, cdecl.}
+when not defined(android):
+  proc g_set_prgname(name: cstring) {.importc, cdecl.}
+  proc gdk_set_program_class(name: cstring) {.importc, cdecl.}
 
 proc install*() =
   startupHooks.add proc () =
@@ -268,9 +270,10 @@ proc install*() =
       (hasApp, app) = forUrl(appUrl)
       # The app's own id, so docks show its window apart from webby's, with its launcher's icon.
       let id = getEnv("WEBBY_APP_ID")
-      if id.len > 0:
-        g_set_prgname(id.cstring)
-        gdk_set_program_class(id.cstring)
+      when not defined(android):
+        if id.len > 0:
+          g_set_prgname(id.cstring)
+          gdk_set_program_class(id.cstring)
     elif not incognito:
       try: refreshLaunchers() except CatchableError: discard
   windowHooks.add proc () =

@@ -10,15 +10,16 @@ import ../browser
 from nimkit/core as kit import nil
 import tabs/common
 
-{.push cdecl, importc.}
-proc g_app_info_launch_default_for_uri(uri: cstring, ctx: pointer, err: pointer): gboolean
-proc g_bus_get_sync(kind: cint, cancellable: pointer, err: pointer): pointer
-proc g_dbus_connection_call_sync(c: pointer, name, path, iface, meth: cstring, params: pointer, replyType: pointer,
-  flags: cint, timeoutMs: cint, cancellable: pointer, err: pointer): pointer
-proc g_variant_new_parsed(format: cstring): pointer {.varargs.}
-proc g_variant_unref(v: pointer)
-proc g_error_free(e: pointer)
-{.pop.}
+when not defined(android):
+  {.push cdecl, importc.}
+  proc g_app_info_launch_default_for_uri(uri: cstring, ctx: pointer, err: pointer): gboolean
+  proc g_bus_get_sync(kind: cint, cancellable: pointer, err: pointer): pointer
+  proc g_dbus_connection_call_sync(c: pointer, name, path, iface, meth: cstring, params: pointer, replyType: pointer,
+    flags: cint, timeoutMs: cint, cancellable: pointer, err: pointer): pointer
+  proc g_variant_new_parsed(format: cstring): pointer {.varargs.}
+  proc g_variant_unref(v: pointer)
+  proc g_error_free(e: pointer)
+  {.pop.}
 
 type
   Download = object
@@ -74,24 +75,33 @@ proc setUpDirectory() =
 
 proc fileUri(path: string): string = "file://" & encodeUrl(path, usePlus = false).replace("%2F", "/")
 
-proc openPath(path: string) =
-  if g_app_info_launch_default_for_uri(fileUri(path).cstring, nil, nil) == 0:
-    toast("No app opens " & path.extractFilename)
+when defined(android):
+  # The Android host opens files with an app that takes them (through its FileProvider); there is no file manager
+  # to select one in, so "Show in folder" opens the file too.
+  proc openPath(path: string) =
+    if hostCall("openFile", path) != "ok": toast("No app opens " & path.extractFilename)
 
-proc showInFolder(path: string) =
-  ## Selects the file in the file manager (org.freedesktop.FileManager1), else opens its folder.
-  let bus = g_bus_get_sync(2, nil, nil)   # G_BUS_TYPE_SESSION
-  if bus != nil:
-    var err: pointer
-    let params = g_variant_new_parsed("([%s], '')", fileUri(path).cstring)
-    let reply = g_dbus_connection_call_sync(bus, "org.freedesktop.FileManager1", "/org/freedesktop/FileManager1",
-      "org.freedesktop.FileManager1", "ShowItems", params, nil, 0, 2000, nil, addr err)
-    g_object_unref(bus)
-    if reply != nil:
-      g_variant_unref(reply)
-      return
-    if err != nil: g_error_free(err)
-  openPath(path.parentDir)
+  proc showInFolder(path: string) = openPath(path)
+
+else:
+  proc openPath(path: string) =
+    if g_app_info_launch_default_for_uri(fileUri(path).cstring, nil, nil) == 0:
+      toast("No app opens " & path.extractFilename)
+
+  proc showInFolder(path: string) =
+    ## Selects the file in the file manager (org.freedesktop.FileManager1), else opens its folder.
+    let bus = g_bus_get_sync(2, nil, nil)   # G_BUS_TYPE_SESSION
+    if bus != nil:
+      var err: pointer
+      let params = g_variant_new_parsed("([%s], '')", fileUri(path).cstring)
+      let reply = g_dbus_connection_call_sync(bus, "org.freedesktop.FileManager1", "/org/freedesktop/FileManager1",
+        "org.freedesktop.FileManager1", "ShowItems", params, nil, 0, 2000, nil, addr err)
+      g_object_unref(bus)
+      if reply != nil:
+        g_variant_unref(reply)
+        return
+      if err != nil: g_error_free(err)
+    openPath(path.parentDir)
 
 # ---------------------------------------------------------------------------------------------------------------
 # The list

@@ -1,10 +1,11 @@
 ## Markdown for the summary panel (app/lib/src/markdown_view.dart): the same block parser, which copes with
 ## half-written text so a streaming answer can be shown as it comes, and inline markup as Pango markup on GtkLabels
-## (on Android, as the HTML subset TextView's Html.fromHtml shows: markdownHtml).
+## (in nim/android's Java shell, built with -d:webbyJavaShell, as the HTML subset TextView's Html.fromHtml shows:
+## markdownHtml).
 
 import std/strutils
 from std/unicode import validateUtf8
-when defined(android):
+when defined(webbyJavaShell):
   proc escapeMarkup(s: string): string =
     s.multiReplace(("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ("\"", "&quot;"))
 else:
@@ -166,8 +167,8 @@ proc anchorWords*(target: string): string =
       if result.endsWith(q): (result = result[0 ..< result.len - q.len]; changed = true)
   result = result.splitWhitespace.join(" ")
 
-const codeSpan = when defined(android): "<tt>" else: "<span font_family=\"monospace\" background=\"#808080\" bgalpha=\"22%\">"
-const codeSpanEnd = when defined(android): "</tt>" else: "</span>"
+const codeSpan = when defined(webbyJavaShell): "<tt>" else: "<span font_family=\"monospace\" background=\"#808080\" bgalpha=\"22%\">"
+const codeSpanEnd = when defined(webbyJavaShell): "</tt>" else: "</span>"
 
 proc inlineMarkup*(text: string): string =
   ## `text` with its inline markdown as Pango markup (escaped otherwise).
@@ -226,7 +227,7 @@ proc inlineMarkup*(text: string): string =
     inc i
   emit ""
 
-when defined(android):
+when defined(webbyJavaShell):
   proc markdownHtml*(source: string): string =
     ## `source` as HTML for Html.fromHtml (anchor links keep anchorPrefix hrefs; Java jumps to their words).
     for b in parseMarkdown(source):

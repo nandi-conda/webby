@@ -6,7 +6,7 @@
 import std/[json, random, strutils, times]
 import ../browser
 from nimkit/core as kit import nil
-from nimkit/backend/gtk as nkgtk import nil
+when not defined(android): from nimkit/backend/gtk as nkgtk import nil
 import summarize/[cache, deepseek, markdown, prompts]
 
 type
@@ -346,11 +346,13 @@ proc applyTextZoom() =
     ".webby-md .webby-md-h2 { font-size: " & pt(1.2) & "; }\n" &
     ".webby-md .webby-md-h3 { font-size: " & pt(1.08) & "; }\n" &
     ".webby-md .webby-md-code label { font-size: " & pt(0.92) & "; }\n"
-  if textCss == nil:
-    textCss = gtk_css_provider_new()
-    gtk_style_context_add_provider_for_screen(gdk_screen_get_default(), textCss,
-      GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
-  discard gtk_css_provider_load_from_data(textCss, css.cstring, css.len, nil)
+  when defined(android): discard css   # Android's labels take the system's text size
+  else:
+    if textCss == nil:
+      textCss = gtk_css_provider_new()
+      gtk_style_context_add_provider_for_screen(gdk_screen_get_default(), textCss,
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
+    discard gtk_css_provider_load_from_data(textCss, css.cstring, css.len, nil)
 
 proc setTextZoom(z: float) =
   textZoom = clamp(z, 0.6, 2.5)
@@ -359,29 +361,33 @@ proc setTextZoom(z: float) =
     try: writeJsonFile(zoomFile(), %*{"zoom": textZoom})
     except CatchableError: discard
 
-proc gtk_window_get_focus(w: Widget): Widget {.importc, cdecl.}
-proc gtk_widget_is_ancestor(w, ancestor: Widget): gboolean {.importc, cdecl.}
-proc gtk_widget_get_pointer(w: Widget, x, y: ptr cint) {.importc, cdecl.}
+when defined(android):
+  proc panelHasFocus(): bool = false   # no keyboard shortcuts to zoom with
 
-proc panelHasFocus(): bool =
-  ## Whether the keyboard focus or the mouse pointer is in the summary panel.
-  if panel.root == nil or not sidePanelShowing(): return false
-  let root = nkgtk.gtkWidget(panel.root)
-  let f = gtk_window_get_focus(window)
-  if f != nil and (f == root or gtk_widget_is_ancestor(f, root) != 0): return true
-  var x, y: cint
-  gtk_widget_get_pointer(root, addr x, addr y)
-  x >= 0 and y >= 0 and x < gtk_widget_get_allocated_width(root) and y < gtk_widget_get_allocated_height(root)
+else:
+  proc gtk_window_get_focus(w: Widget): Widget {.importc, cdecl.}
+  proc gtk_widget_is_ancestor(w, ancestor: Widget): gboolean {.importc, cdecl.}
+  proc gtk_widget_get_pointer(w: Widget, x, y: ptr cint) {.importc, cdecl.}
 
-proc onPanelWheel(w: Widget, e: GEvent, d: pointer): gboolean {.cdecl.} =
-  if (eventState(e) and GDK_CONTROL_MASK) == 0: return 0
-  var dx, dy: cdouble
-  var dir: cint
-  if gdk_event_get_scroll_deltas(e, addr dx, addr dy) == 0:
-    if gdk_event_get_scroll_direction(e, addr dir) == 0: return 1
-    dy = (if dir == GDK_SCROLL_UP: -1.0 elif dir == GDK_SCROLL_DOWN: 1.0 else: 0.0)
-  if dy != 0: setTextZoom(textZoom * (if dy < 0: 1.1 else: 1 / 1.1))
-  1
+  proc panelHasFocus(): bool =
+    ## Whether the keyboard focus or the mouse pointer is in the summary panel.
+    if panel.root == nil or not sidePanelShowing(): return false
+    let root = nkgtk.gtkWidget(panel.root)
+    let f = gtk_window_get_focus(window)
+    if f != nil and (f == root or gtk_widget_is_ancestor(f, root) != 0): return true
+    var x, y: cint
+    gtk_widget_get_pointer(root, addr x, addr y)
+    x >= 0 and y >= 0 and x < gtk_widget_get_allocated_width(root) and y < gtk_widget_get_allocated_height(root)
+
+  proc onPanelWheel(w: Widget, e: GEvent, d: pointer): gboolean {.cdecl.} =
+    if (eventState(e) and GDK_CONTROL_MASK) == 0: return 0
+    var dx, dy: cdouble
+    var dir: cint
+    if gdk_event_get_scroll_deltas(e, addr dx, addr dy) == 0:
+      if gdk_event_get_scroll_direction(e, addr dir) == 0: return 1
+      dy = (if dir == GDK_SCROLL_UP: -1.0 elif dir == GDK_SCROLL_DOWN: 1.0 else: 0.0)
+    if dy != 0: setTextZoom(textZoom * (if dy < 0: 1.1 else: 1 / 1.1))
+    1
 
 proc withoutSourceLinks(text: string): string =
   ## `text` without its ` [§](#words)` links (for Copy).
@@ -493,7 +499,7 @@ proc showPanel(job: Job) =
     panelJob = nil
     panel = Panel()
     if not switchingPanel and shown != nil: shown.close())
-  connect(nkgtk.gtkWidget(panel.scroller), "scroll-event", onPanelWheel)
+  when not defined(android): connect(nkgtk.gtkWidget(panel.scroller), "scroll-event", onPanelWheel)
   panelJob = job
   render()
 

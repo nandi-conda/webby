@@ -107,7 +107,30 @@ public class Host extends Activity {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        Native.start(Host.class, getFilesDir().getAbsolutePath(), density);
+        beforeStart(() -> Native.start(Host.class, getFilesDir().getAbsolutePath(), density));
+    }
+
+    /**
+     * For apps' Host subclasses: work that must happen before the Nim code runs (say, unpacking files on a worker
+     * thread). Call `start` on the main thread when done; the default starts at once.
+     */
+    protected void beforeStart(Runnable start) {
+        start.run();
+    }
+
+    /** For apps' Host subclasses: the Nim side's hostCall(name, arg), on the main thread. null: nothing to say. */
+    protected String onHostCall(String name, String arg) {
+        return null;
+    }
+
+    /** Tells the Nim side's hostEventHooks about something (from the main thread, or posted there). */
+    public static void hostEvent(String name, String data) {
+        if (Looper.myLooper() == Looper.getMainLooper()) Native.hostEvent(name, data);
+        else main.post(() -> Native.hostEvent(name, data));
+    }
+
+    static String hostCall(String name, String arg) {
+        return current == null ? null : current.onHostCall(name, arg);
     }
 
     @Override
