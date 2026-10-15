@@ -40,6 +40,20 @@ const
   GDK_SCROLL_RIGHT* = 3.cint
   CAIRO_OPERATOR_SOURCE* = 1.cint
 
+const
+  GTK_RELIEF_NONE* = 2.cint
+  GTK_DIALOG_MODAL* = 1.cint
+  GTK_DIALOG_DESTROY_WITH_PARENT* = 2.cint
+  GDK_GRAVITY_NORTH_WEST* = 1.cint
+  GDK_GRAVITY_SOUTH_WEST* = 7.cint
+  GTK_STYLE_PROVIDER_PRIORITY_APPLICATION* = 600.cuint
+
+type
+  GdkRectangle* {.bycopy.} = object
+    x*, y*, width*, height*: cint
+  GdkRGBA* {.bycopy.} = object
+    r*, g*, b*, a*: cdouble
+
 {.push cdecl, importc.}
 proc gtk_init(argc: ptr cint, argv: ptr cstringArray)
 proc gtk_main*()
@@ -120,6 +134,70 @@ proc cairo_image_surface_create_for_data*(data: pointer, format: cint, width, he
 proc cairo_set_source_surface*(cr, surface: pointer, x, y: cdouble)
 proc cairo_paint*(cr: pointer)
 proc cairo_surface_destroy*(s: pointer)
+proc gtk_widget_show*(w: GtkWidget)
+proc gtk_box_pack_end*(b, w: GtkWidget, expand, fill: gboolean, padding: cuint)
+proc gtk_button_new*(): GtkWidget
+proc gtk_widget_set_visible*(w: GtkWidget, on: gboolean)
+proc gtk_widget_set_no_show_all*(w: GtkWidget, on: gboolean)
+proc gtk_widget_set_tooltip_text*(w: GtkWidget, text: cstring)
+proc gtk_widget_get_style_context*(w: GtkWidget): pointer
+proc gtk_widget_get_toplevel*(w: GtkWidget): GtkWidget
+proc gtk_widget_get_window*(w: GtkWidget): pointer
+proc gtk_widget_get_screen*(w: GtkWidget): pointer
+proc gtk_widget_translate_coordinates*(src, dest: GtkWidget, x, y: cint, dx, dy: ptr cint): gboolean
+proc gtk_widget_set_halign*(w: GtkWidget, align: cint)
+proc gtk_widget_set_valign*(w: GtkWidget, align: cint)
+proc gtk_widget_queue_resize*(w: GtkWidget)
+proc gtk_style_context_add_class*(c: pointer, name: cstring)
+proc gtk_style_context_remove_class*(c: pointer, name: cstring)
+proc gtk_style_context_get_state*(c: pointer): cint
+proc gtk_style_context_get_color*(c: pointer, state: cint, color: ptr GdkRGBA)
+proc gtk_css_provider_new*(): pointer
+proc gtk_css_provider_load_from_data*(p: pointer, data: cstring, len: int, err: pointer): gboolean
+proc gtk_style_context_add_provider_for_screen*(screen, provider: pointer, priority: cuint)
+proc gdk_screen_get_default*(): pointer
+proc gtk_button_set_relief*(b: GtkWidget, relief: cint)
+proc gtk_button_set_image*(b, image: GtkWidget)
+proc gtk_button_set_always_show_image*(b: GtkWidget, on: gboolean)
+proc gtk_bin_get_child*(b: GtkWidget): GtkWidget
+proc gtk_separator_new*(orientation: cint): GtkWidget
+proc gtk_entry_set_visibility*(e: GtkWidget, visible: gboolean)
+proc gtk_editable_select_region*(e: GtkWidget, start, stop: cint)
+proc gtk_label_set_use_markup*(l: GtkWidget, on: gboolean)
+proc gtk_label_set_markup*(l: GtkWidget, text: cstring)
+proc gtk_menu_new*(): GtkWidget
+proc gtk_menu_item_new*(): GtkWidget
+proc gtk_menu_item_set_submenu*(item, menu: GtkWidget)
+proc gtk_check_menu_item_new*(): GtkWidget
+proc gtk_check_menu_item_set_active*(item: GtkWidget, on: gboolean)
+proc gtk_separator_menu_item_new*(): GtkWidget
+proc gtk_menu_shell_append*(m, item: GtkWidget)
+proc gtk_menu_popup_at_pointer*(m: GtkWidget, event: pointer)
+proc gtk_menu_popup_at_widget*(m, w: GtkWidget, wAnchor, mAnchor: cint, event: pointer)
+proc gtk_menu_popup_at_rect*(m: GtkWidget, window: pointer, rect: ptr GdkRectangle, rAnchor, mAnchor: cint,
+                             event: pointer)
+proc gtk_menu_attach_to_widget*(m, w: GtkWidget, detach: pointer)
+proc gtk_get_current_event*(): pointer
+proc gdk_event_free*(e: pointer)
+proc gtk_dialog_new*(): GtkWidget
+proc gtk_dialog_get_content_area*(d: GtkWidget): GtkWidget
+proc gtk_dialog_add_button*(d: GtkWidget, text: cstring, response: cint): GtkWidget
+proc gtk_dialog_set_default_response*(d: GtkWidget, response: cint)
+proc gtk_window_set_transient_for*(w, parent: GtkWidget)
+proc gtk_window_set_modal*(w: GtkWidget, on: gboolean)
+proc gtk_window_set_destroy_with_parent*(w: GtkWidget, on: gboolean)
+proc gtk_window_set_resizable*(w: GtkWidget, on: gboolean)
+proc g_idle_add*(fn: proc (data: pointer): gboolean {.cdecl.}, data: pointer): cuint
+proc cairo_save*(cr: pointer)
+proc cairo_restore*(cr: pointer)
+proc cairo_translate*(cr: pointer, x, y: cdouble)
+proc cairo_set_source_rgba*(cr: pointer, r, g, b, a: cdouble)
+proc cairo_new_path*(cr: pointer)
+proc cairo_move_to*(cr: pointer, x, y: cdouble)
+proc cairo_line_to*(cr: pointer, x, y: cdouble)
+proc cairo_curve_to*(cr: pointer, x1, y1, x2, y2, x3, y3: cdouble)
+proc cairo_close_path*(cr: pointer)
+proc cairo_fill*(cr: pointer)
 {.pop.}
 
 proc connect*(instance: pointer, signal: string, handler: pointer, data: pointer) =

@@ -8,7 +8,8 @@ import std/tables
 
 type
   WidgetKind* = enum
-    wkColumn, wkRow, wkScroll, wkLabel, wkButton, wkEntry, wkCheck, wkCanvas, wkSlider, wkDropdown, wkProgress, wkToggle
+    wkColumn, wkRow, wkScroll, wkLabel, wkButton, wkEntry, wkCheck, wkCanvas, wkSlider, wkDropdown, wkProgress, wkToggle,
+    wkIcon, wkItem, wkSeparator
 
   PointerKind* = enum
     pkDown, pkMove, pkUp, pkCancel, pkLeave   ## pkLeave: the mouse left the canvas
@@ -53,6 +54,12 @@ type
     marksValue: seq[(float, string)] ## a slider's labelled ticks
     itemsValue: seq[string]          ## a dropdown's choices
     selectedValue: int               ## the chosen one's index, -1 for none
+    visibleValue: bool               ## shown (the default) or hidden, taking no room
+    tooltipValue: string
+    classesValue: seq[string]        ## style names, see addClass
+    iconValue: string                ## an icon's glyph, or a button's/toggle's/item's icon (see registerIcons)
+    iconSizeValue: int               ## logical pixels
+    passwordValue: bool              ## an entry that hides what is typed
     realized*: bool                  ## the backend has made the native widget
     native*: pointer                 ## the backend's own handle, if it has one (GTK)
     # Events
@@ -68,6 +75,10 @@ type
     onKey*: proc (c: Canvas, e: KeyEvent): bool            ## while the canvas has the focus; true: handled
     onFocus*: proc (c: Canvas, focused: bool)
     onResize*: proc (c: Canvas)      ## its pixel size or scale changed
+    onContext*: proc ()              ## items: right-click, or a long press on touch screens
+    onMiddle*: proc ()               ## items: middle-click
+    onEntryKey*: proc (e: KeyEvent): bool   ## entries: a key pressed while it has the focus; true: handled
+    onFocusChange*: proc (focused: bool)    ## entries
     onFrame*: proc (c: Canvas): tuple[data: pointer, width, height, stride: int]
       ## external canvases: asked for the buffer each time the canvas paints, for buffers that move (Ladybird's)
     # Canvas pixels
@@ -85,10 +96,35 @@ type
     update*: proc (w: Widget)
     added*: proc (parent, child: Widget, index: int)
     removed*: proc (parent, child: Widget)
+    moved*: proc (parent, child: Widget, index: int)   ## a child now at `index` (insert of one already there)
     present*: proc (c: Canvas)       ## show the canvas's current pixels
     focus*: proc (w: Widget)         ## give `w` the keyboard focus
     setTitle*: proc (title: string)
     quit*: proc ()
+    popup*: proc (items: seq[MenuItem], anchor: Widget, x, y: float)
+    showDialog*: proc (d: Dialog)
+    closeDialog*: proc (d: Dialog)
+    selectAll*: proc (w: Widget)     ## an entry's text
+
+  MenuItem* = object
+    ## One line of a pop-up menu (`popupMenu`): a command, a check item, a separator or a submenu.
+    label*: string
+    action*: proc ()
+    enabled*: bool
+    checked*: int                    ## -1: not a check item; 0 or 1: unchecked or checked
+    shortcut*: string                ## shown at the end, e.g. "Ctrl+T" (the app handles the key itself)
+    separator*: bool
+    submenu*: seq[MenuItem]
+
+  Dialog* = ref object
+    ## A modal dialog over the window (`showDialog`): a title, the app's content and a row of buttons.
+    title*: string
+    content*: Widget
+    buttons*: seq[string]            ## left to right; the last is the default (Enter)
+    destructive*: int                ## index of a button that deletes or discards something, -1 for none
+    onResult*: proc (index: int)     ## the button's index, or -1 if the dialog was dismissed
+    native*: pointer                 ## the backend's handle while it shows
+    shown*: bool
 
 const
   modAlt* = 1
@@ -97,13 +133,15 @@ const
   modSuper* = 8
 
 var
+  onWindowKey*: proc (e: KeyEvent): bool   ## every key pressed in the window, before the focused widget; true: handled
+  onCloseRequest*: proc (): bool           ## the window's close button (desktop); false keeps it open
   backend*: Backend
   pixelRatio* = 1.0                  ## canvas pixels per logical pixel (the screen density on Android)
   widgets*: Table[int, Widget]       ## by id, so native callbacks can find their widget
   nextId = 1
 
 proc newWidget*(kind: WidgetKind): Widget =
-  result = Widget(kind: kind, id: nextId, enabledValue: true)
+  result = Widget(kind: kind, id: nextId, enabledValue: true, visibleValue: true, iconSizeValue: 16)
   inc nextId
   widgets[result.id] = result
 
@@ -189,6 +227,58 @@ proc `expanded=`*(w: Widget, on: bool) =
   w.expandValue = on
   w.changed
 
+proc visible*(w: Widget): bool = w.visibleValue
+proc `visible=`*(w: Widget, on: bool) =
+  if on == w.visibleValue: return
+  w.visibleValue = on
+  w.changed
+
+proc tooltip*(w: Widget): string = w.tooltipValue
+proc `tooltip=`*(w: Widget, s: string) =
+  if s == w.tooltipValue: return
+  w.tooltipValue = s
+  w.changed
+
+proc classes*(w: Widget): seq[string] = w.classesValue
+proc hasClass*(w: Widget, name: string): bool = name in w.classesValue
+
+proc addClass*(w: Widget, name: string): Widget {.discardable.} =
+  ## Style names the backends know: "heading" (larger, bold), "bold", "dim" (secondary text), "small", "mono",
+  ## "error", "flat" (a button without a frame), "suggested" and "destructive" (a button's emphasis), "selected"
+  ## (an item shown as the current one), "card" (a framed box). Others are passed on where the platform can use
+  ## them (GTK style classes, web CSS classes). Returns `w`.
+  if name notin w.classesValue:
+    w.classesValue.add name
+    w.changed
+  w
+
+proc removeClass*(w: Widget, name: string) =
+  let i = w.classesValue.find(name)
+  if i >= 0:
+    w.classesValue.delete i
+    w.changed
+
+proc setClass*(w: Widget, name: string, on: bool) =
+  if on: discard w.addClass(name) else: w.removeClass(name)
+
+proc iconName*(w: Widget): string = w.iconValue
+proc `iconName=`*(w: Widget, name: string) =
+  if name == w.iconValue: return
+  w.iconValue = name
+  w.changed
+
+proc iconSize*(w: Widget): int = w.iconSizeValue
+proc `iconSize=`*(w: Widget, px: int) =
+  if px == w.iconSizeValue: return
+  w.iconSizeValue = px
+  w.changed
+
+proc password*(w: Widget): bool = w.passwordValue
+proc `password=`*(w: Widget, on: bool) =
+  if on == w.passwordValue: return
+  w.passwordValue = on
+  w.changed
+
 proc sized*(w: Widget, minWidth = 0, minHeight = 0): Widget =
   ## Gives `w` at least this size (logical pixels; 0 keeps its natural size along that side), e.g. so labels in
   ## different rows line up. Returns it, for use inside column(...)/row(...).
@@ -206,7 +296,7 @@ proc expand*(w: Widget): Widget =
 # The tree
 
 proc add*(parent, child: Widget) =
-  assert parent.kind in {wkColumn, wkRow, wkScroll}
+  assert parent.kind in {wkColumn, wkRow, wkScroll, wkItem}
   assert child.parent == nil
   child.parent = parent
   parent.children.add child
@@ -226,6 +316,22 @@ proc remove*(parent, child: Widget) =
 
 proc clear*(parent: Widget) =
   while parent.children.len > 0: parent.remove(parent.children[^1])
+
+proc insert*(parent, child: Widget, index: int) =
+  ## Adds `child` at `index` among `parent`'s children (moving it there if it's already one of them).
+  if child.parent == parent:
+    let i = parent.children.find(child)
+    let j = index.clamp(0, parent.children.high)
+    if i == j: return
+    parent.children.delete i
+    parent.children.insert(child, j)
+    if parent.realized and backend.moved != nil: backend.moved(parent, child, j)
+    return
+  assert child.parent == nil
+  child.parent = parent
+  let j = index.clamp(0, parent.children.len)
+  parent.children.insert(child, j)
+  if parent.realized and backend.added != nil: backend.added(parent, child, j)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Constructors
@@ -306,6 +412,117 @@ proc progress*(fraction = 0.0): Widget =
   ## A horizontal bar filled to `fraction` (0..1), set through `value`: a level meter or a progress bar.
   result = newWidget(wkProgress)
   result.valueValue = fraction
+
+proc icon*(name: string, size = 16): Widget =
+  ## A glyph from the app's icons (`registerIcons`), `size` logical pixels square, in the text colour.
+  result = newWidget(wkIcon)
+  result.iconValue = name
+  result.iconSizeValue = size
+
+proc iconButton*(name: string, tooltip = "", onClick: proc () = nil, size = 18): Widget =
+  ## A frameless button showing only an icon.
+  result = button("", onClick)
+  result.iconValue = name
+  result.iconSizeValue = size
+  result.tooltipValue = tooltip
+  result.classesValue.add "flat"
+
+proc item*(children: varargs[Widget], onClick: proc () = nil): Widget =
+  ## A clickable row (a list entry, a tab): its children side by side, the whole row one button. `onContext` and
+  ## `onMiddle` take right/long-press and middle clicks.
+  result = newWidget(wkItem)
+  result.spacing = 8
+  result.onClick = onClick
+  for c in children: result.add c
+
+proc separator*(): Widget =
+  ## A thin line across a column (or down a row).
+  newWidget(wkSeparator)
+
+proc spacer*(): Widget =
+  ## Empty room that takes a row's or column's spare space, pushing what follows to the end.
+  result = newWidget(wkColumn)
+  result.spacing = 0
+  result.expandValue = true
+
+# ---------------------------------------------------------------------------------------------------------------
+# Icons
+
+var
+  iconPaths*: Table[string, string]  ## name -> SVG path of absolute M, L, H, V, C and Z commands
+  iconEm* = 512                      ## the paths' square: 0..iconEm, y pointing down
+
+proc registerIcons*(paths: openArray[(string, string)], em: int) =
+  ## The glyphs `icon(name)` and widgets' `iconName` draw (e.g. Material Icons outlines). All share one em square.
+  iconEm = em
+  for (name, path) in paths: iconPaths[name] = path
+
+# ---------------------------------------------------------------------------------------------------------------
+# Menus and dialogs
+
+proc menuItem*(label: string, action: proc (), enabled = true, shortcut = ""): MenuItem =
+  MenuItem(label: label, action: action, enabled: enabled, checked: -1, shortcut: shortcut)
+
+proc checkItem*(label: string, checked: bool, action: proc (), enabled = true): MenuItem =
+  MenuItem(label: label, action: action, enabled: enabled, checked: ord(checked))
+
+proc submenu*(label: string, items: seq[MenuItem]): MenuItem =
+  MenuItem(label: label, enabled: true, checked: -1, submenu: items)
+
+proc menuSeparator*(): MenuItem = MenuItem(separator: true, checked: -1)
+
+proc popupMenu*(items: seq[MenuItem], anchor: Widget = nil, x = -1.0, y = -1.0) =
+  ## Shows a pop-up menu: under `anchor` if given (at `x`, `y` in its pixels if those are >= 0, e.g. a canvas's
+  ## right-click), else at the pointer. The chosen item's action runs after the menu closes.
+  if backend.popup != nil: backend.popup(items, anchor, x, y)
+
+proc showDialog*(d: Dialog) =
+  if backend.showDialog != nil and not d.shown:
+    d.shown = true
+    backend.showDialog(d)
+
+proc closeDialog*(d: Dialog) =
+  ## Closes it without calling onResult.
+  if d.shown:
+    d.shown = false
+    if backend.closeDialog != nil: backend.closeDialog(d)
+
+proc dialogResult*(d: Dialog, index: int) =
+  ## For backends: the user pressed button `index` (-1: dismissed).
+  if not d.shown: return
+  d.shown = false
+  if backend.closeDialog != nil: backend.closeDialog(d)
+  if d.onResult != nil: d.onResult(index)
+
+proc dialog*(title: string, content: Widget, buttons: seq[string], onResult: proc (index: int) = nil,
+             destructive = -1): Dialog =
+  ## Shows a modal dialog and returns it. onResult gets the pressed button's index, or -1 if dismissed.
+  result = Dialog(title: title, content: content, buttons: buttons, onResult: onResult, destructive: destructive)
+  showDialog(result)
+
+proc alert*(title: string, text = "", onDone: proc () = nil) =
+  discard dialog(title, column(label(text)), @["OK"], proc (i: int) = (if onDone != nil: onDone()))
+
+proc confirm*(title: string, text = "", ok = "OK", onResult: proc (ok: bool), destructive = false) =
+  ## Cancel / `ok`; onResult(true) only for `ok`.
+  discard dialog(title, column(label(text)), @["Cancel", ok], proc (i: int) = onResult(i == 1),
+    if destructive: 1 else: -1)
+
+proc focus*(w: Widget)
+
+proc prompt*(title: string, text = "", initial = "", onResult: proc (ok: bool, value: string),
+             password = false, ok = "OK") =
+  ## Asks for a line of text. Enter in the field answers `ok`.
+  let field = entry(text = initial)
+  field.password = password
+  var d: Dialog
+  field.onSubmit = proc (s: string) = d.dialogResult(1)
+  let content = if text.len > 0: column(label(text), field) else: column(field)
+  d = dialog(title, content, @["Cancel", ok], proc (i: int) = onResult(i == 1, field.text))
+  field.focus()
+
+proc selectAll*(w: Widget) =
+  if w.realized and backend.selectAll != nil: backend.selectAll(w)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Canvas pixels

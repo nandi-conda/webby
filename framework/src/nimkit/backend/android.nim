@@ -39,6 +39,19 @@ const   # Host.java's ops
   opSelected = 18
   opRange = 19
   opValue = 20
+  opVisible = 21
+  opTooltip = 22
+  opClasses = 23
+  opIcon = 24        # arg: size; text: the glyph's path data, then a space and the em size first ("512 M...")
+  opPassword = 25
+  opFocus = 26
+  opSelectAll = 27
+  opMove = 28        # arg: child; text: index
+  opMenu = 29        # id: anchor (0: none); text: JSON {x, y, items: [{id, label, enabled, checked, shortcut,
+                     # separator, submenu}]}
+  opDialog = 30      # id: the dialog's number; text: JSON {title, buttons, destructive, content}
+  opCloseDialog = 31
+  opKeyHandled = 32  # answers ENTRY_KEY while Host waits: the app used the key, so the field doesn't get it
 
 proc op(o: int, id = 0, arg = 0, text = "") = nk_op(o.cint, id.cint, arg.cint, text.cstring)
 
@@ -55,12 +68,17 @@ proc sync(w: Widget) =
   of wkColumn, wkRow:
     op(opSpacing, w.id, w.spacing)
     op(opPadding, w.id, w.padding)
+  of wkItem:
+    op(opSpacing, w.id, w.spacing)
+    op(opPadding, w.id, w.padding)
   of wkLabel, wkButton, wkCheck, wkToggle:
     op(opText, w.id, text = w.text)
     if w.kind in {wkCheck, wkToggle}: op(opChecked, w.id, ord(w.checked))
   of wkEntry:
     op(opText, w.id, text = w.text)
     op(opPlaceholder, w.id, text = w.placeholder)
+    op(opPassword, w.id, ord(w.password))
+  of wkIcon, wkSeparator: discard
   of wkCanvas: discard
   of wkSlider:
     op(opRange, w.id, text = $w.rangeMin & " " & $w.rangeMax & " " & $w.step)
@@ -70,9 +88,14 @@ proc sync(w: Widget) =
     op(opSelected, w.id, w.selected)
   of wkProgress: op(opValue, w.id, text = $w.value.clamp(0.0, 1.0))
   of wkScroll: discard
+  if w.kind in {wkIcon, wkButton, wkToggle, wkItem}:
+    op(opIcon, w.id, w.iconSize, if w.iconName.len > 0: $iconEm & " " & iconPaths.getOrDefault(w.iconName) else: "")
   op(opMinSize, w.id, w.minWidth, $w.minHeight)
   op(opEnabled, w.id, ord(w.enabled))
   op(opExpand, w.id, ord(w.expanded))
+  op(opVisible, w.id, ord(w.visible))
+  op(opTooltip, w.id, text = w.tooltip)
+  op(opClasses, w.id, text = w.classes.join(" "))
 
 proc realize(w: Widget) =
   op(opCreate, w.id, ord(w.kind))
@@ -97,6 +120,51 @@ backend.removed = proc (parent, child: Widget) =
 backend.present = proc (c: Canvas) =
   if attached.getOrDefault(c.id) and c.pixels.len > 0:
     nk_blit(c.id.cint, addr c.pixels[0], c.width.cint, c.height.cint)
+backend.moved = proc (parent, child: Widget, index: int) = op(opMove, parent.id, child.id, $index)
+backend.focus = proc (w: Widget) = op(opFocus, w.id)
+backend.selectAll = proc (w: Widget) = op(opSelectAll, w.id)
+
+var
+  menuActions: Table[int, proc ()]   # the open menu's items by number
+  dialogs: Table[int, Dialog]        # showing, by number
+  nextMenuItem = 1
+  nextDialog = 1
+
+proc menuJson(items: seq[MenuItem]): JsonNode =
+  result = newJArray()
+  for it in items:
+    let n = nextMenuItem
+    inc nextMenuItem
+    if it.action != nil: menuActions[n] = it.action
+    var j = %*{"id": n, "label": it.label, "enabled": it.enabled, "checked": it.checked, "shortcut": it.shortcut,
+               "separator": it.separator}
+    if it.submenu.len > 0: j["submenu"] = menuJson(it.submenu)
+    result.add j
+
+backend.popup = proc (items: seq[MenuItem], anchor: Widget, x, y: float) =
+  menuActions.clear()
+  let j = %*{"x": x, "y": y, "items": menuJson(items)}
+  op(opMenu, if anchor != nil and anchor.realized: anchor.id else: 0, text = $j)
+
+backend.showDialog = proc (d: Dialog) =
+  let n = nextDialog
+  inc nextDialog
+  dialogs[n] = d
+  d.native = cast[pointer](n)
+  var content = 0
+  if d.content != nil:
+    d.content.realize()
+    content = d.content.id
+  op(opDialog, n, text = $(%*{"title": d.title, "buttons": d.buttons, "destructive": d.destructive,
+                               "content": content}))
+
+backend.closeDialog = proc (d: Dialog) =
+  let n = cast[int](d.native)
+  if n notin dialogs: return
+  dialogs.del n
+  op(opCloseDialog, n)
+  if d.content != nil and d.content.realized: d.content.unrealize()
+
 backend.setTitle = proc (t: string) =
   title = t
   op(opTitle, text = t)
@@ -114,6 +182,12 @@ const   # Native.java's event kinds
   evHttpDone = 8
   evValue = 9
   evSelect = 10
+  evContext = 11       # a long press on an item
+  evMenuAction = 12    # id: the menu item's number (0: the menu closed with nothing chosen)
+  evDialogResult = 13  # id: the dialog's number; x: the button's index, -1 if dismissed
+  evEntryKey = 14      # x: the Windows key code; y: modifiers; pointer: the character's code point, 0 for none
+  evFocus = 15         # x: 1 focused, 0 not
+  evMiddle = 16
 
 var httpPending: Table[int, proc (r: Response)]
 
@@ -137,6 +211,15 @@ proc nk_event(id, kind: cint, text: cstring, x, y: cfloat, pointer: cint) {.expo
   if kind == evHttpDone:
     httpDone(id, $text)
     return
+  if kind == evMenuAction:
+    let action = menuActions.getOrDefault(id)
+    menuActions.clear()
+    if action != nil: action()
+    return
+  if kind == evDialogResult:
+    let d = dialogs.getOrDefault(id)
+    if d != nil: d.dialogResult(int(x))
+    return
   let w = widgets.getOrDefault(id)
   if w == nil: return
   case kind
@@ -156,6 +239,20 @@ proc nk_event(id, kind: cint, text: cstring, x, y: cfloat, pointer: cint) {.expo
   of evSelect:
     w.setSelectedSilently(int(x))
     if w.onSelect != nil: w.onSelect(w.selected)
+  of evContext:
+    if w.onContext != nil: w.onContext()
+  of evMiddle:
+    if w.onMiddle != nil: w.onMiddle()
+  of evEntryKey:
+    var handled = false
+    let e = KeyEvent(down: true, code: int(x), text: uint32(max(pointer, 0)), mods: int(y))
+    if onWindowKey != nil: handled = onWindowKey(e)
+    if not handled and w.onEntryKey != nil: handled = w.onEntryKey(e)
+    if handled: op(opKeyHandled, w.id)
+  of evFocus:
+    if w.kind == wkCanvas:
+      if w.onFocus != nil: w.onFocus(w, x != 0)
+    elif w.onFocusChange != nil: w.onFocusChange(x != 0)
   of evPointerDown .. evPointerDown + 3:
     if w.onPointer != nil:
       w.onPointer(w, PointerEvent(kind: PointerKind(kind - evPointerDown), x: x, y: y, pointer: pointer))

@@ -1,7 +1,7 @@
 ## The web backend (`nim js`): each widget is a DOM element laid out with flexbox, canvases are <canvas> elements
 ## (the pixel buffer is copied into an ImageData), timers are setTimeout, storage is localStorage, HTTP is fetch().
 
-import std/[jsffi, tables]
+import std/[jsffi, strutils, tables, unicode]
 import ../[core, services]
 
 var
@@ -41,12 +41,62 @@ button, input { font: inherit; } input[type=text] { padding: 6px 8px; min-width:
 select { font: inherit; min-width: 0; padding: 4px 6px; }
 progress { width: 100%; height: 6px; }
 .nk-toggle[aria-pressed=true] { background: #c9daf2; border-color: #6b8fc4; }
+.nk-hidden { display: none !important; }
+.nk-icon { display: inline-block; flex: none; fill: currentColor; vertical-align: middle; }
+button > .nk-icon + span:not(:empty) { margin-left: 6px; }
+.nk-item { display: flex; align-items: center; cursor: pointer; padding: 4px 8px; border-radius: 6px; user-select: none; }
+.nk-item:hover { background: rgba(127,127,127,0.12); }
+.nk-selected { background: rgba(80,130,220,0.2); }
+.nk-separator { flex: none; align-self: stretch; background: rgba(127,127,127,0.3); min-height: 1px; min-width: 1px; }
+.nk-flat { background: none; border: none; padding: 4px; border-radius: 6px; color: inherit; }
+.nk-flat:hover { background: rgba(127,127,127,0.15); }
+.nk-heading { font-weight: bold; font-size: 1.2em; } .nk-bold { font-weight: bold; } .nk-dim { opacity: 0.65; }
+.nk-small { font-size: 0.85em; } .nk-mono { font-family: monospace; } .nk-error { color: #c01c28; }
+.nk-suggested { background: #3584e4; color: white; border: none; border-radius: 4px; padding: 5px 12px; }
+.nk-destructive { background: #e01b24; color: white; border: none; border-radius: 4px; padding: 5px 12px; }
+.nk-card { border: 1px solid rgba(127,127,127,0.25); border-radius: 6px; padding: 8px; }
+.nk-menu { position: fixed; z-index: 10; background: #fff; color: #222; border: 1px solid rgba(0,0,0,0.15);
+  border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.2); padding: 4px 0; min-width: 160px; }
+@media (prefers-color-scheme: dark) { .nk-menu { background: #2a2a2c; color: #eee; } }
+.nk-menu > div { display: flex; gap: 24px; padding: 5px 14px; cursor: default; white-space: nowrap; }
+.nk-menu > div:hover { background: rgba(80,130,220,0.25); }
+.nk-menu > div.nk-off { opacity: 0.45; pointer-events: none; }
+.nk-menu > div > span:first-child { flex: 1; } .nk-menu > div > span + span { opacity: 0.6; }
+.nk-menu > hr { border: none; border-top: 1px solid rgba(127,127,127,0.3); margin: 4px 0; }
+dialog.nk-dialog { border: none; border-radius: 10px; padding: 16px; min-width: 280px; color: inherit;
+  background: #f6f5f2; } @media (prefers-color-scheme: dark) { dialog.nk-dialog { background: #2a2a2c; } }
+dialog.nk-dialog h3 { margin: 0 0 12px; font-size: 1.1em; }
+dialog.nk-dialog .nk-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 @media (prefers-color-scheme: dark) { .nk-toggle[aria-pressed=true] { background: #2c4a73; } }
 """
 
 proc el(tag: string, class = ""): JsObject =
   result = document.createElement(tag.cstring)
   if class.len > 0: result.className = class.cstring
+
+proc svgIcon(name: string, size: int): JsObject =
+  ## An inline <svg> of the icon `name` in the text colour.
+  let ns = "http://www.w3.org/2000/svg".cstring
+  result = document.createElementNS(ns, "svg".cstring)
+  result.setAttribute("class", "nk-icon".cstring)
+  result.setAttribute("width", cstring($size))
+  result.setAttribute("height", cstring($size))
+  result.setAttribute("viewBox", cstring("0 0 " & $iconEm & " " & $iconEm))
+  let path = document.createElementNS(ns, "path".cstring)
+  path.setAttribute("d", iconPaths.getOrDefault(name).cstring)
+  result.appendChild(path)
+
+
+proc keyEvent(ev: JsObject): KeyEvent =
+  var mods = 0
+  if ev.altKey.to(bool): mods = mods or modAlt
+  if ev.ctrlKey.to(bool): mods = mods or modCtrl
+  if ev.shiftKey.to(bool): mods = mods or modShift
+  if ev.metaKey.to(bool): mods = mods or modSuper
+  let key = $ev.key.to(cstring)
+  var text = 0'u32
+  if key.len > 0 and key.len <= 4 and key.runeLen == 1: text = uint32(key.runeAt(0))
+  KeyEvent(down: true, code: ev["keyCode"].to(int), text: text, mods: mods)   # keyCode: Windows VK codes
 
 # ---------------------------------------------------------------------------------------------------------------
 # Canvases
@@ -90,13 +140,29 @@ proc sync(w: Widget) =
   of wkColumn, wkRow:
     e.style.gap = cstring($w.spacing & "px")
     e.style.padding = cstring($w.padding & "px")
-  of wkLabel, wkButton: e.textContent = w.text.cstring
+  of wkLabel: e.textContent = w.text.cstring
+  of wkButton:
+    e.textContent = "".cstring
+    if w.iconName.len > 0: e.appendChild(svgIcon(w.iconName, w.iconSize))
+    let t = el("span")
+    t.textContent = w.text.cstring
+    e.appendChild(t)
+  of wkIcon:
+    let fresh = svgIcon(w.iconName, w.iconSize)
+    e.setAttribute("width", fresh.getAttribute("width"))
+    e.setAttribute("height", fresh.getAttribute("height"))
+    e.firstChild.setAttribute("d", iconPaths.getOrDefault(w.iconName).cstring)
+  of wkItem:
+    e.style.gap = cstring($w.spacing & "px")
+    if w.padding > 0: e.style.padding = cstring($w.padding & "px")
+  of wkSeparator: discard
   of wkToggle:
     e.textContent = w.text.cstring
     e.setAttribute("aria-pressed", cstring(if w.checked: "true" else: "false"))
   of wkEntry:
     if $e.value.to(cstring) != w.text: e.value = w.text.cstring
     e.placeholder = w.placeholder.cstring
+    e.`type` = cstring(if w.password: "password" else: "text")
   of wkCheck:
     e.lastChild.textContent = w.text.cstring
     inputs[w.id].checked = w.checked
@@ -133,6 +199,13 @@ proc sync(w: Widget) =
   e.style.minWidth = cstring(if w.minWidth > 0: $w.minWidth & "px" else: "")
   e.style.minHeight = cstring(if w.minHeight > 0: $w.minHeight & "px" else: "")
   e.classList.toggle("nk-expand".cstring, w.expanded)
+  e.classList.toggle("nk-hidden".cstring, not w.visible)
+  if w.tooltip.len > 0: e.title = w.tooltip.cstring else: e.removeAttribute("title")
+  let shown = if e.dataset.nk.isUndefined: "" else: $e.dataset.nk.to(cstring)
+  for c in shown.split(' '):
+    if c.len > 0 and c notin w.classes: e.classList.remove(cstring("nk-" & c))
+  for c in w.classes: e.classList.add(cstring("nk-" & c))
+  e.dataset.nk = w.classes.join(" ").cstring
 
 proc realize(w: Widget): JsObject =
   let e = case w.kind
@@ -152,8 +225,29 @@ proc realize(w: Widget): JsObject =
         w.setTextSilently($i.value.to(cstring))
         if w.onChange != nil: w.onChange(w.text))
       i.addEventListener("keydown", proc (ev: JsObject) =
+        if w.onEntryKey != nil and w.onEntryKey(keyEvent(ev)):
+          ev.preventDefault()
+          ev.stopPropagation()
+          return
         if ev.key.to(cstring) == "Enter" and w.onSubmit != nil: w.onSubmit(w.text))
+      i.addEventListener("focus", proc () = (if w.onFocusChange != nil: w.onFocusChange(true)))
+      i.addEventListener("blur", proc () = (if w.onFocusChange != nil: w.onFocusChange(false)))
       i
+    of wkIcon: svgIcon(w.iconName, w.iconSize)
+    of wkItem:
+      let d = el("div", "nk-item")
+      d.setAttribute("role", "button")
+      d.addEventListener("click", proc () = (if w.onClick != nil: w.onClick()))
+      d.addEventListener("contextmenu", proc (ev: JsObject) =
+        if w.onContext != nil:
+          ev.preventDefault()
+          w.onContext())
+      d.addEventListener("auxclick", proc (ev: JsObject) =
+        if ev.button.to(int) == 1 and w.onMiddle != nil:
+          ev.preventDefault()
+          w.onMiddle())
+      d
+    of wkSeparator: el("div", "nk-separator")
     of wkCheck:
       let l = el("label")
       let i = el("input")
@@ -233,9 +327,108 @@ backend.added = proc (parent, child: Widget, index: int) =
 backend.removed = proc (parent, child: Widget) =
   elems[parent.id].removeChild(elems[child.id])
   child.unrealize()
+backend.moved = proc (parent, child: Widget, index: int) =
+  let e = elems[parent.id]
+  if index + 1 < parent.children.len: e.insertBefore(elems[child.id], elems[parent.children[index + 1].id])
+  else: e.appendChild(elems[child.id])
+backend.focus = proc (w: Widget) = discard elems[w.id].focus()
+backend.selectAll = proc (w: Widget) =
+  if w.kind == wkEntry: discard elems[w.id].select()
 backend.present = paint
 backend.setTitle = proc (title: string) = document.title = title.cstring
 backend.quit = proc () = window.close()
+
+# ---------------------------------------------------------------------------------------------------------------
+# Menus and dialogs
+
+var openMenu: JsObject
+var lastPointer: tuple[x, y: float]   # where the last pointer press was (a menu without an anchor opens there)
+
+proc closeMenu() =
+  if openMenu != nil and not openMenu.isNull:
+    discard openMenu.remove()
+  openMenu = nil
+
+proc showMenu(items: seq[MenuItem], x, y: float)
+
+proc menuRow(it: MenuItem): JsObject =
+  # One proc call per item, so each row's listener keeps its own item (closures in a loop share variables).
+  if it.separator: return el("hr")
+  let row = el("div")
+  let l = el("span")
+  l.textContent = cstring((if it.checked == 1: "✓ " elif it.checked == 0: "   " else: "") & it.label &
+                          (if it.submenu.len > 0: " ▸" else: ""))
+  row.appendChild(l)
+  if it.shortcut.len > 0:
+    let k = el("span")
+    k.textContent = it.shortcut.cstring
+    row.appendChild(k)
+  if not it.enabled: row.classList.add("nk-off".cstring)
+  row.addEventListener("click", proc (ev: JsObject) =
+    ev.stopPropagation()
+    if it.submenu.len > 0:
+      let r = row.getBoundingClientRect()
+      showMenu(it.submenu, r.right.to(float), r.top.to(float))
+      return
+    closeMenu()
+    if it.action != nil: discard window.setTimeout(it.action, 0))
+  row
+
+proc showMenu(items: seq[MenuItem], x, y: float) =
+  closeMenu()
+  let m = el("div", "nk-menu")
+  for it in items: m.appendChild(menuRow(it))
+  m.style.left = cstring($x & "px")
+  m.style.top = cstring($y & "px")
+  document.body.appendChild(m)
+  openMenu = m
+
+backend.popup = proc (items: seq[MenuItem], anchor: Widget, x, y: float) =
+  var px, py: float
+  if anchor != nil and anchor.realized:
+    let r = elems[anchor.id].getBoundingClientRect()
+    if x >= 0 and y >= 0: (px, py) = (r.left.to(float) + x, r.top.to(float) + y)
+    else: (px, py) = (r.left.to(float), r.bottom.to(float))
+  else:
+    (px, py) = (lastPointer.x, lastPointer.y)
+  # Opened from a click: let that click finish before the document's "close on click" listener sees clicks.
+  discard window.setTimeout(proc () = showMenu(items, px, py), 0)
+
+var dialogEls: seq[(Dialog, JsObject)]
+
+proc dialogButton(d: Dialog, i: int): JsObject =
+  result = el("button")
+  result.textContent = d.buttons[i].cstring
+  if i == d.destructive: result.classList.add("nk-destructive".cstring)
+  elif i == d.buttons.high and d.buttons.len > 1: result.classList.add("nk-suggested".cstring)
+  result.addEventListener("click", proc () = d.dialogResult(i))
+
+backend.showDialog = proc (d: Dialog) =
+  let dl = el("dialog", "nk-dialog")
+  let h = el("h3")
+  h.textContent = d.title.cstring
+  dl.appendChild(h)
+  if d.content != nil: dl.appendChild(d.content.realize())
+  let bs = el("div", "nk-buttons")
+  for i in 0 ..< d.buttons.len: bs.appendChild(dialogButton(d, i))
+  dl.appendChild(bs)
+  dl.addEventListener("cancel", proc (ev: JsObject) =
+    ev.preventDefault()
+    d.dialogResult(-1))
+  document.body.appendChild(dl)
+  dialogEls.add (d, dl)
+  discard dl.showModal()
+
+backend.closeDialog = proc (d: Dialog) =
+  var dl: JsObject
+  for i in countdown(dialogEls.high, 0):
+    if dialogEls[i][0] == d:
+      dl = dialogEls[i][1]
+      dialogEls.delete i
+  if dl == nil: return
+  if d.content != nil and d.content.realized: d.content.unrealize()
+  discard dl.close()
+  discard dl.remove()
 
 # ---------------------------------------------------------------------------------------------------------------
 # Services
@@ -283,3 +476,9 @@ proc run*(title: string, root: Widget, width = 480, height = 640) =
   let e = root.realize()
   e.classList.add("nk-root".cstring)
   document.body.appendChild(e)
+  document.addEventListener("click", proc () = closeMenu())
+  document.addEventListener("pointerdown", proc (ev: JsObject) =
+    lastPointer = (ev.clientX.to(float), ev.clientY.to(float)), true)
+  document.addEventListener("keydown", proc (ev: JsObject) =
+    if ev.key.to(cstring) == "Escape" and openMenu != nil: closeMenu()
+    if onWindowKey != nil and onWindowKey(keyEvent(ev)): ev.preventDefault())

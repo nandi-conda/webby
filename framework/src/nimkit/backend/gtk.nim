@@ -3,7 +3,7 @@
 ## files in $XDG_DATA_HOME/<appName>/, HTTP is GIO (gio_http.nim).
 
 import std/[os, strutils, tables]
-import ../[core, services]
+import ../[core, glyphs, services]
 import gtkapi, gio_http
 
 var
@@ -11,6 +11,9 @@ var
   syncing = false          # true while we set a native widget's state, so its signal isn't taken as the user's
   shownMarks: Table[int, seq[(float, string)]]   # slider id -> the marks its GtkScale has
   shownItems: Table[int, seq[string]]            # dropdown id -> the choices its GtkComboBoxText has
+  shownClasses: Table[int, seq[string]]          # widget id -> the style classes its GtkWidget has
+  shownIcons: Table[int, (string, int)]          # button/toggle/item id -> the icon its image shows
+  inner: Table[int, GtkWidget]                   # item id -> the box inside its GtkButton
 
 proc byId(data: pointer): Widget = widgets.getOrDefault(cast[int](data))
 
@@ -48,6 +51,62 @@ proc onComboChanged(c: GtkWidget, data: pointer) {.cdecl.} =
   if w == nil or syncing: return
   w.setSelectedSilently(gtk_combo_box_get_active(c).int)
   if w.onSelect != nil and w.selected >= 0: w.onSelect(w.selected)
+
+proc onItemPress(b: GtkWidget, ev: pointer, data: pointer): gboolean {.cdecl.} =
+  let w = byId(data)
+  if w == nil or gdk_event_get_event_type(ev) != GDK_BUTTON_PRESS: return 0
+  var button: cuint
+  discard gdk_event_get_button(ev, addr button)
+  if button == 3 and w.onContext != nil: w.onContext(); return 1
+  if button == 2 and w.onMiddle != nil: w.onMiddle(); return 1
+  0
+
+proc onEntryFocus(e: GtkWidget, ev: pointer, data: pointer, focused: bool): gboolean =
+  let w = byId(data)
+  if w != nil and w.onFocusChange != nil: w.onFocusChange(focused)
+  0
+
+proc onEntryFocusIn(e: GtkWidget, ev: pointer, data: pointer): gboolean {.cdecl.} = onEntryFocus(e, ev, data, true)
+proc onEntryFocusOut(e: GtkWidget, ev: pointer, data: pointer): gboolean {.cdecl.} = onEntryFocus(e, ev, data, false)
+
+proc keyEvent(ev: pointer, down: bool): KeyEvent
+
+proc onEntryKey(e: GtkWidget, ev: pointer, data: pointer): gboolean {.cdecl.} =
+  let w = byId(data)
+  if w == nil or w.onEntryKey == nil: return 0
+  w.onEntryKey(keyEvent(ev, true)).gboolean
+
+proc onIconDraw(area: GtkWidget, cr: pointer, data: pointer): gboolean {.cdecl.} =
+  # The glyph in the widget's text colour (the button's, inside a button), centred, like a symbolic icon.
+  let w = byId(data)
+  if w == nil: return 0
+  let g = glyph(w.iconName)
+  if g == nil: return 0
+  let size = w.iconSize.float
+  let ctx = gtk_widget_get_style_context(area)
+  var c: GdkRGBA
+  gtk_style_context_get_color(ctx, gtk_style_context_get_state(ctx), addr c)
+  cairo_save(cr)
+  cairo_translate(cr, ((gtk_widget_get_allocated_width(area).float - size) / 2).int.float,
+    ((gtk_widget_get_allocated_height(area).float - size) / 2).int.float)
+  cairo_scale(cr, size / iconEm.float, size / iconEm.float)
+  cairo_new_path(cr)
+  for (op, p) in g.ops:
+    case op
+    of goMove: cairo_move_to(cr, p[0], p[1])
+    of goLine: cairo_line_to(cr, p[0], p[1])
+    of goCurve: cairo_curve_to(cr, p[0], p[1], p[2], p[3], p[4], p[5])
+    of goClose: cairo_close_path(cr)
+  cairo_set_source_rgba(cr, c.r, c.g, c.b, c.a)
+  cairo_fill(cr)
+  cairo_restore(cr)
+  1
+
+proc glyphArea(w: Widget): GtkWidget =
+  ## A drawing area showing `w`'s icon (an icon widget's own, or the image of a button with an icon).
+  result = gtk_drawing_area_new()
+  gtk_widget_set_size_request(result, w.iconSize.cint, w.iconSize.cint)
+  connect(result, "draw", onIconDraw, cast[pointer](w.id))
 
 proc escapeMarkup(s: string): string =
   for ch in s:
@@ -191,6 +250,15 @@ proc keyCode(keyval: cuint): int =
   if k < 0x80 and k.char in punctuation: return punctuation[k.char]
   0
 
+proc keyEvent(ev: pointer, down: bool): KeyEvent =
+  var keyval: cuint
+  discard gdk_event_get_keyval(ev, addr keyval)
+  var state: uint32
+  discard gdk_event_get_state(ev, addr state)
+  var text = gdk_keyval_to_unicode(keyval)
+  if text < 0x20 or text == 0x7f: text = 0
+  KeyEvent(down: down, code: keyCode(keyval), text: text, mods: mods(state), keyval: keyval)
+
 proc onKey(a: GtkWidget, ev: pointer, data: pointer, down: bool): gboolean =
   let c = byId(data)
   if c == nil or c.onKey == nil: return 0
@@ -221,6 +289,58 @@ proc applyExpand(w: Widget) =
   gtk_widget_set_hexpand(w.native, (w.expanded and along == GTK_ORIENTATION_HORIZONTAL).gboolean)
   gtk_widget_set_vexpand(w.native, (w.expanded and along == GTK_ORIENTATION_VERTICAL).gboolean)
 
+const classCss = """
+.nk-heading { font-weight: bold; font-size: 1.2em; }
+.nk-bold { font-weight: bold; }
+.nk-dim { opacity: 0.65; }
+.nk-small { font-size: 0.85em; }
+.nk-mono { font-family: monospace; }
+.nk-error { color: #c01c28; }
+.nk-selected { background-color: alpha(@theme_selected_bg_color, 0.25); }
+.nk-card { border: 1px solid alpha(currentColor, 0.15); border-radius: 6px; padding: 8px; }
+button.nk-item { padding: 2px 6px; }
+"""
+
+var cssLoaded = false
+
+proc syncClasses(w: Widget) =
+  if not cssLoaded:
+    cssLoaded = true
+    let p = gtk_css_provider_new()
+    discard gtk_css_provider_load_from_data(p, classCss.cstring, classCss.len, nil)
+    gtk_style_context_add_provider_for_screen(gdk_screen_get_default(), p, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION)
+  let want = w.classes
+  let have = shownClasses.getOrDefault(w.id)
+  if want == have: return
+  let ctx = gtk_widget_get_style_context(w.native)
+  proc gtkNames(name: string): seq[string] =
+    case name
+    of "suggested": @["suggested-action"]
+    of "destructive": @["destructive-action"]
+    of "flat": @["flat"]
+    else: @["nk-" & name, name]
+  for c in have:
+    if c notin want:
+      for n in gtkNames(c): gtk_style_context_remove_class(ctx, n.cstring)
+  for c in want:
+    if c notin have:
+      for n in gtkNames(c): gtk_style_context_add_class(ctx, n.cstring)
+  if w.kind in {wkButton, wkToggle, wkItem}:
+    gtk_button_set_relief(w.native, (if "flat" in want or w.kind == wkItem: GTK_RELIEF_NONE else: 0.cint))
+  shownClasses[w.id] = want
+
+proc syncButtonIcon(w: Widget) =
+  let want = (w.iconName, w.iconSize)
+  if shownIcons.getOrDefault(w.id) == want: return
+  shownIcons[w.id] = want
+  if w.iconName.len == 0:
+    gtk_button_set_image(w.native, nil)
+  else:
+    let a = glyphArea(w)
+    gtk_widget_show(a)
+    gtk_button_set_image(w.native, a)
+    gtk_button_set_always_show_image(w.native, 1)
+
 proc sync(w: Widget) =
   syncing = true
   defer: syncing = false
@@ -230,11 +350,22 @@ proc sync(w: Widget) =
     gtk_container_set_border_width(w.native, w.padding.cuint)
   of wkLabel: gtk_label_set_text(w.native, w.text.cstring)
   of wkButton, wkCheck, wkToggle:
-    gtk_button_set_label(w.native, w.text.cstring)
+    # A button with only an icon has no label at all (an empty label would still take room).
+    if w.text.len > 0 or w.iconName.len == 0: gtk_button_set_label(w.native, w.text.cstring)
+    elif gtk_bin_get_child(w.native) != nil and w.kind != wkCheck: gtk_button_set_label(w.native, nil)
+    if w.kind in {wkButton, wkToggle}: w.syncButtonIcon()
     if w.kind in {wkCheck, wkToggle}: gtk_toggle_button_set_active(w.native, w.checked.gboolean)
+  of wkItem:
+    gtk_box_set_spacing(inner[w.id], w.spacing.cint)
+    gtk_container_set_border_width(inner[w.id], w.padding.cuint)
+  of wkIcon:
+    gtk_widget_set_size_request(w.native, w.iconSize.cint, w.iconSize.cint)
+    gtk_widget_queue_draw(w.native)
+  of wkSeparator: discard
   of wkEntry:
     if $gtk_entry_get_text(w.native) != w.text: gtk_entry_set_text(w.native, w.text.cstring)
     gtk_entry_set_placeholder_text(w.native, w.placeholder.cstring)
+    gtk_entry_set_visibility(w.native, (not w.password).gboolean)
   of wkCanvas: discard
   of wkSlider:
     gtk_range_set_range(w.native, w.rangeMin, w.rangeMax)
@@ -252,9 +383,14 @@ proc sync(w: Widget) =
     if gtk_combo_box_get_active(w.native) != w.selected.cint: gtk_combo_box_set_active(w.native, w.selected.cint)
   of wkProgress: gtk_progress_bar_set_fraction(w.native, w.value.clamp(0.0, 1.0))
   of wkScroll: discard
-  gtk_widget_set_size_request(w.native, (if w.minWidth > 0: w.minWidth else: -1).cint,
-                              (if w.minHeight > 0: w.minHeight else: -1).cint)
+  if w.kind != wkIcon:
+    gtk_widget_set_size_request(w.native, (if w.minWidth > 0: w.minWidth else: -1).cint,
+                                (if w.minHeight > 0: w.minHeight else: -1).cint)
   gtk_widget_set_sensitive(w.native, w.enabled.gboolean)
+  gtk_widget_set_tooltip_text(w.native, (if w.tooltip.len > 0: w.tooltip.cstring else: nil))
+  gtk_widget_set_no_show_all(w.native, (not w.visible).gboolean)
+  gtk_widget_set_visible(w.native, w.visible.gboolean)
+  w.syncClasses()
   w.applyExpand()
 
 proc attach(parent, child: Widget)
@@ -281,7 +417,24 @@ proc realize(w: Widget) =
       let e = gtk_entry_new()
       connect(e, "changed", onChanged, data)
       connect(e, "activate", onActivate, data)
+      connect(e, "key-press-event", onEntryKey, data)
+      connect(e, "focus-in-event", onEntryFocusIn, data)
+      connect(e, "focus-out-event", onEntryFocusOut, data)
       e
+    of wkIcon: glyphArea(w)
+    of wkItem:
+      let b = gtk_button_new()
+      let box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)
+      gtk_container_add(b, box)
+      inner[w.id] = box
+      gtk_style_context_add_class(gtk_widget_get_style_context(b), "nk-item")
+      gtk_button_set_relief(b, GTK_RELIEF_NONE)
+      connect(b, "clicked", onClicked, data)
+      connect(b, "button-press-event", onItemPress, data)
+      b
+    of wkSeparator:
+      gtk_separator_new(if w.parent != nil and w.parent.kind in {wkRow, wkItem}: GTK_ORIENTATION_VERTICAL
+                        else: GTK_ORIENTATION_HORIZONTAL)
     of wkCheck:
       let b = gtk_check_button_new_with_label("")
       connect(b, "toggled", onToggled, data)
@@ -325,9 +478,11 @@ proc realize(w: Widget) =
     c.realize()
     attach(w, c)
 
+proc box(w: Widget): GtkWidget = (if w.kind == wkItem: inner[w.id] else: w.native)
+
 proc attach(parent, child: Widget) =
   if parent.kind == wkScroll: gtk_container_add(parent.native, child.native)
-  else: gtk_box_pack_start(parent.native, child.native, 0, 1, 0)
+  else: gtk_box_pack_start(parent.box, child.native, 0, 1, 0)
   child.applyExpand()
 
 proc unrealize(w: Widget) =
@@ -336,6 +491,9 @@ proc unrealize(w: Widget) =
   w.native = nil
   shownMarks.del w.id
   shownItems.del w.id
+  shownClasses.del w.id
+  shownIcons.del w.id
+  inner.del w.id
   w.realized = false
 
 proc gtkWidget*(w: Widget): GtkWidget =
@@ -349,18 +507,154 @@ backend.update = proc (w: Widget) = w.sync()
 backend.added = proc (parent, child: Widget, index: int) =
   child.realize()
   attach(parent, child)
-  if parent.kind != wkScroll: gtk_box_reorder_child(parent.native, child.native, index.cint)
+  if parent.kind != wkScroll: gtk_box_reorder_child(parent.box, child.native, index.cint)
   gtk_widget_show_all(child.native)
 
 backend.removed = proc (parent, child: Widget) =
-  gtk_container_remove(parent.native, child.native)
+  gtk_container_remove(parent.box, child.native)
   child.unrealize()
+
+backend.moved = proc (parent, child: Widget, index: int) =
+  if parent.kind != wkScroll: gtk_box_reorder_child(parent.box, child.native, index.cint)
+
+backend.selectAll = proc (w: Widget) =
+  if w.kind == wkEntry: gtk_editable_select_region(w.native, 0, -1)
 
 backend.present = proc (c: Canvas) = gtk_widget_queue_draw(c.native)
 backend.focus = proc (w: Widget) = gtk_widget_grab_focus(w.native)
 backend.setTitle = proc (title: string) =
   if window != nil: gtk_window_set_title(window, title.cstring)
 backend.quit = proc () = gtk_main_quit()
+
+# ---------------------------------------------------------------------------------------------------------------
+# Menus
+
+var menuActions: Table[int, proc ()]
+var nextAction = 1
+
+proc runAction(data: pointer): gboolean {.cdecl.} =
+  let a = menuActions.getOrDefault(cast[int](data))
+  menuActions.del cast[int](data)
+  if a != nil: a()
+  0
+
+proc onMenuActivate(item: GtkWidget, data: pointer) {.cdecl.} =
+  # After the menu has closed, so the action may open dialogs or other menus.
+  discard g_idle_add(runAction, data)
+
+proc buildMenu(items: seq[MenuItem]): GtkWidget =
+  result = gtk_menu_new()
+  for it in items:
+    var mi: GtkWidget
+    if it.separator: mi = gtk_separator_menu_item_new()
+    else:
+      mi = if it.checked >= 0: gtk_check_menu_item_new() else: gtk_menu_item_new()
+      let row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 24)
+      let l = gtk_label_new(it.label.cstring)
+      gtk_label_set_xalign(l, 0)
+      gtk_box_pack_start(row, l, 1, 1, 0)
+      if it.shortcut.len > 0:
+        let k = gtk_label_new(it.shortcut.cstring)
+        gtk_style_context_add_class(gtk_widget_get_style_context(k), "nk-dim")
+        gtk_box_pack_end(row, k, 0, 0, 0)
+      gtk_container_add(mi, row)
+      if it.checked >= 0: gtk_check_menu_item_set_active(mi, (it.checked == 1).gboolean)
+      if it.submenu.len > 0: gtk_menu_item_set_submenu(mi, buildMenu(it.submenu))
+      elif it.action != nil:
+        let id = nextAction
+        inc nextAction
+        menuActions[id] = it.action
+        connect(mi, "activate", onMenuActivate, cast[pointer](id))
+      gtk_widget_set_sensitive(mi, it.enabled.gboolean)
+    gtk_menu_shell_append(result, mi)
+  gtk_widget_show_all(result)
+
+proc toplevel(): GtkWidget = window
+
+backend.popup = proc (items: seq[MenuItem], anchor: Widget, x, y: float) =
+  if items.len == 0: return
+  let menu = buildMenu(items)
+  let target = if anchor != nil and anchor.realized: anchor.native else: toplevel()
+  if target != nil: gtk_menu_attach_to_widget(menu, gtk_widget_get_toplevel(target), nil)
+  if anchor != nil and anchor.realized and x >= 0 and y >= 0:
+    # x, y are in the anchor's pixels: a canvas's are device pixels, other widgets' logical ones.
+    let s = if anchor.kind == wkCanvas: max(anchor.scale, 1).float else: 1.0
+    let top = gtk_widget_get_toplevel(anchor.native)
+    var tx, ty: cint
+    discard gtk_widget_translate_coordinates(anchor.native, top, cint(x / s), cint(y / s), addr tx, addr ty)
+    var r = GdkRectangle(x: tx, y: ty, width: 1, height: 1)
+    gtk_menu_popup_at_rect(menu, gtk_widget_get_window(top), addr r, GDK_GRAVITY_NORTH_WEST, GDK_GRAVITY_NORTH_WEST,
+                           nil)
+  elif anchor != nil and anchor.realized:
+    gtk_menu_popup_at_widget(menu, anchor.native, GDK_GRAVITY_SOUTH_WEST, GDK_GRAVITY_NORTH_WEST, nil)
+  else:
+    let ev = gtk_get_current_event()
+    gtk_menu_popup_at_pointer(menu, ev)
+    if ev != nil: gdk_event_free(ev)
+
+# ---------------------------------------------------------------------------------------------------------------
+# Dialogs
+
+var dialogs: Table[int, Dialog]
+var nextDialog = 1
+
+proc onResponse(d: GtkWidget, response: cint, data: pointer) {.cdecl.} =
+  let dlg = dialogs.getOrDefault(cast[int](data))
+  if dlg != nil: dlg.dialogResult(if response >= 0: response.int else: -1)
+
+backend.showDialog = proc (d: Dialog) =
+  let id = nextDialog
+  inc nextDialog
+  dialogs[id] = d
+  let g = gtk_dialog_new()
+  d.native = cast[pointer](id)
+  gtk_window_set_title(g, d.title.cstring)
+  if toplevel() != nil: gtk_window_set_transient_for(g, toplevel())
+  gtk_window_set_modal(g, 1)
+  gtk_window_set_destroy_with_parent(g, 1)
+  let area = gtk_dialog_get_content_area(g)
+  gtk_container_set_border_width(area, 12)
+  gtk_box_set_spacing(area, 8)
+  if d.content != nil:
+    d.content.realize()
+    gtk_box_pack_start(area, d.content.native, 1, 1, 0)
+  for i, b in d.buttons:
+    let bw = gtk_dialog_add_button(g, b.cstring, i.cint)
+    if i == d.destructive: gtk_style_context_add_class(gtk_widget_get_style_context(bw), "destructive-action")
+    elif i == d.buttons.high and d.buttons.len > 1:
+      gtk_style_context_add_class(gtk_widget_get_style_context(bw), "suggested-action")
+  if d.buttons.len > 0: gtk_dialog_set_default_response(g, d.buttons.high.cint)
+  connect(g, "response", onResponse, cast[pointer](id))
+  inner[-id] = g
+  gtk_widget_show_all(g)
+
+backend.closeDialog = proc (d: Dialog) =
+  let id = cast[int](d.native)
+  let g = inner.getOrDefault(-id)
+  inner.del -id
+  dialogs.del id
+  if g == nil: return
+  if d.content != nil and d.content.realized:
+    gtk_container_remove(gtk_dialog_get_content_area(g), d.content.native)
+    d.content.unrealize()
+  gtk_widget_destroy(g)
+
+# ---------------------------------------------------------------------------------------------------------------
+# The window
+
+proc onWindowKeyPress(w: GtkWidget, ev: pointer, data: pointer): gboolean {.cdecl.} =
+  if onWindowKey == nil: return 0
+  onWindowKey(keyEvent(ev, true)).gboolean
+
+proc onDelete(w: GtkWidget, ev: pointer, data: pointer): gboolean {.cdecl.} =
+  if onCloseRequest != nil and not onCloseRequest(): 1 else: 0
+
+proc useWindow*(w: GtkWidget) =
+  ## For apps that make their own GtkWindow (webby): dialogs and menus belong to it, and onWindowKey and
+  ## onCloseRequest work for it as for run()'s window.
+  window = w
+  connect(w, "key-press-event", onWindowKeyPress, nil)
+  connect(w, "delete-event", onDelete, nil)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Services
@@ -417,7 +711,7 @@ proc onDestroy(w: GtkWidget, data: pointer) {.cdecl.} = gtk_main_quit()
 
 proc run*(title: string, root: Widget, width = 480, height = 640) =
   ## Shows `root` in a window and runs until it is closed.
-  window = gtk_window_new(GTK_WINDOW_TOPLEVEL)
+  useWindow(gtk_window_new(GTK_WINDOW_TOPLEVEL))
   gtk_window_set_title(window, title.cstring)
   gtk_window_set_default_size(window, width.cint, height.cint)
   connect(window, "destroy", onDestroy, nil)

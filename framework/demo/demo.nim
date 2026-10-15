@@ -1,6 +1,6 @@
 ## nimkit's demo: the same source runs on the Linux desktop, Android and the web (see framework/README.md).
 ## A counter, an entry that is kept between runs, a timer, an HTTP fetch, a slider, a dropdown and a canvas you can
-## draw on.
+## draw on, an icon button with a menu, dialogs, and a row with a right-click (long-press) menu.
 
 import std/[strutils, tables]
 import nimkit
@@ -60,7 +60,36 @@ let volume = slider(0, 100, 50, step = 5, onValue = proc (v: float) =
   levelText.text = $int(v) & "%")
 volume.marks = @[(0.0, "Off"), (50.0, "Half"), (100.0, "Full")]
 
+registerIcons({"menu": "M3 6H21V8H3Z M3 11H21V13H3Z M3 16H21V18H3Z",
+               "star": "M12 2L15 9H22L16.5 13.5L18.5 21L12 16.5L5.5 21L7.5 13.5L2 9H9Z"}, 24)
+
+let said = label("")
+let starred = item(icon("star"), label("A row: tap it, or right-click / long-press it").expand,
+  onClick = proc () = said.text = "Row tapped")
+starred.onContext = proc () =
+  popupMenu(@[menuItem("Rename", proc () =
+                prompt("Rename", "A new name for the row", "Starred",
+                       proc (ok: bool, value: string) = said.text = (if ok: "Renamed to " & value else: "Not renamed"))),
+              menuSeparator(),
+              menuItem("Delete", proc () =
+                confirm("Delete the row?", "It comes back next run.", "Delete",
+                        proc (ok: bool) =
+                          starred.visible = not ok
+                          said.text = if ok: "Deleted" else: "Kept",
+                        destructive = true))], starred)
+var menuButton: Widget
+menuButton = iconButton("menu", "More", proc () =
+  popupMenu(@[menuItem("About", proc () = alert("nimkit demo", "Running on " & platform)),
+              checkItem("Big dots", big, proc () =
+                big = not big
+                pad.redraw()),
+              submenu("Ink", @[menuItem(inks[0][0], proc () = (ink = 0; pad.redraw())),
+                               menuItem(inks[1][0], proc () = (ink = 1; pad.redraw()))])], menuButton))
+
 let ui = column(
+  row(menuButton, said.expand),
+  starred,
+  separator(),
   label("nimkit demo, running on " & platform),
   row(button("Click me", proc () =
         inc count
