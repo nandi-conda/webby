@@ -18,8 +18,6 @@ proc g_dbus_connection_call_sync(c: pointer, name, path, iface, meth: cstring, p
 proc g_variant_new_parsed(format: cstring): pointer {.varargs.}
 proc g_variant_unref(v: pointer)
 proc g_error_free(e: pointer)
-proc gtk_accel_label_set_accel(l: Widget, key: cuint, mods: cuint)
-proc gtk_list_box_get_row_at_y(l: Widget, y: cint): Widget
 {.pop.}
 
 type
@@ -29,7 +27,7 @@ type
     received, total, rate, remaining: int64
     canResume, private: bool
   Row = object
-    name, detail, bar, pauseButton, actionButton: Widget
+    name, detail, bar, pauseButton, actionButton: kit.Widget
     status: string
 
 var
@@ -38,9 +36,8 @@ var
   known: Table[uint64, string]   ## id -> status last seen, to notice new and finished downloads
   button: kit.Widget             ## toolbar button; hidden until the first download
   panelOpen = false
-  panelList: Widget
+  panelList: kit.Widget
   rows: Table[uint64, Row]
-  rowIds: seq[uint64]            ## per list row: its download (0 for the empty note)
   refreshQueued = false
   primed = false                 ## the first list was read (downloads Ladybird restored aren't announced)
 
@@ -155,32 +152,25 @@ proc runningCount(): int =
 # ---------------------------------------------------------------------------------------------------------------
 # The sidebar
 
-proc dim(text: string): Widget =
-  result = gtk_label_new(text.cstring)
-  addClass(result, "dim-label")
-  addClass(result, "webby-small")
-  gtk_label_set_xalign(result, 0)
-  gtk_label_set_ellipsize(result, PANGO_ELLIPSIZE_END)
+proc dim(text: string): kit.Widget =
+  result = kit.addClass(kit.addClass(kit.label(text), "dim"), "small")
+  kit.`maxChars=`(result, 200)
 
-proc smallButton(icon, tooltip: string, action: proc ()): Widget =
-  result = iconButton(icon, tooltip, action, 16)
-  gtk_widget_set_valign(result, GTK_ALIGN_CENTER)
+proc smallButton(icon, tooltip: string, action: proc ()): kit.Widget = kit.iconButton(icon, tooltip, action, 16)
 
 proc updateRow(r: var Row, d: Download) =
-  gtk_label_set_text(r.detail, d.detail.cstring)
-  gtk_widget_set_visible(r.bar, d.active.gboolean)
-  if d.active:
-    if d.total > 0: gtk_progress_bar_set_fraction(r.bar, d.fraction)
-    else: gtk_progress_bar_pulse(r.bar)
+  kit.`text=`(r.detail, d.detail)
+  kit.`visible=`(r.bar, d.active)
+  if d.active: kit.`value=`(r.bar, d.fraction)
   # Ladybird pauses only downloads it can resume (the server takes Range requests).
-  gtk_widget_set_visible(r.pauseButton, gboolean(d.status == "paused" or d.status == "in_progress" and d.canResume))
+  kit.`visible=`(r.pauseButton, d.status == "paused" or d.status == "in_progress" and d.canResume)
   if r.status != d.status:
     r.status = d.status
-    setButtonIcon(r.pauseButton, if d.status == "paused": "play_arrow" else: "pause")
-    gtk_widget_set_tooltip_text(r.pauseButton, if d.status == "paused": "Resume" else: "Pause")
-    setButtonIcon(r.actionButton, if d.active: "close" else: "folder_open")
-    gtk_widget_set_tooltip_text(r.actionButton, if d.active: "Cancel" else: "Show in folder")
-    gtk_widget_set_sensitive(r.actionButton, gboolean(d.active or d.status == "completed" and fileExists(d.path)))
+    kit.`iconName=`(r.pauseButton, if d.status == "paused": "play_arrow" else: "pause")
+    kit.`tooltip=`(r.pauseButton, if d.status == "paused": "Resume" else: "Pause")
+    kit.`iconName=`(r.actionButton, if d.active: "close" else: "folder_open")
+    kit.`tooltip=`(r.actionButton, if d.active: "Cancel" else: "Show in folder")
+    kit.`enabled=`(r.actionButton, d.active or d.status == "completed" and fileExists(d.path))
 
 proc pauseOrResume(id: uint64) =
   let i = find(id)
@@ -194,86 +184,10 @@ proc cancelOrShow(id: uint64) =
   if downloads[i].active: webby_downloads_cancel(id); wake()
   else: showInFolder(downloads[i].path)
 
-proc entryRow(d: Download): (Widget, Row) =
-  var r: Row
-  let box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8)
-  for (f, m) in [(gtk_widget_set_margin_start, 10), (gtk_widget_set_margin_end, 4), (gtk_widget_set_margin_top, 6),
-                 (gtk_widget_set_margin_bottom, 6)]: f(box, m.cint)
-  let fileIcon = icon("insert_drive_file_outlined")
-  gtk_widget_set_valign(fileIcon, GTK_ALIGN_CENTER)
-  gtk_box_pack_start(box, fileIcon, 0, 0, 0)
-  let text = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2)
-  r.name = gtk_label_new(d.name.cstring)
-  gtk_label_set_xalign(r.name, 0)
-  gtk_label_set_ellipsize(r.name, 2.cint)   # PANGO_ELLIPSIZE_MIDDLE
-  gtk_box_pack_start(text, r.name, 0, 0, 0)
-  r.bar = gtk_progress_bar_new()
-  gtk_widget_set_no_show_all(r.bar, 1)
-  gtk_box_pack_start(text, r.bar, 0, 0, 0)
-  r.detail = dim("")
-  gtk_box_pack_start(text, r.detail, 0, 0, 0)
-  gtk_box_pack_start(box, text, 1, 1, 0)
-  let id = d.id
-  r.pauseButton = smallButton("pause", "Pause", proc () = pauseOrResume(id))
-  gtk_widget_set_no_show_all(r.pauseButton, 1)
-  gtk_box_pack_start(box, r.pauseButton, 0, 0, 0)
-  r.actionButton = smallButton("close", "Cancel", proc () = cancelOrShow(id))
-  gtk_box_pack_start(box, r.actionButton, 0, 0, 0)
-  gtk_widget_set_tooltip_text(text, d.url.cstring)
-  updateRow(r, d)
-  (box, r)
-
-proc fillPanel() =
-  if panelList == nil: return
-  clearChildren(panelList)
-  rows.clear
-  rowIds.setLen 0
-  if downloads.len == 0:
-    let l = dim(if hasApi(): "Files you download show up here." else: "This version of the engine doesn't list downloads.")
-    gtk_label_set_line_wrap(l, 1)
-    gtk_label_set_xalign(l, 0.5)
-    gtk_widget_set_margin_top(l, 24)
-    gtk_container_add(panelList, l)
-    rowIds.add 0
-  for i in countdown(downloads.high, 0):   # newest first
-    let d = downloads[i]
-    let (w, r) = entryRow(d)
-    gtk_container_add(panelList, w)
-    rows[d.id] = r
-    rowIds.add d.id
-  gtk_widget_show_all(panelList)
-
-proc refreshPanel() =
-  ## Updates rows in place while the same downloads are listed (progress ticks), else rebuilds the list.
-  if panelList == nil: return
-  var same = rows.len == downloads.len
-  if same:
-    for d in downloads:
-      if d.id notin rows: (same = false; break)
-  if not same: fillPanel(); return
-  for d in downloads: updateRow(rows[d.id], d)
-
-proc idAt(y: cdouble): uint64 =
-  let row = gtk_list_box_get_row_at_y(panelList, y.cint)
-  if row == nil: return 0
-  let i = gtk_list_box_row_get_index(row)
-  if i in 0 ..< rowIds.len: rowIds[i] else: 0
-
-proc onRowActivated(l: Widget, row: Widget, data: pointer) {.cdecl.} =
-  let i = gtk_list_box_row_get_index(row)
-  if i notin 0 ..< rowIds.len: return
-  let at = find(rowIds[i])
-  if at >= 0 and downloads[at].status == "completed" and fileExists(downloads[at].path): openPath(downloads[at].path)
-
-proc onPanelButton(l: Widget, ev: GEvent, data: pointer): gboolean {.cdecl.} =
+proc rowMenu(id: uint64) =
   ## Right-click: open, show in folder, copy the link, download it again.
-  var b: cuint
-  discard gdk_event_get_button(ev, addr b)
-  if b != 3 or gdk_event_get_event_type(ev) != GDK_BUTTON_PRESS: return 0
-  var x, y: cdouble
-  discard gdk_event_get_coords(ev, addr x, addr y)
-  let at = find(idAt(y))
-  if at < 0: return 0
+  let at = find(id)
+  if at < 0: return
   let d = downloads[at]
   var items: seq[kit.MenuItem]
   if d.status == "completed" and fileExists(d.path):
@@ -287,7 +201,55 @@ proc onPanelButton(l: Widget, ev: GEvent, data: pointer): gboolean {.cdecl.} =
       discard webby_downloads_start(d.url.cstring, d.private.cint)
       wake())
   kit.popupMenu(items)
-  1
+
+proc openIfDone(id: uint64) =
+  let at = find(id)
+  if at >= 0 and downloads[at].status == "completed" and fileExists(downloads[at].path): openPath(downloads[at].path)
+
+proc entryRow(d: Download): (kit.Widget, Row) =
+  var r: Row
+  r.name = kit.label(d.name)
+  kit.`maxChars=`(r.name, 200)
+  r.bar = kit.progress()
+  r.detail = dim("")
+  let text = kit.column(r.name, r.bar, r.detail)
+  text.spacing = 2
+  let id = d.id
+  r.pauseButton = smallButton("pause", "Pause", proc () = pauseOrResume(id))
+  r.actionButton = smallButton("close", "Cancel", proc () = cancelOrShow(id))
+  let row = kit.item(kit.icon("insert_drive_file_outlined"), kit.expand(text), r.pauseButton, r.actionButton,
+    onClick = proc () = openIfDone(id))
+  row.spacing = 8
+  kit.addClass(row, "webby-download-row")
+  kit.`tooltip=`(row, d.url)
+  row.onContext = proc () = rowMenu(id)
+  updateRow(r, d)
+  (row, r)
+
+proc fillPanel() =
+  if panelList == nil: return
+  kit.clear(panelList)
+  rows.clear
+  if downloads.len == 0:
+    let l = kit.addClass(dim(if hasApi(): "Files you download show up here."
+                             else: "This version of the engine doesn't list downloads."), "webby-downloads-empty")
+    kit.`maxChars=`(l, 0)
+    kit.add(panelList, l)
+  for i in countdown(downloads.high, 0):   # newest first
+    let d = downloads[i]
+    let (w, r) = entryRow(d)
+    kit.add(panelList, w)
+    rows[d.id] = r
+
+proc refreshPanel() =
+  ## Updates rows in place while the same downloads are listed (progress ticks), else rebuilds the list.
+  if panelList == nil: return
+  var same = rows.len == downloads.len
+  if same:
+    for d in downloads:
+      if d.id notin rows: (same = false; break)
+  if not same: fillPanel(); return
+  for d in downloads: updateRow(rows[d.id], d)
 
 proc clearList() =
   if webby_downloads_clear != nil: webby_downloads_clear()
@@ -300,23 +262,15 @@ proc toggleDownloads*() =
   if panelOpen:
     closeSidePanel()
     return
-  let body = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4)
-  let top = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4)
-  gtk_widget_set_margin_start(top, 8)
-  gtk_widget_set_margin_end(top, 4)
   let where = dim(downloadsDir().replace(getHomeDir().strip(leading = false, chars = {'/'}), "~"))
-  gtk_box_pack_start(top, where, 1, 1, 0)
-  gtk_box_pack_start(top, iconButton("folder_open", "Open the Downloads folder", proc () = openPath(downloadsDir())), 0, 0, 0)
-  gtk_box_pack_start(top, iconButton("delete_sweep_outlined", "Clear finished downloads from the list", clearList), 0, 0, 0)
-  gtk_box_pack_start(body, top, 0, 0, 0)
-  let scroller = gtk_scrolled_window_new(nil, nil)
-  gtk_scrolled_window_set_policy(scroller, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
-  panelList = gtk_list_box_new()
-  gtk_list_box_set_selection_mode(panelList, GTK_SELECTION_NONE)
-  connect(panelList, "row-activated", onRowActivated)
-  connect(panelList, "button-press-event", onPanelButton)
-  gtk_container_add(scroller, panelList)
-  gtk_box_pack_start(body, scroller, 1, 1, 0)
+  let top = kit.addClass(kit.row(kit.expand(where),
+    kit.iconButton("folder_open", "Open the Downloads folder", proc () = openPath(downloadsDir())),
+    kit.iconButton("delete_sweep_outlined", "Clear finished downloads from the list", clearList)), "webby-panel-top")
+  top.spacing = 4
+  panelList = kit.column()
+  panelList.spacing = 0
+  let body = kit.column(top, kit.expand(kit.scroll(panelList)))
+  body.spacing = 4
   panelOpen = true
   showSidePanel("Downloads", body, 360, proc () =
     panelOpen = false
@@ -379,6 +333,9 @@ proc install*() =
   windowHooks.add proc () =
     if appUrl.len > 0: return
     addMenuItem("Downloads", toggleDownloads, "Ctrl+J")
+    loadCss("button.webby-download-row { padding: 6px 4px 6px 10px; }\n" &
+      ".webby-download-row button { padding: 2px; min-height: 0; }\n" &
+      ".webby-downloads-empty { margin-top: 24px; }\n.webby-panel-top { margin: 0 4px 0 8px; }")
     if not hasApi(): return
     button = addToolbarButton("download", "Downloads (Ctrl+J)", toggleDownloads, "download", "Downloads")
     kit.`visible=`(button, false)
