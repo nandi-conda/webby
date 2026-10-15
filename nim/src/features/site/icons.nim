@@ -4,6 +4,7 @@
 
 import std/[strutils, tables]
 import ../../browser
+from nimkit/core as kit import nil
 import http, images, permissions
 
 const iconScript = """
@@ -32,15 +33,14 @@ const iconScript = """
 })();
 """
 
-var cache: Table[string, pointer]   ## icon URL to a 16 px GdkPixbuf (nil: it failed)
+var cache: Table[string, string]   ## icon URL to the picture's bytes ("": it failed)
 
 proc setDefault(t: Tab) =
-  setIcon(t.icon, "public")
+  kit.`image=`(t.icon, "")
 
 proc show(t: Tab, href: string) =
   if t.closed or t.props.getOrDefault("site.icon") != href: return
-  let p = cache.getOrDefault(href)
-  if p != nil: gtk_image_set_from_pixbuf(t.icon, p) else: setDefault(t)
+  kit.`image=`(t.icon, cache.getOrDefault(href))
 
 proc onMessage(t: Tab, text: string): bool =
   if not text.startsWith("{\"type\":\"siteIcon\""): return false
@@ -51,9 +51,7 @@ proc onMessage(t: Tab, text: string): bool =
     show(t, href)
     return true
   fetch(t, href, proc (ok: bool, body, kind: string) =
-    let full = if ok: decodeImage(body) else: nil
-    cache[href] = if full == nil: nil else: scaled(full, 16)
-    if full != nil: g_object_unref(full)
+    cache[href] = if ok and kit.imageMime(body).len > 0: body else: ""
     show(t, href), maxBytes = 1 shl 20)
   true
 

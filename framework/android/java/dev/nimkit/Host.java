@@ -62,10 +62,11 @@ public class Host extends Activity {
             PADDING = 7, MIN_SIZE = 8, ADD = 9, REMOVE = 10, ROOT = 11, TITLE = 12, TIMER = 13, UNTIMER = 14,
             QUIT = 15, FORGET = 16, ITEMS = 17, SELECTED = 18, RANGE = 19, VALUE = 20, VISIBLE = 21, TOOLTIP = 22,
             CLASSES = 23, ICON = 24, PASSWORD = 25, FOCUS = 26, SELECT_ALL = 27, MOVE = 28, MENU = 29, DIALOG = 30,
-            CLOSE_DIALOG = 31, KEY_HANDLED = 32;
+            CLOSE_DIALOG = 31, KEY_HANDLED = 32, MAX_CHARS = 33, IMAGE = 34;
     // Widget kinds (WidgetKind in src/nimkit/core.nim).
     static final int COLUMN = 0, ROW = 1, SCROLL = 2, LABEL = 3, BUTTON = 4, ENTRY = 5, CHECK = 6, CANVAS = 7,
-            SLIDER = 8, DROPDOWN = 9, PROGRESS = 10, TOGGLE = 11, ICON_KIND = 12, ITEM = 13, SEPARATOR = 14;
+            SLIDER = 8, DROPDOWN = 9, PROGRESS = 10, TOGGLE = 11, ICON_KIND = 12, ITEM = 13, SEPARATOR = 14,
+            HSCROLL = 15;
     /** A progress bar's resolution: ProgressBar counts in ints. */
     static final int PROGRESS_STEPS = 1000;
 
@@ -81,6 +82,7 @@ public class Host extends Activity {
     final SparseArray<String> classes = new SparseArray<>();
     final SparseArray<String> icons = new SparseArray<>();       // id -> "size spec" last shown
     final SparseArray<AlertDialog> dialogs = new SparseArray<>();
+    final SparseArray<Boolean> pictures = new SparseArray<>();     // icons showing a picture, not their glyph
     boolean syncing;
     boolean keyHandled;          // set by KEY_HANDLED while an ENTRY_KEY event is being handled
     float touchX, touchY;        // the last touch, in content's pixels, for menus with no place given
@@ -206,7 +208,7 @@ public class Host extends Activity {
                     break;
                 case FORGET:
                     views.remove(id); expand.remove(id); minSize.remove(id); ranges.remove(id); shownSelection.remove(id);
-                    classes.remove(id); icons.remove(id);
+                    classes.remove(id); icons.remove(id); pictures.remove(id);
                     break;
                 case ROOT:
                     content.removeAllViews();
@@ -251,6 +253,42 @@ public class Host extends Activity {
                     break;
                 }
                 case KEY_HANDLED: keyHandled = true; break;
+                case MAX_CHARS: if (v instanceof TextView) {
+                    TextView t = (TextView) v;
+                    t.setSingleLine(arg > 0);
+                    t.setEllipsize(arg > 0 ? android.text.TextUtils.TruncateAt.END : null);
+                    t.setMaxEms(arg > 0 ? arg : Integer.MAX_VALUE);
+                }
+                break;
+                case IMAGE: if (v instanceof ImageView) {
+                    if (text.isEmpty()) {
+                        if (pictures.get(id) == null) break;
+                        pictures.remove(id);
+                        String icon = icons.get(id);
+                        icons.remove(id);   // shows the glyph again
+                        if (icon != null && !icon.isEmpty()) {
+                            int space = icon.indexOf(' ');
+                            showIcon(v, id, Integer.parseInt(icon.substring(0, space)), icon.substring(space + 1));
+                        }
+                    } else {
+                        byte[] b = Base64.decode(text, Base64.DEFAULT);
+                        android.graphics.Bitmap bm = android.graphics.BitmapFactory.decodeByteArray(b, 0, b.length);
+                        if (bm != null) {
+                            ImageView img = (ImageView) v;
+                            img.setImageBitmap(bm);
+                            String icon = icons.get(id, "");
+                            int size = icon.isEmpty() ? 16 : Integer.parseInt(icon.substring(0, icon.indexOf(' ')));
+                            img.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                            img.setMaxWidth(px(size)); img.setMaxHeight(px(size));
+                            img.setAdjustViewBounds(true);
+                            img.setLayoutParams(img.getLayoutParams() == null
+                                    ? new ViewGroup.LayoutParams(px(size), px(size)) : sized(img.getLayoutParams(), px(size)));
+                            icons.put(id, icon.isEmpty() ? "" : icon);
+                            pictures.put(id, true);
+                        }
+                    }
+                }
+                break;
                 case TITLE: setTitle(text); break;
                 case QUIT: finish(); break;
             }
@@ -394,6 +432,11 @@ public class Host extends Activity {
                 return p;
             }
             case ICON_KIND: return new ImageView(this);
+            case HSCROLL: {
+                android.widget.HorizontalScrollView s = new android.widget.HorizontalScrollView(this);
+                s.setHorizontalScrollBarEnabled(false);
+                return s;
+            }
             case ITEM: {
                 LinearLayout l = new LinearLayout(this);
                 l.setOrientation(LinearLayout.HORIZONTAL);
@@ -536,11 +579,18 @@ public class Host extends Activity {
 
     void showIcon(View v, int id, int size, String spec) { showIcon(v, id, size, spec, false); }
 
+    static ViewGroup.LayoutParams sized(ViewGroup.LayoutParams p, int size) {
+        p.width = size;
+        p.height = size;
+        return p;
+    }
+
     /** An icon's glyph, or the icon at the start of a button or item. `spec` is "em pathdata", empty for none. */
     void showIcon(View v, int id, int size, String spec, boolean force) {
         String key = spec.isEmpty() ? "" : size + " " + spec;
         if (!force && key.equals(icons.get(id, ""))) return;
         icons.put(id, key);
+        if (Boolean.TRUE.equals(pictures.get(id))) return;   // a picture shows instead (IMAGE)
         java.util.List<String> c = java.util.Arrays.asList(classes.get(id, "").split(" "));
         int color = c.contains("error") ? 0xffd93025
                 : c.contains("suggested") || c.contains("destructive") ? 0xffffffff : textColor();

@@ -5,6 +5,7 @@
 ## Everything happens on one thread, the platform's UI thread: event callbacks, timers and HTTP replies all run there.
 
 import std/tables
+from std/strutils import nil
 
 type
   WidgetKind* = enum
@@ -60,6 +61,9 @@ type
     iconValue: string                ## an icon's glyph, or a button's/toggle's/item's icon (see registerIcons)
     iconSizeValue: int               ## logical pixels
     passwordValue: bool              ## an entry that hides what is typed
+    horizontalValue: bool            ## a scroll view that scrolls sideways instead of up and down
+    maxCharsValue: int               ## a label kept to one line, cut short with "…" past this many characters
+    imageValue: string               ## an icon showing a picture (PNG, JPEG, GIF, ICO, WebP or SVG bytes) instead
     realized*: bool                  ## the backend has made the native widget
     native*: pointer                 ## the backend's own handle, if it has one (GTK)
     # Events
@@ -77,6 +81,7 @@ type
     onResize*: proc (c: Canvas)      ## its pixel size or scale changed
     onContext*: proc ()              ## items: right-click, or a long press on touch screens
     onMiddle*: proc ()               ## items: middle-click
+    onDoubleClick*: proc ()          ## items: a double click with the mouse (onClick comes first)
     onEntryKey*: proc (e: KeyEvent): bool   ## entries: a key pressed while it has the focus; true: handled
     onFocusChange*: proc (focused: bool)    ## entries
     onFrame*: proc (c: Canvas): tuple[data: pointer, width, height, stride: int]
@@ -279,6 +284,35 @@ proc `password=`*(w: Widget, on: bool) =
   w.passwordValue = on
   w.changed
 
+proc horizontal*(w: Widget): bool = w.horizontalValue
+
+proc maxChars*(w: Widget): int = w.maxCharsValue
+proc `maxChars=`*(w: Widget, n: int) =
+  ## Labels: 0 (the default) wraps long text over several lines; n > 0 keeps it to one line at most n characters
+  ## wide, ending in "…" when cut.
+  if n == w.maxCharsValue: return
+  w.maxCharsValue = n
+  w.changed
+
+proc image*(w: Widget): string = w.imageValue
+proc `image=`*(w: Widget, bytes: string) =
+  ## Icons: a picture (a site's favicon: PNG, JPEG, GIF, ICO, WebP or SVG file bytes) drawn at the icon's size
+  ## instead of its glyph; "" brings the glyph back.
+  if bytes == w.imageValue: return
+  w.imageValue = bytes
+  w.changed
+
+proc imageMime*(bytes: string): string =
+  ## The type of a picture from its first bytes ("" if it isn't one of the kinds `image=` takes).
+  proc starts(p: string): bool = bytes.len >= p.len and bytes[0 ..< p.len] == p
+  if starts("\x89PNG"): "image/png"
+  elif starts("\xFF\xD8\xFF"): "image/jpeg"
+  elif starts("GIF8"): "image/gif"
+  elif starts("\0\0\1\0"): "image/x-icon"
+  elif starts("RIFF") and bytes.len >= 12 and bytes[8 ..< 12] == "WEBP": "image/webp"
+  elif strutils.find(bytes[0 ..< min(bytes.len, 1024)], "<svg") >= 0: "image/svg+xml"
+  else: ""
+
 proc sized*(w: Widget, minWidth = 0, minHeight = 0): Widget =
   ## Gives `w` at least this size (logical pixels; 0 keeps its natural size along that side), e.g. so labels in
   ## different rows line up. Returns it, for use inside column(...)/row(...).
@@ -306,13 +340,15 @@ proc forget(w: Widget) =
   widgets.del w.id
   for c in w.children: forget(c)
 
-proc remove*(parent, child: Widget) =
+proc remove*(parent, child: Widget, keep = false) =
+  ## Takes `child` out of `parent`. Unless `keep` (it is going to be added somewhere else, e.g. tabs moving to
+  ## another strip) it is done with: its events stop.
   let i = parent.children.find(child)
   if i < 0: return
   parent.children.delete i
   child.parent = nil
   if parent.realized and backend.removed != nil: backend.removed(parent, child)
-  forget(child)
+  if not keep: forget(child)
 
 proc clear*(parent: Widget) =
   while parent.children.len > 0: parent.remove(parent.children[^1])
@@ -346,9 +382,10 @@ proc row*(children: varargs[Widget]): Widget =
   result.spacing = 8
   for c in children: result.add c
 
-proc scroll*(child: Widget): Widget =
-  ## A vertically scrolling view of `child`.
+proc scroll*(child: Widget, horizontal = false): Widget =
+  ## A scrolling view of `child`: up and down, or sideways (a row too wide for the window, a tab strip).
   result = newWidget(wkScroll)
+  result.horizontalValue = horizontal
   result.add child
 
 proc label*(text: string): Widget =

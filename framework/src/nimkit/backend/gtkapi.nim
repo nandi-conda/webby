@@ -34,6 +34,10 @@ const
   GDK_BUTTON3_MASK* = 1'u32 shl 10
   GDK_SUPER_MASK* = 1'u32 shl 26
   GDK_BUTTON_PRESS* = 4.cint
+  GDK_2BUTTON_PRESS* = 5.cint
+  PANGO_ELLIPSIZE_NONE* = 0.cint
+  PANGO_ELLIPSIZE_END* = 3.cint
+  GDK_INTERP_BILINEAR* = 2.cint
   GDK_SCROLL_UP* = 0.cint
   GDK_SCROLL_DOWN* = 1.cint
   GDK_SCROLL_LEFT* = 2.cint
@@ -133,6 +137,18 @@ proc g_object_unref*(o: pointer)
 proc cairo_image_surface_create_for_data*(data: pointer, format: cint, width, height, stride: cint): pointer
 proc cairo_set_source_surface*(cr, surface: pointer, x, y: cdouble)
 proc cairo_paint*(cr: pointer)
+proc gtk_label_set_ellipsize*(l: GtkWidget, mode: cint)
+proc gtk_label_set_max_width_chars*(l: GtkWidget, n: cint)
+proc gtk_label_set_width_chars*(l: GtkWidget, n: cint)
+proc gdk_pixbuf_loader_new*(): pointer
+proc gdk_pixbuf_loader_set_size*(l: pointer, w, h: cint)
+proc gdk_pixbuf_loader_write*(l: pointer, data: pointer, len: csize_t, err: pointer): gboolean
+proc gdk_pixbuf_loader_close*(l: pointer, err: pointer): gboolean
+proc gdk_pixbuf_loader_get_pixbuf*(l: pointer): pointer
+proc gdk_pixbuf_get_width*(p: pointer): cint
+proc gdk_pixbuf_get_height*(p: pointer): cint
+proc gdk_pixbuf_scale_simple*(p: pointer, w, h: cint, interp: cint): pointer
+proc gdk_cairo_set_source_pixbuf*(cr, p: pointer, x, y: cdouble)
 proc cairo_surface_destroy*(s: pointer)
 proc gtk_widget_show*(w: GtkWidget)
 proc gtk_box_pack_end*(b, w: GtkWidget, expand, fill: gboolean, padding: cuint)
@@ -159,6 +175,7 @@ proc gdk_screen_get_default*(): pointer
 proc gtk_button_set_relief*(b: GtkWidget, relief: cint)
 proc gtk_button_set_image*(b, image: GtkWidget)
 proc gtk_button_get_image*(b: GtkWidget): GtkWidget
+proc gtk_widget_set_focus_on_click*(w: GtkWidget, on: gboolean)
 proc gtk_button_set_always_show_image*(b: GtkWidget, on: gboolean)
 proc gtk_bin_get_child*(b: GtkWidget): GtkWidget
 proc gtk_separator_new*(orientation: cint): GtkWidget

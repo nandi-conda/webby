@@ -52,6 +52,10 @@ const   # Host.java's ops
   opDialog = 30      # id: the dialog's number; text: JSON {title, buttons, destructive, content}
   opCloseDialog = 31
   opKeyHandled = 32  # answers ENTRY_KEY while Host waits: the app used the key, so the field doesn't get it
+  opMaxChars = 33    # a label's one-line width in characters, 0 to wrap
+  opImage = 34       # an icon's picture: text = the file's bytes in base64, "" for the glyph
+
+  kindHScroll = 15   # Host's kind for a sideways scroll view (WidgetKind ends at 14)
 
 proc op(o: int, id = 0, arg = 0, text = "") = nk_op(o.cint, id.cint, arg.cint, text.cstring)
 
@@ -73,6 +77,7 @@ proc sync(w: Widget) =
     op(opPadding, w.id, w.padding)
   of wkLabel, wkButton, wkCheck, wkToggle:
     op(opText, w.id, text = w.text)
+    if w.kind == wkLabel: op(opMaxChars, w.id, w.maxChars)
     if w.kind in {wkCheck, wkToggle}: op(opChecked, w.id, ord(w.checked))
   of wkEntry:
     op(opText, w.id, text = w.text)
@@ -90,6 +95,7 @@ proc sync(w: Widget) =
   of wkScroll: discard
   if w.kind in {wkIcon, wkButton, wkToggle, wkItem}:
     op(opIcon, w.id, w.iconSize, if w.iconName.len > 0: $iconEm & " " & iconPaths.getOrDefault(w.iconName) else: "")
+  if w.kind == wkIcon: op(opImage, w.id, text = encode(w.image))   # after opIcon: it needs the size
   op(opMinSize, w.id, w.minWidth, $w.minHeight)
   op(opEnabled, w.id, ord(w.enabled))
   op(opExpand, w.id, ord(w.expanded))
@@ -98,7 +104,7 @@ proc sync(w: Widget) =
   op(opClasses, w.id, text = w.classes.join(" "))
 
 proc realize(w: Widget) =
-  op(opCreate, w.id, ord(w.kind))
+  op(opCreate, w.id, if w.kind == wkScroll and w.horizontal: kindHScroll else: ord(w.kind))
   w.realized = true
   w.sync()
   for i, c in w.children:

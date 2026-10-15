@@ -31,9 +31,10 @@ const modSuper* = 8
 type
   Tab* = ref object
     view*: View              ## nil while the tab sleeps (no page, no WebContent process); see ensureView
-    button*: Widget          ## the tab's widget in the tab strip
-    label*: Widget           ## the label inside it
-    icon*: Widget            ## a GtkImage before the label (features may set a favicon)
+    button*: kit.Widget      ## the tab's item in the tab strip
+    label*: kit.Widget       ## the label inside it
+    icon*: kit.Widget        ## an icon before the label (features may set a favicon with kit.`image=`)
+    closeButton*: kit.Widget ## the × at its end
     url*, title*, hovered*: string
     loading*, canBack*, canForward*: bool
     cursor*: int
@@ -54,7 +55,10 @@ var
   commandLineUrls*: seq[string]
 
   # Widgets
-  window*, mainBox*, tabStrip*, tabStripBox*, toolbar*, toolbarEnd*, urlEntry*, area*, status*: Widget
+  window*, mainBox*, tabStripBox*, toolbar*, toolbarEnd*, urlEntry*, area*, status*: Widget
+  tabStrip*: kit.Widget        ## the tabs' row (a column with vertical tabs), inside a scroll view in tabStripBox
+  tabStripSpace*: kit.Widget   ## the strip's empty space after the tabs (the last child of tabStrip)
+  tabStripRoot*: kit.Widget    ## tabStripBox as nimkit sees it: the scroll view and the new-tab button
   barSlot*: Widget             ## a box under the toolbar (the bookmark bar goes here)
   findSlot*: Widget            ## a box under the page (the find bar goes here)
   pagePane*: Widget            ## GtkPaned: the page on the left, the side panel on the right
@@ -231,9 +235,9 @@ proc refreshChrome*() =
 proc updateTabButton*(t: Tab) =
   ## Label, tooltip and pinned look of the tab's strip widget.
   var s = tabLabel(t)
-  gtk_label_set_text(t.label, (if t.pinned: "" else: s).cstring)
-  gtk_widget_set_visible(t.label, (not t.pinned).gboolean)
-  gtk_widget_set_tooltip_text(t.button, s.cstring)
+  kit.`text=`(t.label, if t.pinned: "" else: s)
+  kit.`visible=`(t.label, not t.pinned)
+  kit.`tooltip=`(t.button, s)
 
 proc notifyTabStrip*() =
   for h in tabStripHooks: h()
@@ -247,13 +251,13 @@ proc activateTab*(i: int) =
   if i notin 0 ..< tabs.len: return
   if activeIndex in 0 ..< tabs.len and activeIndex != i:
     if tabs[activeIndex].view != nil: webby_view_set_visible(tabs[activeIndex].view, 0)
-    removeClass(tabs[activeIndex].button, "webby-active-tab")
+    kit.removeClass(tabs[activeIndex].button, "webby-active-tab")
   activeIndex = i
   let t = tabs[i]
   ensureView(t)
   webby_view_set_visible(t.view, 1)
   resizeView(t)
-  addClass(t.button, "webby-active-tab")
+  kit.addClass(t.button, "webby-active-tab")
   refreshChrome()
   kit.invalidate(page)
   for h in activeTabHooks: h(t)
@@ -263,23 +267,11 @@ proc activateTab*(t: Tab) = activateTab(tabs.find(t))
 
 proc closeTab*(t: Tab)
 
-proc onTabClicked(button: Widget, event: GEvent, data: pointer): gboolean {.cdecl.} =
-  let t = cast[Tab](data)
-  var b: cuint
-  discard gdk_event_get_button(event, addr b)
-  if gdk_event_get_event_type(event) != GDK_BUTTON_PRESS: return 1
-  case b
-  of 1: activateTab(t)
-  of 2: closeTab(t)
-  of 3:
-    var items: seq[kit.MenuItem]
-    for h in tabMenuHooks: h(t, items)
-    if items.len == 0: items.add kit.menuItem("Close tab", proc () = closeTab(t))
-    kit.popupMenu(items)
-  else: discard
-  1
-
-proc onTabClose(button: Widget, data: pointer) {.cdecl.} = closeTab(cast[Tab](data))
+proc tabMenu(t: Tab) =
+  var items: seq[kit.MenuItem]
+  for h in tabMenuHooks: h(t, items)
+  if items.len == 0: items.add kit.menuItem("Close tab", proc () = closeTab(t))
+  kit.popupMenu(items)
 
 proc randomPrefix(): string =
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
@@ -314,31 +306,19 @@ proc adoptView*(view: View, focus = true, index = -1): Tab =
   let t = Tab(view: view, lastCompat: getMonoTime(), messagePrefix: randomPrefix())
   GC_ref(t)
   if view != nil: webby_view_set_message_prefix(view, t.messagePrefix.cstring)
-  let box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4)
-  t.icon = icon("public", 14)
-  t.label = gtk_label_new("New tab")
-  gtk_label_set_ellipsize(t.label, PANGO_ELLIPSIZE_END)
-  gtk_label_set_width_chars(t.label, 14)
-  gtk_label_set_max_width_chars(t.label, 22)
-  gtk_label_set_xalign(t.label, 0)
-  let close = gtk_button_new()
-  iconButtonImage(close, "close", 14)
-  gtk_button_set_relief(close, GTK_RELIEF_NONE)
-  addClass(close, "webby-tab-close")
-  connect(close, "clicked", onTabClose, cast[pointer](t))
-  gtk_box_pack_start(box, t.icon, 0, 0, 0)
-  gtk_box_pack_start(box, t.label, 1, 1, 0)
-  gtk_box_pack_end(box, close, 0, 0, 0)
-  t.button = gtk_event_box_new()
-  addClass(t.button, "webby-tab")
-  gtk_container_add(t.button, box)
-  g_object_set_data(t.button, "webby-close", close)
-  connect(t.button, "button-press-event", onTabClicked, cast[pointer](t))
-  gtk_box_pack_start(tabStrip, t.button, 0, 0, 0)
-  gtk_widget_show_all(t.button)
+  t.icon = kit.icon("public", 14)
+  t.label = kit.label("New tab")
+  kit.`maxChars=`(t.label, 22)
+  t.closeButton = kit.iconButton("close", "Close tab", proc () = closeTab(t), 14)
+  kit.addClass(t.closeButton, "webby-tab-close")
+  t.button = kit.item(t.icon, kit.expand(kit.sized(t.label, 100)), t.closeButton, onClick = proc () = activateTab(t))
+  t.button.spacing = 4
+  kit.addClass(t.button, "webby-tab")
+  t.button.onMiddle = proc () = closeTab(t)
+  t.button.onContext = proc () = tabMenu(t)
   let at = if index in 0 .. tabs.len: index else: tabs.len
   tabs.insert(t, at)
-  gtk_box_reorder_child(tabStrip, t.button, at.cint)
+  kit.insert(tabStrip, t.button, at)
   if at <= activeIndex: inc activeIndex
   for h in tabCreatedHooks: h(t)
   if focus or activeIndex < 0: activateTab(at)
@@ -366,7 +346,7 @@ proc moveTab*(t: Tab, index: int) =
   let cur = currentTab()
   tabs.delete(i)
   tabs.insert(t, index)
-  gtk_box_reorder_child(tabStrip, t.button, index.cint)
+  kit.insert(tabStrip, t.button, index)
   activeIndex = tabs.find(cur)
   notifyTabStrip()
 
@@ -378,7 +358,7 @@ proc closeTab*(t: Tab) =
   for h in tabClosedHooks: h(t)
   tabs.delete(i)
   t.closed = true
-  gtk_widget_destroy(t.button)
+  kit.remove(tabStrip, t.button)
   if t.view != nil: webby_view_destroy(t.view)
   GC_unref(t)
   if tabs.len == 0:
@@ -1009,14 +989,35 @@ proc defaultShortcuts() =
     if result: closeSidePanel())
 
 const css = """
-.webby-tab { padding: 4px 6px 4px 10px; border-radius: 6px 6px 0 0; }
-.webby-active-tab { background-color: alpha(@theme_selected_bg_color, 0.18); }
+button.webby-tab { padding: 4px 6px 4px 10px; border-radius: 6px 6px 0 0; min-height: 0; }
+button.webby-active-tab { background-color: alpha(@theme_selected_bg_color, 0.18); }
 .webby-tab-close { padding: 0; min-height: 16px; min-width: 16px; }
 .webby-side-panel { border-left: 1px solid alpha(currentColor, 0.15); }
 .webby-link-status { background-color: @theme_bg_color; padding: 2px 8px; font-size: smaller;
   border-top: 1px solid alpha(currentColor, 0.15); border-right: 1px solid alpha(currentColor, 0.15);
   border-radius: 0 6px 0 0; }
 """
+
+proc buildTabStrip*(vertical: bool) =
+  ## Makes the strip (again): a row of tabs under the window's top, or a column of them for vertical tabs. The tabs
+  ## move over from the old strip; the caller puts the new tabStripBox where it goes.
+  let old = tabStrip
+  tabStrip = if vertical: kit.column() else: kit.row()
+  tabStrip.spacing = 2
+  if old != nil:
+    while old.children.len > 0:
+      let c = old.children[0]
+      kit.remove(old, c, keep = true)
+      kit.add(tabStrip, c)
+  else:
+    tabStripSpace = kit.expand(kit.item())
+    kit.addClass(tabStripSpace, "webby-strip-space")
+    kit.add(tabStrip, tabStripSpace)
+  let newTab = kit.iconButton("add", "New tab (Ctrl+T)", proc () = discard openTab(homePage))
+  tabStripRoot = if vertical: kit.column(kit.expand(kit.scroll(tabStrip)), newTab)
+                 else: kit.row(kit.expand(kit.scroll(tabStrip, horizontal = true)), newTab)
+  tabStripRoot.spacing = 0
+  tabStripBox = nkgtk.gtkWidget(tabStripRoot)
 
 proc buildWindow() =
   window = gtk_window_new(GTK_WINDOW_TOPLEVEL)
@@ -1032,14 +1033,7 @@ proc buildWindow() =
   mainBox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
   gtk_container_add(window, mainBox)
 
-  tabStripBox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)
-  let scroller = gtk_scrolled_window_new(nil, nil)
-  gtk_scrolled_window_set_policy(scroller, GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER)
-  tabStrip = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2)
-  gtk_container_add(scroller, tabStrip)
-  gtk_box_pack_start(tabStripBox, scroller, 1, 1, 0)
-  gtk_box_pack_start(tabStripBox, iconButton("add", "New tab (Ctrl+T)", proc () = discard openTab(homePage)),
-    0, 0, 0)
+  buildTabStrip(vertical = false)
   gtk_box_pack_start(mainBox, tabStripBox, 0, 0, 0)
 
   backButton = kit.iconButton("arrow_back", "Back (Alt+Left)", goBack)

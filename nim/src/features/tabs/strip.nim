@@ -91,12 +91,10 @@ proc pinnedCount*(): int =
     inc result
 
 proc styleTab(t: Tab) =
-  let close = cast[Widget](g_object_get_data(t.button, "webby-close"))
-  if close != nil: gtk_widget_set_visible(close, (not t.pinned).gboolean)
-  if t.pinned: addClass(t.button, "webby-pinned-tab") else: removeClass(t.button, "webby-pinned-tab")
+  kit.`visible=`(t.closeButton, not t.pinned)
+  kit.setClass(t.button, "webby-pinned-tab", t.pinned)
   # A 40 px tile with the icon in the middle, like tab_strip.dart's.
-  gtk_widget_set_size_request(t.button, (if t.pinned and not vertical: 40 else: -1), -1)
-  gtk_widget_set_halign(gtk_bin_get_child(t.button), if t.pinned and not vertical: GTK_ALIGN_CENTER else: GTK_ALIGN_FILL)
+  discard kit.sized(t.button, (if t.pinned and not vertical: 40 else: 0))
   updateTabButton(t)
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -159,27 +157,17 @@ proc setVertical*(on: bool, save = true) =
   vertical = on
   if save: writeVerticalTabs(on)
   if appUrl.len > 0: return
-  let scroller = gtk_widget_get_parent(gtk_widget_get_parent(tabStrip))
   let parent = gtk_widget_get_parent(tabStripBox)
-  discard g_object_ref(tabStripBox)
   if parent != nil: gtk_container_remove(parent, tabStripBox)
+  buildTabStrip(on)
   if on:
-    gtk_orientable_set_orientation(tabStripBox, GTK_ORIENTATION_VERTICAL)
-    gtk_orientable_set_orientation(tabStrip, GTK_ORIENTATION_VERTICAL)
-    gtk_scrolled_window_set_policy(scroller, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
-    gtk_widget_set_size_request(tabStripBox, 220, -1)
-    addClass(tabStripBox, "webby-vertical-tabs")
+    discard kit.sized(tabStripRoot, 220)
+    kit.addClass(tabStripRoot, "webby-vertical-tabs")
     gtk_box_pack_start(pageBox, tabStripBox, 0, 0, 0)
     gtk_box_reorder_child(pageBox, tabStripBox, 0)
   else:
-    gtk_orientable_set_orientation(tabStripBox, GTK_ORIENTATION_HORIZONTAL)
-    gtk_orientable_set_orientation(tabStrip, GTK_ORIENTATION_HORIZONTAL)
-    gtk_scrolled_window_set_policy(scroller, GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER)
-    gtk_widget_set_size_request(tabStripBox, -1, -1)
-    removeClass(tabStripBox, "webby-vertical-tabs")
     gtk_box_pack_start(mainBox, tabStripBox, 0, 0, 0)
     gtk_box_reorder_child(mainBox, tabStripBox, 0)
-  g_object_unref(tabStripBox)
   gtk_widget_show_all(tabStripBox)
   for t in tabs: styleTab(t)
 
@@ -247,19 +235,6 @@ proc fillTabMenu*(t: Tab, items: var seq[kit.MenuItem]) =
   items.add kit.menuSeparator()
   items.add kit.checkItem("Vertical tabs", vertical, proc () = setVertical(not vertical))
 
-proc onStripPress(w: Widget, e: GEvent, d: pointer): gboolean {.cdecl.} =
-  var b: cuint
-  discard gdk_event_get_button(e, addr b)
-  # Double-clicking the strip's empty space opens a new tab, as in tab_strip.dart. Tabs keep their own clicks.
-  if gdk_event_get_event_type(e) == GDK_2BUTTON_PRESS and b == 1:
-    newTab()
-    return 1
-  if gdk_event_get_event_type(e) != GDK_BUTTON_PRESS or b != 3: return 0
-  var items: seq[kit.MenuItem]
-  fillTabMenu(nil, items)
-  kit.popupMenu(items)
-  1
-
 # ---------------------------------------------------------------------------------------------------------------
 
 proc startTabs(urls: seq[string]): bool =
@@ -314,15 +289,18 @@ proc install*() =
   tabMenuHooks.add fillTabMenu
   windowHooks.add proc () =
     loadCss("""
-.webby-pinned-tab { padding: 4px 0; }
+button.webby-pinned-tab { padding: 4px 0; }
 .webby-vertical-tabs { border-right: 1px solid alpha(currentColor, 0.15); }
-.webby-vertical-tabs .webby-tab { border-radius: 6px; margin: 1px 4px; }
-.webby-vertical-tabs .webby-tab > box { margin: 4px 0 4px 6px; }
+.webby-vertical-tabs button.webby-tab { border-radius: 6px; margin: 1px 4px; }
+.webby-strip-space, .webby-strip-space:hover { background: none; box-shadow: none; border: none; }
 .webby-toast { background-color: #323232; color: #f0f0f0; }
 """)
-    let viewport = gtk_widget_get_parent(tabStrip)   # right-clicks on the strip's empty space
-    gtk_widget_add_events(viewport, GDK_BUTTON_PRESS_MASK)
-    connect(viewport, "button-press-event", onStripPress)
+    # The strip's empty space: a right-click opens the strip's menu, a double click a new tab (tab_strip.dart).
+    tabStripSpace.onContext = proc () =
+      var items: seq[kit.MenuItem]
+      fillTabMenu(nil, items)
+      kit.popupMenu(items)
+    tabStripSpace.onDoubleClick = newTab
     if readVerticalTabs(): setVertical(true, save = false)
     moreMenuHooks.add addRecentlyClosed   # rebuilt each time the menu opens
     addMenuSeparator()

@@ -55,9 +55,13 @@ proc onComboChanged(c: GtkWidget, data: pointer) {.cdecl.} =
 
 proc onItemPress(b: GtkWidget, ev: pointer, data: pointer): gboolean {.cdecl.} =
   let w = byId(data)
-  if w == nil or gdk_event_get_event_type(ev) != GDK_BUTTON_PRESS: return 0
+  if w == nil: return 0
   var button: cuint
   discard gdk_event_get_button(ev, addr button)
+  if gdk_event_get_event_type(ev) == GDK_2BUTTON_PRESS and button == 1 and w.onDoubleClick != nil:
+    w.onDoubleClick()
+    return 1
+  if gdk_event_get_event_type(ev) != GDK_BUTTON_PRESS: return 0
   if button == 3 and w.onContext != nil: w.onContext(); return 1
   if button == 2 and w.onMiddle != nil: w.onMiddle(); return 1
   0
@@ -77,10 +81,45 @@ proc onEntryKey(e: GtkWidget, ev: pointer, data: pointer): gboolean {.cdecl.} =
   if w == nil or w.onEntryKey == nil: return 0
   w.onEntryKey(keyEvent(ev, true)).gboolean
 
+var pictures: Table[int, tuple[bytes: string, size: int, pixbuf: pointer]]   # icon id -> its image, decoded
+
+proc picture(w: Widget, scale: int): pointer =
+  ## `w.image` decoded at the icon's size in device pixels (nil if it isn't a picture GdkPixbuf reads).
+  let px = w.iconSize * scale
+  let had = pictures.getOrDefault(w.id)
+  if had.bytes == w.image and had.size == px: return had.pixbuf
+  if had.pixbuf != nil: g_object_unref(had.pixbuf)
+  var pix: pointer
+  let bytes = w.image
+  let l = gdk_pixbuf_loader_new()
+  if gdk_pixbuf_loader_write(l, unsafeAddr bytes[0], bytes.len.csize_t, nil) != 0 and
+      gdk_pixbuf_loader_close(l, nil) != 0:
+    let full = gdk_pixbuf_loader_get_pixbuf(l)
+    if full != nil: pix = gdk_pixbuf_scale_simple(full, px.cint, px.cint, GDK_INTERP_BILINEAR)
+  else:
+    discard gdk_pixbuf_loader_close(l, nil)
+  g_object_unref(l)
+  pictures[w.id] = (w.image, px, pix)
+  pix
+
 proc onIconDraw(area: GtkWidget, cr: pointer, data: pointer): gboolean {.cdecl.} =
-  # The glyph in the widget's text colour (the button's, inside a button), centred, like a symbolic icon.
+  # The glyph in the widget's text colour (the button's, inside a button), centred, like a symbolic icon; or the
+  # icon's picture.
   let w = byId(data)
   if w == nil: return 0
+  if w.image.len > 0:
+    let scale = max(gtk_widget_get_scale_factor(area).int, 1)
+    let p = w.picture(scale)
+    if p != nil:
+      let size = w.iconSize.float
+      cairo_save(cr)
+      cairo_translate(cr, ((gtk_widget_get_allocated_width(area).float - size) / 2).int.float,
+        ((gtk_widget_get_allocated_height(area).float - size) / 2).int.float)
+      cairo_scale(cr, 1 / scale.float, 1 / scale.float)
+      gdk_cairo_set_source_pixbuf(cr, p, 0, 0)
+      cairo_paint(cr)
+      cairo_restore(cr)
+      return 1
   let g = glyph(w.iconName)
   if g == nil: return 0
   let size = w.iconSize.float
@@ -286,7 +325,7 @@ proc onFocusOut(a: GtkWidget, ev: pointer, data: pointer): gboolean {.cdecl.} = 
 # Native widgets
 
 proc applyExpand(w: Widget) =
-  let along = if w.parent != nil and w.parent.kind == wkRow: GTK_ORIENTATION_HORIZONTAL else: GTK_ORIENTATION_VERTICAL
+  let along = if w.parent != nil and w.parent.kind in {wkRow, wkItem}: GTK_ORIENTATION_HORIZONTAL else: GTK_ORIENTATION_VERTICAL
   gtk_widget_set_hexpand(w.native, (w.expanded and along == GTK_ORIENTATION_HORIZONTAL).gboolean)
   gtk_widget_set_vexpand(w.native, (w.expanded and along == GTK_ORIENTATION_VERTICAL).gboolean)
 
@@ -354,7 +393,11 @@ proc sync(w: Widget) =
   of wkColumn, wkRow:
     gtk_box_set_spacing(w.native, w.spacing.cint)
     gtk_container_set_border_width(w.native, w.padding.cuint)
-  of wkLabel: gtk_label_set_text(w.native, w.text.cstring)
+  of wkLabel:
+    gtk_label_set_text(w.native, w.text.cstring)
+    gtk_label_set_line_wrap(w.native, (w.maxChars == 0).gboolean)
+    gtk_label_set_ellipsize(w.native, if w.maxChars > 0: PANGO_ELLIPSIZE_END else: PANGO_ELLIPSIZE_NONE)
+    gtk_label_set_max_width_chars(w.native, (if w.maxChars > 0: w.maxChars else: -1).cint)
   of wkButton, wkCheck, wkToggle:
     # A button with only an icon has no label at all (an empty label would still take room). Only changes are
     # set: setting a GtkButton's label rebuilds its insides, and one rebuilt while the pointer is over it stops
@@ -395,7 +438,9 @@ proc sync(w: Widget) =
       shownItems[w.id] = w.items
     if gtk_combo_box_get_active(w.native) != w.selected.cint: gtk_combo_box_set_active(w.native, w.selected.cint)
   of wkProgress: gtk_progress_bar_set_fraction(w.native, w.value.clamp(0.0, 1.0))
-  of wkScroll: discard
+  of wkScroll:
+    if w.horizontal: gtk_scrolled_window_set_policy(w.native, GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER)
+    else: gtk_scrolled_window_set_policy(w.native, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
   if w.kind != wkIcon:
     gtk_widget_set_size_request(w.native, (if w.minWidth > 0: w.minWidth else: -1).cint,
                                 (if w.minHeight > 0: w.minHeight else: -1).cint)
@@ -443,6 +488,7 @@ proc realize(w: Widget) =
       inner[w.id] = box
       gtk_style_context_add_class(gtk_widget_get_style_context(b), "nk-item")
       gtk_button_set_relief(b, GTK_RELIEF_NONE)
+      gtk_widget_set_focus_on_click(b, 0)   # a click on a row (a tab) leaves the keyboard focus where it was
       connect(b, "clicked", onClicked, data)
       connect(b, "button-press-event", onItemPress, data)
       b
@@ -510,6 +556,9 @@ proc unrealize(w: Widget) =
   shownClasses.del w.id
   shownIcons.del w.id
   shownLabels.del w.id
+  if w.id in pictures:
+    if pictures[w.id].pixbuf != nil: g_object_unref(pictures[w.id].pixbuf)
+    pictures.del w.id
   inner.del w.id
   w.realized = false
 

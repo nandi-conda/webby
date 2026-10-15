@@ -1,7 +1,7 @@
 ## The web backend (`nim js`): each widget is a DOM element laid out with flexbox, canvases are <canvas> elements
 ## (the pixel buffer is copied into an ImageData), timers are setTimeout, storage is localStorage, HTTP is fetch().
 
-import std/[jsffi, strutils, tables, unicode]
+import std/[base64, jsffi, strutils, tables, unicode]
 import ../[core, services]
 
 var
@@ -28,6 +28,8 @@ html, body { margin: 0; height: 100%; font: 15px system-ui, sans-serif; color: #
 .nk-column { flex-direction: column; } .nk-row { flex-direction: row; align-items: center; }
 .nk-expand { flex: 1 1 0; min-width: 0; min-height: 0; }
 .nk-scroll { overflow-y: auto; min-height: 0; }
+.nk-hscroll { overflow-x: auto; overflow-y: hidden; min-width: 0; scrollbar-width: thin; }
+.nk-oneline { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .nk-canvas { display: block; touch-action: none; width: 100%; height: 100%; }
 .nk-canvas-box { position: relative; min-height: 0; }
 .nk-canvas-box > canvas { position: absolute; inset: 0; }
@@ -140,7 +142,10 @@ proc sync(w: Widget) =
   of wkColumn, wkRow:
     e.style.gap = cstring($w.spacing & "px")
     e.style.padding = cstring($w.padding & "px")
-  of wkLabel: e.textContent = w.text.cstring
+  of wkLabel:
+    e.textContent = w.text.cstring
+    e.classList.toggle("nk-oneline".cstring, w.maxChars > 0)
+    e.style.maxWidth = cstring(if w.maxChars > 0: $w.maxChars & "ch" else: "")
   of wkButton:
     e.textContent = "".cstring
     if w.iconName.len > 0: e.appendChild(svgIcon(w.iconName, w.iconSize))
@@ -151,7 +156,16 @@ proc sync(w: Widget) =
     let fresh = svgIcon(w.iconName, w.iconSize)
     e.setAttribute("width", fresh.getAttribute("width"))
     e.setAttribute("height", fresh.getAttribute("height"))
-    e.firstChild.setAttribute("d", iconPaths.getOrDefault(w.iconName).cstring)
+    let mime = imageMime(w.image)
+    e.firstChild.setAttribute("d", cstring(if mime.len > 0: "" else: iconPaths.getOrDefault(w.iconName)))
+    # A picture goes in an <image> over the (then empty) path.
+    if e.childNodes.length.to(int) > 1: e.removeChild(e.lastChild)
+    if mime.len > 0:
+      let img = document.createElementNS("http://www.w3.org/2000/svg".cstring, "image".cstring)
+      img.setAttribute("href", cstring("data:" & mime & ";base64," & encode(w.image)))
+      img.setAttribute("width", cstring($iconEm))
+      img.setAttribute("height", cstring($iconEm))
+      e.appendChild(img)
   of wkItem:
     e.style.gap = cstring($w.spacing & "px")
     if w.padding > 0: e.style.padding = cstring($w.padding & "px")
@@ -193,7 +207,9 @@ proc sync(w: Widget) =
         discard e.add(o)
     e.selectedIndex = w.selected
   of wkProgress: e.value = w.value.clamp(0.0, 1.0)
-  of wkScroll: discard
+  of wkScroll:
+    e.classList.toggle("nk-scroll".cstring, not w.horizontal)
+    e.classList.toggle("nk-hscroll".cstring, w.horizontal)
   if w.kind in {wkButton, wkToggle, wkEntry, wkDropdown}: e.disabled = not w.enabled
   if w.kind in {wkCheck, wkSlider}: inputs[w.id].disabled = not w.enabled
   e.style.minWidth = cstring(if w.minWidth > 0: $w.minWidth & "px" else: "")
@@ -242,6 +258,10 @@ proc realize(w: Widget): JsObject =
         if w.onContext != nil:
           ev.preventDefault()
           w.onContext())
+      d.addEventListener("dblclick", proc (ev: JsObject) =
+        if w.onDoubleClick != nil:
+          ev.preventDefault()
+          w.onDoubleClick())
       d.addEventListener("auxclick", proc (ev: JsObject) =
         if ev.button.to(int) == 1 and w.onMiddle != nil:
           ev.preventDefault()
