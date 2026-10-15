@@ -135,6 +135,11 @@ public class WebbyHost extends Host {
                     Services.cancelStream(Integer.parseInt(arg));
                     return "ok";
                 case "device": return android.os.Build.MODEL;
+                case "online": {
+                    android.net.ConnectivityManager cm = getSystemService(android.net.ConnectivityManager.class);
+                    android.net.NetworkCapabilities nc = cm == null ? null : cm.getNetworkCapabilities(cm.getActiveNetwork());
+                    return nc != null && nc.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) ? "yes" : "no";
+                }
                 case "colorScheme": return colorScheme();
                 case "openFile": return Services.openFile(this, arg);
                 case "locationStart": return Site.locationStart(this);

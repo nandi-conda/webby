@@ -3,6 +3,7 @@
      app (nim/android, dev.webby.nim) is still around, so both can be installed. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.webby.kit">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <!-- Asked for only when a site the user allowed needs them. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>

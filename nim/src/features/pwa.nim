@@ -209,6 +209,8 @@ var
 
 proc hasDefaultRoute(): bool =
   ## Whether the kernel has a default route; true when that can't be read, so webby never goes offline by mistake.
+  # Android keeps its routes in per-network tables apps can't read: ask its ConnectivityManager.
+  when defined(android): return hostCall("online") != "no"
   var readable = false
   try:
     let lines = readFile("/proc/net/route").splitLines
