@@ -172,9 +172,10 @@ proc updateRow(r: var Row, d: Download) =
   if d.active:
     if d.total > 0: gtk_progress_bar_set_fraction(r.bar, d.fraction)
     else: gtk_progress_bar_pulse(r.bar)
+  # Ladybird pauses only downloads it can resume (the server takes Range requests).
+  gtk_widget_set_visible(r.pauseButton, gboolean(d.status == "paused" or d.status == "in_progress" and d.canResume))
   if r.status != d.status:
     r.status = d.status
-    gtk_widget_set_visible(r.pauseButton, d.active.gboolean)
     setButtonIcon(r.pauseButton, if d.status == "paused": "play_arrow" else: "pause")
     gtk_widget_set_tooltip_text(r.pauseButton, if d.status == "paused": "Resume" else: "Pause")
     setButtonIcon(r.actionButton, if d.active: "close" else: "folder_open")
@@ -351,8 +352,8 @@ proc announce() =
     known[d.id] = d.status
     if panelOpen: continue
     if before.len == 0 and d.active: toast("Downloading " & d.name & " (Ctrl+J shows downloads)")
-    elif before.len > 0 and d.status == "completed": toast(d.name & " downloaded")
-    elif before.len > 0 and d.status == "failed": toast("Couldn't download " & d.name)
+    elif d.status == "completed": toast(d.name & " downloaded")
+    elif d.status == "failed": toast("Couldn't download " & d.name)
 
 proc poll() =
   let s = webby_downloads_serial()

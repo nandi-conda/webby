@@ -13,7 +13,7 @@ platforms = [{ name = "linux-64-glibc235", platform = "linux-64", glibc = "2.35"
 # `flutter` and `dart`; the first run downloads the Flutter SDK into ~/.cache/conda-flutter (conda/flutter).
 flutter = "3.35.5.*"
 # libwebby.so (LibWeb/LibJS) and the helper processes; activation sets WEBBY_LADYBIRD_PREFIX unless it's already set.
-webby-ladybird = ">=2026.10.14.2"
+webby-ladybird = ">=2026.10.15.1"
 # The password vault's key goes in the desktop keyring through libsecret (loaded at runtime).
 libsecret = "*"
 # Flutter's Linux desktop build: compiler, build tools, GTK 3 and the .pc files its pkg-config lookup pulls in.
