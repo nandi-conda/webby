@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds Ladybird (LibWeb, LibJS, helper processes) plus libwebby.so, the C ABI the Flutter app loads.
+# Builds Ladybird (LibWeb, LibJS, helper processes) plus libwebby.so, the C ABI webby's front end loads.
 #
 # Usage: scripts/build_ladybird.sh            # clone/update into third_party/ladybird and build
 #        LADYBIRD_DIR=/path/to/ladybird scripts/build_ladybird.sh
@@ -29,7 +29,7 @@ if [ "$(git rev-parse -q --verify HEAD || true)" != "$LADYBIRD_COMMIT" ]; then
     git checkout -q -f FETCH_HEAD
 fi
 
-# Our Ladybird patches: 0001 teaches UI/ about the Flutter frontend, 0002 adds Web Authentication (passkeys), 0003
+# Our Ladybird patches: 0001 teaches UI/ about webby's frontend (UI/Flutter, a name kept from the first front end), 0002 adds Web Authentication (passkeys), 0003
 # adds RequestServer's offline (cache-only) mode, 0004 lets image/media documents load the resource they show despite
 # its CSP, 0005 to 0010 get the Android build working and running (plain helper executables, HarfBuzz/FreeType for
 # Skia, bit-rotted Android code, a primitive storage cage that fits a 39-bit address space, a writable temp dir), 0011 adds the microphone permission prompt, 0012 builds the Cranelift WebAssembly JIT for Android, 0013 gives the Android Compositor an ANGLE GLES backend for WebGL, 0014 keeps WebGL bindings across canvas resizes, 0015 lets webby turn off the spare WebContent process, 0016 passes MIMALLOC_* settings on to the helper processes, 0017 stops pages with a <video> from repainting every frame, 0018 fixes the WebAssembly JIT's tier-up into a running loop, 0019 lets null cells in grid-template-areas size the explicit grid (`". ."` is two columns), 0020 reads WebGL frames back in one call rather than one per row, 0021 lets LIBGL_*/GALLIUM_* (software GL) reach the Compositor. When the patch set changes, the tree goes back to the pinned commit first so every patch

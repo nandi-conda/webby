@@ -65,5 +65,5 @@ tests:
 
 about:
   homepage: https://github.com/nandi-conda/webby
-  summary: Ladybird's LibWeb/LibJS engine as libwebby.so plus its helper processes, for the webby Flutter browser
+  summary: Ladybird's LibWeb/LibJS engine as libwebby.so plus its helper processes, for the webby browser
   license: BSD-2-Clause
