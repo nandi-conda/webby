@@ -78,6 +78,12 @@ type PageText* = object
   title*, url*, text*: string
   selection*: bool
 
+proc waitingText*(hasPage, queued: bool): string =
+  ## What the summary panel says before the first piece of the summary comes.
+  if not hasPage: "Reading the page…"
+  elif queued: "DeepSeek is busy and has queued the request. Waiting for it to start…"
+  else: "Asking DeepSeek…"
+
 # ---------------------------------------------------------------------------------------------------------------
 # Requests
 

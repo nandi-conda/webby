@@ -126,7 +126,7 @@ final class SummaryScreen {
         if (!e.optString("error").isEmpty()) {
             rows.add(pad(s, wrapped(a, e.optString("error"), 0xffd32f2f), 12));
         } else if (e.optString("html").isEmpty() && e.optBoolean("running")) {
-            rows.add(pad(s, wrapped(a, "Reading the page…", Ui.dim), 12));
+            rows.add(pad(s, wrapped(a, e.optString("waiting", "Reading the page…"), Ui.dim), 12));
         } else {
             rows.add(pad(s, markdown(a, s, e.optString("html")), 12));
         }

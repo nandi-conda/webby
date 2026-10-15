@@ -50,6 +50,7 @@ proc stateJson(job: Job): JsonNode =
   %*{"open": true, "title": job.title, "url": job.url, "selection": job.selection, "running": job.running,
     "busy": busy, "error": job.error, "html": markdownHtml(job.text.strip), "text": job.text, "saved": saved,
     "questions": qs, "hasKey": apiKey().len > 0,
+    "waiting": waitingText(job.hasPage, job.chat != nil and job.chat.queued),
     "canAsk": apiKey().len > 0 and job.text.strip.len > 0 and not job.running and job.error.len == 0 and
       not job.answering}
 
@@ -177,7 +178,9 @@ proc start(job: Job, key: string, fresh: bool) =
         if job.text.strip.len == 0: (fail("DeepSeek sent back an empty summary."); return)
         job.save()
         job.running = false
-        changed(job)))
+        changed(job),
+      proc () =
+        if generation == job.generation: changed(job)))
 
 proc ask(job: Job, key, text: string) =
   let question = text.strip

@@ -290,12 +290,25 @@ Map<String, Object?> questionRequest({
 };
 
 /// Streams the summary of [page] from DeepSeek, piece by piece. [apiKey] goes only in the Authorization header.
-Stream<String> streamSummary(String apiKey, PageText page, {Uri? endpoint, HttpClient Function()? client}) =>
-    streamChat(apiKey, summaryRequest(page), endpoint: endpoint, client: client);
+Stream<String> streamSummary(String apiKey, PageText page,
+        {Uri? endpoint, HttpClient Function()? client, void Function()? onQueued, Duration? busyLimit}) =>
+    streamChat(apiKey, summaryRequest(page),
+        endpoint: endpoint, client: client, onQueued: onQueued, busyLimit: busyLimit);
 
-/// Streams the reply to a chat completions [body] (with "stream": true) from DeepSeek, piece by piece.
+/// How long DeepSeek may keep a request queued (sending only ": keep-alive" lines) before we give up.
+const deepSeekBusyLimit = Duration(seconds: 90);
+
+const deepSeekBusyMessage = 'DeepSeek kept the request waiting in its queue for 90 seconds without starting on it, '
+    'which it does when it\'s overloaded. Try again in a while.';
+
+/// Streams the reply to a chat completions [body] (with "stream": true) from DeepSeek, piece by piece. When
+/// DeepSeek is overloaded it holds the request in a queue, sending ": keep-alive" lines: [onQueued] is called on the
+/// first, and after [busyLimit] without a piece the stream fails with [deepSeekBusyMessage].
 Stream<String> streamChat(String apiKey, Map<String, Object?> body,
-    {Uri? endpoint, HttpClient Function()? client}) async* {
+    {Uri? endpoint, HttpClient Function()? client, void Function()? onQueued, Duration? busyLimit}) async* {
+  final waited = Stopwatch()..start();
+  var gotPiece = false;
+  var queued = false;
   final http = (client ?? HttpClient.new)()..connectionTimeout = const Duration(seconds: 15);
   try {
     final request = await http.postUrl(endpoint ?? Uri.parse('https://api.deepseek.com/chat/completions'));
@@ -310,6 +323,15 @@ Stream<String> streamChat(String apiKey, Map<String, Object?> body,
     }
     final lines = response.transform(utf8.decoder).transform(const LineSplitter());
     await for (final line in lines.timeout(const Duration(seconds: 60))) {
+      if (line.startsWith(':') && !gotPiece) {
+        // Keep-alives keep the connection open, so the timeout above never fires while the request is queued.
+        if (!queued) {
+          queued = true;
+          onQueued?.call();
+        }
+        if (waited.elapsed > (busyLimit ?? deepSeekBusyLimit)) throw SummaryError(deepSeekBusyMessage);
+        continue;
+      }
       if (!line.startsWith('data:')) continue;
       final data = line.substring(5).trim();
       if (data == '[DONE]') break;
@@ -319,7 +341,10 @@ Stream<String> streamChat(String apiKey, Map<String, Object?> body,
         if (choices.isEmpty) continue;
         final delta = (choices.first as Map<String, Object?>)['delta'] as Map<String, Object?>?;
         final content = delta?['content'];
-        if (content is String && content.isNotEmpty) yield content;
+        if (content is String && content.isNotEmpty) {
+          gotPiece = true;
+          yield content;
+        }
       } on FormatException {
         continue;
       }
@@ -365,6 +390,9 @@ class SummaryJob extends ChangeNotifier {
   String text = '';
   String? error;
   bool selection = false;
+
+  /// What the panel says until the first piece of the summary comes.
+  String waiting = 'Reading the page…';
 
   /// When the summary shown was made, if it came from the cache.
   DateTime? savedAt;
@@ -423,6 +451,7 @@ class SummaryJob extends ChangeNotifier {
     _key = null;
     _page = null;
     _madeAt = null;
+    waiting = 'Reading the page…';
     notifyListeners();
     try {
       final page = await readPageText(controller);
@@ -439,8 +468,13 @@ class SummaryJob extends ChangeNotifier {
       url = page.url;
       selection = page.selection;
       if (page.text.trim().length < 40) throw SummaryError('This page has no text to summarize.');
+      waiting = 'Asking DeepSeek…';
       notifyListeners();
-      await for (final piece in streamSummary(apiKey, page)) {
+      await for (final piece in streamSummary(apiKey, page, onQueued: () {
+        if (generation != _generation) return;
+        waiting = 'DeepSeek is busy and has queued the request. Waiting for it to start…';
+        notifyListeners();
+      })) {
         if (generation != _generation) return;
         text += piece;
         notifyListeners();
@@ -817,7 +851,7 @@ class _SummaryPanelState extends State<_SummaryPanel> {
                       if (job.error != null)
                         Text(job.error!, style: KitText.body(context).copyWith(color: c.danger))
                       else if (job.text.isEmpty && job.running)
-                        Text('Reading the page…', style: KitText.dim(context))
+                        Text(job.waiting, style: KitText.dim(context))
                       else
                         MarkdownView(job.text.trim(), onAnchor: _jump),
                       for (final qa in job.questions) ...[

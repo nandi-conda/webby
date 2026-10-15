@@ -5,14 +5,18 @@
 ## use a local fake server; http:// works too). On Android the bytes come from Java's HttpURLConnection instead
 ## (base.httpStream); the parsing and the messages are the same.
 
-import std/[json, monotimes, os, strutils]
+import std/[json, monotimes, os, strutils, times]
 when defined(android):
   import ../../base
 else:
-  import std/[times, uri]
+  import std/uri
   import ../../browser
 
-const defaultEndpoint = "https://api.deepseek.com/chat/completions"
+const
+  defaultEndpoint = "https://api.deepseek.com/chat/completions"
+  busyLimit = initDuration(seconds = 90)   ## how long DeepSeek may keep a request queued before we give up
+  busyMessage* = "DeepSeek kept the request waiting in its queue for 90 seconds without starting on it, which it " &
+    "does when it's overloaded. Try again in a while."
 
 when not defined(android):
  {.push cdecl, importc.}
@@ -46,6 +50,10 @@ type
     ## One streaming request. `onPiece` gets each piece of the reply; `onDone` gets "" or an error message, once.
     onPiece*: proc (piece: string)
     onDone*: proc (error: string)
+    onQueued*: proc ()          ## called when DeepSeek says it has queued the request (": keep-alive" lines)
+    queued*: bool               ## DeepSeek holds the request in its queue and hasn't sent a piece yet
+    gotPiece: bool
+    lastPiece: MonoTime         ## when the last piece came (or the request was sent)
     finished: bool
     client, conn, cancellable: pointer
     request: string
@@ -112,6 +120,17 @@ proc handleEvents(c: Chat) =
     if nl < 0: return
     let line = c.events[0 ..< nl].strip(leading = false, chars = {'\r'})
     c.events = c.events[nl + 1 .. ^1]
+    if line.startsWith(":"):
+      # A comment: DeepSeek sends ": keep-alive" every few seconds while the request waits in its queue (when it's
+      # overloaded). They keep the connection alive, so the reply timeout never fires: give up after busyLimit.
+      if not c.gotPiece:
+        if not c.queued:
+          c.queued = true
+          if c.onQueued != nil: c.onQueued()
+        if getMonoTime() - c.lastPiece > busyLimit:
+          c.finish(busyMessage)
+          return
+      continue
     if not line.startsWith("data:"): continue
     let data = line[5 .. ^1].strip
     if data == "[DONE]":
@@ -121,8 +140,11 @@ proc handleEvents(c: Chat) =
       let choices = parseJson(data){"choices"}
       if choices == nil or choices.kind != JArray or choices.len == 0: continue
       let content = choices[0]{"delta", "content"}
-      if content != nil and content.kind == JString and content.getStr.len > 0 and c.onPiece != nil:
-        c.onPiece(content.getStr)
+      if content != nil and content.kind == JString and content.getStr.len > 0:
+        c.gotPiece = true
+        c.queued = false
+        c.lastPiece = getMonoTime()
+        if c.onPiece != nil: c.onPiece(content.getStr)
     except CatchableError: discard
 
 proc addBody(c: Chat, data: string) =
@@ -190,11 +212,13 @@ proc ended(c: Chat) =
     c.finish("")
 
 when defined(android):
-  proc streamChat*(apiKey: string, body: JsonNode, onPiece: proc (piece: string), onDone: proc (error: string)): Chat =
+  proc streamChat*(apiKey: string, body: JsonNode, onPiece: proc (piece: string), onDone: proc (error: string),
+                   onQueued: proc () = nil): Chat =
     ## Posts a chat completions `body` (with "stream": true) and streams the reply. Java times the connection out
     ## after 15 s and the reply after 60 s without data.
     let e = getEnv("WEBBY_DEEPSEEK_ENDPOINT")
-    let c = Chat(onPiece: onPiece, onDone: onDone, started: getMonoTime(), lastData: getMonoTime())
+    let c = Chat(onPiece: onPiece, onDone: onDone, onQueued: onQueued, started: getMonoTime(),
+      lastData: getMonoTime(), lastPiece: getMonoTime())
     result = c
     if base.httpStream == nil:
       c.finish("Couldn't reach DeepSeek (no network here).")
@@ -289,11 +313,15 @@ else:
       if late:
         c.finish("DeepSeek took too long to answer.")
         break
+      if c.queued and now - c.lastPiece > busyLimit:
+        c.finish(busyMessage)
+        break
     if chats.len > 0: return 1
     tickSource = 0
     0
 
-  proc streamChat*(apiKey: string, body: JsonNode, onPiece: proc (piece: string), onDone: proc (error: string)): Chat =
+  proc streamChat*(apiKey: string, body: JsonNode, onPiece: proc (piece: string), onDone: proc (error: string),
+                   onQueued: proc () = nil): Chat =
     ## Posts a chat completions `body` (with "stream": true) and streams the reply.
     let e = getEnv("WEBBY_DEEPSEEK_ENDPOINT")
     let u = parseUri(if e.len > 0: e else: defaultEndpoint)
@@ -303,8 +331,8 @@ else:
     let payload = $body
     var path = if u.path.len > 0: u.path else: "/"
     if u.query.len > 0: path.add "?" & u.query
-    result = Chat(onPiece: onPiece, onDone: onDone, client: g_socket_client_new(), cancellable: g_cancellable_new(),
-      started: getMonoTime(), lastData: getMonoTime())
+    result = Chat(onPiece: onPiece, onDone: onDone, onQueued: onQueued, client: g_socket_client_new(),
+      cancellable: g_cancellable_new(), started: getMonoTime(), lastData: getMonoTime(), lastPiece: getMonoTime())
     result.request = "POST " & path & " HTTP/1.1\r\n" &
       "Host: " & host & (if u.port.len > 0: ":" & u.port else: "") & "\r\n" &
       "Authorization: Bearer " & apiKey & "\r\n" &

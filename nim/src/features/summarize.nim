@@ -260,7 +260,9 @@ proc start(job: Job, key: string, fresh = false) =
         if job.text.strip.len == 0: (fail("DeepSeek sent back an empty summary."); return)
         job.save()
         job.running = false
-        changed(job)))
+        changed(job),
+      proc () =
+        if generation == job.generation: changed(job)))
 
 proc ask(job: Job, key, text: string) =
   ## Asks a follow-up question with the page text, the summary and the earlier questions as context.
@@ -434,7 +436,7 @@ proc render() =
     add note
   if job.error.len > 0: add(markupLabel(danger(job.error)), 12)
   elif job.text.len == 0 and job.running:
-    let reading = markupLabel(escapeMarkup("Reading the page…"))
+    let reading = markupLabel(escapeMarkup(waitingText(job.hasPage, job.chat != nil and job.chat.queued)))
     addClass(reading, "webby-md-dim")
     add(reading, 12)
   else: add(markdownView(job.text.strip), 12)

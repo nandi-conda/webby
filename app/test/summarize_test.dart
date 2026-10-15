@@ -14,10 +14,12 @@ void main() {
   late Uri endpoint;
   final requests = <(Map<String, String>, Map<String, Object?>)>[];
   int status = 200;
+  var queuedOnly = false;
 
   setUp(() async {
     requests.clear();
     status = 200;
+    queuedOnly = false;
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     endpoint = Uri.parse('http://127.0.0.1:${server.port}/chat/completions');
     server.listen((request) async {
@@ -26,6 +28,14 @@ void main() {
       request.response.statusCode = status;
       if (status != 200) {
         request.response.write(jsonEncode({'error': {'message': 'nope'}}));
+      } else if (queuedOnly) {
+        // DeepSeek when overloaded: 200, then only keep-alive comments while the request waits in its queue.
+        request.response.headers.contentType = ContentType('text', 'event-stream', charset: 'utf-8');
+        for (var i = 0; i < 20; i++) {
+          request.response.write(': keep-alive\n\n');
+          await request.response.flush();
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
       } else {
         request.response.headers.contentType = ContentType('text', 'event-stream', charset: 'utf-8');
         for (final piece in ['It is ', 'about examples.', '\n• One']) {
@@ -61,6 +71,17 @@ void main() {
       streamSummary('k', page, endpoint: endpoint).toList(),
       throwsA(isA<SummaryError>().having((e) => e.message, 'message', contains('nope'))),
     );
+  });
+
+  test('gives up when DeepSeek keeps the request queued', () async {
+    queuedOnly = true;
+    var queued = 0;
+    await expectLater(
+      streamSummary('k', page, endpoint: endpoint, onQueued: () => queued++, busyLimit: const Duration(milliseconds: 300))
+          .toList(),
+      throwsA(isA<SummaryError>().having((e) => e.message, 'message', deepSeekBusyMessage)),
+    );
+    expect(queued, 1);
   });
 
   test('summary cache keys, persists, trims and clears', () {
