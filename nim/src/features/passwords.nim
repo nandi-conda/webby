@@ -19,7 +19,7 @@
 import std/strutils
 import ../browser
 from nimkit/core as kit import nil
-import passwords/[vault, manager, generator, panel, ui]
+import passwords/[vault, manager, generator, panel]
 
 # page_script.dart's passwordPageScript(prefix), unescaped from its Dart string at compile time.
 const prefixMark = "\x01PREFIX\x01"

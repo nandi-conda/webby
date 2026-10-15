@@ -7,7 +7,7 @@
 
 import std/[strutils, times, uri]
 import ../browser
-import passwords/[manager, ui]
+import passwords/manager
 from passwords/panel import panelActionHooks
 from nimkit/core as kit import nil
 import sync/[keys, blobs, engine, devicetabs]

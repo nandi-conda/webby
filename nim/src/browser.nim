@@ -3,15 +3,24 @@
 ## (UI pieces go in `windowHooks`, which run once the window exists). Nothing here knows about a feature.
 
 import std/[algorithm, json, math, monotimes, os, random, strutils, tables, times]
-import base, gtk, ffi, icons
+import base, ffi
 from icondata as idata import nil
 import nimkit/services
 from nimkit/core as kit import nil
-from nimkit/backend/gtk as nkgtk import nil   # nimkit on GTK; also fills in its services (timers, HTTP, storage)
+when defined(android):
+  # nimkit on Android (dev.nimkit.Host); also fills in its services (timers, HTTP, storage). The chrome is the same
+  # nimkit tree as on the desktop; there is no GTK, so the desktop shell's GTK bits below are left out.
+  from nimkit/backend/android as nkandroid import nil
+  type Widget* = pointer
+  proc loadCss*(css: string) = discard   ## GTK CSS; Android styles nimkit's classes itself
+else:
+  import gtk, icons
+  from nimkit/backend/gtk as nkgtk import nil   # nimkit on GTK; also fills in its services (timers, HTTP, storage)
+  export gtk, icons
 
 appName = "webby"
 userAgent = "webby"
-export base, gtk, ffi, icons, json, tables
+export base, ffi, json, tables
 export services.copyText, services.pasteText, services.after, services.every, services.cancel, services.Timer
 
 # The Flutter app's page shims (lib/src/page_compat.dart), read at compile time so both front ends run the same JS.
@@ -56,7 +65,7 @@ var
   commandLineUrls*: seq[string]
 
   # Widgets
-  window*: Widget              ## the GtkWindow holding rootColumn (the desktop shell)
+  window*: Widget              ## the GtkWindow holding rootColumn (the desktop shell; nil on Android)
   rootColumn*: kit.Widget      ## everything in the window: tab strip, toolbar, bars, then the page and side panel
   statusBubble*: kit.Widget    ## the hovered link's address, floating over the page's bottom left corner
   urlField*: kit.Widget        ## the URL bar (features/omnibox.nim adds its suggestions and keys)
@@ -380,21 +389,6 @@ proc closeTab*(t: Tab) =
 
 # ---------------------------------------------------------------------------------------------------------------
 # Chrome helpers for features
-
-var kitButtons: Table[pointer, kit.Widget]   # iconButton's GtkWidgets -> their nimkit buttons
-
-proc iconButton*(icon, tooltip: string, action: proc () {.closure.}, size = 18): Widget =
-  ## A flat button with one of the Flutter app's icons (an Icons.* name, see icons.nim), as a GtkWidget for GTK
-  ## boxes; a nimkit iconButton underneath (setButtonIcon changes its icon).
-  let b = kit.iconButton(icon, tooltip, action, size)
-  result = nkgtk.gtkWidget(b)
-  kitButtons[result] = b
-  connect(result, "destroy", proc (w: Widget, d: pointer) {.cdecl.} = kitButtons.del w)
-
-proc setButtonIcon*(button: Widget, icon: string) =
-  ## Switches the icon of a button made by iconButton.
-  let b = kitButtons.getOrDefault(button)
-  if b != nil: kit.`iconName=`(b, icon)
 
 var panelButtons: seq[tuple[button: kit.Widget, icon, openIcon, panel: string]]
 var openPanel: string   ## the side panel's title while it shows
@@ -788,15 +782,16 @@ proc pageResized(c: kit.Canvas) =
     resizeView(t)
     wake()
 
-proc modifiers*(state: uint32): int =
-  ## GDK modifier state as modAlt/modCtrl/modShift/modSuper (for the chrome's own GTK events).
-  if (state and GDK_MOD1_MASK) != 0: result = result or modAlt
-  if (state and GDK_CONTROL_MASK) != 0: result = result or modCtrl
-  if (state and GDK_SHIFT_MASK) != 0: result = result or modShift
-  if (state and GDK_SUPER_MASK) != 0: result = result or modSuper
+when not defined(android):
+  proc modifiers*(state: uint32): int =
+    ## GDK modifier state as modAlt/modCtrl/modShift/modSuper (for the chrome's own GTK events).
+    if (state and GDK_MOD1_MASK) != 0: result = result or modAlt
+    if (state and GDK_CONTROL_MASK) != 0: result = result or modCtrl
+    if (state and GDK_SHIFT_MASK) != 0: result = result or modShift
+    if (state and GDK_SUPER_MASK) != 0: result = result or modSuper
 
-proc eventState*(e: GEvent): uint32 =
-  discard gdk_event_get_state(e, addr result)
+  proc eventState*(e: GEvent): uint32 =
+    discard gdk_event_get_state(e, addr result)
 
 proc ladybirdButton(b: int): cint =
   case b
@@ -964,7 +959,7 @@ proc quit*() =
     if not h(): return
   quitting = true
   for h in shutdownHooks: h()
-  gtk_main_quit()
+  kit.quitApp()
 
 
 proc defaultShortcuts() =
@@ -1026,14 +1021,17 @@ proc buildTabStrip*(vertical: bool) =
                  else: kit.row(kit.expand(kit.scroll(tabStrip, horizontal = true)), newTab)
   tabStripRoot.spacing = 0
 
+proc windowTitle(): string = (if incognito: "Webby (Incognito)" else: "Webby")
+
 proc buildWindow() =
-  window = gtk_window_new(GTK_WINDOW_TOPLEVEL)
-  gtk_window_set_default_size(window, 1280, 800)
-  gtk_window_set_title(window, if incognito: "Webby (Incognito)" else: "Webby")
-  setAppIcon(window)
-  kit.onWindowKey = onShortcutKey
+  when not defined(android):
+    window = gtk_window_new(GTK_WINDOW_TOPLEVEL)
+    gtk_window_set_default_size(window, 1280, 800)
+    gtk_window_set_title(window, windowTitle().cstring)
+    setAppIcon(window)
+    nkgtk.useWindow(window)   # nimkit's menus and dialogs belong to it
+  kit.onWindowKey = onShortcutKey   # keys and closing come through nimkit on every platform
   kit.onCloseRequest = proc (): bool = (quit(); false)
-  nkgtk.useWindow(window)   # nimkit's menus and dialogs belong to it; keys and closing go to onWindowKey/onCloseRequest
   kit.registerIcons(idata.iconPaths, idata.iconEm)
   loadCss(css)
 
@@ -1092,7 +1090,7 @@ proc buildWindow() =
 
   rootColumn = kit.column(tabStripRoot, toolbarRow, barSlot, kit.expand(pageSplit))
   rootColumn.spacing = 0
-  gtk_container_add(window, nkgtk.gtkWidget(rootColumn))
+  when not defined(android): gtk_container_add(window, nkgtk.gtkWidget(rootColumn))
 
   if appUrl.len > 0:
     kit.`visible=`(tabStripRoot, false)
@@ -1114,6 +1112,7 @@ proc sweepIncognitoProfiles() =
     try: removeDir(path) except OSError: discard
 
 proc parseCommandLine() =
+  when defined(android): return   # an Activity has no command line
   for a in commandLineParams():
     if a.startsWith("--app="): appUrl = a[6 .. ^1]
     elif a == "--incognito": incognito = true
@@ -1145,21 +1144,24 @@ proc run*() =
   randomize()
   parseCommandLine()
   mark "main"
-  gtk_init(nil, nil)
-  mark "gtk_init"
-  if incognito:
-    g_object_set(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", 1.cint, nil)
+  when not defined(android):
+    gtk_init(nil, nil)
+    mark "gtk_init"
+    if incognito:
+      g_object_set(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", 1.cint, nil)
   for h in startupHooks: h()
   mark "startup hooks"
   let prefix = ladybirdPrefix()
-  loadWebby(prefix)
+  when defined(android): loadWebbyLib("libwebby.so")   # from the APK's native library directory
+  else: loadWebby(prefix)
   if webby_init(prefix.cstring) != 0: quit "webby_init failed for " & prefix
   mark "webby_init"
   defaultShortcuts()
   buildWindow()
   for h in windowHooks: h()
   mark "window hooks"
-  gtk_widget_show_all(window)
+  when defined(android): nkandroid.run(windowTitle(), rootColumn)
+  else: gtk_widget_show_all(window)
   mark "window shown"
 
   let urls = if appUrl.len > 0: @[appUrl] else: commandLineUrls
@@ -1178,6 +1180,7 @@ proc run*() =
   focusPage()
   if trace: discard every(5000, traceTick)
   wake()
+  when defined(android): return   # Android runs the event loop; run() is called from the library's start
   gtk_main()
   for t in tabs:
     if t.view != nil: webby_view_destroy(t.view)

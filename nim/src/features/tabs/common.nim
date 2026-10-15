@@ -4,23 +4,10 @@ import std/[os, strutils, uri]
 import ../../browser
 from nimkit/core as kit import nil
 
-proc gtk_widget_get_parent*(w: Widget): Widget {.importc, cdecl.}
-proc gdk_event_copy*(e: GEvent): GEvent {.importc, cdecl.}
-proc gtk_menu_shell_insert*(m, item: Widget, pos: cint) {.importc, cdecl.}
-proc gtk_orientable_set_orientation*(w: Widget, o: cint) {.importc, cdecl.}
 proc g_spawn_async(dir: cstring, argv, envp: cstringArray, flags: cint, setup, data: pointer, pid: ptr cint,
   err: pointer): gboolean {.importc, cdecl.}
 proc g_child_watch_add(pid: cint, fn, data: pointer): cuint {.importc, cdecl.}
 proc g_spawn_close_pid(pid: cint) {.importc, cdecl.}
-
-proc connectAction*(w: Widget, signal: string, action: proc () {.closure.}) =
-  ## Runs `action` on a signal without arguments of interest ("clicked", "activate", "toggled"); the closure lives
-  ## as long as the widget.
-  let cb = new(proc ())
-  cb[] = action
-  GC_ref(cb)
-  connect(w, signal, proc (w: Widget, d: pointer) {.cdecl.} = cast[ref proc ()](d)[](), cast[pointer](cb))
-  connect(w, "destroy", proc (w: Widget, d: pointer) {.cdecl.} = GC_unref(cast[ref proc ()](d)), cast[pointer](cb))
 
 proc toast*(text: string) =
   ## A message floating over the bottom of the page for a few seconds.

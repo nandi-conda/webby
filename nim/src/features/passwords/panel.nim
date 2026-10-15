@@ -3,7 +3,7 @@
 import std/[algorithm, os, sets, strutils, times]
 import ../../browser
 from nimkit/core as kit import nil
-import vault, manager, generator, ui
+import vault, manager, generator
 
 var
   panelActionHooks*: seq[proc (box: kit.Widget)]  ## add buttons beside "Add password" (sync puts its own there)
