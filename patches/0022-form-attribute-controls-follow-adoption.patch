@@ -1,0 +1,21 @@
+diff --git a/Libraries/LibWeb/DOM/Document.cpp b/Libraries/LibWeb/DOM/Document.cpp
+index 62c1ea4..104caee 100644
+--- a/Libraries/LibWeb/DOM/Document.cpp
++++ b/Libraries/LibWeb/DOM/Document.cpp
+@@ -3784,6 +3784,16 @@ void Document::adopt_node_steps(Node& node)
+                 if (!element->custom_element_registry() || !element->custom_element_registry()->is_scoped()) {
+                     element->set_custom_element_registry(effective_global_custom_element_registry());
+                 }
++
++                // AD-HOC: A listed form-associated element with a form attribute registered with its old document when
++                //         the attribute was set, and that document's list is what tells it about elements with IDs
++                //         coming and going. Move it to this document's list, or a control cloned from a <template>'s
++                //         content never finds a form inserted after it.
++                if (auto* html_element = as_if<HTML::HTMLElement>(*element); html_element && html_element->is_form_associated_element() && html_element->has_attribute(HTML::AttributeNames::form)) {
++                    HTML::FormAssociatedElement& form_associated_element = *html_element;
++                    old_document.remove_form_associated_element_with_form_attribute(form_associated_element);
++                    add_form_associated_element_with_form_attribute(form_associated_element);
++                }
+             }
+ 
+             return TraversalDecision::Continue;

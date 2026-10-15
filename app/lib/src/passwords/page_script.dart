@@ -36,14 +36,16 @@ String passwordPageScript(String prefix) => '''
 
   const visible = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
   const usable = (el) => !el.disabled && !el.readOnly && visible(el);
-  const passwordFields = (root) =>
-    Array.from((root || document).querySelectorAll('input[type=password]')).filter(usable);
+  // A form's controls include those outside it tied to it by a form="id" attribute, so read its elements.
+  const inputsOf = (root) => root instanceof HTMLFormElement
+    ? Array.from(root.elements).filter((el) => el instanceof HTMLInputElement)
+    : Array.from((root || document).querySelectorAll('input'));
+  const passwordFields = (root) => inputsOf(root).filter((el) => el.type === 'password' && usable(el));
   const isTextLike = (el) => el.tagName === 'INPUT' &&
     ['text', 'email', 'tel', ''].includes((el.getAttribute('type') || '').toLowerCase());
 
   function usernameFieldFor(password) {
-    const scope = password.form || document;
-    const inputs = Array.from(scope.querySelectorAll('input')).filter(usable);
+    const inputs = inputsOf(password.form).filter(usable);
     const tagged = inputs.find((el) => isTextLike(el) && /\\busername\\b|\\bemail\\b/.test(el.getAttribute('autocomplete') || ''));
     if (tagged) return tagged;
     const index = inputs.indexOf(password);

@@ -83,6 +83,42 @@ const pageCompatScript = r'''
   // the screen sooner. Flutter reads canvasKitForceMultiSurfaceRasterizer off the plain configuration object it gets
   // from _flutter.loader.load() (an empty one when the page passes none), so a default on Object.prototype turns it
   // on unless the page sets it itself.
+  // A control tied to its form by a form="id" attribute loses that tie in Ladybird when it was cloned from a
+  // <template>'s content and the form comes after it in the page: the clone registers its form attribute with the
+  // template's document and adoption never moves it, so inserting the form later doesn't reach it. Its .form stays
+  // null and its submit button does nothing (try.haxy.net's sign-up page renders its controls exactly so). Setting
+  // the attribute again registers it with the page's document and finds the form, as a fixed engine would have.
+  if (typeof HTMLFormElement !== 'undefined' && (() => {
+    const template = document.createElement('template');
+    template.innerHTML = '<input form="__webby_form_probe"><form id="__webby_form_probe"></form>';
+    // The probe goes in the page for a moment, and its clones one at a time: inserted together, the control would
+    // find the form already there.
+    const parent = document.body || document.documentElement;
+    if (!parent) return false;
+    const box = parent.appendChild(document.createElement('div'));
+    for (const node of Array.from(template.content.childNodes)) box.appendChild(node.cloneNode(true));
+    const broken = box.firstChild.form === null;
+    box.remove();
+    return broken;
+  })()) {
+    const relink = () => {
+      for (const el of document.querySelectorAll('[form]')) {
+        if (el.form || !('form' in el)) continue;
+        const id = el.getAttribute('form');
+        if (document.getElementById(id) instanceof HTMLFormElement) el.setAttribute('form', id);
+      }
+    };
+    const mayNeedRelink = (node) => node.nodeType === 1 &&
+      (node.matches('[form], form[id]') || node.querySelector('[form], form[id]') !== null);
+    new MutationObserver((records) => {
+      if (records.some((record) => Array.from(record.addedNodes).some(mayNeedRelink))) relink();
+    }).observe(document, { childList: true, subtree: true });
+    // A click or Enter that submits reads the button's form right after the event, so catch any left over first.
+    window.addEventListener('click', relink, true);
+    window.addEventListener('keydown', (event) => { if (event.key === 'Enter') relink(); }, true);
+    relink();
+  }
+
   if (!('canvasKitForceMultiSurfaceRasterizer' in Object.prototype)) {
     Object.defineProperty(Object.prototype, 'canvasKitForceMultiSurfaceRasterizer', {
       get() { return true; },
