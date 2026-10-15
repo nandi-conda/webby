@@ -1,6 +1,8 @@
 ## The GTK 3 / GLib / cairo functions the GTK backend uses, declared by hand (as in webby's nim/src/gtk.nim): no
 ## binding package, just pkg-config for the flags.
 
+import cursortheme
+
 {.passC: gorge("pkg-config --cflags gtk+-3.0").}
 {.passL: gorge("pkg-config --libs gtk+-3.0").}
 
@@ -234,7 +236,10 @@ proc cairo_fill*(cr: pointer)
 proc connect*(instance: pointer, signal: string, handler: pointer, data: pointer) =
   discard g_signal_connect_data(instance, signal.cstring, handler, data, nil, 0)
 
-proc gtkInit*() = gtk_init(nil, nil)
+proc gtkInit*() =
+  useSystemCursorPath()
+  gtk_init(nil, nil)
+  useSystemCursorTheme()
 
 # Drag and drop, file choosers
 type GtkTargetEntry* = object
