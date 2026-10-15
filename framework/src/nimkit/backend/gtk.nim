@@ -235,7 +235,7 @@ proc sync(w: Widget) =
   of wkEntry:
     if $gtk_entry_get_text(w.native) != w.text: gtk_entry_set_text(w.native, w.text.cstring)
     gtk_entry_set_placeholder_text(w.native, w.placeholder.cstring)
-  of wkCanvas: gtk_widget_set_size_request(w.native, w.minWidth.cint, w.minHeight.cint)
+  of wkCanvas: discard
   of wkSlider:
     gtk_range_set_range(w.native, w.rangeMin, w.rangeMax)
     gtk_range_set_increments(w.native, w.step, w.step)
@@ -252,6 +252,8 @@ proc sync(w: Widget) =
     if gtk_combo_box_get_active(w.native) != w.selected.cint: gtk_combo_box_set_active(w.native, w.selected.cint)
   of wkProgress: gtk_progress_bar_set_fraction(w.native, w.value.clamp(0.0, 1.0))
   of wkScroll: discard
+  gtk_widget_set_size_request(w.native, (if w.minWidth > 0: w.minWidth else: -1).cint,
+                              (if w.minHeight > 0: w.minHeight else: -1).cint)
   gtk_widget_set_sensitive(w.native, w.enabled.gboolean)
   w.applyExpand()
 

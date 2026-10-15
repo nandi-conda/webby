@@ -61,7 +61,7 @@ proc sync(w: Widget) =
   of wkEntry:
     op(opText, w.id, text = w.text)
     op(opPlaceholder, w.id, text = w.placeholder)
-  of wkCanvas: op(opMinSize, w.id, w.minWidth, $w.minHeight)
+  of wkCanvas: discard
   of wkSlider:
     op(opRange, w.id, text = $w.rangeMin & " " & $w.rangeMax & " " & $w.step)
     op(opValue, w.id, text = $w.value)
@@ -70,6 +70,7 @@ proc sync(w: Widget) =
     op(opSelected, w.id, w.selected)
   of wkProgress: op(opValue, w.id, text = $w.value.clamp(0.0, 1.0))
   of wkScroll: discard
+  op(opMinSize, w.id, w.minWidth, $w.minHeight)
   op(opEnabled, w.id, ord(w.enabled))
   op(opExpand, w.id, ord(w.expanded))
 

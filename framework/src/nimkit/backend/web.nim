@@ -100,9 +100,7 @@ proc sync(w: Widget) =
   of wkCheck:
     e.lastChild.textContent = w.text.cstring
     inputs[w.id].checked = w.checked
-  of wkCanvas:
-    e.style.minWidth = cstring($w.minWidth & "px")
-    e.style.minHeight = cstring($w.minHeight & "px")
+  of wkCanvas: discard
   of wkSlider:
     let i = inputs[w.id]
     i.min = w.rangeMin
@@ -132,6 +130,8 @@ proc sync(w: Widget) =
   of wkScroll: discard
   if w.kind in {wkButton, wkToggle, wkEntry, wkDropdown}: e.disabled = not w.enabled
   if w.kind in {wkCheck, wkSlider}: inputs[w.id].disabled = not w.enabled
+  e.style.minWidth = cstring(if w.minWidth > 0: $w.minWidth & "px" else: "")
+  e.style.minHeight = cstring(if w.minHeight > 0: $w.minHeight & "px" else: "")
   e.classList.toggle("nk-expand".cstring, w.expanded)
 
 proc realize(w: Widget): JsObject =

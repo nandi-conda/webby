@@ -47,7 +47,7 @@ type
     enabledValue: bool
     spacing*: int                    ## between a column's or row's children (logical pixels)
     padding*: int                    ## around them
-    minWidth*, minHeight*: int       ## a canvas's smallest size (logical pixels)
+    minWidth*, minHeight*: int       ## the smallest size (logical pixels), 0 for the natural one; see `sized`
     valueValue: float                ## a slider's value, a progress bar's fraction (0..1)
     minValue, maxValue, stepValue: float  ## a slider's range and the step its keys and wheel move by
     marksValue: seq[(float, string)] ## a slider's labelled ticks
@@ -188,6 +188,14 @@ proc expanded*(w: Widget): bool = w.expandValue
 proc `expanded=`*(w: Widget, on: bool) =
   w.expandValue = on
   w.changed
+
+proc sized*(w: Widget, minWidth = 0, minHeight = 0): Widget =
+  ## Gives `w` at least this size (logical pixels; 0 keeps its natural size along that side), e.g. so labels in
+  ## different rows line up. Returns it, for use inside column(...)/row(...).
+  w.minWidth = minWidth
+  w.minHeight = minHeight
+  w.changed
+  w
 
 proc expand*(w: Widget): Widget =
   ## Marks `w` to take its parent's spare room; returns it, for use inside column(...)/row(...).
