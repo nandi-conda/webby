@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/JsonArray.h>
+#include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
 #include <AK/LexicalPath.h>
 #include <AK/Utf16String.h>
@@ -34,6 +36,7 @@ struct WebbyView {
 // ~Process -> did_lose_process -> deferred_invoke then VERIFY-crashes (SIGILL core dump on every quit).
 static Webby::Application* s_application;
 static Optional<Core::AnonymousBuffer> s_theme;
+static Webby::DownloadsObserver* s_downloads_observer;
 
 static Web::DevicePixelSize to_device_size(int width, int height)
 {
@@ -88,6 +91,7 @@ int webby_init(char const* prefix)
         return -1;
     }
     s_application = application.release_value().leak_ptr();
+    s_downloads_observer = new Webby::DownloadsObserver;
     if (!WebView::Application::settings().geolocation_enabled())
         WebView::Application::settings().set_geolocation_enabled(true);
 
@@ -274,6 +278,96 @@ void webby_view_set_message_prefix(WebbyView* handle, char const* prefix)
 }
 
 char const* webby_view_next_message(WebbyView* handle) { return handle->view->take_message().characters(); }
+
+void webby_downloads_set_directory(char const* path)
+{
+    setenv("XDG_DOWNLOAD_DIR", path, 1);
+}
+
+uint64_t webby_downloads_serial(void) { return s_downloads_observer ? s_downloads_observer->serial() : 0; }
+
+static StringView download_status_name(WebView::FileDownloader::DownloadStatus status)
+{
+    switch (status) {
+    case WebView::FileDownloader::DownloadStatus::InProgress:
+        return "in_progress"sv;
+    case WebView::FileDownloader::DownloadStatus::Paused:
+        return "paused"sv;
+    case WebView::FileDownloader::DownloadStatus::Completed:
+        return "completed"sv;
+    case WebView::FileDownloader::DownloadStatus::Canceled:
+        return "canceled"sv;
+    case WebView::FileDownloader::DownloadStatus::Failed:
+        return "failed"sv;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+char const* webby_downloads_json(void)
+{
+    static ByteString json;
+    JsonArray array;
+    if (s_application) {
+        for (auto const& download : s_application->file_downloader().downloads()) {
+            JsonObject object;
+            object.set("id"sv, download.id);
+            object.set("url"sv, download.url.serialize());
+            object.set("path"sv, download.destination.string().view());
+            object.set("status"sv, download_status_name(download.status));
+            object.set("received"sv, download.downloaded_size);
+            object.set("total"sv, download.total_size.has_value() ? static_cast<i64>(*download.total_size) : -1);
+            object.set("rate"sv, download.bytes_per_second.has_value() ? static_cast<i64>(*download.bytes_per_second) : -1);
+            auto remaining = download.estimated_time_remaining();
+            object.set("remaining"sv, remaining.has_value() ? remaining->to_seconds() : -1);
+            object.set("error"sv, download.error.value_or(String {}));
+            object.set("canResume"sv, download.can_resume);
+            object.set("private"sv, download.is_private == WebView::IsPrivate::Yes);
+            object.set("created"sv, download.created_time.milliseconds_since_epoch());
+            array.must_append(move(object));
+        }
+    }
+    json = array.serialized().to_byte_string();
+    return json.characters();
+}
+
+uint64_t webby_downloads_start(char const* url, int is_private)
+{
+    if (!s_application)
+        return 0;
+    auto parsed = URL::Parser::basic_parse(StringView { url, strlen(url) });
+    if (!parsed.has_value())
+        return 0;
+    // URLs with an opaque path (data:) have no usable filename; Ladybird then picks a default one.
+    auto filename = parsed->has_an_opaque_path() ? ByteString {} : parsed->basename();
+    auto destination = s_application->default_path_for_downloaded_file(filename);
+    if (destination.is_error())
+        return 0;
+    return s_application->file_downloader().download_file(is_private ? WebView::IsPrivate::Yes : WebView::IsPrivate::No, *parsed, destination.release_value());
+}
+
+void webby_downloads_cancel(uint64_t id)
+{
+    if (s_application)
+        s_application->file_downloader().cancel_download(id);
+}
+
+void webby_downloads_pause(uint64_t id)
+{
+    if (s_application)
+        s_application->file_downloader().pause_download(id);
+}
+
+void webby_downloads_resume(uint64_t id)
+{
+    if (s_application)
+        s_application->file_downloader().resume_download(id);
+}
+
+void webby_downloads_clear(void)
+{
+    if (s_application)
+        (void)s_application->file_downloader().prune_inactive_downloads();
+}
 
 uint64_t webby_clipboard_serial(void) { return s_application ? s_application->clipboard_serial() : 0; }
 

@@ -208,6 +208,31 @@ WEBBY_API uint64_t webby_clipboard_serial(void);
 WEBBY_API char const* webby_clipboard_text(void);
 WEBBY_API void webby_clipboard_set_text(char const* text);
 
+/* Downloads. Ladybird saves what pages download (Content-Disposition:
+ * attachment, <a download>, types it can't show, blob: URLs) into
+ * $XDG_DOWNLOAD_DIR or ~/Downloads without asking, created when missing.
+ * webby_downloads_set_directory() points that elsewhere (e.g. an Android app's
+ * own folder); it is process-wide.
+ * webby_downloads_serial() changes whenever a download is added, makes
+ * progress, finishes or is removed; webby_downloads_json() then lists them,
+ * oldest first, valid until the next call:
+ *   [{ "id": n, "url", "path" (where the finished file is), "status":
+ *      "in_progress" | "paused" | "completed" | "canceled" | "failed",
+ *      "received": bytes, "total": bytes or -1, "rate": bytes/s or -1,
+ *      "remaining": seconds or -1, "error": text or "", "canResume": bool,
+ *      "private": bool, "created": unix ms }]
+ * webby_downloads_start() downloads `url` itself (Save link as, Save image);
+ * returns its id, or 0 when it couldn't start. webby_downloads_clear() forgets
+ * every download that isn't in progress or paused (the files stay). */
+WEBBY_API void webby_downloads_set_directory(char const* path);
+WEBBY_API uint64_t webby_downloads_serial(void);
+WEBBY_API char const* webby_downloads_json(void);
+WEBBY_API uint64_t webby_downloads_start(char const* url, int is_private);
+WEBBY_API void webby_downloads_cancel(uint64_t id);
+WEBBY_API void webby_downloads_pause(uint64_t id);
+WEBBY_API void webby_downloads_resume(uint64_t id);
+WEBBY_API void webby_downloads_clear(void);
+
 /* On-screen keyboards. webby_view_ime_state() describes the focused text field
  * as JSON (it changes together with state_serial(); valid until the next call):
  *   { "enabled": bool, "before": text before the caret, "after": text after it,

@@ -7,7 +7,10 @@
 #include <AK/JsonArray.h>
 #include <AK/JsonValue.h>
 #include <AK/LexicalPath.h>
+#include <LibCore/Directory.h>
+#include <LibCore/StandardPaths.h>
 #include <LibCore/System.h>
+#include <LibFileSystem/FileSystem.h>
 #include <LibIPC/File.h>
 #include <LibWebCommon/Geolocation/GeolocationPositionErrorCode.h>
 #include <LibGfx/Bitmap.h>
@@ -29,6 +32,14 @@ void Application::create_platform_options(WebView::BrowserOptions& browser_optio
     // Ladybird keeps an idle WebContent process (with its own ImageDecoder) ready for the next tab, about 50 MB
     // that buys a slightly faster new tab. Start one when a tab needs it instead.
     browser_options.disable_spare_web_content_process = WebView::DisableSpareWebContentProcess::Yes;
+}
+
+ErrorOr<LexicalPath> Application::default_path_for_downloaded_file(ByteString const& file) const
+{
+    auto directory = Core::StandardPaths::downloads_directory();
+    if (!FileSystem::is_directory(directory))
+        (void)Core::Directory::create(directory, Core::Directory::CreateDirectories::Yes);
+    return WebView::Application::default_path_for_downloaded_file(file);
 }
 
 void Application::insert_clipboard_item(Web::Clipboard::SystemClipboardItem item)

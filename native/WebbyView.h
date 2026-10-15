@@ -14,6 +14,7 @@
 #include <LibWebCommon/HTML/FileFilter.h>
 #include <LibWebCommon/HTML/SelectedFile.h>
 #include <LibWebView/Application.h>
+#include <LibWebView/FileDownloader.h>
 #include <LibWebView/HeadlessWebView.h>
 #include <LibWebView/Menu.h>
 #include <LibWebView/WebContentPage.h>
@@ -44,8 +45,26 @@ public:
     // A site's cookies and stored data (see webby_clear_site_data() in webby_ffi.h).
     void clear_site_data(URL::Origin const&);
 
+    // Downloads go into $XDG_DOWNLOAD_DIR or ~/Downloads (see webby_downloads_*() in webby_ffi.h), created when
+    // missing rather than failing the download.
+    virtual ErrorOr<LexicalPath> default_path_for_downloaded_file(ByteString const& file) const override;
+
 private:
     u64 m_clipboard_serial { 0 };
+};
+
+// Counts changes to Ladybird's download list (a download added, progressing, finished or removed) so the UI knows
+// when to re-read it. See webby_downloads_serial() in webby_ffi.h.
+class DownloadsObserver final : public WebView::FileDownloaderObserver {
+public:
+    u64 serial() const { return m_serial; }
+
+private:
+    virtual void download_added(WebView::FileDownloader::Download const&) override { ++m_serial; }
+    virtual void download_updated(WebView::FileDownloader::Download const&) override { ++m_serial; }
+    virtual void download_removed(u64) override { ++m_serial; }
+
+    u64 m_serial { 1 };
 };
 
 // A view with no native window: WebContent paints into shared CPU bitmaps, and each presented frame is copied into
