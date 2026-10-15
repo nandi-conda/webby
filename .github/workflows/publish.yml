@@ -9,7 +9,7 @@
 #   prebuilt-release.yml), so it's republished when conda/webby-ladybird/ changes (bump the recipe's version/sha256
 #   or build number after releasing a new prebuilt).
 # - flutter repackages the Flutter SDK release named in conda/flutter/recipe.yaml; it's republished when that
-#   directory changes. `pixi run start` and the webby build both take Flutter from it.
+#   directory changes. `pixi run webby` and the webby build both take Flutter from it.
 #   Rebuilding Ladybird itself (LADYBIRD_COMMIT, native/, scripts/build_ladybird.sh) still happens on a Fly build machine.
 name: publish
 
@@ -152,9 +152,9 @@ jobs:
           pgrep -a WebContent || { cat webby.log; exit 1; }
           pgrep -a RequestServer
 
-  # `pixi run start` from a fresh checkout: installs the workspace (Flutter included) and builds and launches the app
+  # `pixi run webby` from a fresh checkout: installs the workspace (Flutter included) and builds and launches the app
   # under Xvfb, then checks the Flutter build finished and the engine's helpers came up.
-  pixi-start:
+  pixi-webby:
     needs: flutter
     if: ${{ !cancelled() && needs.flutter.result != 'failure' }}
     runs-on: ubuntu-22.04
@@ -165,13 +165,13 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq xvfb xauth >/dev/null
           curl -fsSL https://pixi.sh/install.sh | bash
           echo "$HOME/.pixi/bin" >> "$GITHUB_PATH"
-      - name: pixi run start
+      - name: pixi run webby
         run: |
           for i in 1 2 3 4 5; do
             pixi install && break
             [ "$i" = 5 ] && exit 1; sleep 30; pixi clean cache --repodata -y || true
           done
-          (timeout 900 xvfb-run -a pixi run start -a https://example.com < /dev/null > start.log 2>&1 || true) &
+          (timeout 900 xvfb-run -a pixi run webby -a https://example.com < /dev/null > start.log 2>&1 || true) &
           for i in $(seq 180); do
             pgrep -f WebContent >/dev/null && break
             sleep 5
