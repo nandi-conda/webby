@@ -7,6 +7,7 @@
 
 import std/[json, os, strutils, tables, uri]
 import ../browser
+from nimkit/core as kit import nil
 import tabs/common
 
 {.push cdecl, importc.}
@@ -35,7 +36,7 @@ var
   serial: uint64
   downloads: seq[Download]
   known: Table[uint64, string]   ## id -> status last seen, to notice new and finished downloads
-  button: Widget                 ## toolbar button; hidden until the first download
+  button: kit.Widget             ## toolbar button; hidden until the first download
   panelOpen = false
   panelList: Widget
   rows: Table[uint64, Row]
@@ -174,9 +175,9 @@ proc updateRow(r: var Row, d: Download) =
   if r.status != d.status:
     r.status = d.status
     gtk_widget_set_visible(r.pauseButton, d.active.gboolean)
-    setIcon(gtk_button_get_image(r.pauseButton), if d.status == "paused": "play_arrow" else: "pause")
+    setButtonIcon(r.pauseButton, if d.status == "paused": "play_arrow" else: "pause")
     gtk_widget_set_tooltip_text(r.pauseButton, if d.status == "paused": "Resume" else: "Pause")
-    setIcon(gtk_button_get_image(r.actionButton), if d.active: "close" else: "folder_open")
+    setButtonIcon(r.actionButton, if d.active: "close" else: "folder_open")
     gtk_widget_set_tooltip_text(r.actionButton, if d.active: "Cancel" else: "Show in folder")
     gtk_widget_set_sensitive(r.actionButton, gboolean(d.active or d.status == "completed" and fileExists(d.path)))
 
@@ -273,17 +274,18 @@ proc onPanelButton(l: Widget, ev: GEvent, data: pointer): gboolean {.cdecl.} =
   let at = find(idAt(y))
   if at < 0: return 0
   let d = downloads[at]
-  let menu = gtk_menu_new()
+  var items: seq[kit.MenuItem]
   if d.status == "completed" and fileExists(d.path):
-    menuItem(menu, "Open", proc () = openPath(d.path))
-    menuItem(menu, "Show in folder", proc () = showInFolder(d.path))
-    menuSeparator(menu)
-  menuItem(menu, "Copy download link", proc () = gtk_clipboard_set_text(systemClipboard(), d.url.cstring, -1))
+    items.add kit.menuItem("Open", proc () = openPath(d.path))
+    items.add kit.menuItem("Show in folder", proc () = showInFolder(d.path))
+    items.add kit.menuSeparator()
+  items.add kit.menuItem("Copy download link", proc () =
+    gtk_clipboard_set_text(systemClipboard(), d.url.cstring, -1))
   if not d.active and webby_downloads_start != nil:
-    menuItem(menu, "Download again", proc () = discard webby_downloads_start(d.url.cstring, d.private.cint); wake())
-  gtk_menu_attach_to_widget(menu, panelList, nil)
-  gtk_widget_show_all(menu)
-  gtk_menu_popup_at_pointer(menu, ev)
+    items.add kit.menuItem("Download again", proc () =
+      discard webby_downloads_start(d.url.cstring, d.private.cint)
+      wake())
+  kit.popupMenu(items)
   1
 
 proc clearList() =
@@ -326,9 +328,9 @@ proc toggleDownloads*() =
 
 proc refreshButton() =
   if button == nil: return
-  gtk_widget_set_visible(button, gboolean(downloads.len > 0))
+  kit.`visible=`(button, downloads.len > 0)
   let running = runningCount()
-  if not panelOpen: setIcon(gtk_button_get_image(button), if running > 0: "downloading" else: "download")
+  if not panelOpen: kit.`iconName=`(button, if running > 0: "downloading" else: "download")
   var tip = "Downloads (Ctrl+J)"
   if running > 0:
     var got, total: int64
@@ -339,7 +341,7 @@ proc refreshButton() =
       if d.total > 0: total += d.total else: sized = false
     tip = (if running == 1: "1 download" else: $running & " downloads") &
       (if sized and total > 0: ", " & $int(got.float * 100 / total.float) & "%" else: ", " & size(got))
-  gtk_widget_set_tooltip_text(button, tip.cstring)
+  kit.`tooltip=`(button, tip)
 
 proc announce() =
   ## A note when a download starts and when it finishes or fails (the sidebar shows it all when it's open).
@@ -375,10 +377,8 @@ proc install*() =
   addShortcut(modCtrl, 0x6a, toggleDownloads)   # Ctrl+J
   windowHooks.add proc () =
     if appUrl.len > 0: return
-    let item = addMenuItem("Downloads", toggleDownloads)
-    gtk_accel_label_set_accel(gtk_bin_get_child(item), 0x6a, GDK_CONTROL_MASK)
+    addMenuItem("Downloads", toggleDownloads, "Ctrl+J")
     if not hasApi(): return
     button = addToolbarButton("download", "Downloads (Ctrl+J)", toggleDownloads, "download", "Downloads")
-    gtk_widget_set_no_show_all(button, 1)
-    gtk_widget_hide(button)
+    kit.`visible=`(button, false)
     pumpHooks.add poll

@@ -394,10 +394,20 @@ proc closeTab*(t: Tab) =
 # ---------------------------------------------------------------------------------------------------------------
 # Chrome helpers for features
 
+var kitButtons: Table[pointer, kit.Widget]   # iconButton's GtkWidgets -> their nimkit buttons
+
 proc iconButton*(icon, tooltip: string, action: proc () {.closure.}, size = 18): Widget =
   ## A flat button with one of the Flutter app's icons (an Icons.* name, see icons.nim), as a GtkWidget for GTK
-  ## boxes; a nimkit iconButton underneath.
-  nkgtk.gtkWidget(kit.iconButton(icon, tooltip, action, size))
+  ## boxes; a nimkit iconButton underneath (setButtonIcon changes its icon).
+  let b = kit.iconButton(icon, tooltip, action, size)
+  result = nkgtk.gtkWidget(b)
+  kitButtons[result] = b
+  connect(result, "destroy", proc (w: Widget, d: pointer) {.cdecl.} = kitButtons.del w)
+
+proc setButtonIcon*(button: Widget, icon: string) =
+  ## Switches the icon of a button made by iconButton.
+  let b = kitButtons.getOrDefault(button)
+  if b != nil: kit.`iconName=`(b, icon)
 
 var panelButtons: seq[tuple[button: kit.Widget, icon, openIcon, panel: string]]
 var openPanel: string   ## the side panel's title while it shows
