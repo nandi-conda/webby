@@ -13,6 +13,7 @@ import 'src/bookmarks/bookmark_dialog.dart';
 import 'src/bookmarks/bookmark_store.dart';
 import 'src/bookmarks/bookmarks_page.dart';
 import 'src/color_scheme.dart';
+import 'src/content_blocking.dart';
 import 'src/find_in_page.dart';
 import 'src/frame_bench.dart';
 import 'src/history/history_page.dart';
@@ -203,7 +204,7 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
         _lifecycle = AppLifecycleListener(
             onHide: () => OpenTabsStore.instance.flush(_sessionTabs(), _active, pinned: _pinnedCount));
       }
-      if (!Incognito.active && !Platform.isAndroid) _exitListener = AppLifecycleListener(onExitRequested: _onExitRequested);
+      if (!Platform.isAndroid) _exitListener = AppLifecycleListener(onExitRequested: _onExitRequested);
     } catch (error) {
       _startupError = error;
     }
@@ -358,6 +359,7 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
   Future<AppExitResponse> _onExitRequested() async {
     if (!Incognito.active) SessionStore.instance.save(_sessionTabs(), active: _active);
     if (_restoresTabs) OpenTabsStore.instance.flush(_sessionTabs(), _active, pinned: _pinnedCount);
+    if (Incognito.active) Incognito.removeProfile();
     return AppExitResponse.exit;
   }
 
@@ -781,6 +783,19 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
 
   void _toggleBookmarkBar() => BookmarkStore.instance.showBar = !BookmarkStore.instance.showBar;
 
+  /// Switches ad and tracker blocking; the open page reloads to show the change when the runtime applies it live.
+  void _toggleContentBlocking() {
+    final on = !ContentBlocking.enabled.value;
+    ContentBlocking.setEnabled(on);
+    final what = on ? 'Blocking ads and trackers' : 'Ads and trackers allowed';
+    if (ContentBlocking.appliesLive) {
+      if (_tab?.controller case final c? when c.url.isNotEmpty) c.reload();
+      showKitToast(context, what);
+    } else {
+      showKitToast(context, '$what from the next start');
+    }
+  }
+
   static const _shortcuts = <ShortcutActivator, String>{
     SingleActivator(LogicalKeyboardKey.keyD, control: true): 'bookmark',
     SingleActivator(LogicalKeyboardKey.keyB, control: true, shift: true): 'bar',
@@ -1101,6 +1116,11 @@ class _BrowserPageState extends State<BrowserPage> with WidgetsBindingObserver {
                       if (!Incognito.active)
                         KitMenuItem('Summarize settings…', onSelected: () => showSummarizeSettings(context)),
                       const KitMenuDivider(),
+                      KitMenuItem(
+                        'Block ads and trackers',
+                        checked: ContentBlocking.enabled.value,
+                        onSelected: _toggleContentBlocking,
+                      ),
                       KitMenuItem('Clear browsing data…', shortcut: 'Ctrl+Shift+Del', onSelected: _clearBrowsingData),
                     ],
                     builder: (context, toggle, open) => KitIconButton(Icons.more_vert, tooltip: 'More', onPressed: toggle),

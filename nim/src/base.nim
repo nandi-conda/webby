@@ -8,6 +8,8 @@ export json, tables
 var
   appUrl*: string              ## --app=<url>: an installed web app's own window (no tab strip, no URL bar)
   incognito*: bool             ## --incognito: this process keeps nothing (see app/lib/src/incognito.dart)
+  incognitoProfile*: string    ## incognito: the throwaway Ladybird profile directory (deleted on exit)
+  originalLadybirdArgs*: seq[string]  ## $WEBBY_LADYBIRD_ARGS before incognito swapped the profile out
 
   # Secrets kept in the password vault (e.g. the DeepSeek key), set by the passwords feature. nil until it installs;
   # getSecret returns "" when there is none. A secret syncs to the other devices unless secretSyncs says no.

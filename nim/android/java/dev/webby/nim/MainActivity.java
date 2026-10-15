@@ -314,6 +314,7 @@ public final class MainActivity extends Activity {
         menu.getMenu().add(0, 3, 0, "Share").setEnabled(onPage);
         menu.getMenu().add(0, 4, 0, "Copy link").setEnabled(onPage);
         menu.getMenu().add(0, 14, 0, "Site settings").setEnabled(onPage);
+        menu.getMenu().add(0, 18, 0, "Block ads and trackers").setCheckable(true).setChecked(state.optBoolean("adblock", true));
         menu.getMenu().add(0, 9, 0, "Clear browsing data");
         menu.getMenu().add(0, 5, 0, "Close tab");
         menu.setOnMenuItemClickListener(item -> {
@@ -335,10 +336,18 @@ public final class MainActivity extends Activity {
                 case 15: SummaryScreen.open(this); break;
                 case 16: WebApps.install(this, state.optString("app")); break;
                 case 17: FindBar.show(this); break;
+                case 18: toggleAdblock(!state.optBoolean("adblock", true)); break;
             }
             return true;
         });
         menu.show();
+    }
+
+    /** Switches ad and tracker blocking (nim/android/src/features/adblock.nim). */
+    private void toggleAdblock(boolean on) {
+        JSONObject r = Native.obj("adblock.set", "on", on);
+        String what = on ? "Blocking ads and trackers" : "Ads and trackers allowed";
+        Ui.toast(this, r != null && r.optBoolean("live") ? what : what + " from the next start");
     }
 
     private void newTab() {

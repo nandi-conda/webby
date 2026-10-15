@@ -6,6 +6,7 @@ import 'dart:io';
 import 'package:ffi/ffi.dart';
 
 import 'android.dart';
+import 'content_blocking.dart';
 
 typedef ViewPtr = Pointer<Void>;
 
@@ -135,6 +136,7 @@ class WebbyBindings {
 
   static WebbyBindings _start(String prefix, DynamicLibrary library) {
     final bindings = WebbyBindings._(prefix, library);
+    ContentBlocking.prepareEngine();
     final prefixUtf8 = prefix.toNativeUtf8();
     final result = bindings.init(prefixUtf8);
     malloc.free(prefixUtf8);

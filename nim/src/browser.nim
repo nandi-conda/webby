@@ -1082,6 +1082,21 @@ proc buildWindow() =
     gtk_widget_set_no_show_all(tabStripBox, 1)
     gtk_widget_set_no_show_all(toolbar, 1)
 
+const incognitoPrefix = "webby-incognito-"
+
+proc incognitoRoot(): string =
+  let r = getEnv("XDG_RUNTIME_DIR")
+  if r.len > 0 and dirExists(r): r else: getTempDir()
+
+proc sweepIncognitoProfiles() =
+  ## Deletes incognito profiles whose window is gone (crashed or killed before it could delete its own).
+  for kind, path in walkDir(incognitoRoot()):
+    let name = path.extractFilename
+    if kind != pcDir or not name.startsWith(incognitoPrefix): continue
+    let owner = try: parseInt(name[incognitoPrefix.len .. ^1]) except ValueError: continue
+    if owner == getCurrentProcessId() or dirExists("/proc/" & $owner): continue
+    try: removeDir(path) except OSError: discard
+
 proc parseCommandLine() =
   for a in commandLineParams():
     if a.startsWith("--app="): appUrl = a[6 .. ^1]
@@ -1089,17 +1104,25 @@ proc parseCommandLine() =
     elif not a.startsWith("--"): commandLineUrls.add a
   if appUrl.len > 0: incognito = false
   if incognito:
-    # Ladybird flags for an engine that forgets everything when the window closes (Incognito.engineFlags).
+    # Ladybird flags for an engine that forgets everything when the window closes (Incognito.engineFlags), with a
+    # throwaway profile of our own instead of --temporary-profile so features can seed it (the ad blocker's switch
+    # and lists): deleted on exit, swept at the next start if a crash left it.
+    sweepIncognitoProfiles()
+    incognitoProfile = incognitoRoot() / (incognitoPrefix & $getCurrentProcessId())
+    removeDir(incognitoProfile)
+    createDir(incognitoProfile)
     var kept: seq[string]
     let words = getEnv("WEBBY_LADYBIRD_ARGS").splitWhitespace
+    originalLadybirdArgs = words
     var i = 0
     while i < words.len:
       let w = words[i]
       if w in ["--profile", "--profile-path"]: inc i
-      elif not (w.startsWith("--profile=") or w.startsWith("--profile-path=") or w == "--force-new-process"):
+      elif not (w.startsWith("--profile=") or w.startsWith("--profile-path=") or
+                w in ["--force-new-process", "--temporary-profile"]):
         kept.add w
       inc i
-    putEnv("WEBBY_LADYBIRD_ARGS", (kept & @["--temporary-profile", "--disable-sql-database",
+    putEnv("WEBBY_LADYBIRD_ARGS", (kept & @["--profile-path=" & incognitoProfile, "--disable-sql-database",
       "--disable-http-disk-cache"]).join(" "))
 
 proc run*() =
@@ -1142,3 +1165,5 @@ proc run*() =
   gtk_main()
   for t in tabs:
     if t.view != nil: webby_view_destroy(t.view)
+  if incognitoProfile.len > 0:
+    try: removeDir(incognitoProfile) except OSError: discard

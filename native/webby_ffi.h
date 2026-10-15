@@ -261,6 +261,12 @@ WEBBY_API void webby_view_key_event(WebbyView*, int is_down, int key_code, int m
  * were opened before load without a network. Off by default. */
 WEBBY_API void webby_set_offline(int offline);
 
+/* Ad and tracker blocking: Ladybird's content blocker (EasyList and EasyPrivacy,
+ * kept up to date by Ladybird in the profile's ContentBlocking/Lists). Front ends
+ * switch it on before webby_init() through the profile's Settings.json; this
+ * turns it on or off while running, in every open page. */
+WEBBY_API void webby_set_content_blocking(int enabled);
+
 #ifdef __cplusplus
 }
 #endif

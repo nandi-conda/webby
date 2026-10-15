@@ -11,6 +11,7 @@ import std/[dynlib, json, math, monotimes, os, random, strutils, tables, times]
 import ../../src/[base, ffi]
 import ../../src/features/omnibox/address
 from nimkit/services import serviceImpl, appName, userAgent
+import ../../src/features/adblock/store as adblockStore
 export base, ffi, json, tables
 
 proc glue_log(text: cstring) {.importc, cdecl.}
@@ -666,6 +667,8 @@ proc nim_init(prefix, profileDir: cstring, d: cdouble, isDark: cint): cint {.exp
     log "dlopen(libwebby.so) failed: " & $dlerror()
     return -100
   loadWebbyLib("libwebby.so")
+  # Ad blocking is Ladybird's content blocker, switched on in its Settings.json before it starts.
+  adblockStore.prepareEngine()
   let r = webby_init(prefix)
   if r != 0:
     log "webby_init failed: " & $r

@@ -325,6 +325,18 @@ void webby_clear_browsing_data(int64_t since_ms, int what)
     (void)s_application->clear_browsing_data(options);
 }
 
+void webby_set_content_blocking(int enabled)
+{
+    if (!s_application)
+        return;
+    auto& settings = WebView::Application::settings();
+    if (enabled) {
+        settings.set_content_blocker_list_enabled("easyList"sv, true);
+        settings.set_content_blocker_list_enabled("easyPrivacy"sv, true);
+    }
+    settings.set_content_blocker_enabled(enabled != 0);
+}
+
 char const* webby_view_permission_request(WebbyView* handle) { return handle->view->permission_request().characters(); }
 
 void webby_view_permission_respond(WebbyView* handle, uint64_t id, int granted)

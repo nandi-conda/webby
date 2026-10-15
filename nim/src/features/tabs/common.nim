@@ -81,11 +81,8 @@ proc openIncognitoWindow*(url = "") =
   for k, v in envPairs():
     if k.startsWith("WEBBY_APP_"): continue
     if k == "WEBBY_LADYBIRD_ARGS" and incognito:
-      # This process added the incognito engine flags itself; the new one adds them again.
-      var kept: seq[string]
-      for w in v.splitWhitespace:
-        if w notin ["--temporary-profile", "--disable-sql-database", "--disable-http-disk-cache"]: kept.add w
-      env.add k & "=" & kept.join(" ")
+      # This process swapped in its own throwaway profile; the new one makes its own from the original flags.
+      env.add k & "=" & originalLadybirdArgs.join(" ")
     else: env.add k & "=" & v
   let argv = allocCStringArray(args)
   let envp = allocCStringArray(env)

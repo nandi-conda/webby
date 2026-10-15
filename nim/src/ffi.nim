@@ -80,6 +80,7 @@ var
   webby_view_key_event*: proc (v: View, down, keyCode, modifiers: cint, codePoint: uint32, repeat: cint) {.cdecl, gcsafe.}
   webby_set_offline*: proc (offline: cint) {.cdecl, gcsafe.}
   # Optional (nil with a runtime older than 2026.10.14.2): native find in page.
+  webby_set_content_blocking*: proc (on: cint) {.cdecl, gcsafe.}  ## optional: runtimes since 2026.10.15
   webby_view_find*: proc (v: View, query: cstring, caseSensitive: cint) {.cdecl, gcsafe.}
   webby_view_find_next*: proc (v: View) {.cdecl, gcsafe.}
   webby_view_find_previous*: proc (v: View) {.cdecl, gcsafe.}
@@ -167,6 +168,7 @@ proc loadWebbyLib*(path: string) =
   optional webby_view_find_end
   optional webby_view_find_current
   optional webby_view_find_total
+  optional webby_set_content_blocking
 
 proc hasNativeFind*(): bool =
   ## Whether the runtime finds in page itself (webby_view_find); else features/find runs a page script.

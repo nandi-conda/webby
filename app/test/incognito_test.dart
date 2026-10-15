@@ -6,20 +6,21 @@ import 'package:webby/src/incognito.dart';
 
 void main() {
   group('Incognito.ladybirdArgs', () {
-    test('adds the forgetful engine flags', () {
-      expect(Incognito.ladybirdArgs(''), '--temporary-profile --disable-sql-database --disable-http-disk-cache');
+    test('adds the throwaway profile and the forgetful engine flags', () {
+      expect(Incognito.ladybirdArgs('', '/run/p'), '--profile-path=/run/p --disable-sql-database --disable-http-disk-cache');
     });
 
     test('keeps other flags and drops any profile choice', () {
       expect(
-        Incognito.ladybirdArgs('--disable-sandbox --profile work  --profile-path=/x --force-new-process --dot'),
-        '--disable-sandbox --dot --temporary-profile --disable-sql-database --disable-http-disk-cache',
+        Incognito.ladybirdArgs(
+            '--disable-sandbox --profile work  --profile-path=/x --force-new-process --temporary-profile --dot', '/run/p'),
+        '--disable-sandbox --dot --profile-path=/run/p --disable-sql-database --disable-http-disk-cache',
       );
     });
 
     test('does not repeat flags that are already there', () {
-      expect(Incognito.ladybirdArgs('--disable-http-disk-cache'),
-          '--temporary-profile --disable-sql-database --disable-http-disk-cache');
+      expect(Incognito.ladybirdArgs('--disable-http-disk-cache', '/run/p'),
+          '--profile-path=/run/p --disable-sql-database --disable-http-disk-cache');
     });
   });
 
