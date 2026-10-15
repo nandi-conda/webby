@@ -1,4 +1,4 @@
-## Web notifications (app/lib/src/notifications.dart), which Ladybird doesn't have: the Dart app's page script
+## Web notifications, which Ladybird doesn't have: the page script (scripts/notifications.js)
 ## provides window.Notification, asks through the site permission prompt and hands notifications to
 ## org.freedesktop.Notifications on the session bus, or on Android to the app's Java host (WebbyHost notify,
 ## NotificationManager), whose taps and dismissals come back as host events.
@@ -8,12 +8,7 @@ import ../../browser
 import permissions
 when not defined(android): import gio
 
-# The Dart app's script, read at compile time so both front ends run the same JS.
-const notificationScript = block:
-  let dart = staticRead("../../../../app/lib/src/notifications.dart")
-  let start = dart.find("String notificationPageScript")
-  let first = dart.find("'''", start) + 3
-  dart[first ..< dart.find("''';", first)]
+const notificationScript = staticRead("../../scripts/notifications.js")
 
 when not defined(android):
   const

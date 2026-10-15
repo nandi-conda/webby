@@ -1,16 +1,13 @@
 ## Find in page: Ctrl+F (or ⋮ > Find in page) opens a bar under the page with the query, "n of m", previous/next
 ## and close. Enter / F3 / Ctrl+G go to the next match, Shift with them to the previous one, Esc closes the bar.
 ## Ladybird does the search when the runtime has webby_view_find (every match highlighted); older runtimes get
-## the page script in app/lib/src/find_in_page.dart, shared with the Flutter app.
+## the page script, scripts/find_in_page.js.
 
 import std/strutils
 import ../browser
 from nimkit/core as kit import nil
 
-const findScript = block:
-  let dart = staticRead("../../../app/lib/src/find_in_page.dart")
-  let start = dart.find("r'''") + 4
-  dart[start ..< dart.find("'''", start)]
+const findScript = staticRead("../scripts/find_in_page.js")
 
 var
   bar, entry, countLabel, caseButton: kit.Widget

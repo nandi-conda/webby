@@ -25,11 +25,8 @@ export base, ffi, json, tables
 export services.copyText, services.pasteText, services.after, services.every, services.cancel, services.Timer,
   services.hostCall, services.hostEventHooks
 
-# The Flutter app's page shims (lib/src/page_compat.dart), read at compile time so both front ends run the same JS.
-const pageCompatScript* = block:
-  let dart = staticRead("../../app/lib/src/page_compat.dart")
-  let start = dart.find("r'''") + 4
-  dart[start ..< dart.rfind("'''")]
+# Shims for what Ladybird lacks, run on every page (scripts/page_compat.js).
+const pageCompatScript* = staticRead("scripts/page_compat.js")
 
 # Blank tabs and startup show the start page (features/home.nim draws it into about:blank).
 const homePage* = "about:blank"

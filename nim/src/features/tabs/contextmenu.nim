@@ -10,16 +10,9 @@ from nimkit/core as kit import nil
 import common
 when defined(android): import nimkit/services
 
-proc dartString(dart, head: string): string =
-  ## The body of a ''' string in Dart source that follows `head`, with Dart's \\ and \$ escapes undone.
-  let start = dart.find(head) + head.len
-  result = dart[start ..< dart.find("''';", start)]
-  result = result.replace("\\\\", "\x01").replace("\\$", "$").replace("\x01", "\\")
-
-const contextMenuDart = staticRead("../../../../app/lib/src/context_menu.dart")
-const menuScript = dartString(contextMenuDart, "String contextMenuPageScript(String prefix) => '''")
-const inspectWrapper = dartString(contextMenuDart, "String inspectScriptWith(String erudaSource) => '''")
-const erudaSource = staticRead("../../../../app/assets/eruda/eruda.js")
+const menuScript = staticRead("../../scripts/context_menu.js")
+const inspectWrapper = staticRead("../../scripts/inspect.js")
+const erudaSource = staticRead("../../scripts/eruda/eruda.js")
 
 
 proc pageScript(t: Tab): string =

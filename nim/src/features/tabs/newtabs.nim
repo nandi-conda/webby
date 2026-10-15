@@ -6,11 +6,7 @@
 import std/[json, strutils]
 import ../../browser
 
-const newTabScript = block:
-  let dart = staticRead("../../../../app/lib/src/tabs/new_tab_requests.dart")
-  let head = "String newTabPageScript(String prefix) => '''"
-  let start = dart.find(head) + head.len
-  dart[start ..< dart.find("''';", start)].replace("\\\\", "\x01").replace("\\$", "$").replace("\x01", "\\")
+const newTabScript = staticRead("../../scripts/new_tab_requests.js")
 
 proc pageScript(t: Tab): string =
   if t.messagePrefix.len == 0: return ""

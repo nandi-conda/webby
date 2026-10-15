@@ -23,10 +23,7 @@ import passwords/[vault, manager, generator, panel]
 
 # page_script.dart's passwordPageScript(prefix), unescaped from its Dart string at compile time.
 const prefixMark = "\x01PREFIX\x01"
-const pageScript = block:
-  let dart = staticRead("../../../app/lib/src/passwords/page_script.dart")
-  let start = dart.find("=> '''") + 6
-  dart[start ..< dart.find("''';", start)].replace("${jsonEncode(prefix)}", prefixMark).replace("\\\\", "\\")
+const pageScript = staticRead("../scripts/passwords.js").replace("${jsonEncode(prefix)}", prefixMark)
 
 const messageTag = "passwords:"   ## after the tab's prefix, so other features' messages aren't ours
 

@@ -1,5 +1,5 @@
-## What Summarize sends (app/lib/src/summarize.dart), shared by the desktop and Android front ends: the page-text
-## and jump-to-text page scripts read from the Dart app at compile time, the prompts, and the DeepSeek requests.
+## What Summarize sends, on the desktop and Android: the page-text and jump-to-text page scripts, the prompts, and
+## the chat completions requests.
 
 import std/[json, strutils]
 
@@ -55,46 +55,11 @@ proc busyMessage*(p: Provider): string =
   p.name & " accepted the request but hasn't sent anything back in 90 seconds. It may be having an outage" &
     (if p.info.status.len > 0: ": see " & p.info.status else: "") & "."
 
-proc dartScript*(name: string): string {.compileTime.} =
-  ## The body of the `String name(...) => '''...''';` script in summarize.dart, with Dart's escapes undone. A raw
-  ## script (`r'''...''' + expr + r'''...'''`) is taken as is, with each spliced-in expr written `${expr}` as in the
-  ## plain ones, so both kinds are filled in the same way.
-  let dart = staticRead("../../../../app/lib/src/summarize.dart")
-  var start = dart.find("String " & name & "(")
-  doAssert start >= 0, name & " not found in summarize.dart"
-  let arrow = dart.find("=> ", start) + "=> ".len
-  let rawString = dart.continuesWith("r'''", arrow)
-  start = arrow + (if rawString: 4 else: 3)
-  let stop = dart.find("\n''';", start) + 1   # the script's own closing line (a splice can end in r''';)
-  doAssert stop > start, name & ": end of the script not found in summarize.dart"
-  let raw = dart[start ..< stop]
-  var i = 0
-  if rawString:
-    while i < raw.len:
-      let splice = raw.find("''' + ", i)
-      if splice < 0:
-        result.add raw[i .. ^1]
-        break
-      let close = raw.find(" + r'''", splice)
-      result.add raw[i ..< splice] & "${" & raw[splice + "''' + ".len ..< close] & "}"
-      i = close + " + r'''".len
-    return
-  while i < raw.len:
-    if raw[i] == '\\' and i + 1 < raw.len:
-      result.add(case raw[i + 1]
-        of 'n': '\n'
-        of 't': '\t'
-        else: raw[i + 1])
-      i += 2
-    else:
-      result.add raw[i]
-      inc i
-
-# The Flutter app's page scripts, read at compile time so both front ends run the same JS. pageTextScript posts
+# The page scripts (scripts/page_text.js, scripts/jump_to_text.js). pageTextScript posts
 # {"type": "pagetext", "id", "selection", "title", "url", "lang", "text"} as a page message (headings as "## ...");
 # jumpToTextScript scrolls to the words a summary's [§](#words) link cites and flashes them.
-const pageTextTemplate = dartScript("pageTextScript")
-const jumpTemplate = dartScript("jumpToTextScript")
+const pageTextTemplate = staticRead("../../scripts/page_text.js")
+const jumpTemplate = staticRead("../../scripts/jump_to_text.js")
 
 proc pageTextScript*(prefix, id: string): string =
   pageTextTemplate.multiReplace(("${jsonEncode(prefix)}", $(%prefix)), ("${jsonEncode(id)}", $(%id)),

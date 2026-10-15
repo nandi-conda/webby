@@ -5,11 +5,7 @@ import std/[json, strutils]
 import ../../base
 import ../bookmarks/store as bookmarkStore
 
-const homePageSource* = block:
-  let dart = staticRead("../../../../app/lib/src/home_page.dart")
-  let head = "const homePageSource = r'''"
-  let start = dart.find(head) + head.len
-  dart[start ..< dart.find("''';", start)]
+const homePageSource* = staticRead("../../scripts/home_page.js")
 
 proc homePageData*(limit = 8): JsonNode =
   var marks = newJArray()

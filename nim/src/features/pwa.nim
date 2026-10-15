@@ -8,12 +8,7 @@ from nimkit/core as kit import nil
 import site/[http, images]
 import pwa/[manifest, store]
 
-# The Dart app's script, read at compile time so both front ends run the same JS.
-const manifestScript = block:
-  let dart = staticRead("../../../app/lib/src/pwa/pwa_agent.dart")
-  let start = dart.find("String manifestPageScript")
-  let first = dart.find("'''", start) + 3
-  dart[first ..< dart.find("''';", first)]
+const manifestScript = staticRead("../scripts/pwa_manifest.js")
 
 type Agent = ref object
   ## One tab's manifest watch.
