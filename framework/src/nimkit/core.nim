@@ -64,6 +64,8 @@ type
     horizontalValue: bool            ## a scroll view that scrolls sideways instead of up and down
     maxCharsValue: int               ## a label kept to one line, cut short with "…" past this many characters
     imageValue: string               ## an icon showing a picture (PNG, JPEG, GIF, ICO, WebP or SVG bytes) instead
+    dragValue: string                ## items: what dragging it carries (see `dragData=`); empty: not draggable
+    dropHandler: proc (data: string, x, y: float)  ## see `onDrop=`
     realized*: bool                  ## the backend has made the native widget
     native*: pointer                 ## the backend's own handle, if it has one (GTK)
     # Events
@@ -112,6 +114,8 @@ type
     selectAll*: proc (w: Widget)     ## an entry's text
     showPopover*: proc (p: Popover)  ## show (again) under its anchor, at the anchor's width
     hidePopover*: proc (p: Popover)
+    chooseFile*: proc (title: string, save: bool, name: string, patterns: seq[string], filterName: string,
+                       onDone: proc (path: string))
 
   MenuItem* = object
     ## One line of a pop-up menu (`popupMenu`): a command, a check item, a separator or a submenu.
@@ -321,6 +325,20 @@ proc imageMime*(bytes: string): string =
   elif starts("RIFF") and bytes.len >= 12 and bytes[8 ..< 12] == "WEBP": "image/webp"
   elif strutils.find(bytes[0 ..< min(bytes.len, 1024)], "<svg") >= 0: "image/svg+xml"
   else: ""
+
+proc dragData*(w: Widget): string = w.dragValue
+proc `dragData=`*(w: Widget, data: string) =
+  ## Makes an item draggable (within the app), carrying `data` to where it is dropped; "" stops it.
+  if w.dragValue != data:
+    w.dragValue = data
+    w.changed
+
+proc dropHandler*(w: Widget): proc (data: string, x, y: float) = w.dropHandler
+proc `onDrop=`*(w: Widget, handler: proc (data: string, x, y: float)) =
+  ## Lets a row, column or item take drops of dragged items: `handler` gets their dragData and where it was
+  ## dropped as fractions (0..1) of `w`'s width and height. The innermost widget that takes drops gets it.
+  w.dropHandler = handler
+  w.changed
 
 proc sized*(w: Widget, minWidth = 0, minHeight = 0): Widget =
   ## Gives `w` at least this size (logical pixels; 0 keeps its natural size along that side), e.g. so labels in
@@ -572,6 +590,13 @@ proc prompt*(title: string, text = "", initial = "", onResult: proc (ok: bool, v
   d = dialog(title, content, @["Cancel", ok], proc (i: int) = onResult(i == 1, field.text))
   field.focus()
   field.selectAll()
+
+proc chooseFile*(title: string, onDone: proc (path: string), save = false, name = "",
+                 patterns: seq[string] = @[], filterName = "") =
+  ## Asks for a file to open (or, with `save`, a place to save one, suggesting `name`). `patterns` such as "*.html"
+  ## limit the choice, under `filterName`. onDone gets the path, or "" if cancelled. Backends without files skip it.
+  if backend.chooseFile != nil: backend.chooseFile(title, save, name, patterns, filterName, onDone)
+  else: onDone("")
 
 proc popover*(anchor, content: Widget): Popover =
   ## A popover for `content` under `anchor`, not shown yet. `content` stays live: change it while it shows.

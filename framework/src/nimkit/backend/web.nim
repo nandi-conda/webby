@@ -139,6 +139,33 @@ proc canvasPointer(c: Canvas, kind: PointerKind, ev: JsObject) =
 # ---------------------------------------------------------------------------------------------------------------
 # Elements
 
+var dragPayload: string   # the dragged item's dragData, while a drag from this page is on
+
+proc syncDrag(w: Widget, e: JsObject) =
+  if w.dragData.len > 0 and e.dataset.nkdrag.isUndefined:
+    e.dataset.nkdrag = "1".cstring
+    e.draggable = true
+    e.addEventListener("dragstart", proc (ev: JsObject) =
+      dragPayload = w.dragData
+      ev.dataTransfer.setData("text/plain".cstring, "nimkit".cstring)
+      ev.stopPropagation())
+    e.addEventListener("dragend", proc () = dragPayload = "")
+  if w.dropHandler != nil and e.dataset.nkdrop.isUndefined:
+    e.dataset.nkdrop = "1".cstring
+    e.addEventListener("dragover", proc (ev: JsObject) =
+      if dragPayload.len > 0:
+        ev.preventDefault()
+        ev.stopPropagation())
+    e.addEventListener("drop", proc (ev: JsObject) =
+      if dragPayload.len == 0 or w.dropHandler == nil: return
+      ev.preventDefault()
+      ev.stopPropagation()
+      let r = e.getBoundingClientRect()
+      let payload = dragPayload
+      dragPayload = ""
+      w.dropHandler()(payload, (ev.clientX.to(float) - r.left.to(float)) / max(r.width.to(float), 1.0),
+        (ev.clientY.to(float) - r.top.to(float)) / max(r.height.to(float), 1.0)))
+
 proc sync(w: Widget) =
   let e = elems[w.id]
   case w.kind
@@ -225,6 +252,7 @@ proc sync(w: Widget) =
     if c.len > 0 and c notin w.classes: e.classList.remove(cstring("nk-" & c))
   for c in w.classes: e.classList.add(cstring("nk-" & c))
   e.dataset.nk = w.classes.join(" ").cstring
+  syncDrag(w, e)
 
 proc realize(w: Widget): JsObject =
   let e = case w.kind

@@ -2,7 +2,7 @@
 ## straight from the pixel buffer (premultiplied 0xAARRGGBB is cairo's ARGB32), timers are GLib sources, storage is
 ## files in $XDG_DATA_HOME/<appName>/, HTTP is GIO (gio_http.nim).
 
-import std/[os, strutils, tables]
+import std/[os, sets, strutils, tables]
 import ../[core, glyphs, services]
 import gtkapi, gio_http
 
@@ -388,6 +388,47 @@ proc syncButtonIcon(w: Widget) =
     gtk_button_set_image(w.native, a)
     gtk_button_set_always_show_image(w.native, 1)
 
+# ---------------------------------------------------------------------------------------------------------------
+# Drag and drop within the app: the dragged item's data travels in `dragPayload`.
+
+var
+  dragTarget = GtkTargetEntry(target: "nimkit/item", flags: GTK_TARGET_SAME_APP, info: 0)
+  dragPayload: string
+  dragSources, dropTargets: HashSet[int]
+
+proc onDragBegin(g: GtkWidget, ctx: pointer, data: pointer) {.cdecl.} =
+  let w = byId(data)
+  dragPayload = if w != nil: w.dragData else: ""
+
+proc onDragDataGet(g: GtkWidget, ctx, sel: pointer, info, time: cuint, data: pointer) {.cdecl.} =
+  gtk_selection_data_set(sel, gtk_selection_data_get_target(sel), 8, dragPayload.cstring, dragPayload.len.cint)
+
+proc onDragEnd(g: GtkWidget, ctx: pointer, data: pointer) {.cdecl.} =
+  # After drag-data-received, which reads the payload.
+  dragPayload = ""
+
+proc onDragReceived(g: GtkWidget, ctx: pointer, x, y: cint, sel: pointer, info, time: cuint,
+                    data: pointer) {.cdecl.} =
+  let w = byId(data)
+  if w == nil or w.dropHandler == nil or dragPayload.len == 0: return
+  let h = w.dropHandler
+  let payload = dragPayload
+  h(payload, x.float / max(gtk_widget_get_allocated_width(g), 1).float,
+    y.float / max(gtk_widget_get_allocated_height(g), 1).float)
+
+proc syncDrag(w: Widget) =
+  let data = cast[pointer](w.id)
+  if w.dragData.len > 0 and w.id notin dragSources:
+    dragSources.incl w.id
+    gtk_drag_source_set(w.native, GDK_BUTTON1_MASK.cuint, addr dragTarget, 1, GDK_ACTION_MOVE)
+    connect(w.native, "drag-begin", onDragBegin, data)
+    connect(w.native, "drag-data-get", onDragDataGet, data)
+    connect(w.native, "drag-end", onDragEnd, data)
+  if w.dropHandler != nil and w.id notin dropTargets:
+    dropTargets.incl w.id
+    gtk_drag_dest_set(w.native, GTK_DEST_DEFAULT_ALL, addr dragTarget, 1, GDK_ACTION_MOVE)
+    connect(w.native, "drag-data-received", onDragReceived, data)
+
 proc sync(w: Widget) =
   syncing = true
   defer: syncing = false
@@ -452,6 +493,7 @@ proc sync(w: Widget) =
   gtk_widget_set_visible(w.native, w.visible.gboolean)
   w.syncClasses()
   w.applyExpand()
+  w.syncDrag()
 
 proc attach(parent, child: Widget)
 
@@ -562,6 +604,8 @@ proc unrealize(w: Widget) =
     if pictures[w.id].pixbuf != nil: g_object_unref(pictures[w.id].pixbuf)
     pictures.del w.id
   inner.del w.id
+  dragSources.excl w.id
+  dropTargets.excl w.id
   w.realized = false
 
 proc gtkWidget*(w: Widget): GtkWidget =
@@ -712,6 +756,28 @@ backend.closeDialog = proc (d: Dialog) =
     gtk_container_remove(gtk_dialog_get_content_area(g), d.content.native)
     d.content.unrealize()
   gtk_widget_destroy(g)
+
+backend.chooseFile = proc (title: string, save: bool, name: string, patterns: seq[string], filterName: string,
+                          onDone: proc (path: string)) =
+  let d = gtk_file_chooser_dialog_new(title.cstring, toplevel(),
+    if save: GTK_FILE_CHOOSER_ACTION_SAVE else: GTK_FILE_CHOOSER_ACTION_OPEN,
+    "_Cancel", GTK_RESPONSE_CANCEL, (if save: "_Save" else: "_Open").cstring, GTK_RESPONSE_ACCEPT, nil)
+  if patterns.len > 0:
+    let f = gtk_file_filter_new()
+    gtk_file_filter_set_name(f, (if filterName.len > 0: filterName else: patterns.join(", ")).cstring)
+    for p in patterns: gtk_file_filter_add_pattern(f, p.cstring)
+    gtk_file_chooser_add_filter(d, f)
+  if save:
+    if name.len > 0: gtk_file_chooser_set_current_name(d, name.cstring)
+    gtk_file_chooser_set_do_overwrite_confirmation(d, 1)
+  var path = ""
+  if gtk_dialog_run(d) == GTK_RESPONSE_ACCEPT:
+    let p = gtk_file_chooser_get_filename(d)
+    if p != nil:
+      path = $p
+      g_free(cast[pointer](p))
+  gtk_widget_destroy(d)
+  onDone(path)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Popovers: an undecorated popup window (it never takes the keyboard focus) under the anchor.

@@ -226,3 +226,32 @@ proc connect*(instance: pointer, signal: string, handler: pointer, data: pointer
   discard g_signal_connect_data(instance, signal.cstring, handler, data, nil, 0)
 
 proc gtkInit*() = gtk_init(nil, nil)
+
+# Drag and drop, file choosers
+type GtkTargetEntry* = object
+  target*: cstring
+  flags*, info*: cuint
+const
+  GDK_ACTION_MOVE* = 4.cint
+  GTK_DEST_DEFAULT_ALL* = 7.cint
+  GTK_TARGET_SAME_APP* = 1.cuint
+  GTK_FILE_CHOOSER_ACTION_OPEN* = 0.cint
+  GTK_FILE_CHOOSER_ACTION_SAVE* = 1.cint
+  GTK_RESPONSE_ACCEPT* = -3.cint
+  GTK_RESPONSE_CANCEL* = -6.cint
+{.push cdecl, importc.}
+proc gtk_drag_source_set*(w: GtkWidget, mask: cuint, targets: ptr GtkTargetEntry, n: cint, actions: cint)
+proc gtk_drag_dest_set*(w: GtkWidget, flags: cint, targets: ptr GtkTargetEntry, n: cint, actions: cint)
+proc gtk_selection_data_set*(sel: pointer, kind: pointer, format: cint, data: cstring, len: cint)
+proc gtk_selection_data_get_target*(sel: pointer): pointer
+proc gtk_file_chooser_dialog_new*(title: cstring, parent: GtkWidget, action: cint, first: cstring): GtkWidget {.varargs.}
+proc gtk_file_chooser_get_filename*(c: GtkWidget): cstring
+proc gtk_file_chooser_set_current_name*(c: GtkWidget, name: cstring)
+proc gtk_file_chooser_set_do_overwrite_confirmation*(c: GtkWidget, on: gboolean)
+proc gtk_file_chooser_add_filter*(c: GtkWidget, f: pointer)
+proc gtk_file_filter_new*(): pointer
+proc gtk_file_filter_set_name*(f: pointer, name: cstring)
+proc gtk_file_filter_add_pattern*(f: pointer, pattern: cstring)
+proc gtk_dialog_run*(d: GtkWidget): cint
+proc g_free*(p: pointer)
+{.pop.}
