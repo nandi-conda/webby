@@ -1,7 +1,7 @@
 ## Summarize (app/lib/src/summarize.dart): reads the page's text through a page script, streams a summary from
-## DeepSeek into the side panel, answers follow-up questions about the page, and saves both (summarize/cache.nim).
-## The API key is a secret in the password vault, synced to the other devices unless unticked; without the vault
-## (getSecret is nil) it is asked for and kept in memory until Webby quits.
+## DeepSeek or Xiaomi MiMo into the side panel, answers follow-up questions about the page, and saves both (summarize/cache.nim).
+## Each provider's API key is a secret in the password vault, synced to the other devices unless unticked, and so
+## is the choice of provider; without the vault (getSecret is nil) they are kept in memory until Webby quits.
 
 import std/[json, random, strutils, times]
 import ../browser
@@ -25,6 +25,7 @@ type
     hasPage: bool
     madeAt: int64
     chat: Chat
+    provider: Provider         ## who the summary was asked of
 
   Panel = object
     root, spinner, copyButton, redoButton, content, entry, sendButton, adjustment: Widget
@@ -32,7 +33,7 @@ type
 
 var
   jobs: Table[string, Job]     ## by the tab's messagePrefix
-  memoryKey: string            ## the key when there's no vault to keep it in
+  memorySecrets: Table[string, string]   ## the keys and choice when there's no vault to keep them in
   pendingReads: Table[string, proc (ok: bool, page: PageText)]
   panelJob: Job                ## the job the side panel shows, nil when it shows something else
   panel: Panel
@@ -41,6 +42,11 @@ var
 
 const GTK_RESPONSE_REJECT = -2.cint
 proc gtk_check_button_new_with_mnemonic(label: cstring): Widget {.importc, cdecl.}
+proc gtk_combo_box_text_new(): Widget {.importc, cdecl.}
+proc gtk_combo_box_text_append_text(c: Widget, text: cstring) {.importc, cdecl.}
+proc gtk_combo_box_set_active(c: Widget, i: cint) {.importc, cdecl.}
+proc gtk_combo_box_get_active(c: Widget): cint {.importc, cdecl.}
+proc gtk_dialog_get_widget_for_response(d: Widget, response: cint): Widget {.importc, cdecl.}
 proc gtk_box_set_spacing(b: Widget, s: cint) {.importc, cdecl.}
 proc gtk_scrolled_window_get_vadjustment(s: Widget): Widget {.importc, cdecl.}
 proc gtk_adjustment_get_value(a: Widget): cdouble {.importc, cdecl.}
@@ -63,14 +69,15 @@ proc later(ms: int, action: proc ()) =
 # ---------------------------------------------------------------------------------------------------------------
 # The API key
 
-proc apiKey(): string =
-  if getSecret != nil:
-    result = getSecret(deepSeekKeySecret)
-  if result.len == 0: result = memoryKey
+proc secret(name: string): string =
+  if getSecret != nil: getSecret(name) else: memorySecrets.getOrDefault(name)
 
-proc storeKey(value: string, sync: bool) =
-  if setSecret != nil: setSecret(deepSeekKeySecret, value, sync)
-  else: memoryKey = value
+proc storeSecret(name, value: string, sync: bool) =
+  if setSecret != nil: setSecret(name, value, sync)
+  else: memorySecrets[name] = value
+
+proc provider(): Provider = chosenProvider(secret)
+proc apiKey(): string = secret(provider().info.keySecret)
 
 
 proc onShowKey(button: Widget, entry: pointer) {.cdecl.} =
@@ -78,23 +85,54 @@ proc onShowKey(button: Widget, entry: pointer) {.cdecl.} =
 
 proc render()
 
+type SettingsDialog = object
+  dialog, providerBox, label, sync, info: Widget
+  provider: Provider
+
+proc settingsUpdate(d: ptr SettingsDialog) =
+  ## Fits the dialog to the provider picked.
+  let p = Provider(max(0, gtk_combo_box_get_active(d.providerBox)))
+  let hasKey = secret(p.info.keySecret).len > 0
+  gtk_label_set_text(d.label, cstring(if hasKey: "New " & p.name & " API key (one is saved)" else: p.name & " API key"))
+  gtk_widget_set_sensitive(gtk_dialog_get_widget_for_response(d.dialog, GTK_RESPONSE_REJECT), hasKey.gboolean)
+  if p != d.provider:
+    gtk_toggle_button_set_active(d.sync, cint(secretSyncs == nil or secretSyncs(p.info.keySecret)))
+  d.provider = p
+  let where =
+    if setSecret != nil: "It is kept encrypted in the password vault; when it syncs, it travels end-to-end " &
+      "encrypted like your passwords."
+    else: "The password vault isn't available, so the key is kept in memory until Webby quits."
+  gtk_label_set_markup(d.info, cstring("<small>" & escapeMarkup("Create a key at " & p.info.site & ". " & where &
+    " Summarize sends the page's text to " & p.name & ".") & "</small>"))
+
+proc onProviderChanged(box: Widget, d: pointer) {.cdecl.} = settingsUpdate(cast[ptr SettingsDialog](d))
+
 proc showSummarizeSettings*() =
-  ## The dialog where the DeepSeek API key is entered, replaced or removed.
+  ## The dialog where the provider is picked and its API key entered, replaced or removed.
   if incognito and setSecret != nil:
-    alert("Set the DeepSeek API key in a normal window.")
+    alert("Set the Summarize API key in a normal window.")
     return
-  let hasKey = apiKey().len > 0
-  let d = gtk_dialog_new_with_buttons("Summarize with DeepSeek", window, GTK_DIALOG_MODAL, nil)
-  if hasKey: discard gtk_dialog_add_button(d, "_Remove key", GTK_RESPONSE_REJECT)
+  var s = SettingsDialog(provider: provider())
+  let d = gtk_dialog_new_with_buttons("Summarize settings", window, GTK_DIALOG_MODAL, nil)
+  s.dialog = d
+  discard gtk_dialog_add_button(d, "_Remove key", GTK_RESPONSE_REJECT)
   discard gtk_dialog_add_button(d, "_Cancel", GTK_RESPONSE_CANCEL)
   discard gtk_dialog_add_button(d, "_Save", GTK_RESPONSE_OK)
   gtk_dialog_set_default_response(d, GTK_RESPONSE_OK)
   let box = gtk_dialog_get_content_area(d)
   gtk_container_set_border_width(box, 12)
   gtk_box_set_spacing(box, 6)
-  let label = gtk_label_new(cstring(if hasKey: "New API key (one is saved)" else: "DeepSeek API key"))
-  gtk_label_set_xalign(label, 0)
-  gtk_box_pack_start(box, label, 0, 0, 0)
+  let withLabel = gtk_label_new("Summarize with")
+  gtk_label_set_xalign(withLabel, 0)
+  gtk_box_pack_start(box, withLabel, 0, 0, 0)
+  s.providerBox = gtk_combo_box_text_new()
+  for p in Provider: gtk_combo_box_text_append_text(s.providerBox, p.name.cstring)
+  gtk_combo_box_set_active(s.providerBox, s.provider.ord.cint)
+  gtk_box_pack_start(box, s.providerBox, 0, 0, 0)
+  s.label = gtk_label_new("")
+  gtk_label_set_xalign(s.label, 0)
+  gtk_widget_set_margin_top(s.label, 6)
+  gtk_box_pack_start(box, s.label, 0, 0, 0)
   let entry = gtk_entry_new()
   gtk_entry_set_visibility(entry, 0)
   gtk_entry_set_placeholder_text(entry, "sk-…")
@@ -104,28 +142,32 @@ proc showSummarizeSettings*() =
   let show = gtk_check_button_new_with_mnemonic("Sho_w key")
   connect(show, "toggled", onShowKey, entry)
   gtk_box_pack_start(box, show, 0, 0, 0)
-  let sync = gtk_check_button_new_with_mnemonic("S_ync this key to my other devices")
-  gtk_toggle_button_set_active(sync, cint(secretSyncs == nil or secretSyncs(deepSeekKeySecret)))
-  if setSecret != nil: gtk_box_pack_start(box, sync, 0, 0, 0)
-  let where =
-    if setSecret != nil: "It is kept encrypted in the password vault; when it syncs, it travels end-to-end " &
-      "encrypted like your passwords."
-    else: "The password vault isn't available, so the key is kept in memory until Webby quits."
-  let info = markupLabel("<small>" & escapeMarkup("Create a key at platform.deepseek.com. " & where &
-    " Summarize sends the page's text to DeepSeek.") & "</small>", selectable = false)
-  addClass(info, "webby-md-dim")
-  gtk_box_pack_start(box, info, 0, 0, 0)
+  s.sync = gtk_check_button_new_with_mnemonic("S_ync this key to my other devices")
+  gtk_toggle_button_set_active(s.sync, cint(secretSyncs == nil or secretSyncs(s.provider.info.keySecret)))
+  if setSecret != nil: gtk_box_pack_start(box, s.sync, 0, 0, 0)
+  s.info = markupLabel("", selectable = false)
+  addClass(s.info, "webby-md-dim")
+  gtk_box_pack_start(box, s.info, 0, 0, 0)
+  settingsUpdate(addr s)
+  connect(s.providerBox, "changed", onProviderChanged, addr s)
   gtk_widget_show_all(d)
   while true:
     let r = gtk_dialog_run(d)
     let text = ($gtk_entry_get_text(entry)).strip
-    let syncs = gtk_toggle_button_get_active(sync) != 0
+    let syncs = gtk_toggle_button_get_active(s.sync) != 0
+    let p = s.provider
+    let name = p.info.keySecret
+    let hasKey = secret(name).len > 0
     if r == GTK_RESPONSE_OK and text.len == 0:
-      # With a key saved, Save with the field empty just changes whether it syncs.
+      # With a key saved, Save with the field empty just switches to the provider and changes whether it syncs.
       if not hasKey: continue
-      storeKey(apiKey(), syncs)
-    elif r == GTK_RESPONSE_OK: storeKey(text, syncs)
-    elif r == GTK_RESPONSE_REJECT: storeKey("", syncs)
+      storeSecret(name, secret(name), syncs)
+    elif r == GTK_RESPONSE_OK: storeSecret(name, text, syncs)
+    elif r == GTK_RESPONSE_REJECT: storeSecret(name, "", syncs)
+    if r in [GTK_RESPONSE_OK, GTK_RESPONSE_REJECT]:
+      # The choice travels with the key: a device that gets the key also switches to it.
+      if secret(providerSecret) != p.info.id or (secretSyncs != nil and secretSyncs(providerSecret) != syncs):
+        storeSecret(providerSecret, p.info.id, syncs)
     break
   gtk_widget_destroy(d)
   render()
@@ -208,8 +250,8 @@ proc stopChat(job: Job) =
   job.chat.cancel()
   job.chat = nil
 
-proc start(job: Job, key: string, fresh = false) =
-  ## Reads the page and asks DeepSeek for a summary. A summary saved for the same page (or selection) is shown
+proc start(job: Job, key: string, provider: Provider, fresh = false) =
+  ## Reads the page and asks `provider` for a summary. A summary saved for the same page (or selection) is shown
   ## instead unless `fresh`.
   job.stopChat()
   inc job.generation
@@ -226,6 +268,7 @@ proc start(job: Job, key: string, fresh = false) =
   job.key = ""
   job.hasPage = false
   job.madeAt = 0
+  job.provider = provider
   changed(job)
   proc fail(message: string) =
     if generation != job.generation: return
@@ -248,7 +291,7 @@ proc start(job: Job, key: string, fresh = false) =
     job.selection = page.selection
     if page.text.strip.len < 40: (fail("This page has no text to summarize."); return)
     changed(job)
-    job.chat = streamChat(key, summaryRequest(page),
+    job.chat = streamChat(provider, key, summaryRequest(page, provider),
       proc (piece: string) =
         if generation != job.generation: return
         job.text.add piece
@@ -257,14 +300,14 @@ proc start(job: Job, key: string, fresh = false) =
         if generation != job.generation: return
         job.chat = nil
         if error.len > 0: (fail(error); return)
-        if job.text.strip.len == 0: (fail("DeepSeek sent back an empty summary."); return)
+        if job.text.strip.len == 0: (fail(provider.name & " sent back an empty summary."); return)
         job.save()
         job.running = false
         changed(job),
       proc () =
         if generation == job.generation: changed(job)))
 
-proc ask(job: Job, key, text: string) =
+proc ask(job: Job, key, text: string, provider: Provider) =
   ## Asks a follow-up question with the page text, the summary and the earlier questions as context.
   let question = text.strip
   if question.len == 0 or job.running or job.answering or job.text.strip.len == 0: return
@@ -279,7 +322,8 @@ proc ask(job: Job, key, text: string) =
     if generation != job.generation: return
     var context: seq[tuple[question, answer: string]]
     for qa in earlier: context.add (qa.question, qa.answer)
-    job.chat = streamChat(key, questionRequest(job.hasPage, job.page, job.title, job.url, job.text, context, question),
+    job.chat = streamChat(provider, key,
+      questionRequest(job.hasPage, job.page, job.title, job.url, job.text, context, question, provider),
       proc (piece: string) =
         if generation != job.generation: return
         entry.answer.add piece
@@ -289,7 +333,7 @@ proc ask(job: Job, key, text: string) =
         job.chat = nil
         entry.running = false
         entry.error = if error.len > 0: error
-                      elif entry.answer.strip.len == 0: "DeepSeek sent back an empty answer."
+                      elif entry.answer.strip.len == 0: provider.name & " sent back an empty answer."
                       else: ""
         if entry.error.len == 0: job.save()
         changed(job))
@@ -436,7 +480,7 @@ proc render() =
     add note
   if job.error.len > 0: add(markupLabel(danger(job.error)), 12)
   elif job.text.len == 0 and job.running:
-    let reading = markupLabel(escapeMarkup(waitingText(job.hasPage, job.chat != nil and job.chat.queued)))
+    let reading = markupLabel(escapeMarkup(waitingText(job.hasPage, job.chat != nil and job.chat.queued, job.provider)))
     addClass(reading, "webby-md-dim")
     add(reading, 12)
   else: add(markdownView(job.text.strip), 12)
@@ -468,7 +512,7 @@ proc askFromEntry() =
   if job == nil or key.len == 0 or question.len == 0 or job.running or job.answering: return
   gtk_entry_set_text(panel.entry, "")
   panel.stickToBottom = true
-  job.ask(key, question)
+  job.ask(key, question, provider())
   render()
   onAdjustmentChanged(panel.adjustment, nil)
 
@@ -489,7 +533,7 @@ proc showPanel(job: Job) =
     let key = apiKey()
     if job != nil and key.len > 0 and not job.running and not job.answering:
       panel.stickToBottom = false
-      job.start(key, fresh = true)
+      job.start(key, provider(), fresh = true)
       render())
   panel.copyButton = iconButton("copy", "Copy summary", proc () =
     if panelJob != nil and panelJob.text.len > 0:
@@ -548,7 +592,7 @@ proc hidePanel() =
 
 proc summarizePage*() =
   ## Summarizes the current page, asking for the API key first when there's none. A saved summary of the page is
-  ## shown without asking DeepSeek again (the panel's redo button makes a new one).
+  ## shown without asking again (the panel's redo button makes a new one).
   let t = currentTab()
   if t == nil or t.url.len == 0: return
   let job = jobOf(t)
@@ -566,7 +610,7 @@ proc summarizePage*() =
     showSummarizeSettings()
     key = apiKey()
     if key.len == 0: return
-  job.start(key)
+  job.start(key, provider())
   showPanel(job)
 
 proc toggleSummary() =
@@ -597,7 +641,7 @@ proc install*() =
     discard addToolbarButton("summarize_outlined", "Summarize this page", toggleSummary, "summarize", "Summary")
     if children(moreMenu).len > 0: addMenuSeparator()
     addMenuItem("Summarize this page", summarizePage)
-    if not incognito or setSecret == nil: addMenuItem("DeepSeek API key…", showSummarizeSettings)
+    if not incognito or setSecret == nil: addMenuItem("Summarize settings…", showSummarizeSettings)
   activeTabHooks.add proc (t: Tab) =
     let job = jobs.getOrDefault(t.messagePrefix)
     let wanted = job != nil and job.open

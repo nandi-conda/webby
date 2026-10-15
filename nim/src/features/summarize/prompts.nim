@@ -5,7 +5,50 @@ import std/[json, strutils]
 
 const
   deepSeekKeySecret* = "deepseek-api-key"   ## the key's name among the vault's secrets (synced unless unticked)
+  mimoKeySecret* = "mimo-api-key"           ## the Xiaomi MiMo key's name
+  providerSecret* = "summarize-provider"    ## the chosen provider's id, a secret that syncs along with its key
   maxSummaryInputChars* = 40000             ## longer pages are cut before they're sent
+
+type
+  Provider* = enum
+    ## A chat completions service Summarize can ask (SummaryProvider in summarize.dart).
+    deepSeek, mimo
+
+  ProviderInfo* = object
+    id*, name*, keySecret*, endpoint*, model*, site*: string
+    status*: string      ## status page named when a request hangs, or ""
+    keyHeader*: string   ## the header the key goes in bare; "" means Authorization: Bearer
+
+const providers*: array[Provider, ProviderInfo] = [
+  deepSeek: ProviderInfo(id: "deepseek", name: "DeepSeek", keySecret: deepSeekKeySecret,
+    endpoint: "https://api.deepseek.com/chat/completions", model: "deepseek-chat", site: "platform.deepseek.com",
+    status: "status.deepseek.com"),
+  # platform.xiaomimimo.com: pay-as-you-go keys (sk-...) on api.xiaomimimo.com, sent in an `api-key` header. The V2.6
+  # models think first by default; requests turn that off so the answer starts at once.
+  mimo: ProviderInfo(id: "mimo", name: "Xiaomi MiMo", keySecret: mimoKeySecret,
+    endpoint: "https://api.xiaomimimo.com/v1/chat/completions", model: "mimo-v2.6-flash",
+    site: "platform.xiaomimimo.com", keyHeader: "api-key")]
+
+proc info*(p: Provider): ProviderInfo = providers[p]
+proc name*(p: Provider): string = providers[p].name
+
+proc providerById*(id: string): Provider =
+  for p in Provider:
+    if providers[p].id == id: return p
+  deepSeek
+
+proc chosenProvider*(secret: proc (name: string): string): Provider =
+  ## The chosen provider (the providerSecret), unless only another has a key.
+  if secret == nil: return deepSeek
+  result = providerById(secret(providerSecret))
+  if secret(providers[result].keySecret).len > 0: return
+  for p in Provider:
+    if secret(providers[p].keySecret).len > 0: return p
+
+proc busyMessage*(p: Provider): string =
+  ## For a request accepted but held without a word for 90 s.
+  p.name & " accepted the request but hasn't sent anything back in 90 seconds. It may be having an outage" &
+    (if p.info.status.len > 0: ": see " & p.info.status else: "") & "."
 
 proc dartScript*(name: string): string {.compileTime.} =
   ## The body of the `String name(...) => '''...''';` script in summarize.dart, with Dart's escapes undone. A raw
@@ -78,23 +121,29 @@ type PageText* = object
   title*, url*, text*: string
   selection*: bool
 
-proc waitingText*(hasPage, queued: bool): string =
+proc waitingText*(hasPage, queued: bool, provider = deepSeek): string =
   ## What the summary panel says before the first piece of the summary comes.
   if not hasPage: "Reading the page…"
-  elif queued: "DeepSeek hasn't started answering yet…"
-  else: "Asking DeepSeek…"
+  elif queued: provider.name & " hasn't started answering yet…"
+  else: "Asking " & provider.name & "…"
+
+proc withProvider(body: JsonNode, provider: Provider): JsonNode =
+  body["model"] = %provider.info.model
+  if provider == mimo: body["thinking"] = %*{"type": "disabled"}
+  body
 
 # ---------------------------------------------------------------------------------------------------------------
 # Requests
 
-proc summaryRequest*(page: PageText): JsonNode =
-  %*{"model": "deepseek-chat", "stream": true, "temperature": 0.3, "messages": [
+proc summaryRequest*(page: PageText, provider = deepSeek): JsonNode =
+  withProvider(%*{"model": "deepseek-chat", "stream": true, "temperature": 0.3, "messages": [
     {"role": "system", "content": summaryPrompt},
     {"role": "user", "content": (if page.selection: "Summarize this text selected on" else: "Summarize this page:") &
-      " " & (if page.title.len == 0: "" else: "\"" & page.title & "\" ") & "(" & page.url & ")\n\n" & page.text}]}
+      " " & (if page.title.len == 0: "" else: "\"" & page.title & "\" ") & "(" & page.url & ")\n\n" & page.text}]}, provider)
 
 proc questionRequest*(hasPage: bool, page: PageText, title, url, summary: string,
-                      earlier: seq[tuple[question, answer: string]], question: string): JsonNode =
+                      earlier: seq[tuple[question, answer: string]], question: string,
+                      provider = deepSeek): JsonNode =
   ## A follow-up question with the page text (or, without it, its title and address), the summary and the earlier
   ## questions and answers as context.
   let context =
@@ -108,4 +157,4 @@ proc questionRequest*(hasPage: bool, page: PageText, title, url, summary: string
     messages.add %*{"role": "user", "content": qa.question}
     messages.add %*{"role": "assistant", "content": qa.answer}
   messages.add %*{"role": "user", "content": question}
-  %*{"model": "deepseek-chat", "stream": true, "temperature": 0.3, "messages": messages}
+  withProvider(%*{"model": "deepseek-chat", "stream": true, "temperature": 0.3, "messages": messages}, provider)

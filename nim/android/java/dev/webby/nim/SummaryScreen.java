@@ -14,6 +14,8 @@ import android.view.inputmethod.EditorInfo;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.TextView;
 import java.util.ArrayList;
 import java.util.List;
@@ -21,7 +23,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * Summarize (summarize.dart's panel): the page's summary from DeepSeek as it streams in, follow-up questions under
+ * Summarize (summarize.dart's panel): the page's summary from DeepSeek or Xiaomi MiMo as it streams in, follow-up questions under
  * it, and the API key dialog. features/summarize.nim does the work and sends "summary" events with its state.
  */
 final class SummaryScreen {
@@ -204,7 +206,10 @@ final class SummaryScreen {
         return t;
     }
 
-    /** The DeepSeek API key: entered, replaced or removed; kept in the vault, synced unless unticked. */
+    /**
+     * The provider (DeepSeek or Xiaomi MiMo) and its API key: entered, replaced or removed; kept in the vault, synced
+     * unless unticked. The choice syncs with the key.
+     */
     static void settings(MainActivity a, Runnable then) {
         JSONObject k = Native.obj("summarize.key");
         if (k == null) return;
@@ -212,9 +217,22 @@ final class SummaryScreen {
             Ui.toast(a, "Unlock the password vault first (Passwords and passkeys)");
             return;
         }
-        boolean hasKey = k.optBoolean("hasKey");
+        JSONArray providers = k.optJSONArray("providers");
+        if (providers == null || providers.length() == 0) return;
         LinearLayout form = Ui.form(a);
-        form.addView(Ui.label(a, hasKey ? "New API key (one is saved)" : "DeepSeek API key"));
+        form.addView(Ui.label(a, "Summarize with"));
+        RadioGroup which = new RadioGroup(a);
+        RadioButton[] radios = new RadioButton[providers.length()];
+        for (int i = 0; i < radios.length; i++) {
+            radios[i] = new RadioButton(a);
+            radios[i].setText(providers.optJSONObject(i).optString("name"));
+            radios[i].setTextColor(Ui.foreground);
+            radios[i].setId(View.generateViewId());
+            which.addView(radios[i]);
+        }
+        form.addView(which);
+        TextView keyLabel = Ui.label(a, "");
+        form.addView(keyLabel);
         EditText key = Ui.field(a, "", "sk-…");
         key.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
         form.addView(key);
@@ -230,26 +248,54 @@ final class SummaryScreen {
         CheckBox sync = new CheckBox(a);
         sync.setText("Sync this key to my other devices");
         sync.setTextColor(Ui.foreground);
-        sync.setChecked(k.optBoolean("sync", true));
         form.addView(sync);
-        TextView info = Ui.text(a, "Create a key at platform.deepseek.com. It is kept encrypted in the password "
-            + "vault; when it syncs, it travels end-to-end encrypted like your passwords. Summarize sends the page's "
-            + "text to DeepSeek.", 13, Ui.dim);
+        TextView info = Ui.text(a, "", 13, Ui.dim);
         info.setSingleLine(false);
         form.addView(info);
-        AlertDialog.Builder b = new AlertDialog.Builder(a).setTitle("Summarize with DeepSeek").setView(form)
+        int[] picked = {0};
+        AlertDialog[] dialog = {null};
+        Runnable fit = () -> {
+            JSONObject p = providers.optJSONObject(picked[0]);
+            String name = p.optString("name");
+            if (dialog[0] != null) {
+                View remove = dialog[0].getButton(AlertDialog.BUTTON_NEUTRAL);
+                if (remove != null) remove.setVisibility(p.optBoolean("hasKey") ? View.VISIBLE : View.GONE);
+            }
+            keyLabel.setText(p.optBoolean("hasKey") ? "New " + name + " API key (one is saved)" : name + " API key");
+            sync.setChecked(p.optBoolean("sync", true));
+            info.setText("Create a key at " + p.optString("site") + ". It is kept encrypted in the password vault; "
+                + "when it syncs, it travels end-to-end encrypted like your passwords. Summarize sends the page's "
+                + "text to " + name + ".");
+        };
+        for (int i = 0; i < radios.length; i++) {
+            if (providers.optJSONObject(i).optString("id").equals(k.optString("provider"))) picked[0] = i;
+        }
+        radios[picked[0]].setChecked(true);
+        fit.run();
+        which.setOnCheckedChangeListener((g, id) -> {
+            for (int i = 0; i < radios.length; i++) if (radios[i].getId() == id) picked[0] = i;
+            key.setText("");
+            fit.run();
+        });
+        AlertDialog.Builder b = new AlertDialog.Builder(a).setTitle("Summarize settings").setView(form)
             .setPositiveButton("Save", (d, w) -> {
+                JSONObject p = providers.optJSONObject(picked[0]);
                 String v = key.getText().toString().trim();
-                // With a key saved, Save with the field empty just changes whether it syncs.
-                if (v.isEmpty() && !hasKey) return;
-                JSONObject r = v.isEmpty() ? Native.obj("summarize.key", "sync", sync.isChecked())
-                    : Native.obj("summarize.key", "key", v, "sync", sync.isChecked());
+                // With a key saved, Save with the field empty just switches to the provider and changes whether it syncs.
+                if (v.isEmpty() && !p.optBoolean("hasKey")) return;
+                JSONObject r = v.isEmpty()
+                    ? Native.obj("summarize.key", "provider", p.optString("id"), "sync", sync.isChecked())
+                    : Native.obj("summarize.key", "provider", p.optString("id"), "key", v, "sync", sync.isChecked());
                 if (r != null && !r.optString("error").isEmpty()) Ui.toast(a, r.optString("error"));
                 else if (then != null) then.run();
             })
-            .setNegativeButton("Cancel", null);
-        if (hasKey) b.setNeutralButton("Remove key",
-            (d, w) -> Native.cmd("summarize.key", "key", "", "sync", sync.isChecked()));
-        b.show();
+            .setNegativeButton("Cancel", null)
+            .setNeutralButton("Remove key", (d, w) -> {
+                JSONObject p = providers.optJSONObject(picked[0]);
+                if (p.optBoolean("hasKey"))
+                    Native.cmd("summarize.key", "provider", p.optString("id"), "key", "", "sync", sync.isChecked());
+            });
+        dialog[0] = b.show();
+        fit.run();
     }
 }

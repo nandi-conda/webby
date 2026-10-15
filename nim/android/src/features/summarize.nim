@@ -1,7 +1,8 @@
 ## Summarize on Android (src/features/summarize.nim on the desktop): reads the page's text with the Dart app's page
-## script, streams a summary from DeepSeek (summarize/deepseek.nim over base.httpStream), answers follow-up questions
+## script, streams a summary from DeepSeek or Xiaomi MiMo (summarize/deepseek.nim over base.httpStream), answers follow-up questions
 ## and saves both in summaries.json (summarize/cache.nim). Java's SummaryScreen shows the "summary" events this
-## sends: the whole state, with the markdown already turned into HTML. The API key is a vault secret, synced unless unticked.
+## sends: the whole state, with the markdown already turned into HTML. Each provider's API key is a vault secret,
+## synced unless unticked, and so is the choice of provider.
 
 import std/[random, strutils, times]
 import ../core
@@ -23,6 +24,7 @@ type
     page: PageText
     hasPage: bool
     chat: Chat
+    provider: Provider
 
 var
   jobs: Table[int, Job]   ## by tab id
@@ -32,8 +34,11 @@ var
 
 proc nowMs(): int64 = (epochTime() * 1000).int64
 
-proc apiKey(): string =
-  if getSecret != nil: getSecret(deepSeekKeySecret) else: ""
+proc secret(name: string): string =
+  if getSecret != nil: getSecret(name) else: ""
+
+proc provider(): Provider = chosenProvider(secret)
+proc apiKey(): string = secret(provider().info.keySecret)
 
 proc answering(job: Job): bool = job.questions.len > 0 and job.questions[^1].running
 
@@ -50,7 +55,7 @@ proc stateJson(job: Job): JsonNode =
   %*{"open": true, "title": job.title, "url": job.url, "selection": job.selection, "running": job.running,
     "busy": busy, "error": job.error, "html": markdownHtml(job.text.strip), "text": job.text, "saved": saved,
     "questions": qs, "hasKey": apiKey().len > 0,
-    "waiting": waitingText(job.hasPage, job.chat != nil and job.chat.queued),
+    "waiting": waitingText(job.hasPage, job.chat != nil and job.chat.queued, job.provider),
     "canAsk": apiKey().len > 0 and job.text.strip.len > 0 and not job.running and job.error.len == 0 and
       not job.answering}
 
@@ -128,7 +133,7 @@ proc showSaved(job: Job, key: string, saved: CachedSummary) =
   job.madeAt = saved.at
   changed(job)
 
-proc start(job: Job, key: string, fresh: bool) =
+proc start(job: Job, key: string, provider: Provider, fresh: bool) =
   job.stopChat()
   inc job.generation
   let generation = job.generation
@@ -143,6 +148,7 @@ proc start(job: Job, key: string, fresh: bool) =
   job.key = ""
   job.hasPage = false
   job.madeAt = 0
+  job.provider = provider
   changed(job)
   proc fail(message: string) =
     if generation != job.generation: return
@@ -164,9 +170,9 @@ proc start(job: Job, key: string, fresh: bool) =
     job.url = page.url
     job.selection = page.selection
     if page.text.strip.len < 40: (fail("This page has no text to summarize."); return)
-    if key.len == 0: (fail("Add a DeepSeek API key under Summarize settings."); return)
+    if key.len == 0: (fail("Add an API key under Summarize settings."); return)
     changed(job)
-    job.chat = streamChat(key, summaryRequest(page),
+    job.chat = streamChat(provider, key, summaryRequest(page, provider),
       proc (piece: string) =
         if generation != job.generation: return
         job.text.add piece
@@ -175,14 +181,14 @@ proc start(job: Job, key: string, fresh: bool) =
         if generation != job.generation: return
         job.chat = nil
         if error.len > 0: (fail(error); return)
-        if job.text.strip.len == 0: (fail("DeepSeek sent back an empty summary."); return)
+        if job.text.strip.len == 0: (fail(provider.name & " sent back an empty summary."); return)
         job.save()
         job.running = false
         changed(job),
       proc () =
         if generation == job.generation: changed(job)))
 
-proc ask(job: Job, key, text: string) =
+proc ask(job: Job, key, text: string, provider: Provider) =
   let question = text.strip
   if question.len == 0 or key.len == 0 or job.running or job.answering or job.text.strip.len == 0: return
   let generation = job.generation
@@ -194,8 +200,8 @@ proc ask(job: Job, key, text: string) =
   changed(job)
   proc send() =
     if generation != job.generation: return
-    job.chat = streamChat(key, questionRequest(job.hasPage, job.page, job.title, job.url, job.text, earlier,
-      question),
+    job.chat = streamChat(provider, key, questionRequest(job.hasPage, job.page, job.title, job.url, job.text,
+      earlier, question, provider),
       proc (piece: string) =
         if generation != job.generation: return
         entry.answer.add piece
@@ -205,7 +211,7 @@ proc ask(job: Job, key, text: string) =
         job.chat = nil
         entry.running = false
         entry.error = if error.len > 0: error
-                      elif entry.answer.strip.len == 0: "DeepSeek sent back an empty answer."
+                      elif entry.answer.strip.len == 0: provider.name & " sent back an empty answer."
                       else: ""
         if entry.error.len == 0: job.save()
         changed(job))
@@ -238,12 +244,12 @@ proc startCmd(args: JsonNode): JsonNode =
   let fresh = args{"fresh"}.getBool
   if fresh or (job.text.len == 0 and not job.running) or summaryKey(job.url) != summaryKey(t.url) or
       job.error.len > 0:
-    job.start(apiKey(), fresh)
+    job.start(apiKey(), provider(), fresh)
   sendNow()
   nil
 
 proc askCmd(args: JsonNode): JsonNode =
-  if shown != nil: shown.ask(apiKey(), args{"text"}.getStr)
+  if shown != nil: shown.ask(apiKey(), args{"text"}.getStr, provider())
   nil
 
 proc closeCmd(args: JsonNode): JsonNode =
@@ -266,17 +272,26 @@ proc jumpCmd(args: JsonNode): JsonNode =
   %true
 
 proc keyCmd(args: JsonNode): JsonNode =
-  ## {} -> {hasKey, vault, sync}; {key, sync?} stores it ("" removes it); {sync} alone changes whether it syncs.
-  let sync = if args{"sync"}.kind == JBool: args["sync"].getBool
-             else: secretSyncs == nil or secretSyncs(deepSeekKeySecret)
-  if args.hasKey("key") or args{"sync"}.kind == JBool:
+  ## {} -> {provider, hasKey, vault, providers: [{id, name, site, hasKey, sync}]}: the id in use and whether it has a key.
+  ## {provider, key?, sync?} switches to that provider and stores its key ("" removes it); without `key` it only
+  ## changes whether the key syncs. The choice syncs with the key.
+  proc syncs(name: string): bool = secretSyncs == nil or secretSyncs(name)
+  if args.hasKey("provider"):
     if setSecret == nil: return %*{"error": "The password vault isn't available."}
-    let key = if args.hasKey("key"): args{"key"}.getStr.strip else: apiKey()
-    setSecret(deepSeekKeySecret, key, sync)
-    if apiKey() != key: return %*{"error": "The password vault isn't open, so the key wasn't saved."}
+    let p = providerById(args{"provider"}.getStr)
+    let name = p.info.keySecret
+    let sync = if args{"sync"}.kind == JBool: args["sync"].getBool else: syncs(name)
+    let key = if args.hasKey("key"): args{"key"}.getStr.strip else: secret(name)
+    setSecret(name, key, sync)
+    if secret(name) != key: return %*{"error": "The password vault isn't open, so the key wasn't saved."}
+    if secret(providerSecret) != p.info.id or syncs(providerSecret) != sync:
+      setSecret(providerSecret, p.info.id, sync)
     if shown != nil: changed(shown)
-  %*{"hasKey": apiKey().len > 0, "vault": setSecret != nil,
-     "sync": secretSyncs == nil or secretSyncs(deepSeekKeySecret)}
+  var list = newJArray()
+  for p in Provider:
+    list.add %*{"id": p.info.id, "name": p.name, "site": p.info.site, "hasKey": secret(p.info.keySecret).len > 0,
+      "sync": syncs(p.info.keySecret)}
+  %*{"provider": provider().info.id, "hasKey": apiKey().len > 0, "vault": setSecret != nil, "providers": list}
 
 proc install*() =
   pageMessageHooks.add onPageMessage

@@ -1,22 +1,20 @@
-## DeepSeek chat completions, streamed (the HTTP half of app/lib/src/summarize.dart). A small HTTP/1.1 client on
+## Chat completions from DeepSeek or Xiaomi MiMo (prompts.Provider), streamed (the HTTP half of
+## app/lib/src/summarize.dart). A small HTTP/1.1 client on
 ## GIO's async sockets (TLS from glib-networking), so it runs on the GTK main loop: nothing blocks, every callback
 ## is on the GTK thread. Not std/httpclient: with -d:ssl, Nim loads the system's OpenSSL at startup, and then
-## libwebby.so can't load the runtime's newer libcrypto. WEBBY_DEEPSEEK_ENDPOINT overrides the endpoint (tests
-## use a local fake server; http:// works too). On Android the bytes come from Java's HttpURLConnection instead
+## libwebby.so can't load the runtime's newer libcrypto. WEBBY_DEEPSEEK_ENDPOINT overrides the endpoint of
+## either provider (tests use a local fake server; http:// works too). On Android the bytes come from Java's HttpURLConnection instead
 ## (base.httpStream); the parsing and the messages are the same.
 
 import std/[json, monotimes, os, strutils, times]
+import prompts
 when defined(android):
   import ../../base
 else:
   import std/uri
   import ../../browser
 
-const
-  defaultEndpoint = "https://api.deepseek.com/chat/completions"
-  busyLimit = initDuration(seconds = 90)   ## how long DeepSeek may keep a request queued before we give up
-  busyMessage* = "DeepSeek accepted the request but hasn't sent anything back in 90 seconds. It may be having " &
-    "an outage: see status.deepseek.com."
+const busyLimit = initDuration(seconds = 90)   ## how long a provider may keep a request queued before we give up
 
 when not defined(android):
  {.push cdecl, importc.}
@@ -66,6 +64,7 @@ type
     inChunk: bool
     started, lastData: MonoTime
     stream: int                 ## Android: the base.httpStream id
+    provider: Provider
 
 var
   chats: seq[Chat]
@@ -101,17 +100,22 @@ proc cancel*(c: Chat) =
   c.onDone = nil
   c.finish("")
 
-proc describeFailure(status: int, body: string): string =
+proc describeFailure(provider: Provider, status: int, body: string): string =
+  let name = provider.name
   var detail = ""
   try:
     let e = parseJson(body){"error"}
     if e != nil and e.kind == JObject: detail = e{"message"}.getStr
   except CatchableError: discard
   case status
-  of 401: "DeepSeek didn't accept the API key. Check it under Summarize settings."
-  of 402: "The DeepSeek account is out of balance."
-  of 429: "DeepSeek is rate limiting requests; try again in a moment."
-  else: "DeepSeek answered with an error (" & $status & ")" & (if detail.len > 0: ": " & detail else: "") & "."
+  of 401: name & " didn't accept the API key. Check it under Summarize settings."
+  of 402: "The " & name & " account is out of balance."
+  of 429: name & " is rate limiting requests; try again in a moment."
+  else: name & " answered with an error (" & $status & ")" & (if detail.len > 0: ": " & detail else: "") & "."
+
+proc keyHeader(provider: Provider, apiKey: string): (string, string) =
+  ## The header the key goes in; it goes nowhere else.
+  if provider.info.keyHeader.len > 0: (provider.info.keyHeader, apiKey) else: ("Authorization", "Bearer " & apiKey)
 
 proc handleEvents(c: Chat) =
   ## Server-sent events: each `data: {...}` line carries a piece in choices[0].delta.content.
@@ -128,7 +132,7 @@ proc handleEvents(c: Chat) =
           c.queued = true
           if c.onQueued != nil: c.onQueued()
         if getMonoTime() - c.lastPiece > busyLimit:
-          c.finish(busyMessage)
+          c.finish(c.provider.busyMessage)
           return
       continue
     if not line.startsWith("data:"): continue
@@ -204,28 +208,28 @@ proc parseRaw(c: Chat) =
 
 proc ended(c: Chat) =
   ## The response is complete (or the server closed the connection).
-  if not c.gotHeaders: c.finish("Couldn't reach DeepSeek (the connection closed).")
-  elif c.status != 200: c.finish(describeFailure(c.status, c.body))
+  if not c.gotHeaders: c.finish("Couldn't reach " & c.provider.name & " (the connection closed).")
+  elif c.status != 200: c.finish(describeFailure(c.provider, c.status, c.body))
   else:
     if not c.done: c.events.add "\n"
     c.handleEvents()
     c.finish("")
 
 when defined(android):
-  proc streamChat*(apiKey: string, body: JsonNode, onPiece: proc (piece: string), onDone: proc (error: string),
-                   onQueued: proc () = nil): Chat =
-    ## Posts a chat completions `body` (with "stream": true) and streams the reply. Java times the connection out
-    ## after 15 s and the reply after 60 s without data.
+  proc streamChat*(provider: Provider, apiKey: string, body: JsonNode, onPiece: proc (piece: string),
+                   onDone: proc (error: string), onQueued: proc () = nil): Chat =
+    ## Posts a chat completions `body` (with "stream": true) to `provider` and streams the reply. Java times the
+    ## connection out after 15 s and the reply after 60 s without data.
     let e = getEnv("WEBBY_DEEPSEEK_ENDPOINT")
     let c = Chat(onPiece: onPiece, onDone: onDone, onQueued: onQueued, started: getMonoTime(),
-      lastData: getMonoTime(), lastPiece: getMonoTime())
+      lastData: getMonoTime(), lastPiece: getMonoTime(), provider: provider)
     result = c
     if base.httpStream == nil:
-      c.finish("Couldn't reach DeepSeek (no network here).")
+      c.finish("Couldn't reach " & provider.name & " (no network here).")
       return
     chats.add c
-    c.stream = base.httpStream("POST", (if e.len > 0: e else: defaultEndpoint),
-      @[("Authorization", "Bearer " & apiKey), ("Content-Type", "application/json"), ("Accept", "text/event-stream"),
+    c.stream = base.httpStream("POST", (if e.len > 0: e else: provider.info.endpoint),
+      @[keyHeader(provider, apiKey), ("Content-Type", "application/json"), ("Accept", "text/event-stream"),
         ("User-Agent", "webby")], $body,
       proc (status: int) =
         c.gotHeaders = true
@@ -238,8 +242,8 @@ when defined(android):
       proc (error: string) =
         if c.finished: return
         if error.len == 0: c.ended()
-        elif c.gotHeaders: c.finish("The answer from DeepSeek broke off (" & error & ").")
-        else: c.finish("Couldn't reach DeepSeek (" & error & ")."))
+        elif c.gotHeaders: c.finish("The answer from " & c.provider.name & " broke off (" & error & ").")
+        else: c.finish("Couldn't reach " & c.provider.name & " (" & error & ")."))
 else:
   proc readMore(c: Chat)
 
@@ -253,8 +257,8 @@ else:
       return
     if n < 0:
       let msg = errorText(err)
-      c.finish(if c.gotHeaders: "The answer from DeepSeek broke off (" & msg & ")." else:
-        "Couldn't reach DeepSeek (" & msg & ").")
+      c.finish(if c.gotHeaders: "The answer from " & c.provider.name & " broke off (" & msg & ")." else:
+        "Couldn't reach " & c.provider.name & " (" & msg & ").")
       return
     if n == 0:
       c.ended()
@@ -283,7 +287,7 @@ else:
       if err != nil: g_error_free(err)
       return
     if not ok:
-      c.finish("Couldn't reach DeepSeek (" & errorText(err) & ").")
+      c.finish("Couldn't reach " & c.provider.name & " (" & errorText(err) & ").")
       return
     c.readMore()
 
@@ -297,7 +301,7 @@ else:
       if err != nil: g_error_free(err)
       return
     if conn == nil:
-      c.finish("Couldn't reach DeepSeek (" & errorText(err) & ").")
+      c.finish("Couldn't reach " & c.provider.name & " (" & errorText(err) & ").")
       return
     c.conn = conn
     GC_ref(c)
@@ -311,20 +315,20 @@ else:
       let late = if c.conn == nil: now - c.started > initDuration(seconds = 15)
                  else: now - c.lastData > initDuration(seconds = 60)
       if late:
-        c.finish("DeepSeek took too long to answer.")
+        c.finish(c.provider.name & " took too long to answer.")
         break
       if c.queued and now - c.lastPiece > busyLimit:
-        c.finish(busyMessage)
+        c.finish(c.provider.busyMessage)
         break
     if chats.len > 0: return 1
     tickSource = 0
     0
 
-  proc streamChat*(apiKey: string, body: JsonNode, onPiece: proc (piece: string), onDone: proc (error: string),
-                   onQueued: proc () = nil): Chat =
-    ## Posts a chat completions `body` (with "stream": true) and streams the reply.
+  proc streamChat*(provider: Provider, apiKey: string, body: JsonNode, onPiece: proc (piece: string),
+                   onDone: proc (error: string), onQueued: proc () = nil): Chat =
+    ## Posts a chat completions `body` (with "stream": true) to `provider` and streams the reply.
     let e = getEnv("WEBBY_DEEPSEEK_ENDPOINT")
-    let u = parseUri(if e.len > 0: e else: defaultEndpoint)
+    let u = parseUri(if e.len > 0: e else: provider.info.endpoint)
     let tls = u.scheme != "http"
     let port = if u.port.len > 0: u.port elif tls: "443" else: "80"
     let host = if ':' in u.hostname: "[" & u.hostname & "]" else: u.hostname
@@ -332,10 +336,12 @@ else:
     var path = if u.path.len > 0: u.path else: "/"
     if u.query.len > 0: path.add "?" & u.query
     result = Chat(onPiece: onPiece, onDone: onDone, onQueued: onQueued, client: g_socket_client_new(),
-      cancellable: g_cancellable_new(), started: getMonoTime(), lastData: getMonoTime(), lastPiece: getMonoTime())
+      cancellable: g_cancellable_new(), started: getMonoTime(), lastData: getMonoTime(), lastPiece: getMonoTime(),
+      provider: provider)
+    let (keyName, keyValue) = keyHeader(provider, apiKey)
     result.request = "POST " & path & " HTTP/1.1\r\n" &
       "Host: " & host & (if u.port.len > 0: ":" & u.port else: "") & "\r\n" &
-      "Authorization: Bearer " & apiKey & "\r\n" &
+      keyName & ": " & keyValue & "\r\n" &
       "Content-Type: application/json\r\nAccept: text/event-stream\r\nUser-Agent: webby\r\nConnection: close\r\n" &
       "Content-Length: " & $payload.len & "\r\n\r\n" & payload
     g_socket_client_set_tls(result.client, tls.gboolean)
