@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- webby on nimkit for Android: the desktop's Nim front end under nimkit's Host. Its own app id while the Java-shell
+     app (nim/android, dev.webby.nim) is still around, so both can be installed. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.webby.kit">
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Asked for only when a site the user allowed needs them. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <application
+        android:label="Webby"
+        android:icon="@mipmap/ic_launcher"
+        android:theme="@style/Webby"
+        android:allowBackup="false"
+        android:usesCleartextTraffic="true"
+        android:extractNativeLibs="true">
+        <!-- extractNativeLibs: Ladybird's helper processes ship as lib<Name>.so and are run from the native library
+             directory (LadybirdRuntime.java), so they must be files there. -->
+        <activity
+            android:name="dev.webby.kit.WebbyHost"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="nimkit.lib" android:value="webbykit"/>
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="http"/>
+                <data android:scheme="https"/>
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

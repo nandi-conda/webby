@@ -1167,6 +1167,12 @@ proc run*() =
   else: gtk_widget_show_all(window)
   mark "window shown"
 
+  when defined(android):
+    # A link another app opened us with; later ones arrive as "openUrl" host events.
+    let launched = hostCall("launchUrl")
+    if launched.len > 0: commandLineUrls.add launched
+    hostEventHooks.add proc (name, data: string) =
+      if name == "openUrl" and data.len > 0: discard openTab(data)
   let urls = if appUrl.len > 0: @[appUrl] else: commandLineUrls
   var opened = false
   if appUrl.len == 0:
