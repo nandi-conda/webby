@@ -472,7 +472,7 @@ class SummaryJob extends ChangeNotifier {
       notifyListeners();
       await for (final piece in streamSummary(apiKey, page, onQueued: () {
         if (generation != _generation) return;
-        waiting = 'DeepSeek hasn't started answering yet…';
+        waiting = 'DeepSeek hasn\'t started answering yet…';
         notifyListeners();
       })) {
         if (generation != _generation) return;
