@@ -56,24 +56,25 @@ var
   commandLineUrls*: seq[string]
 
   # Widgets
-  window*, mainBox*, tabStripBox*, toolbar*, toolbarEnd*, area*, status*: Widget
+  window*: Widget              ## the GtkWindow holding rootColumn (the desktop shell)
+  rootColumn*: kit.Widget      ## everything in the window: tab strip, toolbar, bars, then the page and side panel
+  statusBubble*: kit.Widget    ## the hovered link's address, floating over the page's bottom left corner
   urlField*: kit.Widget        ## the URL bar (features/omnibox.nim adds its suggestions and keys)
   urlFocused*: bool            ## the URL bar has the keyboard focus
-  tabStrip*: kit.Widget        ## the tabs' row (a column with vertical tabs), inside a scroll view in tabStripBox
+  tabStrip*: kit.Widget        ## the tabs' row (a column with vertical tabs), inside a scroll view in tabStripRoot
   tabStripSpace*: kit.Widget   ## the strip's empty space after the tabs (the last child of tabStrip)
-  tabStripRoot*: kit.Widget    ## tabStripBox as nimkit sees it: the scroll view and the new-tab button
+  tabStripRoot*: kit.Widget    ## the strip's scroll view and the new-tab button: atop rootColumn, or left in pageRow
   barSlot*: kit.Widget         ## a column under the toolbar (the bookmark bar and info bars go here)
   findSlot*: kit.Widget        ## a column under the page (the find bar goes here)
-  pagePane*: Widget            ## GtkPaned: the page on the left, the side panel on the right
-  pageBox*: Widget             ## holds the vertical tab list (if any) and the page area
-  page*: kit.Canvas            ## the page view: a nimkit canvas showing the active tab's frame (its GtkWidget is `area`)
-  sidePanel*: Widget           ## the side panel's box (hidden when nothing shows)
+  pageSplit*: kit.Widget       ## the page on the left, the side panel on the right
+  pageRow*: kit.Widget         ## holds the vertical tab list (if any) and the page column
+  page*: kit.Canvas            ## the page view: a nimkit canvas showing the active tab's frame
+  sidePanel*: kit.Widget       ## the side panel's column (hidden when nothing shows)
   sidePanelTitle*: kit.Widget
-  sidePanelContent*: kit.Widget  ## the side panel's nimkit body (empty while GTK content shows)
-  sidePanelBody*: Widget
-  starSlot*: Widget            ## a box inside the URL bar row, right of the entry (the bookmark star goes here)
-  toolbarRow*: kit.Widget      ## the toolbar as nimkit sees it (`toolbar` is its GtkBox)
-  starSlotRow*, toolbarEndRow*: kit.Widget  ## `starSlot` and `toolbarEnd` as nimkit rows
+  sidePanelContent*: kit.Widget  ## the side panel's body
+  toolbarRow*: kit.Widget      ## the toolbar
+  starSlotRow*: kit.Widget     ## right of the URL entry (the bookmark star goes here)
+  toolbarEndRow*: kit.Widget   ## features' toolbar buttons, before the ⋮ menu
   urlSlotRow*: kit.Widget      ## holds the URL entry, in toolbarRow
   backButton*, forwardButton*, reloadButton*, moreButton*: kit.Widget
 
@@ -117,7 +118,6 @@ var
   pumping = false
   wokeInPump = false
   clipboardSerial: uint64
-  cursors: Table[int, pointer]
   shortcuts: seq[tuple[mods: int, keyval: uint32, action: proc (): bool]]
   quitting = false
   # Wheel coalescing: while a sent wheel event hasn't produced a new frame yet, later ones add up here and go out
@@ -220,22 +220,19 @@ proc refreshChrome*() =
   # An installed web app's window is titled by the app alone.
   let title = if appUrl.len > 0 and t.title.len > 0: t.title
               elif t.title.len > 0: t.title & " - " & name else: name
-  gtk_window_set_title(window, title.cstring)
+  kit.setTitle(title)
   if not urlFocused: kit.`text=`(urlField, if t.url == "about:blank": "" else: t.url)
   kit.`enabled=`(backButton, t.canBack)
   kit.`enabled=`(forwardButton, t.canForward)
   kit.`iconName=`(reloadButton, if t.loading: "close" else: "refresh")
   kit.`tooltip=`(reloadButton, if t.loading: "Stop" else: "Reload (Ctrl+R)")
-  gtk_label_set_text(status, t.hovered.cstring)
-  gtk_widget_set_visible(status, (t.hovered.len > 0).gboolean)
-  let win = gtk_widget_get_window(area)
-  if win != nil:
-    const names = {1: "none", 2: "default", 3: "crosshair", 4: "text", 5: "ew-resize", 6: "ns-resize",
-      7: "nwse-resize", 8: "nesw-resize", 9: "col-resize", 10: "row-resize", 11: "pointer", 12: "help", 13: "grab",
-      14: "grabbing", 15: "copy", 16: "move", 17: "wait", 18: "not-allowed", 19: "crosshair", 20: "zoom-in"}.toTable
-    let id = if t.cursor in names: t.cursor else: 2
-    if id notin cursors: cursors[id] = gdk_cursor_new_from_name(gtk_widget_get_display(area), names[id].cstring)
-    gdk_window_set_cursor(win, cursors[id])
+  kit.`text=`(statusBubble, t.hovered)
+  kit.`visible=`(statusBubble, t.hovered.len > 0)
+  # Ladybird's cursor numbers, as CSS names.
+  const names = {1: "none", 2: "default", 3: "crosshair", 4: "text", 5: "ew-resize", 6: "ns-resize",
+    7: "nwse-resize", 8: "nesw-resize", 9: "col-resize", 10: "row-resize", 11: "pointer", 12: "help", 13: "grab",
+    14: "grabbing", 15: "copy", 16: "move", 17: "wait", 18: "not-allowed", 19: "crosshair", 20: "zoom-in"}.toTable
+  kit.`cursor=`(page, names.getOrDefault(t.cursor, "default"))
 
 proc updateTabButton*(t: Tab) =
   ## Label, tooltip and pinned look of the tab's strip widget.
@@ -471,9 +468,8 @@ proc closeSidePanel*() =
     let h = sidePanelCloseHook
     sidePanelCloseHook = nil
     h()
-  clearChildren(sidePanelBody)
   kit.clear(sidePanelContent)
-  gtk_widget_hide(sidePanel)
+  kit.`visible=`(sidePanel, false)
   if openPanel.len > 0:
     openPanel = ""
     refreshPanelButtons()
@@ -487,29 +483,15 @@ proc openSidePanel(title: string, width: int, onClose: proc ()) =
   openPanel = title
   refreshPanelButtons()
 
-proc revealSidePanel(width: int) =
-  # The panel is no_show_all (so show_all on the window leaves it hidden): show its parts, then itself.
-  for c in children(sidePanel): gtk_widget_show_all(c)
-  # Only the body in use takes the room: the GTK one or the nimkit one.
-  if sidePanelContent.children.len > 0: gtk_widget_hide(sidePanelBody)
-  else: gtk_widget_hide(nkgtk.gtkWidget(sidePanelContent))
-  gtk_widget_show(sidePanel)
-  let total = gtk_widget_get_allocated_width(pagePane)
-  if total > width: gtk_paned_set_position(pagePane, cint(total - width))
-
-proc showSidePanel*(title: string, content: Widget, width = 360, onClose: proc () = nil) =
-  ## Shows `content` in the sidebar right of the page, replacing what was there.
-  openSidePanel(title, width, onClose)
-  gtk_box_pack_start(sidePanelBody, content, 1, 1, 0)
-  revealSidePanel(width)
-
 proc showSidePanel*(title: string, content: kit.Widget, width = 360, onClose: proc () = nil) =
-  ## The same for a nimkit widget (done with once the panel closes: its events stop).
+  ## Shows `content` in the sidebar right of the page, replacing what was there (done with once the panel closes:
+  ## its events stop).
   openSidePanel(title, width, onClose)
   kit.add(sidePanelContent, kit.expand(content))
-  revealSidePanel(width)
+  kit.`splitSize=`(pageSplit, width.float)
+  kit.`visible=`(sidePanel, true)
 
-proc sidePanelShowing*(): bool = gtk_widget_get_visible(sidePanel) != 0
+proc sidePanelShowing*(): bool = kit.visible(sidePanel)
 
 proc alert*(text: string, secondary = "") =
   kit.alert(text, secondary)
@@ -934,7 +916,7 @@ proc onUrlSubmit(text: string) =
   if t == nil: discard openTab(text)
   else:
     t.loadUrl(text)
-    gtk_widget_grab_focus(area)
+    kit.focus(page)
 
 proc onUrlFocus(focused: bool) =
   urlFocused = focused
@@ -942,7 +924,7 @@ proc onUrlFocus(focused: bool) =
   if focused: discard after(0, proc () = (if urlFocused: kit.selectAll(urlField)))
   for h in urlFocusHooks: h(focused)
 
-proc focusPage*() = gtk_widget_grab_focus(area)
+proc focusPage*() = kit.focus(page)
 
 proc goBack*() = (let t = currentTab(); if t != nil: webby_view_go_back(t.view); wake())
 proc goForward*() = (let t = currentTab(); if t != nil: webby_view_go_forward(t.view); wake())
@@ -1033,7 +1015,6 @@ proc buildTabStrip*(vertical: bool) =
   tabStripRoot = if vertical: kit.column(kit.expand(kit.scroll(tabStrip)), newTab)
                  else: kit.row(kit.expand(kit.scroll(tabStrip, horizontal = true)), newTab)
   tabStripRoot.spacing = 0
-  tabStripBox = nkgtk.gtkWidget(tabStripRoot)
 
 proc buildWindow() =
   window = gtk_window_new(GTK_WINDOW_TOPLEVEL)
@@ -1046,11 +1027,7 @@ proc buildWindow() =
   kit.registerIcons(idata.iconPaths, idata.iconEm)
   loadCss(css)
 
-  mainBox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
-  gtk_container_add(window, mainBox)
-
   buildTabStrip(vertical = false)
-  gtk_box_pack_start(mainBox, tabStripBox, 0, 0, 0)
 
   backButton = kit.iconButton("arrow_back", "Back (Alt+Left)", goBack)
   forwardButton = kit.iconButton("arrow_forward", "Forward (Alt+Right)", goForward)
@@ -1065,18 +1042,11 @@ proc buildWindow() =
   for r in [starSlotRow, toolbarEndRow]: r.spacing = 0
   toolbarRow = kit.row(backButton, forwardButton, reloadButton, urlSlotRow, starSlotRow, toolbarEndRow, moreButton)
   toolbarRow.spacing = 2
-  toolbar = nkgtk.gtkWidget(toolbarRow)
-  starSlot = nkgtk.gtkWidget(starSlotRow)
-  toolbarEnd = nkgtk.gtkWidget(toolbarEndRow)
-  gtk_box_pack_start(mainBox, toolbar, 0, 0, 2)
+  toolbarRow.padding = 2
 
   barSlot = kit.column()
   barSlot.spacing = 0
-  gtk_box_pack_start(mainBox, nkgtk.gtkWidget(barSlot), 0, 0, 0)
 
-  pagePane = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL)
-  pageBox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)
-  let pageColumn = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
   page = kit.externalCanvas()
   page.onFrame = pageFrame
   page.onResize = pageResized
@@ -1084,43 +1054,35 @@ proc buildWindow() =
   page.onWheel = pageWheel
   page.onKey = pageKey
   page.onFocus = pageFocus
-  area = nkgtk.gtkWidget(page)
-  # The hovered-link bubble floats over the page's bottom-left corner: packed in the box, showing it shrank the
+  # The hovered-link bubble floats over the page's bottom-left corner: packed beside it, showing it shrank the
   # page view, which re-laid out the page and flickered on every hover.
-  let pageOverlay = gtk_overlay_new()
-  gtk_container_add(pageOverlay, area)
-  status = gtk_label_new("")
-  gtk_label_set_xalign(status, 0)
-  gtk_label_set_ellipsize(status, PANGO_ELLIPSIZE_END)
-  gtk_label_set_max_width_chars(status, 80)
-  gtk_widget_set_halign(status, GTK_ALIGN_START)
-  gtk_widget_set_valign(status, GTK_ALIGN_END)
-  addClass(status, "webby-link-status")
-  gtk_widget_set_no_show_all(status, 1)
-  gtk_overlay_add_overlay(pageOverlay, status)
-  gtk_overlay_set_overlay_pass_through(pageOverlay, status, 1)
-  gtk_box_pack_start(pageColumn, pageOverlay, 1, 1, 0)
+  statusBubble = kit.addClass(kit.label(""), "webby-link-status")
+  kit.`maxChars=`(statusBubble, 80)
+  kit.`visible=`(statusBubble, false)
   findSlot = kit.column()
   findSlot.spacing = 0
-  gtk_box_pack_start(pageColumn, nkgtk.gtkWidget(findSlot), 0, 0, 0)
-  gtk_box_pack_end(pageBox, pageColumn, 1, 1, 0)
-  gtk_paned_pack1(pagePane, pageBox, 1, 0)
+  let pageColumn = kit.column(kit.expand(kit.overlay(page, statusBubble)), findSlot)
+  pageColumn.spacing = 0
+  pageRow = kit.row(kit.expand(pageColumn))
+  pageRow.spacing = 0
 
-  sidePanel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
-  addClass(sidePanel, "webby-side-panel")
   sidePanelTitle = kit.addClass(kit.label(""), "title")
   kit.`maxChars=`(sidePanelTitle, 40)
   let header = kit.row(kit.expand(sidePanelTitle), kit.iconButton("close", "Close (Esc)", closeSidePanel, 16))
   header.spacing = 4
+  header.padding = 2
   kit.addClass(header, "webby-side-panel-header")
-  gtk_box_pack_start(sidePanel, nkgtk.gtkWidget(header), 0, 0, 2)
-  sidePanelBody = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
-  gtk_box_pack_start(sidePanel, sidePanelBody, 1, 1, 0)
   sidePanelContent = kit.column()
-  gtk_box_pack_start(sidePanel, nkgtk.gtkWidget(sidePanelContent), 1, 1, 0)
-  gtk_widget_set_no_show_all(sidePanel, 1)
-  gtk_paned_pack2(pagePane, sidePanel, 0, 0)
-  gtk_box_pack_start(mainBox, pagePane, 1, 1, 0)
+  sidePanelContent.spacing = 0
+  sidePanel = kit.column(header, kit.expand(sidePanelContent))
+  sidePanel.spacing = 0
+  kit.addClass(sidePanel, "webby-side-panel")
+  kit.`visible=`(sidePanel, false)
+  pageSplit = kit.split(pageRow, sidePanel)
+
+  rootColumn = kit.column(tabStripRoot, toolbarRow, barSlot, kit.expand(pageSplit))
+  rootColumn.spacing = 0
+  gtk_container_add(window, nkgtk.gtkWidget(rootColumn))
 
   if appUrl.len > 0:
     kit.`visible=`(tabStripRoot, false)

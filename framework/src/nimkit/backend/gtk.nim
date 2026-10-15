@@ -396,6 +396,9 @@ var
   dragTarget = GtkTargetEntry(target: "nimkit/item", flags: GTK_TARGET_SAME_APP, info: 0)
   dragPayload: string
   dragSources, dropTargets: HashSet[int]
+  splitsPlaced: HashSet[int]             ## splits laid out once, so their size has been applied
+  shownCursors: Table[int, string]
+  cursorCache: Table[string, pointer]
 
 proc onDragBegin(g: GtkWidget, ctx: pointer, data: pointer) {.cdecl.} =
   let w = byId(data)
@@ -446,6 +449,56 @@ proc syncDrag(w: Widget) =
     gtk_drag_dest_set(w.native, GTK_DEST_DEFAULT_ALL, addr dragTarget, 1, GDK_ACTION_MOVE)
     connect(w.native, "drag-data-received", onDragReceived, data)
 
+# Splits: a GtkPaned whose second pane keeps `splitSize` logical pixels.
+
+const
+  GTK_ALIGN_START = 1.cint
+  GTK_ALIGN_END = 2.cint
+
+var settingSplit = false
+
+proc applySplit(w: Widget) =
+  let width = gtk_widget_get_allocated_width(w.native)
+  if width <= 1: return   # not laid out yet: size-allocate applies it
+  settingSplit = true
+  gtk_paned_set_position(w.native, cint(max(0.0, width.float - w.splitSize)))
+  settingSplit = false
+
+proc onSplitAllocate(p: GtkWidget, alloc: pointer, data: pointer) {.cdecl.} =
+  # Laid out (the first time, or the second pane just showed): give the second pane its size again if it lost it.
+  let w = byId(data)
+  if w == nil or w.children.len < 2 or not w.children[1].visible: return
+  let width = gtk_widget_get_allocated_width(p)
+  if w.id notin splitsPlaced or abs(float(width - gtk_paned_get_position(p)) - w.splitSize) > 1:
+    splitsPlaced.incl w.id
+    applySplit(w)
+
+proc onSplitPosition(p: GtkWidget, spec: pointer, data: pointer) {.cdecl.} =
+  let w = byId(data)
+  if w == nil or settingSplit or w.id notin splitsPlaced: return
+  let size = float(gtk_widget_get_allocated_width(p) - gtk_paned_get_position(p))
+  if w.children.len < 2 or size < 1 or abs(size - w.splitSize) < 1: return
+  w.setValueSilently(size)
+  if w.onValue != nil: w.onValue(size)
+
+# Canvas cursors, by CSS name (GDK takes the same names).
+
+proc syncCursor(w: Widget) =
+  let win = gtk_widget_get_window(w.native)
+  if win == nil or shownCursors.getOrDefault(w.id, "default") == (if w.cursor.len > 0: w.cursor else: "default"):
+    return
+  let name = if w.cursor.len > 0: w.cursor else: "default"
+  shownCursors[w.id] = name
+  if name notin cursorCache:
+    cursorCache[name] = gdk_cursor_new_from_name(gtk_widget_get_display(w.native), name.cstring)
+  gdk_window_set_cursor(win, cursorCache[name])
+
+proc onCanvasRealize(a: GtkWidget, data: pointer) {.cdecl.} =
+  let w = byId(data)
+  if w != nil:
+    shownCursors.del w.id
+    syncCursor(w)
+
 proc sync(w: Widget) =
   syncing = true
   defer: syncing = false
@@ -487,7 +540,7 @@ proc sync(w: Widget) =
     if $gtk_entry_get_text(w.native) != w.text: gtk_entry_set_text(w.native, w.text.cstring)
     gtk_entry_set_placeholder_text(w.native, w.placeholder.cstring)
     gtk_entry_set_visibility(w.native, (not w.password).gboolean)
-  of wkCanvas: discard
+  of wkCanvas: syncCursor(w)
   of wkSlider:
     gtk_range_set_range(w.native, w.rangeMin, w.rangeMax)
     gtk_range_set_increments(w.native, w.step, w.step)
@@ -503,6 +556,8 @@ proc sync(w: Widget) =
       shownItems[w.id] = w.items
     if gtk_combo_box_get_active(w.native) != w.selected.cint: gtk_combo_box_set_active(w.native, w.selected.cint)
   of wkProgress: gtk_progress_bar_set_fraction(w.native, w.value.clamp(0.0, 1.0))
+  of wkOverlay: discard
+  of wkSplit: applySplit(w)
   of wkScroll:
     if w.followEnd: onAdjustmentChanged(gtk_scrolled_window_get_vadjustment(w.native), cast[pointer](w.id))
     if w.horizontal: gtk_scrolled_window_set_policy(w.native, GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER)
@@ -525,6 +580,12 @@ proc realize(w: Widget) =
   w.native = case w.kind
     of wkColumn: gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)
     of wkRow: gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)
+    of wkOverlay: gtk_overlay_new()
+    of wkSplit:
+      let p = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL)
+      connect(p, "size-allocate", onSplitAllocate, data)
+      connect(p, "notify::position", onSplitPosition, data)
+      p
     of wkScroll:
       let s = gtk_scrolled_window_new(nil, nil)
       gtk_scrolled_window_set_policy(s, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
@@ -589,6 +650,7 @@ proc realize(w: Widget) =
       connect(a, "key-release-event", onKeyRelease, data)
       connect(a, "focus-in-event", onFocusIn, data)
       connect(a, "focus-out-event", onFocusOut, data)
+      connect(a, "realize", onCanvasRealize, data)
       a
     of wkSlider:
       let r = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 1, 0.01)
@@ -615,7 +677,18 @@ proc realize(w: Widget) =
 proc box(w: Widget): GtkWidget = (if w.kind == wkItem: inner[w.id] else: w.native)
 
 proc attach(parent, child: Widget) =
-  if parent.kind == wkScroll: gtk_container_add(parent.native, child.native)
+  case parent.kind
+  of wkScroll: gtk_container_add(parent.native, child.native)
+  of wkOverlay:
+    if parent.children.find(child) == 0: gtk_container_add(parent.native, child.native)
+    else:
+      gtk_widget_set_halign(child.native, GTK_ALIGN_START)
+      gtk_widget_set_valign(child.native, GTK_ALIGN_END)
+      gtk_overlay_add_overlay(parent.native, child.native)
+      gtk_overlay_set_overlay_pass_through(parent.native, child.native, 1)
+  of wkSplit:
+    if parent.children.find(child) == 0: gtk_paned_pack1(parent.native, child.native, 1, 0)
+    else: gtk_paned_pack2(parent.native, child.native, 0, 0)
   else: gtk_box_pack_start(parent.box, child.native, 0, 1, 0)
   child.applyExpand()
 
@@ -634,6 +707,8 @@ proc unrealize(w: Widget) =
   inner.del w.id
   dragSources.excl w.id
   dropTargets.excl w.id
+  splitsPlaced.excl w.id
+  shownCursors.del w.id
   w.realized = false
 
 proc gtkWidget*(w: Widget): GtkWidget =
@@ -647,7 +722,7 @@ backend.update = proc (w: Widget) = w.sync()
 backend.added = proc (parent, child: Widget, index: int) =
   child.realize()
   attach(parent, child)
-  if parent.kind != wkScroll: gtk_box_reorder_child(parent.box, child.native, index.cint)
+  if parent.kind in {wkColumn, wkRow, wkItem}: gtk_box_reorder_child(parent.box, child.native, index.cint)
   gtk_widget_show_all(child.native)
 
 backend.removed = proc (parent, child: Widget) =
@@ -655,7 +730,7 @@ backend.removed = proc (parent, child: Widget) =
   child.unrealize()
 
 backend.moved = proc (parent, child: Widget, index: int) =
-  if parent.kind != wkScroll: gtk_box_reorder_child(parent.box, child.native, index.cint)
+  if parent.kind in {wkColumn, wkRow, wkItem}: gtk_box_reorder_child(parent.box, child.native, index.cint)
 
 backend.selectAll = proc (w: Widget) =
   if w.kind == wkEntry: gtk_editable_select_region(w.native, 0, -1)

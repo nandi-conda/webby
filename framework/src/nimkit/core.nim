@@ -10,7 +10,7 @@ from std/strutils import nil
 type
   WidgetKind* = enum
     wkColumn, wkRow, wkScroll, wkLabel, wkButton, wkEntry, wkCheck, wkCanvas, wkSlider, wkDropdown, wkProgress, wkToggle,
-    wkIcon, wkItem, wkSeparator
+    wkIcon, wkItem, wkSeparator, wkOverlay, wkSplit
 
   PointerKind* = enum
     pkDown, pkMove, pkUp, pkCancel, pkLeave   ## pkLeave: the mouse left the canvas
@@ -69,6 +69,7 @@ type
     followValue: bool                ## a scroll view kept scrolled to its end (see `followEnd=`)
     dragValue: string                ## items: what dragging it carries (see `dragData=`); empty: not draggable
     dropHandler: proc (data: string, x, y: float)  ## see `onDrop=`
+    cursorValue: string              ## canvases: the mouse pointer's shape over it (CSS cursor names)
     realized*: bool                  ## the backend has made the native widget
     native*: pointer                 ## the backend's own handle, if it has one (GTK)
     # Events
@@ -373,6 +374,21 @@ proc `onDrop=`*(w: Widget, handler: proc (data: string, x, y: float)) =
   w.dropHandler = handler
   w.changed
 
+proc cursor*(w: Widget): string = w.cursorValue
+proc `cursor=`*(w: Widget, name: string) =
+  ## A canvas's mouse pointer: a CSS cursor name such as "default", "pointer", "text", "wait", "grab" or
+  ## "col-resize" ("" is "default"). Touch screens have none.
+  if name == w.cursorValue: return
+  w.cursorValue = name
+  w.changed
+
+proc splitSize*(w: Widget): float = w.valueValue
+proc `splitSize=`*(w: Widget, size: float) =
+  ## A split's second pane width (logical pixels). The user changes it by dragging the divider (onValue).
+  if size == w.valueValue: return
+  w.valueValue = size
+  w.changed
+
 proc sized*(w: Widget, minWidth = 0, minHeight = 0): Widget =
   ## Gives `w` at least this size (logical pixels; 0 keeps its natural size along that side), e.g. so labels in
   ## different rows line up. Returns it, for use inside column(...)/row(...).
@@ -390,7 +406,7 @@ proc expand*(w: Widget): Widget =
 # The tree
 
 proc add*(parent, child: Widget) =
-  assert parent.kind in {wkColumn, wkRow, wkScroll, wkItem}
+  assert parent.kind in {wkColumn, wkRow, wkScroll, wkItem, wkOverlay, wkSplit}
   assert child.parent == nil
   child.parent = parent
   parent.children.add child
@@ -447,6 +463,22 @@ proc scroll*(child: Widget, horizontal = false): Widget =
   result = newWidget(wkScroll)
   result.horizontalValue = horizontal
   result.add child
+
+proc overlay*(base: Widget, floating: varargs[Widget]): Widget =
+  ## `base` with `floating` widgets drawn over its bottom left corner (a status bubble over a page). The floating
+  ## ones let the pointer through to `base`.
+  result = newWidget(wkOverlay)
+  result.add base
+  for f in floating: result.add f
+
+proc split*(first, second: Widget, size = 360.0, onResize: proc (size: float) = nil): Widget =
+  ## `first` and, at its right, `second` `size` logical pixels wide, with a divider the user drags to resize it
+  ## (onResize then gets the new width). Hiding `second` gives `first` the whole width.
+  result = newWidget(wkSplit)
+  result.valueValue = size
+  result.onValue = onResize
+  result.add first
+  result.add second
 
 proc label*(text: string): Widget =
   result = newWidget(wkLabel)

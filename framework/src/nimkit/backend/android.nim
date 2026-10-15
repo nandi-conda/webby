@@ -60,7 +60,7 @@ const   # Host.java's ops
   opPasteText = 38   # id: the request, answered by evPasteText
   opToast = 39       # text: the message
 
-  kindHScroll = 15   # Host's kind for a sideways scroll view (WidgetKind ends at 14)
+  kindHScroll = 30   # Host's kind for a sideways scroll view (past WidgetKind's)
 
 proc op(o: int, id = 0, arg = 0, text = "") = nk_op(o.cint, id.cint, arg.cint, text.cstring)
 
@@ -97,7 +97,8 @@ proc sync(w: Widget) =
     op(opItems, w.id, text = w.items.join("\n"))
     op(opSelected, w.id, w.selected)
   of wkProgress: op(opValue, w.id, text = $w.value.clamp(0.0, 1.0))
-  of wkScroll: discard
+  of wkScroll, wkOverlay: discard
+  of wkSplit: op(opValue, w.id, text = $w.splitSize)
   if w.kind in {wkIcon, wkButton, wkToggle, wkItem}:
     op(opIcon, w.id, w.iconSize, if w.iconName.len > 0: $iconEm & " " & iconPaths.getOrDefault(w.iconName) else: "")
   if w.kind == wkIcon: op(opImage, w.id, text = encode(w.image))   # after opIcon: it needs the size

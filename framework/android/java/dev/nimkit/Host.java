@@ -67,7 +67,7 @@ public class Host extends Activity {
     // Widget kinds (WidgetKind in src/nimkit/core.nim).
     static final int COLUMN = 0, ROW = 1, SCROLL = 2, LABEL = 3, BUTTON = 4, ENTRY = 5, CHECK = 6, CANVAS = 7,
             SLIDER = 8, DROPDOWN = 9, PROGRESS = 10, TOGGLE = 11, ICON_KIND = 12, ITEM = 13, SEPARATOR = 14,
-            HSCROLL = 15;
+            OVERLAY = 15, SPLIT = 16, HSCROLL = 30;
     /** A progress bar's resolution: ProgressBar counts in ints. */
     static final int PROGRESS_STEPS = 1000;
 
@@ -84,6 +84,8 @@ public class Host extends Activity {
     final SparseArray<String> icons = new SparseArray<>();       // id -> "size spec" last shown
     final SparseArray<AlertDialog> dialogs = new SparseArray<>();
     final SparseArray<Boolean> pictures = new SparseArray<>();     // icons showing a picture, not their glyph
+    final java.util.HashMap<View, Integer> splits = new java.util.HashMap<>();   // split -> its second pane's width (px)
+    final java.util.HashSet<View> overlays = new java.util.HashSet<>();
     final SparseArray<android.widget.PopupWindow> popovers = new SparseArray<>();
     boolean syncing;
     boolean keyHandled;          // set by KEY_HANDLED while an ENTRY_KEY event is being handled
@@ -206,9 +208,14 @@ public class Host extends Activity {
                         showValue((SeekBar) v, r);
                     } else if (v instanceof ProgressBar) {
                         ((ProgressBar) v).setProgress((int) Math.round(Double.parseDouble(text) * PROGRESS_STEPS));
+                    } else if (splits.containsKey(v)) {
+                        splits.put(v, px((int) Math.round(Double.parseDouble(text))));
+                        ViewGroup g = (ViewGroup) v;
+                        if (g.getChildCount() > 1) relayout(g.getChildAt(1), 0);
                     }
                     break;
                 case FORGET:
+                    if (v != null) { splits.remove(v); overlays.remove(v); }
                     views.remove(id); expand.remove(id); minSize.remove(id); ranges.remove(id); shownSelection.remove(id);
                     classes.remove(id); icons.remove(id); pictures.remove(id);
                     break;
@@ -375,7 +382,17 @@ public class Host extends Activity {
         if (!(v.getParent() instanceof ViewGroup)) return;
         ViewGroup parent = (ViewGroup) v.getParent();
         boolean grow = Boolean.TRUE.equals(expand.get(id));
-        if (parent instanceof LinearLayout) {
+        if (splits.containsKey(parent)) {
+            // The first pane takes the room the second (a fixed width, no divider on touch screens) leaves.
+            boolean first = parent.indexOfChild(v) == 0;
+            v.setLayoutParams(first ? new LinearLayout.LayoutParams(0, -1, 1)
+                                    : new LinearLayout.LayoutParams(splits.get(parent), -1, 0));
+        } else if (overlays.contains(parent)) {
+            boolean base = parent.indexOfChild(v) == 0;
+            FrameLayout.LayoutParams p = base ? new FrameLayout.LayoutParams(-1, -1) : new FrameLayout.LayoutParams(-2, -2);
+            if (!base) p.gravity = Gravity.BOTTOM | Gravity.START;
+            v.setLayoutParams(p);
+        } else if (parent instanceof LinearLayout) {
             boolean vertical = ((LinearLayout) parent).getOrientation() == LinearLayout.VERTICAL;
             LinearLayout.LayoutParams p = vertical
                     ? new LinearLayout.LayoutParams(-1, grow ? 0 : -2, grow ? 1 : 0)
@@ -489,6 +506,17 @@ public class Host extends Activity {
                 return p;
             }
             case ICON_KIND: return new ImageView(this);
+            case OVERLAY: {
+                FrameLayout f = new FrameLayout(this);
+                overlays.add(f);
+                return f;
+            }
+            case SPLIT: {
+                LinearLayout l = new LinearLayout(this);
+                l.setOrientation(LinearLayout.HORIZONTAL);
+                splits.put(l, px(360));
+                return l;
+            }
             case HSCROLL: {
                 android.widget.HorizontalScrollView s = new android.widget.HorizontalScrollView(this);
                 s.setHorizontalScrollBarEnabled(false);

@@ -29,6 +29,14 @@ html, body { margin: 0; height: 100%; font: 15px system-ui, sans-serif; color: #
 .nk-column { flex-direction: column; } .nk-row { flex-direction: row; align-items: center; }
 .nk-expand { flex: 1 1 0; min-width: 0; min-height: 0; }
 .nk-scroll { overflow-y: auto; min-height: 0; }
+.nk-overlay { position: relative; display: flex; min-width: 0; min-height: 0; }
+.nk-overlay > :first-child { flex: 1 1 0; min-width: 0; min-height: 0; }
+.nk-overlay > :not(:first-child) { position: absolute; left: 0; bottom: 0; pointer-events: none; }
+.nk-split { position: relative; display: flex; flex-direction: row; min-width: 0; min-height: 0; }
+.nk-split > :first-child { flex: 1 1 0; min-width: 0; }
+.nk-split > :nth-child(2) { flex: none; }
+.nk-split-handle { position: absolute; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 2; }
+.nk-split > .nk-hidden + .nk-split-handle { display: none; }
 .nk-hscroll { overflow-x: auto; overflow-y: hidden; min-width: 0; scrollbar-width: thin; }
 .nk-oneline { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .nk-canvas { display: block; touch-action: none; width: 100%; height: 100%; }
@@ -212,6 +220,12 @@ proc syncDrag(w: Widget, e: JsObject) =
       w.dropHandler()(payload, (ev.clientX.to(float) - r.left.to(float)) / max(r.width.to(float), 1.0),
         (ev.clientY.to(float) - r.top.to(float)) / max(r.height.to(float), 1.0)))
 
+proc placeSplit(w: Widget) =
+  ## The second pane `splitSize` wide, the divider's handle over its left edge.
+  if w.children.len < 2 or w.children[1].id notin elems: return
+  elems[w.children[1].id].style.width = cstring($w.splitSize & "px")
+  elems[w.id].lastChild.style.right = cstring($(w.splitSize - 3) & "px")
+
 proc sync(w: Widget) =
   let e = elems[w.id]
   case w.kind
@@ -258,7 +272,9 @@ proc sync(w: Widget) =
   of wkCheck:
     e.lastChild.textContent = w.text.cstring
     inputs[w.id].checked = w.checked
-  of wkCanvas: discard
+  of wkCanvas: e.style.cursor = w.cursor.cstring
+  of wkOverlay: discard
+  of wkSplit: placeSplit(w)
   of wkSlider:
     let i = inputs[w.id]
     i.min = w.rangeMin
@@ -362,6 +378,8 @@ proc realize(w: Widget): JsObject =
           w.onMiddle())
       d
     of wkSeparator: el("div", "nk-separator")
+    of wkOverlay: el("div", "nk-overlay")
+    of wkSplit: el("div", "nk-split")
     of wkCheck:
       let l = el("label")
       let i = el("input")
@@ -424,6 +442,25 @@ proc realize(w: Widget): JsObject =
   w.realized = true
   w.sync()
   for child in w.children: e.appendChild(child.realize())
+  if w.kind == wkSplit:
+    # The divider: dragging it resizes the second pane (children come first: the CSS hides it with a hidden pane).
+    let handle = el("div", "nk-split-handle")
+    e.appendChild(handle)
+    handle.addEventListener("pointerdown", proc (ev: JsObject) =
+      ev.preventDefault()
+      discard handle.setPointerCapture(ev.pointerId)
+      let startX = ev.clientX.to(float)
+      let startSize = w.splitSize
+      proc move(ev: JsObject) =
+        let size = max(80.0, min(startSize + startX - ev.clientX.to(float), e.clientWidth.to(float) - 80))
+        w.setValueSilently(size)
+        placeSplit(w)
+        if w.onValue != nil: w.onValue(size)
+      handle.onpointermove = move
+      handle.onpointerup = proc (ev: JsObject) =
+        handle.onpointermove = nil
+        handle.onpointerup = nil)
+    placeSplit(w)
   e
 
 proc unrealize(w: Widget) =

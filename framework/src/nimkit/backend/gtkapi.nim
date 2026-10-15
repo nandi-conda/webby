@@ -259,6 +259,17 @@ proc gtk_file_filter_new*(): pointer
 proc gtk_file_filter_set_name*(f: pointer, name: cstring)
 proc gtk_file_filter_add_pattern*(f: pointer, pattern: cstring)
 proc gtk_dialog_run*(d: GtkWidget): cint
+proc gtk_paned_new*(orientation: cint): GtkWidget
+proc gtk_paned_pack1*(p, child: GtkWidget, resize, shrink: gboolean)
+proc gtk_paned_pack2*(p, child: GtkWidget, resize, shrink: gboolean)
+proc gtk_paned_set_position*(p: GtkWidget, position: cint)
+proc gtk_paned_get_position*(p: GtkWidget): cint
+proc gtk_overlay_new*(): GtkWidget
+proc gtk_overlay_add_overlay*(o, child: GtkWidget)
+proc gtk_overlay_set_overlay_pass_through*(o, child: GtkWidget, on: gboolean)
+proc gtk_widget_get_display*(w: GtkWidget): pointer
+proc gdk_cursor_new_from_name*(display: pointer, name: cstring): pointer
+proc gdk_window_set_cursor*(win: pointer, cursor: pointer)
 proc gtk_clipboard_get*(selection: pointer): pointer
 proc gtk_clipboard_set_text*(cb: pointer, text: cstring, len: cint)
 proc gtk_clipboard_request_text*(cb: pointer, callback: pointer, data: pointer)

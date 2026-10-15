@@ -157,18 +157,15 @@ proc setVertical*(on: bool, save = true) =
   vertical = on
   if save: writeVerticalTabs(on)
   if appUrl.len > 0: return
-  let parent = gtk_widget_get_parent(tabStripBox)
-  if parent != nil: gtk_container_remove(parent, tabStripBox)
-  buildTabStrip(on)
+  let old = tabStripRoot
+  buildTabStrip(on)   # moves the tabs over to a new strip
+  if old != nil and old.parent != nil: kit.remove(old.parent, old)
   if on:
     discard kit.sized(tabStripRoot, 220)
     kit.addClass(tabStripRoot, "webby-vertical-tabs")
-    gtk_box_pack_start(pageBox, tabStripBox, 0, 0, 0)
-    gtk_box_reorder_child(pageBox, tabStripBox, 0)
+    kit.insert(pageRow, tabStripRoot, 0)
   else:
-    gtk_box_pack_start(mainBox, tabStripBox, 0, 0, 0)
-    gtk_box_reorder_child(mainBox, tabStripBox, 0)
-  gtk_widget_show_all(tabStripBox)
+    kit.insert(rootColumn, tabStripRoot, 0)
   for t in tabs: styleTab(t)
 
 # ---------------------------------------------------------------------------------------------------------------
