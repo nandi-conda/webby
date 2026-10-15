@@ -27,8 +27,8 @@ LLVM="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 CC="$LLVM/aarch64-linux-android30-clang"
 OUT="$HERE/build"
 
-rm -rf "$OUT/apk" "$OUT/res" "$OUT/classes" "$OUT/dex"
-mkdir -p "$OUT/apk/lib/arm64-v8a" "$OUT/apk/assets" "$OUT/res" "$OUT/classes" "$OUT/dex"
+rm -rf "$OUT/apk" "$OUT/res" "$OUT/classes" "$OUT/dex" "$OUT/gen"
+mkdir -p "$OUT/apk/lib/arm64-v8a" "$OUT/apk/assets" "$OUT/res" "$OUT/classes" "$OUT/dex" "$OUT/gen"
 
 # Ladybird: libwebby.so, the helper processes as lib<Name>.so, and its resources (assets/lagom.zip).
 zstd -dc "$NATIVE" | tar -x -C "$OUT" jniLibs assets
@@ -42,7 +42,7 @@ rm -rf "$OUT/jniLibs" "$OUT/assets"
     --nimcache:"$OUT/nimcache" -o:"$OUT/apk/lib/arm64-v8a/libwebbykit.so" "$ROOT/nim/webby.nim"
 "$LLVM/llvm-strip" --strip-unneeded "$OUT/apk/lib/arm64-v8a/libwebbykit.so"
 
-# Resources: the theme and the launcher icon.
+# Resources: the theme, the launcher icon and the notification icon (R.java for the last).
 cp -r "$HERE/res/." "$OUT/res/"
 for density in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
     mkdir -p "$OUT/res/mipmap-${density%%:*}"
@@ -51,11 +51,11 @@ done
 "$BUILD_TOOLS/aapt2" compile --dir "$OUT/res" -o "$OUT/res.zip"
 "$BUILD_TOOLS/aapt2" link -o "$OUT/base.apk" -I "$ANDROID_JAR" --manifest "$HERE/AndroidManifest.xml" \
     --min-sdk-version 30 --target-sdk-version 34 \
-    --version-code "$VERSION_CODE" --version-name "$VERSION_NAME" -A "$OUT/apk/assets" "$OUT/res.zip"
+    --version-code "$VERSION_CODE" --version-name "$VERSION_NAME" -A "$OUT/apk/assets" --java "$OUT/gen" "$OUT/res.zip"
 
 # nimkit's Host and webby's subclass.
 javac -source 11 -target 11 -Xlint:-options -encoding UTF-8 -cp "$ANDROID_JAR" -d "$OUT/classes" \
-    $(find "$ROOT/framework/android/java" "$HERE/java" -name '*.java')
+    $(find "$ROOT/framework/android/java" "$HERE/java" "$OUT/gen" -name '*.java')
 "$BUILD_TOOLS/d8" --release --min-api 30 --lib "$ANDROID_JAR" --output "$OUT/dex" $(find "$OUT/classes" -name '*.class')
 
 # Into the APK, aligned and signed.

@@ -1,9 +1,13 @@
 ## The device's location for pages' navigator.geolocation (app/lib/src/geolocation.dart): GeoClue over the system
-## D-Bus, running only while a page that was allowed to is waiting for a position or watching.
+## D-Bus on the desktop, the app's Java host on Android (WebbyHost locationStart/locationStop, LocationManager),
+## running only while a page that was allowed to is waiting for a position or watching.
 
 import std/[monotimes, strutils, times]
 import ../../browser
-import gio
+when defined(android):
+  import std/json
+else:
+  import gio
 
 const
   geoclue = "org.freedesktop.GeoClue2"
@@ -17,9 +21,8 @@ const
 type Fix = tuple[lat, lon, accuracy, altitude, heading, speed: float]
 
 var
-  client: string          ## the GeoClue client's object path while it runs
+  client: string          ## the GeoClue client's object path while it runs ("android" there)
   starting = false
-  signalId: cuint
   last: Fix
   lastAt, idleSince, failedAt: MonoTime
   hasFix, idle, failed = false
@@ -38,76 +41,111 @@ proc fail(code: cint, message: string) =
   webby_geolocation_set_error(code, message.cstring)
   wake()
 
-proc stop() =
-  if client.len > 0:
-    let path = client
-    call(busSystem, geoclue, path, geoclue & ".Client", "Stop", nil, proc (r: GVariant, e: string) =
-      call(busSystem, geoclue, "/org/freedesktop/GeoClue2/Manager", geoclue & ".Manager", "DeleteClient",
-        g_variant_new("(o)", path.cstring)))
-  unsubscribe(busSystem, signalId)
-  signalId = 0
-  client = ""
-  idle = false
+when defined(android):
+  proc stop() =
+    if client.len > 0: discard hostCall("locationStop", "")
+    client = ""
+    idle = false
 
-proc readLocation(path: string) =
-  call(busSystem, geoclue, path, "org.freedesktop.DBus.Properties", "GetAll",
-    g_variant_new("(s)", cstring(geoclue & ".Location")), proc (r: GVariant, e: string) =
-      if r == nil: return
-      let props = child(r, 0)
-      proc num(name: string, fallback = NaN): float =
-        let v = g_variant_lookup_value(props, name.cstring, variantType("d"))
-        if v == nil: return fallback
-        result = g_variant_get_double(v)
-        g_variant_unref(v)
-      last = (num("Latitude"), num("Longitude"), num("Accuracy"), num("Altitude", -Inf), num("Heading", -1.0),
-        num("Speed", -1.0))
-      g_variant_unref(props)
-      hasFix = true
-      failed = false
-      lastAt = getMonoTime()
-      if client.len > 0: deliver(last))
+  proc start() =
+    # The host asks for the permission first when the app doesn't have it; fixes and failures come as events.
+    let r = hostCall("locationStart", "")
+    if r == "ok":
+      client = "android"
+    else:
+      fail(errorPositionUnavailable, if r.len > 0: r else: "this phone has no location service")
 
-proc start() =
-  starting = true
-  proc failStart(e: string) =
-    starting = false
-    stop()
-    fail(if "AccessDenied" in e or "denied" in e: errorPermissionDenied else: errorPositionUnavailable, e)
-  call(busSystem, geoclue, "/org/freedesktop/GeoClue2/Manager", geoclue & ".Manager", "GetClient", nil,
-    proc (r: GVariant, e: string) =
-      if r == nil:
-        failStart("GeoClue: " & e)
-        return
-      let path = stringAt(r, 0)
-      client = path
-      signalId = subscribe(busSystem, geoclue, geoclue & ".Client", "LocationUpdated", path,
-        proc (p: string, params: GVariant) = readLocation(stringAt(params, 1)))
-      let setProp = proc (name: string, value: GVariant, next: proc ()) =
-        call(busSystem, geoclue, path, "org.freedesktop.DBus.Properties", "Set",
-          g_variant_new("(ssv)", cstring(geoclue & ".Client"), name.cstring, value), proc (r: GVariant, e: string) =
-            if r == nil: failStart("GeoClue: " & e) else: next())
-      setProp("DesktopId", g_variant_new_string("webby"), proc () =
-        setProp("RequestedAccuracyLevel", g_variant_new_uint32(accuracyExact), proc () =
-          call(busSystem, geoclue, path, geoclue & ".Client", "Start", nil, proc (r: GVariant, e: string) =
-            if r == nil: failStart("GeoClue: " & e) else: starting = false))))
+  proc onHostEvent(name, data: string) =
+    if name notin ["location", "locationError"]: return
+    var j: JsonNode
+    try: j = parseJson(data) except CatchableError: return
+    if name == "locationError":
+      stop()
+      fail(if j{"denied"}.getBool: errorPermissionDenied else: errorPositionUnavailable, j{"message"}.getStr)
+      return
+    proc num(k: string, fallback: float): float =
+      let v = j{k}
+      if v == nil or v.kind notin {JFloat, JInt}: fallback else: v.getFloat
+    last = (num("lat", NaN), num("lon", NaN), num("accuracy", NaN), num("altitude", -Inf), num("heading", -1.0),
+      num("speed", -1.0))
+    hasFix = true
+    failed = false
+    lastAt = getMonoTime()
+    if client.len > 0: deliver(last)
 
-proc poll(data: pointer): gboolean {.cdecl.} =
+else:
+  var signalId: cuint
+
+  proc stop() =
+    if client.len > 0:
+      let path = client
+      call(busSystem, geoclue, path, geoclue & ".Client", "Stop", nil, proc (r: GVariant, e: string) =
+        call(busSystem, geoclue, "/org/freedesktop/GeoClue2/Manager", geoclue & ".Manager", "DeleteClient",
+          g_variant_new("(o)", path.cstring)))
+    unsubscribe(busSystem, signalId)
+    signalId = 0
+    client = ""
+    idle = false
+
+  proc readLocation(path: string) =
+    call(busSystem, geoclue, path, "org.freedesktop.DBus.Properties", "GetAll",
+      g_variant_new("(s)", cstring(geoclue & ".Location")), proc (r: GVariant, e: string) =
+        if r == nil: return
+        let props = child(r, 0)
+        proc num(name: string, fallback = NaN): float =
+          let v = g_variant_lookup_value(props, name.cstring, variantType("d"))
+          if v == nil: return fallback
+          result = g_variant_get_double(v)
+          g_variant_unref(v)
+        last = (num("Latitude"), num("Longitude"), num("Accuracy"), num("Altitude", -Inf), num("Heading", -1.0),
+          num("Speed", -1.0))
+        g_variant_unref(props)
+        hasFix = true
+        failed = false
+        lastAt = getMonoTime()
+        if client.len > 0: deliver(last))
+
+  proc start() =
+    starting = true
+    proc failStart(e: string) =
+      starting = false
+      stop()
+      fail(if "AccessDenied" in e or "denied" in e: errorPermissionDenied else: errorPositionUnavailable, e)
+    call(busSystem, geoclue, "/org/freedesktop/GeoClue2/Manager", geoclue & ".Manager", "GetClient", nil,
+      proc (r: GVariant, e: string) =
+        if r == nil:
+          failStart("GeoClue: " & e)
+          return
+        let path = stringAt(r, 0)
+        client = path
+        signalId = subscribe(busSystem, geoclue, geoclue & ".Client", "LocationUpdated", path,
+          proc (p: string, params: GVariant) = readLocation(stringAt(params, 1)))
+        let setProp = proc (name: string, value: GVariant, next: proc ()) =
+          call(busSystem, geoclue, path, "org.freedesktop.DBus.Properties", "Set",
+            g_variant_new("(ssv)", cstring(geoclue & ".Client"), name.cstring, value), proc (r: GVariant, e: string) =
+              if r == nil: failStart("GeoClue: " & e) else: next())
+        setProp("DesktopId", g_variant_new_string("webby"), proc () =
+          setProp("RequestedAccuracyLevel", g_variant_new_uint32(accuracyExact), proc () =
+            call(busSystem, geoclue, path, geoclue & ".Client", "Start", nil, proc (r: GVariant, e: string) =
+              if r == nil: failStart("GeoClue: " & e) else: starting = false))))
+
+proc poll() =
   let wanted = webby_geolocation_wanted()
   let now = getMonoTime()
   if wanted == 0:
     if client.len > 0:
       if not idle: (idle = true; idleSince = now)
       if now - idleSince >= linger: stop()
-    return 1
+    return
   idle = false
   # While the service runs it reports every move, so its last fix is the current position.
   if (wanted and geolocationRequested) != 0 and hasFix and (client.len > 0 or now - lastAt < fresh):
     deliver(last)
-    return 1
-  if client.len > 0 or starting: return 1
-  if failed and now - failedAt < retryAfter: return 1
+    return
+  if client.len > 0 or starting: return
+  if failed and now - failedAt < retryAfter: return
   start()
-  1
 
 proc install*() =
-  windowHooks.add proc () = discard g_timeout_add(250, poll, nil)
+  when defined(android): hostEventHooks.add onHostEvent
+  windowHooks.add proc () = discard every(250, poll)

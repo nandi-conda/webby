@@ -41,6 +41,7 @@ public class WebbyHost extends Host {
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        if (prepared) Site.opened(intent);
         String url = viewedUrl(intent);
         if (!url.isEmpty()) hostEvent("openUrl", url);
     }
@@ -48,6 +49,12 @@ public class WebbyHost extends Host {
     private static String viewedUrl(Intent intent) {
         if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction()) || intent.getData() == null) return "";
         return intent.getData().toString();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        Site.permissionResult();
     }
 
     private String colorScheme() {
@@ -118,6 +125,14 @@ public class WebbyHost extends Host {
                 case "device": return android.os.Build.MODEL;
                 case "colorScheme": return colorScheme();
                 case "openFile": return Services.openFile(this, arg);
+                case "locationStart": return Site.locationStart(this);
+                case "locationStop":
+                    Site.locationStop(this);
+                    return "ok";
+                case "notify": return Site.notify(this, new JSONObject(arg));
+                case "notificationClose":
+                    Site.cancel(this, Integer.parseInt(arg));
+                    return "ok";
                 case "toast":
                     Toast.makeText(this, arg, Toast.LENGTH_SHORT).show();
                     return "ok";

@@ -1,10 +1,12 @@
 ## Web notifications (app/lib/src/notifications.dart), which Ladybird doesn't have: the Dart app's page script
 ## provides window.Notification, asks through the site permission prompt and hands notifications to
-## org.freedesktop.Notifications on the session bus.
+## org.freedesktop.Notifications on the session bus, or on Android to the app's Java host (WebbyHost notify,
+## NotificationManager), whose taps and dismissals come back as host events.
 
 import std/[strutils, tables]
 import ../../browser
-import gio, permissions
+import permissions
+when not defined(android): import gio
 
 # The Dart app's script, read at compile time so both front ends run the same JS.
 const notificationScript = block:
@@ -13,9 +15,10 @@ const notificationScript = block:
   let first = dart.find("'''", start) + 3
   dart[first ..< dart.find("''';", first)]
 
-const
-  service = "org.freedesktop.Notifications"
-  servicePath = "/org/freedesktop/Notifications"
+when not defined(android):
+  const
+    service = "org.freedesktop.Notifications"
+    servicePath = "/org/freedesktop/Notifications"
 
 type Shown = object
   tab: Tab
@@ -49,7 +52,7 @@ proc clicked(id: uint32) =
   shown.del id
   if s.tab.closed: return
   activateTab(s.tab)
-  gtk_window_present(window)
+  when not defined(android): gtk_window_present(window)
   callPage(s.tab, "click(" & $s.pageId & ")")
   callPage(s.tab, "closed(" & $s.pageId & ")")
 
@@ -59,35 +62,56 @@ proc closedBySystem(id: uint32) =
   shown.del id
   callPage(s.tab, "closed(" & $s.pageId & ")")
 
-proc listen() =
-  if listening: return
-  listening = true
-  discard subscribe(busSession, service, service, "ActionInvoked", servicePath,
-    proc (p: string, v: GVariant) = clicked(uint32At(v, 0)))
-  discard subscribe(busSession, service, service, "NotificationClosed", servicePath,
-    proc (p: string, v: GVariant) = closedBySystem(uint32At(v, 0)))
+when defined(android):
+  var nextSystemId = 1'u32
+
+  proc systemShow(replace: uint32, title, text: string, done: proc (id: uint32)) =
+    let id = if replace != 0: replace else: (inc nextSystemId; nextSystemId - 1)
+    if hostCall("notify", $(%*{"id": id, "title": title, "text": text})) == "ok": done(id)
+    else: stderr.writeLine "webby: could not show a notification"
+
+  proc systemClose(id: uint32) = discard hostCall("notificationClose", $id)
+
+  proc onHostEvent(name, data: string) =
+    case name
+    of "notificationClick": (try: clicked(uint32(parseInt(data))) except ValueError: discard)
+    of "notificationClosed": (try: closedBySystem(uint32(parseInt(data))) except ValueError: discard)
+    else: discard
+
+else:
+  proc listen() =
+    if listening: return
+    listening = true
+    discard subscribe(busSession, service, service, "ActionInvoked", servicePath,
+      proc (p: string, v: GVariant) = clicked(uint32At(v, 0)))
+    discard subscribe(busSession, service, service, "NotificationClosed", servicePath,
+      proc (p: string, v: GVariant) = closedBySystem(uint32At(v, 0)))
+
+  proc systemShow(replace: uint32, title, text: string, done: proc (id: uint32)) =
+    listen()
+    let actions = g_variant_builder_new(variantType("as"))
+    g_variant_builder_add(actions, "s", "default")
+    g_variant_builder_add(actions, "s", "Open")
+    let hints = g_variant_builder_new(variantType("a{sv}"))
+    g_variant_builder_add(hints, "{sv}", "desktop-entry", g_variant_new_string("webby"))
+    let params = g_variant_new("(susssasa{sv}i)", "Webby", replace, "webby", title.cstring, text.cstring, actions,
+      hints, -1.cint)
+    g_variant_builder_unref(actions)
+    g_variant_builder_unref(hints)
+    call(busSession, service, servicePath, service, "Notify", params, proc (r: GVariant, e: string) =
+      if r == nil: stderr.writeLine "webby: could not show a notification: ", e
+      else: done(uint32At(r, 0)))
+
+  proc systemClose(id: uint32) =
+    call(busSession, service, servicePath, service, "CloseNotification", g_variant_new("(u)", id))
 
 proc show(t: Tab, origin: string, pageId: int, tag, title, body: string) =
-  listen()
   var site = origin[origin.find("://") + 3 .. ^1]
   if site.startsWith("www."): site = site[4 .. ^1]
   let key = if tag.len > 0: origin & " " & tag else: ""
-  let actions = g_variant_builder_new(variantType("as"))
-  g_variant_builder_add(actions, "s", "default")
-  g_variant_builder_add(actions, "s", "Open")
-  let hints = g_variant_builder_new(variantType("a{sv}"))
-  g_variant_builder_add(hints, "{sv}", "desktop-entry", g_variant_new_string("webby"))
   # Like Chrome, say which site it came from.
   let text = if body.len == 0: site else: body & "\n" & site
-  let params = g_variant_new("(susssasa{sv}i)", "Webby", tagged.getOrDefault(key, 0'u32), "webby", title.cstring,
-    text.cstring, actions, hints, -1.cint)
-  g_variant_builder_unref(actions)
-  g_variant_builder_unref(hints)
-  call(busSession, service, servicePath, service, "Notify", params, proc (r: GVariant, e: string) =
-    if r == nil:
-      stderr.writeLine "webby: could not show a notification: ", e
-      return
-    let id = uint32At(r, 0)
+  systemShow(tagged.getOrDefault(key, 0'u32), title, text, proc (id: uint32) =
     if key.len > 0: tagged[key] = id
     shown[id] = Shown(tab: t, pageId: pageId, origin: origin))
 
@@ -95,7 +119,7 @@ proc closePage(t: Tab, pageId: int) =
   for id, s in shown:
     if s.tab == t and s.pageId == pageId:
       shown.del id
-      call(busSession, service, servicePath, service, "CloseNotification", g_variant_new("(u)", id))
+      systemClose(id)
       return
 
 proc onMessage(t: Tab, text: string): bool =
@@ -132,6 +156,7 @@ proc onTabState(t: Tab) =
   for id in gone: shown.del id
 
 proc install*() =
+  when defined(android): hostEventHooks.add onHostEvent
   pageScriptHooks.add script
   pageMessageHooks.add onMessage
   tabStateHooks.add onTabState
