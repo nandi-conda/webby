@@ -79,6 +79,7 @@ public final class MainActivity extends Activity {
         } catch (Exception e) {
             Log.e(TAG, "environment", e);
         }
+        Downloads.start(this);
         dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
         Ui.setDark(dark);
         foreground = Ui.foreground;
@@ -304,6 +305,7 @@ public final class MainActivity extends Activity {
         menu.getMenu().add(0, 6, 0, state.optBoolean("bookmarked") ? "Edit bookmark" : "Bookmark this page").setEnabled(onPage);
         menu.getMenu().add(0, 7, 0, "Bookmarks");
         menu.getMenu().add(0, 8, 0, "History");
+        menu.getMenu().add(0, 19, 0, "Downloads");
         menu.getMenu().add(0, 10, 0, "Passwords and passkeys");
         menu.getMenu().add(0, 11, 0, "Tabs from other devices");
         menu.getMenu().add(0, 13, 0, "Sessions");
@@ -337,6 +339,7 @@ public final class MainActivity extends Activity {
                 case 16: WebApps.install(this, state.optString("app")); break;
                 case 17: FindBar.show(this); break;
                 case 18: toggleAdblock(!state.optBoolean("adblock", true)); break;
+                case 19: Downloads.showAll(this); break;
             }
             return true;
         });

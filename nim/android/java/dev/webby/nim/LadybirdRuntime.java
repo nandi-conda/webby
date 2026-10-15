@@ -44,6 +44,7 @@ final class LadybirdRuntime {
             path.mkdirs();
             Os.setenv(d[0], path.getPath(), true);
         }
+        Downloads.setEnvironment(context);
         String libraries = context.getApplicationInfo().nativeLibraryDir;
         Os.setenv("LD_LIBRARY_PATH", libraries, true);
         Os.setenv("LADYBIRD_CRANELIFT_COMPILER", new File(libraries, "libcranelift-compiler.so").getPath(), true);
