@@ -5,6 +5,8 @@
 
 import std/strutils
 import ../browser
+from nimkit/core as kit import nil
+from nimkit/backend/gtk as nkgtk import nil
 
 const findScript = block:
   let dart = staticRead("../../../app/lib/src/find_in_page.dart")
@@ -12,20 +14,20 @@ const findScript = block:
   dart[start ..< dart.find("'''", start)]
 
 var
-  bar, entry, countLabel, caseButton: Widget
+  bar, entry, countLabel, caseButton: kit.Widget
   shownFor: Tab          ## the tab the bar searches (nil while it is hidden)
   scriptCurrent, scriptTotal: int  ## the page script's last report
   scriptDefinedFor: string  ## url the page script was last defined in
 
 proc js(s: string): string = $(%s)
 
-proc query(): string = $gtk_entry_get_text(entry)
-proc caseSensitive(): bool = gtk_toggle_button_get_active(caseButton) != 0
+proc query(): string = kit.text(entry)
+proc caseSensitive(): bool = kit.checked(caseButton)
 
 proc showCount(current, total: int) =
   let q = query()
-  gtk_label_set_text(countLabel, (if q.len == 0: "" elif total == 0: "No matches" else: $current & " of " & $total).cstring)
-  if q.len > 0 and total == 0: addClass(entry, "error") else: removeClass(entry, "error")
+  kit.`text=`(countLabel, if q.len == 0: "" elif total == 0: "No matches" else: $current & " of " & $total)
+  kit.setClass(entry, "error", q.len > 0 and total == 0)
 
 proc ensureScript(t: Tab) =
   if scriptDefinedFor != t.url:
@@ -63,7 +65,7 @@ proc closeBar*() =
   if shownFor == nil: return
   endFind(shownFor)
   shownFor = nil
-  gtk_widget_hide(bar)
+  kit.`visible=`(bar, false)
   focusPage()
 
 proc openBar*() =
@@ -73,60 +75,43 @@ proc openBar*() =
     if shownFor != nil: endFind(shownFor)
     shownFor = t
     scriptDefinedFor = ""
-    # show_all skips a no_show_all widget (the bar is one, so the window's show_all leaves it hidden).
-    gtk_widget_set_no_show_all(bar, 0)
-    gtk_widget_show_all(bar)
-    gtk_widget_set_no_show_all(bar, 1)
+    kit.`visible=`(bar, true)
     if query().len > 0: search(t)
-  gtk_widget_grab_focus(entry)
-  gtk_editable_select_region(entry, 0, -1)
+  kit.focus(entry)
+  kit.selectAll(entry)
 
 proc nextOrOpen(forward: bool) =
   if shownFor == nil or shownFor != currentTab():
     openBar()
   else: step(forward)
 
-proc onChanged(e: Widget, data: pointer) {.cdecl.} = search(shownFor)
-
-proc onEntryKey(e: Widget, ev: GEvent, data: pointer): gboolean {.cdecl.} =
-  var keyval: cuint
-  discard gdk_event_get_keyval(ev, addr keyval)
-  let shift = (modifiers(eventState(ev)) and modShift) != 0
-  case keyval
-  of 0xff0d, 0xff8d:                       # Enter, Shift+Enter
-    step(not shift)
-    1
-  of 0xff1b:                               # Esc
+proc onEntryKey(e: kit.KeyEvent): bool =
+  case e.code
+  of 0x0D:                                 # Enter, Shift+Enter
+    step((e.mods and kit.modShift) == 0)
+    true
+  of 0x1B:                                 # Esc
     closeBar()
-    1
-  else: 0
-
-proc onCaseToggled(b: Widget, data: pointer) {.cdecl.} = search(shownFor)
+    true
+  else: false
 
 proc buildBar() =
-  bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2)
-  addClass(bar, "webby-find-bar")
-  entry = gtk_search_entry_new()
-  gtk_entry_set_placeholder_text(entry, "Find in page")
-  gtk_entry_set_width_chars(entry, 28)
-  connect(entry, "changed", onChanged)
-  connect(entry, "key-press-event", onEntryKey)
-  gtk_box_pack_start(bar, entry, 0, 0, 4)
-  countLabel = gtk_label_new("")
-  gtk_label_set_width_chars(countLabel, 10)
-  gtk_label_set_xalign(countLabel, 0)
-  gtk_box_pack_start(bar, countLabel, 0, 0, 4)
-  gtk_box_pack_start(bar, iconButton("keyboard_arrow_up", "Previous match (Shift+Enter)", proc () = step(false)),
-    0, 0, 0)
-  gtk_box_pack_start(bar, iconButton("keyboard_arrow_down", "Next match (Enter)", proc () = step(true)), 0, 0, 0)
-  caseButton = gtk_toggle_button_new_with_label("Aa")
-  gtk_button_set_relief(caseButton, GTK_RELIEF_NONE)
-  gtk_widget_set_tooltip_text(caseButton, "Match case")
-  connect(caseButton, "toggled", onCaseToggled)
-  gtk_box_pack_start(bar, caseButton, 0, 0, 0)
-  gtk_box_pack_end(bar, iconButton("close", "Close (Esc)", closeBar, 16), 0, 0, 0)
-  gtk_widget_set_no_show_all(bar, 1)
-  gtk_box_pack_start(findSlot, bar, 0, 0, 2)
+  entry = kit.entry("Find in page", onChange = proc (text: string) = search(shownFor))
+  entry.onEntryKey = onEntryKey
+  discard kit.sized(entry, 260)
+  countLabel = kit.label("")
+  discard kit.sized(countLabel, 90)
+  caseButton = kit.toggle("Aa", onToggle = proc (on: bool) = search(shownFor))
+  kit.`tooltip=`(caseButton, "Match case")
+  bar = kit.row(entry, countLabel,
+    kit.iconButton("keyboard_arrow_up", "Previous match (Shift+Enter)", proc () = step(false)),
+    kit.iconButton("keyboard_arrow_down", "Next match (Enter)", proc () = step(true)),
+    caseButton, kit.spacer(),
+    kit.iconButton("close", "Close (Esc)", closeBar, 16))
+  bar.spacing = 4
+  kit.addClass(bar, "webby-find-bar")
+  kit.`visible=`(bar, false)
+  gtk_box_pack_start(findSlot, nkgtk.gtkWidget(bar), 0, 0, 2)
 
 proc onMessage(t: Tab, text: string): bool =
   if not text.startsWith("{\"type\":\"find\""): return false
@@ -157,7 +142,7 @@ proc install*() =
   tabClosedHooks.add proc (t: Tab) =
     if t == shownFor:
       shownFor = nil
-      gtk_widget_hide(bar)
+      kit.`visible=`(bar, false)
   navigationHooks.add proc (t: Tab) =
     # A new page: search it again so the count and highlights match what shows.
     if t == shownFor:
