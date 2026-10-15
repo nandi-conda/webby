@@ -95,7 +95,11 @@ proc ladybirdPrefix*(): string =
 proc loadWebbyLib*(path: string) =
   ## Loads libwebby.so from `path` (a bare file name searches the library path, as on Android).
   let lib = loadLib(path)
-  if lib == nil: quit "libwebby.so not found at " & path & ". Set WEBBY_LADYBIRD_PREFIX to the Ladybird runtime."
+  if lib == nil:
+    proc dlerror(): cstring {.importc, header: "<dlfcn.h>".}
+    let why = $dlerror()
+    quit "Can't load libwebby.so from " & path & (if why.len > 0: " (" & why & ")" else: "") &
+      ". Set WEBBY_LADYBIRD_PREFIX to the Ladybird runtime."
   template sym(p: untyped) = p = cast[typeof(p)](lib.checkedSymAddr(astToStr(p)))
   sym webby_init
   sym webby_pump
