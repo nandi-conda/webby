@@ -315,7 +315,7 @@ proc poll() =
   serial = s
   # Progress changes the serial many times a second; read the list at most every 200 ms.
   refreshQueued = true
-  discard g_timeout_add(200, proc (d: pointer): gboolean {.cdecl.} =
+  discard after(200, proc () =
     refreshQueued = false
     serial = webby_downloads_serial()
     downloads = parse($webby_downloads_json())
@@ -324,8 +324,7 @@ proc poll() =
       for d in downloads: known[d.id] = d.status
       primed = true
     refreshButton()
-    refreshPanel()
-    0, nil)
+    refreshPanel())
 
 proc install*() =
   startupHooks.add setUpDirectory

@@ -272,7 +272,7 @@ proc runPasskeyDialogs() =
 proc onWebauthn(t: Tab, request: JsonNode) =
   pendingPasskey.add (t, request)
   if pendingPasskey.len == 1:
-    discard g_idle_add(proc (d: pointer): gboolean {.cdecl.} = (runPasskeyDialogs(); 0), nil)
+    discard after(0, runPasskeyDialogs)
 
 # ---------------------------------------------------------------------------------------------------------------
 

@@ -185,12 +185,8 @@ proc buildAppWindow() =
 
 proc closeLater(t: Tab) =
   ## Closes `t` outside the pump (which still uses the tab after the state hooks).
-  GC_ref(t)
-  discard g_idle_add(proc (d: pointer): gboolean {.cdecl.} =
-    let t = cast[Tab](d)
-    if not t.closed: closeTab(t)
-    GC_unref(t)
-    0, cast[pointer](t))
+  discard after(0, proc () =
+    if not t.closed: closeTab(t))
 
 proc onAppTabState(t: Tab) =
   # Links the app opens in a new window go to the browser when they leave the app.
@@ -241,10 +237,6 @@ proc setOffline(value: bool) =
   if offlineIcon != nil: kit.`visible=`(offlineIcon, value)
   if offlineBanner != nil: kit.`visible=`(offlineBanner, value)
 
-proc checkOffline(data: pointer): gboolean {.cdecl.} =
-  setOffline(not hasDefaultRoute())
-  1
-
 proc startOffline() =
   # Offline mode serves pages from the disk cache, which incognito windows don't have.
   if incognito: return
@@ -263,7 +255,7 @@ proc startOffline() =
   of "1": setOffline(true)
   else:
     setOffline(not hasDefaultRoute())
-    discard g_timeout_add(5000, checkOffline, nil)
+    discard every(5000, proc () = setOffline(not hasDefaultRoute()))
 
 # ---------------------------------------------------------------------------------------------------------------
 

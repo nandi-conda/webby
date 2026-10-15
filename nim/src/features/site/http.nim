@@ -71,9 +71,7 @@ proc fetch*(t: Tab, url: string, done: Fetched, accept = "", maxBytes = 4 shl 20
   t.runJs(fetchScript.multiReplace(("$1", $(%t.messagePrefix)), ("$2", $(%url)), ("$3", headers),
     ("$4", $maxBytes), ("$5", $id)))
   wake()
-  discard g_timeout_add(timeoutMs.cuint, proc (d: pointer): gboolean {.cdecl.} =
-    finish(cast[int](d), false, "", "")
-    0, cast[pointer](id))
+  discard after(timeoutMs, proc () = finish(id, false, "", ""))
 
 proc install*() =
   pageMessageHooks.add onMessage

@@ -389,12 +389,11 @@ proc refresh() =
   ## Bookmarks changed: redraw what shows them, once per main-loop turn.
   if refreshQueued: return
   refreshQueued = true
-  discard g_idle_add(proc (d: pointer): gboolean {.cdecl.} =
+  discard after(0, proc () =
     refreshQueued = false
     fillBar()
     updateStar()
-    if managerOpen: fillManager()
-    0, nil)
+    if managerOpen: fillManager())
 
 proc bookmarkSuggestions(text: string): seq[Suggestion] =
   ## Bookmarks whose name or address contain every typed word.

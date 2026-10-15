@@ -12,7 +12,7 @@ from nimkit/backend/gtk as nkgtk import nil   # nimkit on GTK; also fills in its
 appName = "webby"
 userAgent = "webby"
 export base, gtk, ffi, icons, json, tables
-export services.copyText, services.pasteText
+export services.copyText, services.pasteText, services.after, services.every, services.cancel, services.Timer
 
 # The Flutter app's page shims (lib/src/page_compat.dart), read at compile time so both front ends run the same JS.
 const pageCompatScript* = block:
@@ -112,7 +112,7 @@ var
   permissionHandler*: proc (t: Tab, request: JsonNode)
 
   viewW, viewH, viewScale = 0
-  pumpSource: cuint
+  pumpTimer: Timer
   pumpDelay = 0
   quietTicks = 0
   pumping = false
@@ -499,14 +499,13 @@ proc alert*(text: string, secondary = "") =
 # ---------------------------------------------------------------------------------------------------------------
 # Page requests
 
-proc runDialog(data: pointer): gboolean {.cdecl.} =
+proc runDialog(t: Tab) =
   ## Asks the page's alert/confirm/prompt; the tab answers no more until the user does.
-  let t = cast[Tab](data)
-  if t.closed: return 0
+  if t.closed: return
   let raw = str(webby_view_dialog(t.view))
   if raw.len == 0:
     t.answering = false
-    return 0
+    return
   let j = parseJson(raw)
   let id = uint64(j{"id"}.getBiggestInt)
   let message = j{"message"}.getStr
@@ -519,12 +518,11 @@ proc runDialog(data: pointer): gboolean {.cdecl.} =
   of "prompt": kit.prompt(title, message, j{"default"}.getStr, respond)
   of "alert": kit.alert(title, message, proc () = respond(true, ""))
   else: kit.confirm(title, message, onResult = proc (ok: bool) = respond(ok, ""))
-  0
 
 proc answerRequests(t: Tab) =
   if not t.answering and str(webby_view_dialog(t.view)).len > 0:
     t.answering = true
-    discard g_idle_add(runDialog, cast[pointer](t))
+    discard after(0, proc () = runDialog(t))
   let wa = str(webby_view_webauthn_prompt(t.view))
   if wa.len > 0 and t.props.getOrDefault("webauthn") != wa:
     t.props["webauthn"] = wa
@@ -634,7 +632,7 @@ proc pumpTab(t: Tab, isActive: bool): bool =
       kit.invalidate(page)
   busy
 
-proc pumpAll(data: pointer): gboolean {.cdecl.} =
+proc pumpAll() =
   inc pumps
   pumping = true
   wokeInPump = false
@@ -664,21 +662,19 @@ proc pumpAll(data: pointer): gboolean {.cdecl.} =
     elif events: (if quietTicks >= 80: 40 else: min(quietTicks + 1, 79))
     else: quietTicks + 1
   let delay = if quietTicks < 60: 4 elif quietTicks < 80: 16 elif quietTicks < 100: 50 else: 100
-  if delay == pumpDelay: return 1
-  schedule(delay)
-  0
+  if delay != pumpDelay: schedule(delay)
 
 proc schedule(ms: int) =
   pumpDelay = ms
-  pumpSource = g_timeout_add(ms.cuint, pumpAll, nil)
+  cancel(pumpTimer)
+  pumpTimer = every(ms, pumpAll)
 
 proc wake*() =
   quietTicks = 0
   if pumping:
     wokeInPump = true
     return
-  if pumpDelay <= 4 and pumpSource != 0: return
-  if pumpSource != 0: discard g_source_remove(pumpSource)
+  if pumpDelay <= 4 and pumpTimer != nil and pumpTimer.id != 0: return
   schedule(4)
 
 # CPU time of this process and its helpers, for WEBBY_TRACE: "webby-cpu" lines give each process's (and its busiest
@@ -752,7 +748,7 @@ proc cpuReport(): string =
   cpuTicks = fresh
   parts.join("  ")
 
-proc traceTick(data: pointer): gboolean {.cdecl.} =
+proc traceTick() =
   stderr.writeLine "webby-cpu ", cpuReport()
   stderr.writeLine "webby-trace pumps=", pumps, " frames=", frames, " draws=", draws, " delay=", pumpDelay,
     "ms nativeMs=", nativeUs div 1000, " drawMs=", drawUs div 1000,
@@ -761,7 +757,6 @@ proc traceTick(data: pointer): gboolean {.cdecl.} =
     " maxWheelMs=", formatFloat(maxWheelUs.float / 1000, ffDecimal, 1), " tabs=", tabs.len
   pumps = 0; frames = 0; draws = 0; nativeUs = 0; drawUs = 0; maxTickUs = 0
   wheelFrames = 0; wheelUs = 0; maxWheelUs = 0
-  1
 
 # ---------------------------------------------------------------------------------------------------------------
 # Drawing and input on the page area
@@ -1166,7 +1161,7 @@ proc run*() =
     activateTab(0)
   mark "tabs opened"
   focusPage()
-  if trace: discard g_timeout_add(5000, traceTick, nil)
+  if trace: discard every(5000, traceTick)
   wake()
   gtk_main()
   for t in tabs:

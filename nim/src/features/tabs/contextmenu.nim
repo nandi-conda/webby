@@ -200,11 +200,11 @@ proc saveImage(url: string) =
 var
   menuTab: Tab            # the tab right-clicked, until its report arrives or the fallback fires
   menuAt: (float, float)  # where, in the page canvas's pixels
-  fallback: cuint
+  fallback: Timer
 
 proc clearPending() =
-  if fallback != 0: discard g_source_remove(fallback)
-  fallback = 0
+  cancel(fallback)
+  fallback = nil
   menuTab = nil
 
 proc ellipsize(text: string, n: int): string =
@@ -276,11 +276,10 @@ proc show(info: JsonNode) =
   if t == nil or t.closed or t != currentTab(): return
   if pageContextMenuHook != nil: pageContextMenuHook(t, info, menuAt[0], menuAt[1])
 
-proc onFallback(d: pointer): gboolean {.cdecl.} =
+proc onFallback() =
   # The page didn't report the click (Shift+right-click, a page the script can't run in): a menu without targets.
-  fallback = 0
+  fallback = nil
   show(newJObject())
-  0
 
 proc onPagePointer(t: Tab, e: kit.PointerEvent): bool =
   # Watches for right-clicks; the page still gets them (its script reports what was under the pointer).
@@ -288,7 +287,7 @@ proc onPagePointer(t: Tab, e: kit.PointerEvent): bool =
     clearPending()
     menuAt = (e.x, e.y)
     menuTab = t
-    fallback = g_timeout_add(400, onFallback, nil)
+    fallback = after(400, onFallback)
 
 proc onMessage(t: Tab, msg: string): bool =
   if not msg.startsWith("{\"type\":\"contextmenu\""): return false

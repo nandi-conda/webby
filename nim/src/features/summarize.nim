@@ -43,15 +43,7 @@ var
 
 proc nowMs(): int64 = (epochTime() * 1000).int64
 
-proc later(ms: int, action: proc ()) =
-  let cb = new(proc ())
-  cb[] = action
-  GC_ref(cb)
-  discard g_timeout_add(ms.cuint, proc (d: pointer): gboolean {.cdecl.} =
-    let cb = cast[ref proc ()](d)
-    GC_unref(cb)
-    cb[]()
-    0, cast[pointer](cb))
+proc later(ms: int, action: proc ()) = discard after(ms, action)
 
 # ---------------------------------------------------------------------------------------------------------------
 # The API key

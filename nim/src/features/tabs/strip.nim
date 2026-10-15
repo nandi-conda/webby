@@ -70,7 +70,7 @@ proc lowOnMemory(): bool =
   except CatchableError: return false
   total > 0 and available >= 0 and available * 10 < total
 
-proc discardIdleTabs(d: pointer): gboolean {.cdecl.} =
+proc discardIdleTabs() =
   ## Every minute: background tabs hidden for discardMinutes, or for a minute when memory is low, lose their page.
   let after = discardMinutes()
   let low = lowOnMemory()
@@ -80,7 +80,6 @@ proc discardIdleTabs(d: pointer): gboolean {.cdecl.} =
     if "webauthn" in t.props or "filepicker" in t.props or "permission" in t.props: continue
     let hidden = now - parseFloat(t.props["hiddenSince"])
     if (after > 0 and hidden >= float(after * 60)) or (low and hidden >= 60): discardTab(t)
-  1
 
 # ---------------------------------------------------------------------------------------------------------------
 # Pinned tabs: small tiles at the start of the strip that survive "Close other tabs".
@@ -102,28 +101,22 @@ proc styleTab(t: Tab) =
 # opened again, asleep, at the next start.
 
 var
-  saveSource: cuint
+  saveTimer: Timer
   restoring = false
 
 proc keepsTabs(): bool = not incognito and appUrl.len == 0
 
 proc saveOpenTabsNow() =
-  if saveSource != 0:
-    discard g_source_remove(saveSource)
-    saveSource = 0
+  cancel(saveTimer)
+  saveTimer = nil
   # Closing the last tab quits; what was saved before it stays for the next start.
   if not keepsTabs() or restoring or tabs.len == 0: return
   var list: seq[DeviceTab]
   for t in tabs: list.add DeviceTab(title: t.title, url: t.url)
   writeOpenTabs(list, activeIndex, pinnedCount())
 
-proc onSaveTimer(d: pointer): gboolean {.cdecl.} =
-  saveSource = 0
-  saveOpenTabsNow()
-  0
-
 proc saveOpenTabsSoon() =
-  if keepsTabs() and not restoring and saveSource == 0: saveSource = g_timeout_add(1000, onSaveTimer, nil)
+  if keepsTabs() and not restoring and saveTimer == nil: saveTimer = after(1000, saveOpenTabsNow)
 
 proc fixOrder() =
   ## Pinned tabs stay together at the start; a tab opened among them moves just after them.
@@ -303,4 +296,4 @@ button.webby-pinned-tab { padding: 4px 0; }
     addMenuItem("New incognito window", proc () = openIncognitoWindow(), "Ctrl+Shift+N")
   addShortcut(modCtrl or modShift, 0x74, reopenClosedTab)                     # Ctrl+Shift+T
   addShortcut(modCtrl or modShift, 0x6e, proc () = openIncognitoWindow())     # Ctrl+Shift+N
-  discard g_timeout_add(60_000, discardIdleTabs, nil)
+  discard every(60_000, discardIdleTabs)

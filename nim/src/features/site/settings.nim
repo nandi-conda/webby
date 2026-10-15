@@ -24,14 +24,7 @@ proc fill()
 
 proc later(action: proc ()) =
   ## Runs `action` once the widget whose signal is running has let go.
-  let cb = new(proc ())
-  cb[] = action
-  GC_ref(cb)
-  discard g_idle_add(proc (d: pointer): gboolean {.cdecl.} =
-    let cb = cast[ref proc ()](d)
-    GC_unref(cb)
-    cb[]()
-    0, cast[pointer](cb))
+  discard after(0, action)
 
 proc deleteSiteData() =
   let t = currentTab()

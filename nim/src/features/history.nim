@@ -180,10 +180,9 @@ proc fillPanel() =
 proc queueRefresh() =
   if not panelOpen or refreshQueued: return
   refreshQueued = true
-  discard g_idle_add(proc (d: pointer): gboolean {.cdecl.} =
+  discard after(0, proc () =
     refreshQueued = false
-    if panelOpen: fillPanel()
-    0, nil)
+    if panelOpen: fillPanel())
 
 proc showHistory*() =
   closeSidePanel()
