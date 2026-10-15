@@ -407,6 +407,11 @@ proc addToolbarButton*(icon, tooltip: string, action: proc () {.closure.}, openI
   result = kit.iconButton(icon, tooltip, action)
   kit.add(toolbarEndRow, result)
   if openIcon.len > 0: panelButtons.add (result, icon, openIcon, panel)
+  when defined(android):
+    # No room for them on a phone's toolbar (toolbarEndRow is hidden there): they're ⋮ menu items instead.
+    let b = result
+    moreMenuHooks.add proc (items: var seq[kit.MenuItem]) =
+      if kit.visible(b): items.add kit.menuItem(kit.tooltip(b), action)
 
 proc shortcutText*(mods: int, keyval: uint32): string =
   ## "Ctrl+Shift+T" for a shortcut's mods and GDK keyval, to show in menus.
@@ -1187,6 +1192,10 @@ proc buildWindow() =
   toolbarRow = kit.row(backButton, forwardButton, reloadButton, urlSlotRow, starSlotRow, toolbarEndRow, moreButton)
   toolbarRow.spacing = 2
   toolbarRow.padding = 2
+  when defined(android):
+    kit.`visible=`(forwardButton, false)
+    kit.`visible=`(toolbarEndRow, false)
+    addMenuItem("Forward", goForward)
 
   barSlot = kit.column()
   barSlot.spacing = 0

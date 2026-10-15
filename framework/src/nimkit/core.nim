@@ -485,7 +485,8 @@ proc overlay*(base: Widget, floating: varargs[Widget]): Widget =
 
 proc split*(first, second: Widget, size = 360.0, onResize: proc (size: float) = nil): Widget =
   ## `first` and, at its right, `second` `size` logical pixels wide, with a divider the user drags to resize it
-  ## (onResize then gets the new width). Hiding `second` gives `first` the whole width.
+  ## (onResize then gets the new width). Hiding `second` gives `first` the whole width. On a phone-sized window
+  ## (Android, under 600 dp wide) `second` takes the whole width while it shows.
   result = newWidget(wkSplit)
   result.valueValue = size
   result.onValue = onResize

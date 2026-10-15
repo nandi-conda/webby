@@ -605,7 +605,24 @@ public class Host extends Activity {
                 return f;
             }
             case SPLIT: {
-                LinearLayout l = new LinearLayout(this);
+                LinearLayout l = new LinearLayout(this) {
+                    @Override
+                    protected void onMeasure(int w, int h) {
+                        // On a phone-sized window the second pane, when it shows, takes the whole width: next to it
+                        // the first would be too narrow to use.
+                        int width = MeasureSpec.getSize(w);
+                        if (getChildCount() > 1) {
+                            View first = getChildAt(0), second = getChildAt(1);
+                            boolean alone = second.getVisibility() == View.VISIBLE && width < px(600);
+                            LinearLayout.LayoutParams p = (LinearLayout.LayoutParams) second.getLayoutParams();
+                            int want = alone ? width : splits.getOrDefault(this, px(360));
+                            if (p.width != want) { p.width = want; second.setLayoutParams(p); }
+                            int firstVis = alone ? View.GONE : View.VISIBLE;
+                            if (first.getVisibility() != firstVis) first.setVisibility(firstVis);
+                        }
+                        super.onMeasure(w, h);
+                    }
+                };
                 l.setOrientation(LinearLayout.HORIZONTAL);
                 splits.put(l, px(360));
                 return l;
