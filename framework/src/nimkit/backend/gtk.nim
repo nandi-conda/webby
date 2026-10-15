@@ -338,6 +338,7 @@ const classCss = """
 .nk-error { color: #c01c28; }
 .nk-selected { background-color: alpha(@theme_selected_bg_color, 0.25); }
 .nk-popover { border: 1px solid alpha(currentColor, 0.2); }
+.nk-dialog-title { font-weight: bold; font-size: larger; }
 .nk-card { border: 1px solid alpha(currentColor, 0.15); border-radius: 6px; padding: 8px; }
 button.nk-item { padding: 2px 6px; }
 """
@@ -675,13 +676,19 @@ backend.showDialog = proc (d: Dialog) =
   dialogs[id] = d
   let g = gtk_dialog_new()
   d.native = cast[pointer](id)
-  gtk_window_set_title(g, d.title.cstring)
+  gtk_window_set_title(g, "")
   if toplevel() != nil: gtk_window_set_transient_for(g, toplevel())
   gtk_window_set_modal(g, 1)
   gtk_window_set_destroy_with_parent(g, 1)
   let area = gtk_dialog_get_content_area(g)
   gtk_container_set_border_width(area, 12)
   gtk_box_set_spacing(area, 8)
+  # The title in the dialog too, as GTK's message dialogs show it (window managers may not draw a title bar).
+  if d.title.len > 0:
+    let t = gtk_label_new(d.title.cstring)
+    gtk_label_set_xalign(t, 0)
+    gtk_style_context_add_class(gtk_widget_get_style_context(t), "nk-dialog-title")
+    gtk_box_pack_start(area, t, 0, 0, 0)
   if d.content != nil:
     d.content.realize()
     gtk_box_pack_start(area, d.content.native, 1, 1, 0)

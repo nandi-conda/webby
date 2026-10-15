@@ -63,7 +63,7 @@ proc sinceMs(combo: kit.Widget): int64 =
   let secs = ranges[clamp(kit.selected(combo), 0, ranges.high)][1]
   if secs == 0: 0'i64 else: nowMs() - secs * 1000
 
-proc dimLabel(text: string): kit.Widget = kit.addClass(kit.label(text), "dim-label")
+proc dimLabel(text: string): kit.Widget = kit.addClass(kit.label(text), "dim")
 
 proc oneLine(text: string): kit.Widget =
   result = kit.label(text)
@@ -137,7 +137,7 @@ proc entryRow(group: seq[HistoryEntry]): kit.Widget =
   let row = kit.item(clock, kit.icon("public"), oneLine(e.label), onClick = proc () = openUrl(e.url))
   if group.len > 1: kit.add(row, dimLabel("×" & $group.len))
   let s = site(e.url)
-  kit.add(row, kit.expand(if s.len > 0 and e.title.len > 0: kit.addClass(oneLine(s), "dim-label") else: kit.spacer()))
+  kit.add(row, kit.expand(if s.len > 0 and e.title.len > 0: kit.addClass(oneLine(s), "dim") else: kit.spacer()))
   kit.add(row, kit.iconButton("close", "Remove from history", proc () = remove(group), 14))
   row.spacing = 8
   kit.`tooltip=`(row, e.url)
@@ -166,7 +166,7 @@ proc fillPanel() =
     let label = dayLabel(localTime(e.time), now)
     if label != day:
       day = label
-      kit.add(panelList, kit.addClass(kit.addClass(kit.label(label), "webby-bold"), "webby-history-day"))
+      kit.add(panelList, kit.addClass(kit.addClass(kit.label(label), "bold"), "webby-history-day"))
     var group = @[e]
     inc i
     while i < found.len and samePage(found[i].url, e.url) and dayLabel(localTime(found[i].time), now) == day:
@@ -229,7 +229,6 @@ button.webby-history-row { padding: 0 4px 0 10px; min-height: 0; }
 .webby-history-note { margin-top: 24px; }
 .webby-panel-top { margin: 0 4px 0 8px; }
 .webby-check-detail { margin-left: 26px; }
-.webby-bold { font-weight: bold; }
 """)
     menuWithAccel("History", 0x68, modCtrl, showHistory)
     addMenuSeparator()

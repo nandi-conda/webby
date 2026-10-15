@@ -1021,6 +1021,7 @@ button.webby-active-tab { background-color: alpha(@theme_selected_bg_color, 0.18
 .webby-tab-close { padding: 0; min-height: 16px; min-width: 16px; }
 .webby-side-panel { border-left: 1px solid alpha(currentColor, 0.15); }
 .webby-side-panel-header label.title { margin-left: 8px; }
+.webby-small { font-size: smaller; }
 .webby-link-status { background-color: @theme_bg_color; padding: 2px 8px; font-size: smaller;
   border-top: 1px solid alpha(currentColor, 0.15); border-right: 1px solid alpha(currentColor, 0.15);
   border-radius: 0 6px 0 0; }

@@ -80,8 +80,8 @@ proc linkButton(label: string, action: proc ()): kit.Widget =
   kit.addClass(kit.addClass(kit.button(label, action), "flat"), "webby-link")
 
 proc dimLabel(text: string, small = false): kit.Widget =
-  result = kit.addClass(kit.label(text), "dim-label")
-  if small: kit.addClass(result, "webby-small")
+  result = kit.addClass(kit.label(text), "dim")
+  if small: kit.addClass(result, "small")
 
 proc oneLine(text: string): kit.Widget =
   result = kit.label(text)
@@ -108,7 +108,7 @@ proc sessionGroup(s: SavedSession): kit.Widget =
   ## One session the way OneTab shows a tab group: size and date, the actions, then every tab.
   let box = kit.addClass(kit.column(), "webby-session")
   box.spacing = 2
-  let names = kit.column(kit.addClass(oneLine(s.name), "webby-bold"), dimLabel(sessionCreated(s.savedAt), small = true))
+  let names = kit.column(kit.addClass(oneLine(s.name), "bold"), dimLabel(sessionCreated(s.savedAt), small = true))
   let head = kit.row(kit.addClass(dimLabel(plural(s.tabs.len, "tab")), "webby-session-count"), kit.expand(names))
   head.spacing = 12
   kit.add(box, head)
@@ -210,10 +210,8 @@ proc install*() =
     if appUrl.len > 0 or incognito: return
     loadCss("""
 .webby-link { color: @theme_selected_bg_color; padding: 2px 4px; }
-.webby-small { font-size: smaller; }
 .webby-session { border-top: 1px solid alpha(currentColor, 0.15); padding-top: 8px; margin-top: 8px; }
 .webby-undo { padding: 4px 8px; background-color: alpha(currentColor, 0.06); }
-.webby-bold { font-weight: bold; }
 .webby-session-count { font-size: x-large; font-weight: 300; }
 .webby-panel-actions { margin-left: 8px; }
 .webby-panel-body { padding: 8px; }

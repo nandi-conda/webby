@@ -282,7 +282,12 @@ proc install*() =
     startManager()
     if theVault != nil: theVault.onChange.add refreshPanel
     loadCss(""".webby-password-bar { padding: 4px 12px; border-left: 3px solid @theme_selected_bg_color;
-      border-bottom: 1px solid alpha(currentColor, 0.15); }""")
+      border-bottom: 1px solid alpha(currentColor, 0.15); }
+.webby-vault { padding: 8px; }
+.webby-vault-row { margin: 4px 4px 4px 8px; }
+.webby-vault-row button { padding: 2px; min-height: 0; }
+.webby-vault-note { margin: 24px 16px 0 16px; }
+.webby-vault-heading { margin-left: 8px; }""")
     bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8)
     addClass(bar, "webby-password-bar")
     gtk_widget_set_no_show_all(bar, 1)

@@ -9,6 +9,7 @@ import std/[strutils, times, uri]
 import ../browser
 import passwords/[manager, ui]
 from passwords/panel import panelActionHooks
+from nimkit/core as kit import nil
 import sync/[keys, blobs, engine, devicetabs]
 
 {.push cdecl, importc.}
@@ -357,7 +358,7 @@ proc install*() =
     statusListeners.add refresh
     deviceListeners.add proc () = (if shown == panelDevices: refresh())
     engine.start()
-  panelActionHooks.add proc (box: Widget) =
-    gtk_box_pack_end(box, button(if enabled(): "Synced" else: "Sync", showSyncPanel), 0, 0, 0)
+  panelActionHooks.add proc (box: kit.Widget) =
+    kit.add(box, kit.button(if enabled(): "Synced" else: "Sync", showSyncPanel))
   tabStateHooks.add proc (t: Tab) = publishTabs()
   tabStripHooks.add publishTabs
