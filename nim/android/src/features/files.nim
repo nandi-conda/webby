@@ -14,6 +14,7 @@ proc respond(args: JsonNode): JsonNode =
   let i = tabIndex(args{"tab"}.getInt)
   if i < 0: return nil
   let t = tabs[i]
+  if t.asleep: return nil
   if str(webby_view_file_picker_request(t.view)) != args{"request"}.getStr: return nil
   var paths = newJArray()
   for p in args{"paths"}.getElems: paths.add p

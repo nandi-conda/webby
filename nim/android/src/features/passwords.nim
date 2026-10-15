@@ -167,6 +167,7 @@ proc passkeyRespond(args: JsonNode): JsonNode =
   let i = tabIndex(args{"tab"}.getInt)
   if i < 0: return nil
   let t = tabs[i]
+  if t.asleep: return nil
   if str(webby_view_webauthn_prompt(t.view)) != args{"prompt"}.getStr: return nil
   webby_view_webauthn_respond(t.view, args{"ok"}.getBool.cint, args{"account"}.getInt(-1).cint)
   nil

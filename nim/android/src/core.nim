@@ -745,8 +745,9 @@ proc nim_color_scheme(scheme: cint) {.exportc, cdecl.} =
   wake()
 
 proc nim_trim_memory(level: cint) {.exportc, cdecl.} =
-  ## ComponentCallbacks2 levels: from TRIM_MEMORY_RUNNING_LOW (10) on, background tabs go to sleep.
-  if level >= 10: sleepIdleTabs(all = true)
+  ## ComponentCallbacks2 levels: RUNNING_LOW (10), RUNNING_CRITICAL (15) and MODERATE (60) and up put background
+  ## tabs to sleep; UI_HIDDEN (20, the app just left the screen) and BACKGROUND (40) don't.
+  if level in [10, 15] or level >= 60: sleepIdleTabs(all = true)
   for t in tabs:
     if not t.asleep: webby_view_collect_garbage(t.view)
   wake()
