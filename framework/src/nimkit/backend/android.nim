@@ -60,6 +60,8 @@ const   # Host.java's ops
   opHidePopover = 36
   opCopyText = 37    # text: what to put on the clipboard
   opPasteText = 38   # id: the request, answered by evPasteText
+  opChooseFiles = 42 # id: the request, answered by evFiles; text: JSON {title, name, save, multiple, patterns, mimeTypes}
+  opRich = 41        # a label: arg 1 = its text is markup (HTML subset), 2 = selectable (both: 3)
   opTextField = 40   # id: a canvas; arg: 1 to show the keyboard now; text: JSON {before, after}, "" for no field
   opToast = 39       # text: the message
 
@@ -84,6 +86,7 @@ proc sync(w: Widget) =
     op(opSpacing, w.id, w.spacing)
     op(opPadding, w.id, w.padding)
   of wkLabel, wkButton, wkCheck, wkToggle:
+    if w.kind == wkLabel: op(opRich, w.id, ord(w.rich) or (ord(w.selectable) shl 1))
     op(opText, w.id, text = w.text)
     if w.kind == wkLabel: op(opMaxChars, w.id, w.maxChars)
     if w.kind in {wkCheck, wkToggle}: op(opChecked, w.id, ord(w.checked))
@@ -230,10 +233,13 @@ const   # Native.java's event kinds
   evCanvasKey = 19      # a canvas's key: x the Windows key code, y modifiers, pointer the character; text "up" on release
   evTextInput = 20      # a canvas's keyboard text: text, replacing y units from x (relative to the caret)
   evBack = 21           # id 0: the back gesture; answered with opKeyHandled (id 0) when the app used it
+  evFiles = 23          # id: the opChooseFiles request; text: JSON array of paths (empty: cancelled)
+  evLink = 22           # a rich label's link: text the URL; answered with opKeyHandled when the app opened it
 
 var
   httpPending: Table[int, proc (r: Response)]
   pastePending: Table[int, proc (text: string)]
+  filesPending: Table[int, proc (paths: seq[string])]
 
 proc httpDone(id: int, text: string) =
   let done = httpPending.getOrDefault(id)
@@ -259,6 +265,15 @@ proc nk_event(id, kind: cint, text: cstring, x, y: cfloat, pointer: cint) {.expo
     let action = menuActions.getOrDefault(id)
     menuActions.clear()
     if action != nil: action()
+    return
+  if kind == evFiles:
+    var done: proc (paths: seq[string])
+    if filesPending.pop(int(id), done):
+      var paths: seq[string]
+      try:
+        for p in parseJson($text): paths.add p.getStr
+      except CatchableError: discard
+      done(paths)
     return
   if kind == evPasteText:
     var done: proc (text: string)
@@ -309,6 +324,8 @@ proc nk_event(id, kind: cint, text: cstring, x, y: cfloat, pointer: cint) {.expo
     var handled = e.down and onWindowKey != nil and onWindowKey(e)
     if not handled and w.onKey != nil: handled = w.onKey(w, e)
     if handled: op(opKeyHandled, w.id)
+  of evLink:
+    if w.onLink != nil and w.onLink($text): op(opKeyHandled, w.id)
   of evTextInput:
     if w.onTextInput != nil: w.onTextInput(w, $text, int(x), int(y))
   of evFocus:
@@ -396,6 +413,12 @@ backend.toast = proc (text: string) = op(opToast, text = text)
 backend.textField = proc (c: Canvas, f: TextField) =
   op(opTextField, c.id, ord(f.show), if f.active: $(%*{"before": f.before, "after": f.after}) else: "")
 serviceImpl.copyText = proc (text: string) = op(opCopyText, text = text)
+backend.chooseFiles = proc (r: FileRequest, onDone: proc (paths: seq[string])) =
+  let id = nextTimer   # any unused number
+  inc nextTimer
+  filesPending[id] = onDone
+  op(opChooseFiles, id, text = $(%*{"title": r.title, "name": r.name, "save": r.save, "multiple": r.multiple,
+    "patterns": r.patterns, "mimeTypes": r.mimeTypes}))
 serviceImpl.pasteText = proc (onDone: proc (text: string)) =
   let id = nextTimer   # any unused number
   inc nextTimer

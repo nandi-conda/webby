@@ -62,7 +62,7 @@ public class Host extends Activity {
             QUIT = 15, FORGET = 16, ITEMS = 17, SELECTED = 18, RANGE = 19, VALUE = 20, VISIBLE = 21, TOOLTIP = 22,
             CLASSES = 23, ICON = 24, PASSWORD = 25, FOCUS = 26, SELECT_ALL = 27, MOVE = 28, MENU = 29, DIALOG = 30,
             CLOSE_DIALOG = 31, KEY_HANDLED = 32, MAX_CHARS = 33, IMAGE = 34, POPOVER = 35,
-            HIDE_POPOVER = 36, COPY_TEXT = 37, PASTE_TEXT = 38, TOAST = 39, TEXT_FIELD = 40;
+            HIDE_POPOVER = 36, COPY_TEXT = 37, PASTE_TEXT = 38, TOAST = 39, TEXT_FIELD = 40, RICH = 41, CHOOSE_FILES = 42;
     // Widget kinds (WidgetKind in src/nimkit/core.nim).
     static final int COLUMN = 0, ROW = 1, SCROLL = 2, LABEL = 3, BUTTON = 4, ENTRY = 5, CHECK = 6, CANVAS = 7,
             SLIDER = 8, DROPDOWN = 9, PROGRESS = 10, TOGGLE = 11, ICON_KIND = 12, ITEM = 13, SEPARATOR = 14,
@@ -80,6 +80,7 @@ public class Host extends Activity {
     final SparseArray<double[]> ranges = new SparseArray<>();    // slider id -> {min, max, step, value}
     final SparseArray<Integer> shownSelection = new SparseArray<>();  // dropdown id -> the index Nim knows about
     final SparseArray<String> classes = new SparseArray<>();
+    final SparseArray<Integer> rich = new SparseArray<>();       // labels: 1 markup, 2 selectable
     final SparseArray<String> icons = new SparseArray<>();       // id -> "size spec" last shown
     final SparseArray<AlertDialog> dialogs = new SparseArray<>();
     final SparseArray<Boolean> pictures = new SparseArray<>();     // icons showing a picture, not their glyph
@@ -132,6 +133,34 @@ public class Host extends Activity {
         return current == null ? null : current.onHostCall(name, arg);
     }
 
+    interface ResultCallback {
+        void done(int code, android.content.Intent data);
+    }
+
+    private final SparseArray<ResultCallback> results = new SparseArray<>();
+    private int nextRequest = 1;
+
+    /** Starts `intent` for a result, which goes to `callback`; false when no app takes it. */
+    boolean startForResult(android.content.Intent intent, ResultCallback callback) {
+        int code = nextRequest++;
+        results.put(code, callback);
+        try {
+            startActivityForResult(intent, code);
+            return true;
+        } catch (android.content.ActivityNotFoundException e) {
+            results.remove(code);
+            return false;
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        ResultCallback c = results.get(requestCode);
+        results.remove(requestCode);
+        if (c != null) c.done(resultCode, data);
+    }
+
     @Override
     public void onBackPressed() {
         keyHandled = false;
@@ -146,6 +175,33 @@ public class Host extends Activity {
     }
 
     int px(int dp) { return Math.round(dp * density); }
+
+    /** A rich label's markup (Pango-style on GTK; the same tags are HTML) with links that ask the Nim side first. */
+    void setRichText(int id, TextView t, String markup) {
+        android.text.Spanned html = android.text.Html.fromHtml(markup, android.text.Html.FROM_HTML_MODE_COMPACT);
+        android.text.SpannableStringBuilder b = new android.text.SpannableStringBuilder(html);
+        for (android.text.style.URLSpan u : b.getSpans(0, b.length(), android.text.style.URLSpan.class)) {
+            int start = b.getSpanStart(u), end = b.getSpanEnd(u), flags = b.getSpanFlags(u);
+            String url = u.getURL();
+            b.removeSpan(u);
+            b.setSpan(new android.text.style.ClickableSpan() {
+                @Override
+                public void onClick(View w) {
+                    keyHandled = false;
+                    Native.event(id, Native.LINK, url, 0, 0, 0);
+                    if (keyHandled) return;
+                    try {
+                        startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse(url)));
+                    } catch (Exception e) {
+                        // no app for it
+                    }
+                }
+            }, start, end, flags);
+        }
+        t.setText(b);
+        t.setMovementMethod(android.text.method.LinkMovementMethod.getInstance());
+    }
 
     // --- Ops from Nim
 
@@ -181,6 +237,8 @@ public class Host extends Activity {
                         t.setTextOn(text);
                         t.setTextOff(text);
                         t.setText(text);
+                    } else if (v instanceof TextView && (rich.get(id, 0) & 1) != 0) {
+                        setRichText(id, (TextView) v, text);
                     } else if (v instanceof TextView) ((TextView) v).setText(text);
                     break;
                 case PLACEHOLDER: if (v instanceof EditText) ((EditText) v).setHint(text); break;
@@ -246,7 +304,7 @@ public class Host extends Activity {
                 case FORGET:
                     if (v != null) { splits.remove(v); overlays.remove(v); }
                     views.remove(id); expand.remove(id); minSize.remove(id); ranges.remove(id); shownSelection.remove(id);
-                    classes.remove(id); icons.remove(id); pictures.remove(id);
+                    classes.remove(id); icons.remove(id); pictures.remove(id); rich.remove(id);
                     break;
                 case ROOT:
                     content.removeAllViews();
@@ -368,6 +426,11 @@ public class Host extends Activity {
                 break;
                 case TITLE: setTitle(text); break;
                 case TOAST: android.widget.Toast.makeText(this, text, android.widget.Toast.LENGTH_LONG).show(); break;
+                case RICH:
+                    rich.put(id, arg);
+                    if (v instanceof TextView) ((TextView) v).setTextIsSelectable((arg & 2) != 0);
+                    break;
+                case CHOOSE_FILES: Files.choose(this, id, text); break;
                 case TEXT_FIELD: if (v instanceof CanvasView) ((CanvasView) v).setField(text, arg != 0); break;
                 case COPY_TEXT: {
                     android.content.ClipboardManager cm = getSystemService(android.content.ClipboardManager.class);

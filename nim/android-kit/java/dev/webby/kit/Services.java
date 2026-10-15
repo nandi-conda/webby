@@ -89,6 +89,40 @@ final class Services {
         }
     }
 
+    // --- Downloads: Ladybird saves into files/downloads; opening one copies it into the public Downloads collection
+    // (once) and hands that to whichever app takes its type.
+
+    private static final Map<String, android.net.Uri> published = new ConcurrentHashMap<>();
+
+    static String openFile(android.app.Activity a, String path) {
+        try {
+            java.io.File f = new java.io.File(path);
+            String ext = android.webkit.MimeTypeMap.getFileExtensionFromUrl(f.getName());
+            String mime = ext == null ? null : android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext.toLowerCase());
+            if (mime == null) mime = "application/octet-stream";
+            android.net.Uri uri = published.get(path);
+            if (uri == null) {
+                android.content.ContentResolver cr = a.getContentResolver();
+                android.content.ContentValues v = new android.content.ContentValues();
+                v.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, f.getName());
+                v.put(android.provider.MediaStore.Downloads.MIME_TYPE, mime);
+                uri = cr.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                if (uri == null) return null;
+                try (InputStream in = new java.io.FileInputStream(f); OutputStream out = cr.openOutputStream(uri)) {
+                    byte[] buf = new byte[1 << 16];
+                    for (int k; (k = in.read(buf)) > 0; ) out.write(buf, 0, k);
+                }
+                published.put(path, uri);
+            }
+            a.startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW).setDataAndType(uri, mime)
+                .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION));
+            return "ok";
+        } catch (Exception e) {
+            Log.e(TAG, "open " + path, e);
+            return null;
+        }
+    }
+
     // --- Streams (base.httpStream): the body goes to Nim piece by piece as it arrives, as host events
     // httpStream.status {id, status}, httpStream.data {id, data (base64)} and httpStream.done {id, error}.
 

@@ -117,6 +117,7 @@ public class WebbyHost extends Host {
                     return "ok";
                 case "device": return android.os.Build.MODEL;
                 case "colorScheme": return colorScheme();
+                case "openFile": return Services.openFile(this, arg);
                 case "toast":
                     Toast.makeText(this, arg, Toast.LENGTH_SHORT).show();
                     return "ok";
