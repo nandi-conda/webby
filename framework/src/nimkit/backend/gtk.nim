@@ -784,27 +784,42 @@ backend.closeDialog = proc (d: Dialog) =
     d.content.unrealize()
   gtk_widget_destroy(g)
 
-backend.chooseFile = proc (title: string, save: bool, name: string, patterns: seq[string], filterName: string,
-                          onDone: proc (path: string)) =
-  let d = gtk_file_chooser_dialog_new(title.cstring, toplevel(),
-    if save: GTK_FILE_CHOOSER_ACTION_SAVE else: GTK_FILE_CHOOSER_ACTION_OPEN,
-    "_Cancel", GTK_RESPONSE_CANCEL, (if save: "_Save" else: "_Open").cstring, GTK_RESPONSE_ACCEPT, nil)
-  if patterns.len > 0:
+backend.chooseFiles = proc (r: FileRequest, onDone: proc (paths: seq[string])) =
+  # The native chooser: the desktop portal's when there is one (sandboxes, other desktops), else GTK's.
+  let d = gtk_file_chooser_native_new(r.title.cstring, toplevel(),
+    if r.save: GTK_FILE_CHOOSER_ACTION_SAVE else: GTK_FILE_CHOOSER_ACTION_OPEN,
+    (if r.save: "_Save" else: "_Open").cstring, "_Cancel")
+  if r.patterns.len + r.mimeTypes.len > 0:
     let f = gtk_file_filter_new()
-    gtk_file_filter_set_name(f, (if filterName.len > 0: filterName else: patterns.join(", ")).cstring)
-    for p in patterns: gtk_file_filter_add_pattern(f, p.cstring)
+    gtk_file_filter_set_name(f, (if r.filterName.len > 0: r.filterName
+                                 else: (r.patterns & r.mimeTypes).join(", ")).cstring)
+    for p in r.patterns: gtk_file_filter_add_pattern(f, p.cstring)
+    for m in r.mimeTypes: gtk_file_filter_add_mime_type(f, m.cstring)
     gtk_file_chooser_add_filter(d, f)
-  if save:
-    if name.len > 0: gtk_file_chooser_set_current_name(d, name.cstring)
+    if not r.save:
+      let all = gtk_file_filter_new()
+      gtk_file_filter_set_name(all, "All files")
+      gtk_file_filter_add_pattern(all, "*")
+      gtk_file_chooser_add_filter(d, all)
+    gtk_file_chooser_set_filter(d, f)
+  if r.save:
+    if r.name.len > 0: gtk_file_chooser_set_current_name(d, r.name.cstring)
     gtk_file_chooser_set_do_overwrite_confirmation(d, 1)
-  var path = ""
-  if gtk_dialog_run(d) == GTK_RESPONSE_ACCEPT:
-    let p = gtk_file_chooser_get_filename(d)
-    if p != nil:
-      path = $p
-      g_free(cast[pointer](p))
-  gtk_widget_destroy(d)
-  onDone(path)
+  gtk_file_chooser_set_select_multiple(d, (r.multiple and not r.save).gboolean)
+  var paths: seq[string]
+  if gtk_native_dialog_run(d) == GTK_RESPONSE_ACCEPT:
+    type GSList = object
+      data: pointer
+      next: ptr GSList
+    let list = cast[ptr GSList](gtk_file_chooser_get_filenames(d))
+    var node = list
+    while node != nil:
+      paths.add $cast[cstring](node.data)
+      g_free(node.data)
+      node = node.next
+    g_slist_free(list)
+  gtk_native_dialog_destroy(d)
+  onDone(paths)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Popovers: an undecorated popup window (it never takes the keyboard focus) under the anchor.

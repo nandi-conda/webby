@@ -118,8 +118,13 @@ type
     selectAll*: proc (w: Widget)     ## an entry's text
     showPopover*: proc (p: Popover)  ## show (again) under its anchor, at the anchor's width
     hidePopover*: proc (p: Popover)
-    chooseFile*: proc (title: string, save: bool, name: string, patterns: seq[string], filterName: string,
-                       onDone: proc (path: string))
+    chooseFiles*: proc (r: FileRequest, onDone: proc (paths: seq[string]))
+
+  FileRequest* = object
+    ## What `chooseFile`/`chooseFiles` ask the system's file chooser for.
+    title*, name*, filterName*: string
+    save*, multiple*: bool
+    patterns*, mimeTypes*: seq[string]
 
   MenuItem* = object
     ## One line of a pop-up menu (`popupMenu`): a command, a check item, a separator or a submenu.
@@ -635,12 +640,24 @@ proc prompt*(title: string, text = "", initial = "", onResult: proc (ok: bool, v
   field.focus()
   field.selectAll()
 
+proc chooseFiles*(title: string, onDone: proc (paths: seq[string]), multiple = true,
+                  patterns: seq[string] = @[], mimeTypes: seq[string] = @[], filterName = "") =
+  ## Asks for files to open (one unless `multiple`). `patterns` such as "*.html" and `mimeTypes` such as
+  ## "image/*" make the chooser's first filter, under `filterName`, with "All files" as the other. onDone gets
+  ## the paths, none if cancelled. Backends without files skip it.
+  let r = FileRequest(title: title, multiple: multiple, patterns: patterns, mimeTypes: mimeTypes,
+                      filterName: filterName)
+  if backend.chooseFiles != nil: backend.chooseFiles(r, onDone)
+  else: onDone(@[])
+
 proc chooseFile*(title: string, onDone: proc (path: string), save = false, name = "",
                  patterns: seq[string] = @[], filterName = "") =
   ## Asks for a file to open (or, with `save`, a place to save one, suggesting `name`). `patterns` such as "*.html"
   ## limit the choice, under `filterName`. onDone gets the path, or "" if cancelled. Backends without files skip it.
-  if backend.chooseFile != nil: backend.chooseFile(title, save, name, patterns, filterName, onDone)
-  else: onDone("")
+  let r = FileRequest(title: title, save: save, name: name, patterns: patterns, filterName: filterName)
+  let done = proc (paths: seq[string]) = onDone(if paths.len > 0: paths[0] else: "")
+  if backend.chooseFiles != nil: backend.chooseFiles(r, done)
+  else: done(@[])
 
 proc popover*(anchor, content: Widget, modal = false, onClose: proc () = nil): Popover =
   ## A popover for `content` under `anchor`, not shown yet. `content` stays live: change it while it shows.
