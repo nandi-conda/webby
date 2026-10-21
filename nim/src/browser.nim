@@ -1329,6 +1329,17 @@ proc run*() =
       g_object_set(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", 1.cint, nil)
   for h in startupHooks: h()
   mark "startup hooks"
+  # Ladybird keeps IndexedDB in the WebContent process's memory, and with site isolation a cross-site navigation
+  # moves the tab to a new process, so a site that leaves for another and comes back finds its IndexedDB empty.
+  # atproto OAuth sign-ins (spaces.colibri.social) keep their state there and failed after the sign-in hop. With
+  # isolation off a tab keeps its process. A --site-isolation flag in $WEBBY_LADYBIRD_ARGS wins.
+  block:
+    let args = getEnv("WEBBY_LADYBIRD_ARGS").splitWhitespace
+    var given = false
+    for a in args:
+      if a.startsWith("--site-isolation"): given = true
+    if not given:
+      putEnv("WEBBY_LADYBIRD_ARGS", (args & @["--site-isolation=disable"]).join(" "))
   let prefix = ladybirdPrefix()
   when defined(android): loadWebbyLib("libwebby.so")   # from the APK's native library directory
   else: loadWebby(prefix)

@@ -173,7 +173,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.15-9_cp315.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/sysroot_linux-64-2.34-h087de78_3.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2026c-h151e31d_0.conda
-      - conda: https://prefix.dev/nandi-testing/linux-64/webby-ladybird-2026.10.15.3-h169a0c0_0.conda
+      - conda: https://prefix.dev/nandi-testing/linux-64/webby-ladybird-2026.10.21.1-h169a0c0_0.conda
 packages:
 - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
   build_number: 20
@@ -2494,9 +2494,9 @@ packages:
   run_exports: {}
   size: 118849
   timestamp: 1784250406640
-- conda: https://prefix.dev/nandi-testing/linux-64/webby-ladybird-2026.10.15.3-h169a0c0_0.conda
-  sha256: 883d9cef73b31c6106c9256f801eedd0e17ef2fdcb2a4a12e541ed7cef9a3c60
-  md5: 37c7ef127a43b32a8b24db817cfc9444
+- conda: https://prefix.dev/nandi-testing/linux-64/webby-ladybird-2026.10.21.1-h169a0c0_0.conda
+  sha256: 2ca521440651cc1dadc0c73b8078da4e904dac3fc0f1f4eeccb462496c17b6a3
+  md5: 809d09578dd4095e4a0250ee37150fa7
   depends:
   - __glibc >=2.35
   - libstdcxx >=14
@@ -2506,5 +2506,5 @@ packages:
   - __glibc >=2.28,<3.0.a0
   license: BSD-2-Clause
   run_exports: {}
-  size: 67050941
-  timestamp: 1792092713959
+  size: 67051259
+  timestamp: 1792589601731
