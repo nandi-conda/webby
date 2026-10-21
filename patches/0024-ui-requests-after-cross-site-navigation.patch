@@ -1,0 +1,43 @@
+diff --git a/Services/WebContent/ConnectionFromClient.cpp b/Services/WebContent/ConnectionFromClient.cpp
+index d3a4f8c9..5a1a6db9 100644
+--- a/Services/WebContent/ConnectionFromClient.cpp
++++ b/Services/WebContent/ConnectionFromClient.cpp
+@@ -533,7 +533,9 @@ void ConnectionFromClient::populate_navigation(Web::PageId page_id, Web::HTML::N
+ 
+ void ConnectionFromClient::stop_loading(Web::PageId page_id)
+ {
+-    if (auto page = this->page(page_id); page.has_value())
++    // AD-HOC: The page may hold the tab's top-level traversable remotely after a cross-site navigation moved its
++    //         document to another process (see PageClient::run_javascript).
++    if (auto page = this->page(page_id); page.has_value() && page->page().has_local_traversable())
+         page->page().local_traversable()->stop_loading();
+ }
+ 
+@@ -3282,7 +3284,9 @@ void ConnectionFromClient::update_visibility_state(Web::PageId page_id, Web::HTM
+ 
+ void ConnectionFromClient::reset_zoom(Web::PageId page_id)
+ {
+-    if (auto page = this->page(page_id); page.has_value())
++    // AD-HOC: The page may hold the tab's top-level traversable remotely after a cross-site navigation moved its
++    //         document to another process (see PageClient::run_javascript).
++    if (auto page = this->page(page_id); page.has_value() && page->page().has_local_traversable())
+         page->page().local_traversable()->reset_zoom();
+ }
+ 
+diff --git a/Services/WebContent/PageClient.cpp b/Services/WebContent/PageClient.cpp
+index 07d23f8e..58bc129a 100644
+--- a/Services/WebContent/PageClient.cpp
++++ b/Services/WebContent/PageClient.cpp
+@@ -2133,6 +2133,12 @@ void PageClient::js_console_input(StringView js_source)
+ 
+ void PageClient::run_javascript(StringView js_source)
+ {
++    // AD-HOC: After a cross-site navigation moved the tab's document to another process, this page holds the tab's
++    //         top-level traversable remotely, and a script the UI sent before it learned of the move can still land
++    //         here. There is no document of the tab's left to run it in.
++    if (!page().has_local_traversable())
++        return;
++
+     auto active_document = page().local_traversable()->active_document();
+ 
+     if (!active_document)
