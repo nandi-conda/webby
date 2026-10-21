@@ -37,7 +37,11 @@ cp "$OUT/assets/lagom.zip" "$OUT/apk/assets/"
 rm -rf "$OUT/jniLibs" "$OUT/assets"
 
 # The Nim front end, with nimkit's JNI glue compiled in (framework/android/glue.c).
+# ⋮ > About shows the version name, the commit and the native part's version (scripts/android/native.env).
+COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+NATIVE_VERSION="$(. "$ROOT/scripts/android/native.env" && echo "$NATIVE_VERSION")"
 "$NIM" c --app:lib --noMain --os:android --cpu:arm64 -d:androidNDK --cc:clang \
+    -d:webbyCommit="$COMMIT" -d:webbyVersion="$VERSION_NAME" -d:webbyRuntime="$NATIVE_VERSION" \
     --clang.exe="$CC" --clang.linkerexe="$CC" -d:release --opt:speed --mm:orc --hints:off \
     --nimcache:"$OUT/nimcache" -o:"$OUT/apk/lib/arm64-v8a/libwebbykit.so" "$ROOT/nim/webby.nim"
 "$LLVM/llvm-strip" --strip-unneeded "$OUT/apk/lib/arm64-v8a/libwebbykit.so"

@@ -9,6 +9,8 @@ PKG="${1:-webby-ladybird}"
 CHANNEL="${CHANNEL:-nandi-testing}"
 OUT="${OUT:-$ROOT/build/conda}"
 
+# The commit webby's ⋮ > About shows (conda/webby/recipe.yaml passes it to build.sh).
+export WEBBY_COMMIT="${WEBBY_COMMIT:-$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)}"
 rattler-build build --recipe "$ROOT/conda/$PKG/recipe.yaml" --output-dir "$OUT" -c conda-forge -c "https://prefix.dev/$CHANNEL"
 : "${PREFIX_API_KEY:?set PREFIX_API_KEY}"  # rattler-build reads it from the environment
 rattler-build upload prefix --skip-existing --channel "$CHANNEL" "$OUT"/linux-64/"$PKG"-[0-9]*.conda

@@ -8,7 +8,9 @@ export HOME="$SRC_DIR/.home"
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/share/pkgconfig"
 pkg-config --cflags --libs gtk+-3.0 > /dev/null
 mkdir -p "$HOME" "$PREFIX/lib/webby" "$PREFIX/bin"
+# ⋮ > About shows the package version and the commit (WEBBY_COMMIT, from scripts/publish_conda.sh via the recipe).
 nim c -d:release --hints:off --warnings:off --cc:clang --nimcache:"$SRC_DIR/.nimcache" \
+  -d:webbyVersion="$PKG_VERSION" -d:webbyCommit="${WEBBY_COMMIT:-}" \
   --passL:"-fuse-ld=lld -L$PREFIX/lib -Wl,-rpath,$PREFIX/lib -Wl,--no-as-needed -lstdc++ -Wl,--as-needed" \
   -o:"$PREFIX/lib/webby/webby" "$SRC_DIR/nim/webby.nim"
 install -m 755 "$RECIPE_DIR/webby.sh" "$PREFIX/bin/webby"

@@ -3,6 +3,7 @@
 # Install: pixi global install -c https://prefix.dev/nandi-testing webby
 # Build + upload: scripts/publish_conda.sh webby (needs PREFIX_API_KEY).
 # CI sets WEBBY_VERSION (commit date + run number) and WEBBY_BUILD_NUMBER (run number); see .github/workflows/publish.yml.
+# scripts/publish_conda.sh sets WEBBY_COMMIT (the git commit, for ⋮ > About).
 context:
   version: ${{ env.get("WEBBY_VERSION", default="2026.10.15") }}
 
@@ -27,7 +28,11 @@ build:
       - lib/
     overlinking_behavior: ignore
     overdepending_behavior: ignore
-  script: build.sh
+  script:
+    file: build.sh
+    env:
+      # The commit shown in ⋮ > About; scripts/publish_conda.sh sets it from git.
+      WEBBY_COMMIT: ${{ env.get("WEBBY_COMMIT", default="") }}
 
 requirements:
   build:

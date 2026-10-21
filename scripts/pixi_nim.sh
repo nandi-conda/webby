@@ -9,15 +9,21 @@ export WEBBY_LADYBIRD_PREFIX="${WEBBY_LADYBIRD_PREFIX:-$CONDA_PREFIX/lib/webby-l
 
 # The page scripts (nim/src/scripts) and the window icon (icons/*.svg) are read at compile time, so they count as
 # sources too.
-if [ ! -x "$BIN" ] || [ -n "$(find "$ROOT/nim" "$ROOT/framework/src" "$ROOT/icons" \( -name '*.nim' -o -name '*.js' -o -name '*.svg' \) -newer "$BIN" -print -quit)" ]; then
+# The commit it's built from goes into ⋮ > About (nim/src/features/about.nim), "-dirty" with uncommitted changes to
+# those sources; a new commit rebuilds it even when the sources didn't change.
+COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+if [ "$COMMIT" != unknown ] && ! git -C "$ROOT" diff --quiet HEAD -- nim framework icons 2>/dev/null; then COMMIT="$COMMIT-dirty"; fi
+STAMP="$ROOT/.pixi/webby-commit"
+if [ ! -x "$BIN" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$COMMIT" ] || [ -n "$(find "$ROOT/nim" "$ROOT/framework/src" "$ROOT/icons" \( -name '*.nim' -o -name '*.js' -o -name '*.svg' \) -newer "$BIN" -print -quit)" ]; then
   echo "Building nim/webby..." >&2
   # GTK's flags come from pkg-config at compile time; fail here rather than with its error text as compiler flags.
   pkg-config --cflags --libs gtk+-3.0 > /dev/null
   # No -d:ssl: Nim's OpenSSL setup would load a libcrypto before libwebby's own. The rpath makes the binary use the
   # env's GTK at run time. libstdc++ is linked in so the env's (new enough for Ladybird's C++23) loads first:
   # otherwise a system library GTK pulls in can load the system's older one, and libwebby.so then fails to load.
-  nim c -d:release --hints:off --warnings:off --cc:clang --nimcache:"$ROOT/.pixi/nimcache" \
+  nim c -d:release --hints:off --warnings:off --cc:clang --nimcache:"$ROOT/.pixi/nimcache" -d:webbyCommit="$COMMIT" \
     --passL:"-fuse-ld=lld -L$CONDA_PREFIX/lib -Wl,-rpath,$CONDA_PREFIX/lib -Wl,--no-as-needed -lstdc++ -Wl,--as-needed" -o:"$BIN" "$ROOT/nim/webby.nim"
+  echo "$COMMIT" > "$STAMP"
 fi
 # A fontconfig file Ladybird's sandboxed helpers can read, as conda/webby's launcher sets up: they may only read
 # share/Lagom/fonts, so without it each one prints "Cannot load default config file".
