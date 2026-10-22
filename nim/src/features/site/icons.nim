@@ -14,7 +14,11 @@ const iconScript = """
   const PREFIX = $1;
   const prompt = window.prompt;
   let last = null;
+  // Not while the document is still being parsed: a prompt() then can leave Ladybird's parser paused for good (no
+  // DOMContentLoaded, no first paint, the page loading forever; joshuamorris.info's head scripts adding <link>s did it).
+  // A change seen while loading is reported on DOMContentLoaded instead.
   const report = () => {
+    if (document.readyState === 'loading') return;
     let best = null, score = -1;
     for (const link of document.querySelectorAll('link[rel][href]')) {
       const rel = link.rel.toLowerCase().split(/\s+/);
@@ -28,7 +32,8 @@ const iconScript = """
     last = href;
     try { prompt.call(window, PREFIX + JSON.stringify({ type: 'siteIcon', href })); } catch (e) {}
   };
-  report();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', report, { once: true });
+  else report();
   try { new MutationObserver(report).observe(document.head || document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['href', 'rel', 'sizes'] }); } catch (e) {}
 })();
 """
