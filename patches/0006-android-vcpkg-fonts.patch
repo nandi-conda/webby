@@ -1,8 +1,8 @@
 diff --git a/vcpkg.json b/vcpkg.json
-index 574dba01..c231cce8 100644
+index 59783e697b..e7052a3903 100644
 --- a/vcpkg.json
 +++ b/vcpkg.json
-@@ -59,7 +59,7 @@
+@@ -60,7 +60,7 @@
      },
      {
        "name": "harfbuzz",
@@ -11,7 +11,7 @@ index 574dba01..c231cce8 100644
        "features": [
          "freetype",
          "icu"
-@@ -221,6 +221,9 @@
+@@ -222,6 +222,9 @@
        "platform": "android",
        "default-features": false,
        "features": [

@@ -264,13 +264,13 @@ View::View(Core::AnonymousBuffer theme, Web::DevicePixelSize size)
         show_dialog(DialogType::Alert, message);
     };
 
-    // getUserMedia() asks through a confirm dialog with this text (patches/0011).
+    // getUserMedia() asks for the microphone through Ladybird's permission prompt; the UI answers per site.
+    on_request_permission = [this](Utf16String const& name, URL::Origin const&, Function<void(bool granted)> on_decided) {
+        auto permission = name.to_utf8();
+        ask_permission(permission.bytes_as_string_view(), move(on_decided));
+    };
+
     on_request_confirm = [this, headless_confirm = move(on_request_confirm)](Utf16String const& message) {
-        static constexpr auto microphone_request = "\x01webby-permission:microphone"sv;
-        if (auto utf8 = message.to_utf8(); utf8.bytes_as_string_view() == microphone_request) {
-            ask_permission("microphone"sv, [this](bool granted) { confirm_closed(granted); });
-            return;
-        }
         if (headless_confirm)
             headless_confirm(message);
         show_dialog(DialogType::Confirm, message);

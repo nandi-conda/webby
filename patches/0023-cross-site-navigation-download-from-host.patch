@@ -1,8 +1,8 @@
 diff --git a/Libraries/LibWebView/WebContentPage.cpp b/Libraries/LibWebView/WebContentPage.cpp
-index 28587b5d2..c90c7b4b8 100644
+index 2423772d1b..beb13d8155 100644
 --- a/Libraries/LibWebView/WebContentPage.cpp
 +++ b/Libraries/LibWebView/WebContentPage.cpp
-@@ -2029,31 +2029,52 @@ Messages::WebContentClient::DidStartDownloadResponse WebContentPage::did_start_d
+@@ -2221,25 +2221,46 @@ Messages::WebContentClient::DidStartDownloadResponse WebContentPage::did_start_d
      // the reporting process ends its side when its population output says the download was handled. The body
      // identifiers preserve the original RequestServer transfer lease, so only the process and navigation that
      // received that response may claim it, and only while its population is in flight.
@@ -10,30 +10,25 @@ index 28587b5d2..c90c7b4b8 100644
 -    if (auto navigable = population_worker_navigable(navigable_id); navigable.has_value()) {
 +    // AD-HOC: A response that turns out to be a download is populated in the process chosen to host the document
 +    //         it would have created; for a cross-site navigation that is a new process, which does not host the
-+    //         navigable yet and is no longer its population worker (set_navigation_host clears that). Such a host
-+    //         may claim the body as well.
++    //         navigable yet and is not its population worker. The navigation's host may claim the body as well.
 +    auto in_flight_navigable = [&]() -> Optional<CanonicalNavigable&> {
 +        if (auto navigable = population_worker_navigable(navigable_id); navigable.has_value())
 +            return navigable;
 +        auto navigable = traversable().top_level_traversable().find(navigable_id);
-+        if (navigable.has_value() && navigable->navigation_host_matches(*this))
-+            return navigable;
++        if (navigable.has_value() && navigation_id.has_value()) {
++            if (auto navigation = navigable->navigation_with_id(*navigation_id); navigation && navigation->host() == this)
++                return navigable;
++        }
 +        return {};
 +    };
 +    Optional<CanonicalNavigable&> claimed_navigable;
 +    if (auto navigable = in_flight_navigable(); navigable.has_value()) {
-         auto const& ongoing_navigation = navigable->ongoing_navigation();
-         if (ongoing_navigation.has_value()
-             && ongoing_navigation->navigation_id == navigation_id
-             && ongoing_navigation->phase == CanonicalNavigation::Phase::Populating
-             && ongoing_navigation->loader
-             && ongoing_navigation->loader->response_body_matches(request_server_client_id, request_server_request_id)) {
--            if (navigable->is_top_level_traversable()) {
--                if (displays_tab())
--                    view().did_cancel_loading(ongoing_navigation->navigation_id);
--            }
+         auto ongoing_navigation = navigation_id.has_value() ? navigable->navigation_with_id(*navigation_id) : nullptr;
+         if (ongoing_navigation
+             && (ongoing_navigation->state.has<CanonicalNavigation::CreatingNavigationParams>() || ongoing_navigation->state.has<CanonicalNavigation::Populating>())
+             && ongoing_navigation->loader()->response_body_matches(request_server_client_id, request_server_request_id)) {
 -            matches_in_flight_navigation = true;
--            navigable->clear_ongoing_navigation();
+-            navigable->did_cancel_navigation(*navigation_id);
 +            claimed_navigable = navigable;
          }
      }
@@ -44,12 +39,7 @@ index 28587b5d2..c90c7b4b8 100644
 +    // NB: Ending the navigation can discard a page created to host it (this one), so the download is adopted first.
 +    NonnullRefPtr protect = *this;
 +    auto end_navigation = [&] {
-+        auto& navigable = *claimed_navigable;
-+        if (navigable.is_top_level_traversable() && navigable.ongoing_navigation().has_value()) {
-+            if (auto tab_view = traversable().view(); tab_view.has_value())
-+                tab_view->did_cancel_loading(navigable.ongoing_navigation()->navigation_id);
-+        }
-+        navigable.clear_ongoing_navigation();
++        claimed_navigable->did_cancel_navigation(*navigation_id);
 +    };
 +
      auto destination = choose_download_destination_or_report_error(url, suggested_filename);

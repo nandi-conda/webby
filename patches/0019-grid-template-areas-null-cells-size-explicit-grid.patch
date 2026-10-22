@@ -1,6 +1,8 @@
+diff --git a/Libraries/LibWeb/Rust/src/layout/grid_formatting_context.rs b/Libraries/LibWeb/Rust/src/layout/grid_formatting_context.rs
+index fbf5d2d543..2f303a1725 100644
 --- a/Libraries/LibWeb/Rust/src/layout/grid_formatting_context.rs
 +++ b/Libraries/LibWeb/Rust/src/layout/grid_formatting_context.rs
-@@ -1471,6 +1471,27 @@ impl<'pass> GridFormattingContext<'pass> {
+@@ -1508,6 +1508,27 @@ impl<'pass> GridFormattingContext<'pass> {
              grid_style.areas.as_slice(),
              grid_style.names.raws(),
          );

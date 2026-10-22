@@ -1,5 +1,5 @@
 diff --git a/UI/CMakeLists.txt b/UI/CMakeLists.txt
-index 605ee377..aaeb7fcf 100644
+index 605ee37784..aaeb7fcf8f 100644
 --- a/UI/CMakeLists.txt
 +++ b/UI/CMakeLists.txt
 @@ -47,7 +47,11 @@ function(create_ladybird_bundle target_name)

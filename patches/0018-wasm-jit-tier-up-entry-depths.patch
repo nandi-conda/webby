@@ -1,6 +1,8 @@
+diff --git a/Libraries/LibWasm/Rust/src/compiler.rs b/Libraries/LibWasm/Rust/src/compiler.rs
+index aa5dcd510a..c8e8f8fb92 100644
 --- a/Libraries/LibWasm/Rust/src/compiler.rs
 +++ b/Libraries/LibWasm/Rust/src/compiler.rs
-@@ -2424,6 +2424,19 @@ impl CraneliftCompiler {
+@@ -2407,6 +2407,19 @@ impl CraneliftCompiler {
                              .branch_target;
                          let next_tail = builder.create_block();
                          builder.switch_to_block(tail);
@@ -17,6 +19,6 @@
 +                                }
 +                            }
 +                        }
-                         let matches = builder.ins().icmp_imm(IntCC::Equal, tier_up_target_ip, insn.imm1);
+                         let matches = builder.ins().icmp_imm_s(IntCC::Equal, tier_up_target_ip, insn.imm1);
                          builder.ins().brif(matches, header, &[], next_tail, &[]);
                          builder.seal_block(tail);

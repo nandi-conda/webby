@@ -1,8 +1,8 @@
 diff --git a/Services/RequestServer/ControlConnectionFromClient.cpp b/Services/RequestServer/ControlConnectionFromClient.cpp
-index a97611a310..30a9a70d38 100644
+index e4415a4eb1..fd276f11f5 100644
 --- a/Services/RequestServer/ControlConnectionFromClient.cpp
 +++ b/Services/RequestServer/ControlConnectionFromClient.cpp
-@@ -134,6 +134,11 @@ void ControlConnectionFromClient::set_disk_cache_settings(HTTP::DiskCacheSetting
+@@ -124,6 +124,11 @@ void ControlConnectionFromClient::set_disk_cache_settings(HTTP::DiskCacheSetting
          m_disk_cache->set_maximum_disk_cache_size(disk_cache_settings.maximum_size);
  }
  
@@ -15,10 +15,10 @@ index a97611a310..30a9a70d38 100644
  {
      auto& dns_info = DNSInfo::the();
 diff --git a/Services/RequestServer/ControlConnectionFromClient.h b/Services/RequestServer/ControlConnectionFromClient.h
-index 82e449af4f..f7f8221cb6 100644
+index 60af7871e2..bf49fe19a4 100644
 --- a/Services/RequestServer/ControlConnectionFromClient.h
 +++ b/Services/RequestServer/ControlConnectionFromClient.h
-@@ -43,6 +43,7 @@ private:
+@@ -41,6 +41,7 @@ private:
      virtual void bind_client_to_site(int client_id, Utf16String top_level_site, Optional<Utf16String> frame_site) override;
  
      virtual void set_disk_cache_settings(HTTP::DiskCacheSettings) override;
@@ -27,12 +27,12 @@ index 82e449af4f..f7f8221cb6 100644
      virtual void set_dns_server(ByteString host_or_address, u16 port, bool use_tls, bool validate_dnssec_locally) override;
      virtual void set_use_system_dns() override;
 diff --git a/Services/RequestServer/Request.cpp b/Services/RequestServer/Request.cpp
-index 14a8e538fd..465024e6f3 100644
+index c8d0ad7cd7..9316963b8f 100644
 --- a/Services/RequestServer/Request.cpp
 +++ b/Services/RequestServer/Request.cpp
-@@ -35,6 +35,26 @@ extern OwnPtr<ResourceSubstitutionMap> g_resource_substitution_map;
- static long s_connect_timeout_seconds = 90L;
+@@ -38,6 +38,26 @@ static constexpr size_t max_response_header_count = 1000;
  static AK::Duration s_wait_for_cache_timeout = AK::Duration::from_seconds(10);
+ static AK::Duration s_maximum_wait_for_cache = AK::Duration::from_seconds(30);
  static AK::Duration s_revalidation_stall_timeout = AK::Duration::from_seconds(30);
 +static bool s_offline_mode = false;
 +
@@ -55,9 +55,9 @@ index 14a8e538fd..465024e6f3 100644
 +    return HTTP::CacheMode::OnlyIfCached;
 +}
  
- static CURLcode configure_ssl_context(CURL*, [[maybe_unused]] void* ssl_context, [[maybe_unused]] void* aia_collector)
- {
-@@ -518,7 +538,7 @@ Request::Request(
+ // Let Fetch authorize credentials; otherwise curl sends URL credentials itself.
+ static ByteString url_without_credentials(URL::URL url)
+@@ -529,7 +549,7 @@ Request::Request(
      , m_network_isolation_key(move(network_isolation_key))
      , m_disk_cache(m_network_isolation_key.has_value() && m_network_isolation_key->frame_site.has_value() ? disk_cache : OptionalNone {})
      , m_disk_cache_partition(m_network_isolation_key.has_value() ? m_network_isolation_key->disk_cache_partition() : OptionalNone {})
@@ -67,11 +67,11 @@ index 14a8e538fd..465024e6f3 100644
      , m_curl_multi_handle(curl_multi)
      , m_resolver(resolver)
 diff --git a/Services/RequestServer/Request.h b/Services/RequestServer/Request.h
-index 3f4d528c1f..c7e2ec877b 100644
+index 63fd505c1f..cf2e8c1df4 100644
 --- a/Services/RequestServer/Request.h
 +++ b/Services/RequestServer/Request.h
-@@ -88,6 +88,10 @@ public:
-     virtual ~Request() override;
+@@ -102,6 +102,10 @@ public:
+     ErrorOr<Requests::ExportedRequest> export_response();
  
      static void set_performance_monitor_enabled(bool);
 +
@@ -82,7 +82,7 @@ index 3f4d528c1f..c7e2ec877b 100644
      void set_performance_origin(i32 process_id, u64 page_id);
      void sample_network_usage();
 diff --git a/Services/RequestServer/RequestServerControl.ipc b/Services/RequestServer/RequestServerControl.ipc
-index 2bb2931954..aba086df03 100644
+index 321e419c70..451044419b 100644
 --- a/Services/RequestServer/RequestServerControl.ipc
 +++ b/Services/RequestServer/RequestServerControl.ipc
 @@ -19,6 +19,9 @@ endpoint RequestServerControl
