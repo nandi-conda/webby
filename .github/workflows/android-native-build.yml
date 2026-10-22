@@ -1,0 +1,63 @@
+# Cross-builds the Android native part (Ladybird with every patch in patches/, for arm64) in an ubuntu:26.04
+# container (scripts/android/ci_build.sh) and publishes it as the GitHub Release `webby-android-native-<version>`,
+# which nim-android-apk.yml builds the APK from once scripts/android/native.env names it. A cold build takes hours;
+# ccache, vcpkg's binary cache and the Android tools carry over between runs, also from a run that timed out.
+name: android-native-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Native version (e.g. 2026.10.22.1); bump scripts/android/native.env to it afterwards
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost \
+            /usr/local/.ghcup /usr/share/swift /usr/local/lib/node_modules /usr/local/share/powershell /usr/local/share/chromium
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          sudo mkdir -p /build && sudo chown -R "$USER" /build
+          df -h /
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            /build/ccache
+            /build/vcpkg-cache
+          key: android-native-${{ github.sha }}
+          restore-keys: android-native-
+      - name: Build
+        timeout-minutes: 330
+        run: |
+          cp -a "$GITHUB_WORKSPACE" /build/webby
+          docker run --rm -v /build:/build ubuntu:26.04 bash /build/webby/scripts/android/ci_build.sh
+      - name: Save caches
+        if: always()
+        run: sudo chown -R "$USER" /build
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            /build/ccache
+            /build/vcpkg-cache
+          key: android-native-${{ github.sha }}-${{ github.run_attempt }}-${{ github.run_id }}
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          cd /build/out
+          sha256sum webby-android-native-arm64.tar.zst > webby-android-native-arm64.tar.zst.sha256
+          cat webby-android-native-arm64.tar.zst.sha256
+          gh release create "webby-android-native-$VERSION" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "webby-android-native $VERSION" \
+            --notes "Ladybird for Android arm64 (jniLibs + assets/lagom.zip), built by android-native-build from $GITHUB_SHA. Used by the nim-android-apk workflow." \
+            webby-android-native-arm64.tar.zst webby-android-native-arm64.tar.zst.sha256

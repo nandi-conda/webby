@@ -1,0 +1,50 @@
+diff --git a/Libraries/LibWeb/Platform/FontPlugin.cpp b/Libraries/LibWeb/Platform/FontPlugin.cpp
+index b8fd9e1151..9b94405adf 100644
+--- a/Libraries/LibWeb/Platform/FontPlugin.cpp
++++ b/Libraries/LibWeb/Platform/FontPlugin.cpp
+@@ -161,27 +161,33 @@ FlyString FontPlugin::compute_generic_font_name(GenericFont generic_font)
+         VERIFY_NOT_REACHED();
+     }
+ 
+-    if (generic_font == GenericFont::UiSansSerif && m_system_font_family.has_value()) {
+-        auto system_font_family_is_available = false;
+-        Gfx::FontDatabase::the().for_each_typeface_with_family_name(m_system_font_family.value(), [&](Gfx::Typeface const&) {
+-            system_font_family_is_available = true;
++    auto family_is_available = [](FlyString const& family) {
++        bool is_available = false;
++        Gfx::FontDatabase::the().for_each_typeface_with_family_name(family, [&](Gfx::Typeface const&) {
++            is_available = true;
+         });
+-        if (system_font_family_is_available)
++        return is_available;
++    };
++
++    if (generic_font == GenericFont::UiSansSerif && m_system_font_family.has_value()) {
++        if (family_is_available(m_system_font_family.value()))
+             return m_system_font_family.value();
+     }
+ 
++    // NB: CSS font matching looks a family up by the name its faces carry. Android's font manager answers with the
++    //     generic name itself ("sans-serif"), which no face carries, so take the matched face's own family instead,
++    //     and only a family that lookups can find; otherwise every generic family in a font-family list matches
++    //     nothing and a later family (like "Noto Color Emoji") draws the text.
+     auto name = Gfx::FontDatabase::the().resolve_generic_family(generic_family_name, 400, 0);
+     if (name.has_value()) {
+-        if (Gfx::FontDatabase::the().get(name.value(), 16, 400, Gfx::FontWidth::Normal, 0))
+-            return FlyString { name.release_value() };
++        if (family_is_available(name.value()))
++            return name.release_value();
++        if (auto font = Gfx::FontDatabase::the().get(name.value(), 16, 400, Gfx::FontWidth::Normal, 0); font && family_is_available(font->family()))
++            return font->family();
+     }
+ 
+     for (auto const& family : fallbacks) {
+-        bool is_available = false;
+-        Gfx::FontDatabase::the().for_each_typeface_with_family_name(family, [&](Gfx::Typeface const&) {
+-            is_available = true;
+-        });
+-        if (is_available)
++        if (family_is_available(family))
+             return family;
+     }
+ 
