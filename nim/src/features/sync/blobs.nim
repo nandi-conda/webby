@@ -7,7 +7,9 @@
 import std/[base64, json, strutils, times, uri]
 import doc, keys, http
 
-const defaultSyncServer* = "https://webby-sync.fly.dev"
+const defaultSyncServer* = "https://webby-sync.nandithebull.workers.dev"
+const retiredSyncServers = ["https://webby-sync.fly.dev", "https://webby-sync.fly.dev/"]
+  ## Earlier defaults, still saved in older settings and pairing links; they mean the default server now.
 
 type
   SyncBlob* = enum blobVault, blobBookmarks, blobTabs, blobSummaries, blobSessions, blobSecrets
@@ -34,7 +36,7 @@ proc code*(s: JsonNode): string = s{"code"}.getStr
 proc isWebdav*(s: JsonNode): bool = s{"backend"}.getStr == "webdav"
 proc server*(s: JsonNode): string =
   let v = s{"server"}
-  if v != nil and v.kind == JString: v.getStr else: defaultSyncServer
+  if v == nil or v.kind != JString or v.getStr in retiredSyncServers: defaultSyncServer else: v.getStr
 
 proc pairingLink*(s: JsonNode): string =
   ## What another device needs to join: the code, plus where to sync when it isn't the default.
@@ -59,7 +61,7 @@ proc fromPairing*(text: string): JsonNode =
         else: discard
     discard keyFromCode(code)
     if hasWebdav: return newSettings(code, webdav = true, server = webdav)
-    return newSettings(code, server = if server.len > 0: server else: defaultSyncServer)
+    return newSettings(code, server = if server.len > 0 and server notin retiredSyncServers: server else: defaultSyncServer)
   newSettings(normalizeCode(t))
 
 # ---------------------------------------------------------------------------------------------------------------

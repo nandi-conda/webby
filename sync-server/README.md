@@ -22,7 +22,8 @@ port is `$PORT` (default 8080).
     docker build -t webby-sync . && docker run -p 8080:8080 -v webby-sync:/data webby-sync
     fly launch --copy-config --no-deploy && fly volumes create webby_sync_data --size 1 && fly deploy
 
-The public instance (https://webby-sync.fly.dev, webby's default) is deployed with `deploy_fly.py`, which needs only
+The public instance is now the Cloudflare Worker in `../sync-worker/` (`just deploy-sync`). The old Fly instance
+(https://webby-sync.fly.dev) was deployed with `deploy_fly.py`, which needs only
 `FLY_API_KEY` and the Machines API: `python3 deploy_fly.py machine <commit sha>` redeploys it.
 
 Put it behind HTTPS (Fly does that), then pick "My sync server" in webby's sync setup. Tests: `dart test`.

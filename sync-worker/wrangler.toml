@@ -1,0 +1,10 @@
+name = "webby-sync"
+main = "src/entry.py"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["python_workers"]
+workers_dev = true
+account_id = "2612967e82750619224e7446c4c41b0b"  # the "nandi" account; serves webby-sync.nandithebull.workers.dev
+
+[[r2_buckets]]
+binding = "BLOBS"
+bucket_name = "webby-sync"
