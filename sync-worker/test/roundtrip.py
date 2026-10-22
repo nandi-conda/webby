@@ -15,6 +15,8 @@ OTHER = "o" * 40
 
 
 def call(method, url=BLOB, body=None, token=TOKEN, **headers):
+    # Cloudflare's browser integrity check turns away urllib's default User-Agent with a 403.
+    headers.setdefault("User-Agent", "webby-sync-roundtrip")
     if token:
         headers["Authorization"] = "Bearer " + token
     request = urllib.request.Request(url, data=body, method=method, headers=headers)
