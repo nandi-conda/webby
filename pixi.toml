@@ -43,7 +43,7 @@ nodejs = ">=22"
 uv = ">=0.12.3"
 
 [feature.sync.tasks]
-deploy-sync = { cmd = "(npx --yes wrangler r2 bucket info webby-sync >/dev/null 2>&1 || npx --yes wrangler r2 bucket create webby-sync) && uv run pywrangler deploy", cwd = "sync-worker", description = "Deploy the sync server to Cloudflare (wrangler login or CLOUDFLARE_API_TOKEN)" }
+deploy-sync = { cmd = "sync-worker/deploy.sh", description = "Deploy the sync server to Cloudflare (wrangler login or CLOUDFLARE_API_TOKEN)" }
 dev-sync = { cmd = "uv run pywrangler dev --port 8787", cwd = "sync-worker", description = "Run the sync server locally on :8787" }
 
 [environments]
