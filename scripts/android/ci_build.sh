@@ -24,7 +24,8 @@ export CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache
 export VCPKG_DEFAULT_BINARY_CACHE=/build/vcpkg-cache
 mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
 /build/webby/scripts/android/setup_toolchain.sh
-/build/webby/scripts/android/build_ladybird.sh
+# -k 0: a failed build reports every broken file, not only the first.
+WEBBY_NINJA_ARGS="-k 0" /build/webby/scripts/android/build_ladybird.sh
 ccache -s || true
 mkdir -p /build/out
 /build/webby/scripts/android/pack_native.sh /build/out/webby-android-native-arm64.tar.zst

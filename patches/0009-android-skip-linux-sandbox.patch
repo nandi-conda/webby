@@ -43,6 +43,20 @@ index f6ed976a3c..f55df09d1b 100644
  void CrashReport::symbolicate_frame(ReportFrame&)
  {
  }
+diff --git a/Services/AudioServer/main.cpp b/Services/AudioServer/main.cpp
+index 6f9d021fa5..76792561a2 100644
+--- a/Services/AudioServer/main.cpp
++++ b/Services/AudioServer/main.cpp
+@@ -61,7 +61,8 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+ 
+     auto& event_loop = Core::EventLoop::initialize_for_current_thread();
+ 
+-#if defined(AK_OS_LINUX)
++// Android helpers run unsandboxed (see SandboxUnimplemented.cpp), so they skip the Linux sandbox's setup.
++#if defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)
+     // Without the sandbox there is no redirect to the broker, so libpulse finds the daemon the usual way.
+     if (connect_broker_fd != -1 && !disable_sandbox) {
+         Sandbox::set_connect_broker_fd(connect_broker_fd);
 diff --git a/Services/Compositor/main.cpp b/Services/Compositor/main.cpp
 index d2b348e797..b384e7360d 100644
 --- a/Services/Compositor/main.cpp
