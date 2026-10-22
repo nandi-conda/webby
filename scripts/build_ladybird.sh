@@ -67,7 +67,8 @@ fi
 cmake -S . -B Build/release -DENABLE_CI_BASELINE_CPU=ON
 
 # `ladybird` is libwebby.so here; it depends on WebContent, RequestServer, ImageDecoder and the resource files.
-cmake --build Build/release --target ladybird
+# -k 0: a failed build reports every broken file, not only the first.
+cmake --build Build/release --target ladybird -- -k 0
 # WasmCompiler looks for cranelift-compiler next to itself; Ladybird leaves it in bin/, which runtime tarballs don't
 # ship, and without it every WebAssembly module runs in the (much slower) interpreter.
 if [ -f Build/release/bin/cranelift-compiler ]; then
