@@ -62,7 +62,7 @@ public:
 private:
     virtual void download_added(WebView::FileDownloader::Download const&) override { ++m_serial; }
     virtual void download_updated(WebView::FileDownloader::Download const&) override { ++m_serial; }
-    virtual void download_removed(u64) override { ++m_serial; }
+    virtual void download_removed(u64, WebView::IsPrivate) override { ++m_serial; }
 
     u64 m_serial { 1 };
 };
