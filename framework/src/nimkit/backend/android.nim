@@ -64,6 +64,7 @@ const   # Host.java's ops
   opRich = 41        # a label: arg 1 = its text is markup (HTML subset), 2 = selectable (both: 3)
   opTextField = 40   # id: a canvas; arg: 1 to show the keyboard now; text: JSON {before, after}, "" for no field
   opToast = 39       # text: the message
+  opReveal = 43      # scroll the scroll views around the widget so it shows
 
   kindHScroll = 30   # Host's kind for a sideways scroll view (past WidgetKind's)
 
@@ -147,6 +148,7 @@ backend.present = proc (c: Canvas) =
     nk_blit(c.id.cint, addr c.pixels[0], c.width.cint, c.height.cint, cint(c.width * 4))
 backend.moved = proc (parent, child: Widget, index: int) = op(opMove, parent.id, child.id, $index)
 backend.focus = proc (w: Widget) = op(opFocus, w.id)
+backend.reveal = proc (w: Widget) = op(opReveal, w.id)
 backend.selectAll = proc (w: Widget) = op(opSelectAll, w.id)
 
 var

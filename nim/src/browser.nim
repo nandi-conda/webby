@@ -269,6 +269,7 @@ proc activateTab*(i: int) =
   webby_view_set_visible(t.view, 1)
   resizeView(t)
   kit.addClass(t.button, "webby-active-tab")
+  kit.reveal(t.button)   # a tab opened past the strip's edge (a link from another app) scrolls into view
   refreshChrome()
   kit.invalidate(page)
   for h in activeTabHooks: h(t)

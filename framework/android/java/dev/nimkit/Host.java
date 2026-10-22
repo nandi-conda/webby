@@ -62,7 +62,8 @@ public class Host extends Activity {
             QUIT = 15, FORGET = 16, ITEMS = 17, SELECTED = 18, RANGE = 19, VALUE = 20, VISIBLE = 21, TOOLTIP = 22,
             CLASSES = 23, ICON = 24, PASSWORD = 25, FOCUS = 26, SELECT_ALL = 27, MOVE = 28, MENU = 29, DIALOG = 30,
             CLOSE_DIALOG = 31, KEY_HANDLED = 32, MAX_CHARS = 33, IMAGE = 34, POPOVER = 35,
-            HIDE_POPOVER = 36, COPY_TEXT = 37, PASTE_TEXT = 38, TOAST = 39, TEXT_FIELD = 40, RICH = 41, CHOOSE_FILES = 42;
+            HIDE_POPOVER = 36, COPY_TEXT = 37, PASTE_TEXT = 38, TOAST = 39, TEXT_FIELD = 40, RICH = 41, CHOOSE_FILES = 42,
+            REVEAL = 43;
     // Widget kinds (WidgetKind in src/nimkit/core.nim).
     static final int COLUMN = 0, ROW = 1, SCROLL = 2, LABEL = 3, BUTTON = 4, ENTRY = 5, CHECK = 6, CANVAS = 7,
             SLIDER = 8, DROPDOWN = 9, PROGRESS = 10, TOGGLE = 11, ICON_KIND = 12, ITEM = 13, SEPARATOR = 14,
@@ -340,6 +341,11 @@ public class Host extends Activity {
                             .showSoftInput(v, 0));
                 }
                 break;
+                case REVEAL: if (v != null) {
+                    // After layout, so a tab added just now has its place; scroll views on the way up scroll to it.
+                    v.post(() -> v.requestRectangleOnScreen(new android.graphics.Rect(0, 0, v.getWidth(), v.getHeight())));
+                }
+                break;
                 case SELECT_ALL: if (v instanceof EditText) ((EditText) v).selectAll(); break;
                 case MOVE: {
                     View child = views.get(arg);
@@ -401,7 +407,8 @@ public class Host extends Activity {
                     TextView t = (TextView) v;
                     t.setSingleLine(arg > 0);
                     t.setEllipsize(arg > 0 ? android.text.TextUtils.TruncateAt.END : null);
-                    t.setMaxEms(arg > 0 ? arg : Integer.MAX_VALUE);
+                    // `arg` is characters, as GTK's max-width-chars (about half an em each); an em is an M.
+                    t.setMaxEms(arg > 0 ? (arg + 1) / 2 : Integer.MAX_VALUE);
                 }
                 break;
                 case IMAGE: if (v instanceof ImageView) {

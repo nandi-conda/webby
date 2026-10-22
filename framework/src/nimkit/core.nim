@@ -115,6 +115,7 @@ type
     moved*: proc (parent, child: Widget, index: int)   ## a child now at `index` (insert of one already there)
     present*: proc (c: Canvas)       ## show the canvas's current pixels
     focus*: proc (w: Widget)         ## give `w` the keyboard focus
+    reveal*: proc (w: Widget)        ## scroll the scroll views around `w` so it shows
     setTitle*: proc (title: string)
     quit*: proc ()
     popup*: proc (items: seq[MenuItem], anchor: Widget, x, y: float)
@@ -761,6 +762,10 @@ proc invalidate*(c: Canvas) =
 
 proc focus*(w: Widget) =
   if w.realized and backend.focus != nil: backend.focus(w)
+
+proc reveal*(w: Widget) =
+  ## Scrolls the scroll views `w` is in so that it shows (the selected tab in a strip wider than the window).
+  if w.realized and backend.reveal != nil: backend.reveal(w)
 
 proc resized*(c: Canvas, width, height: int, scale = 1) =
   ## For backends: the canvas is now `width` x `height` pixels, `scale` per logical pixel. Keeps what fits of the
