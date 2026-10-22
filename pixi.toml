@@ -35,3 +35,16 @@ fontconfig = "*"
 [tasks]
 webby = { cmd = "scripts/pixi_nim.sh", description = "Build (when changed) and run webby's Nim front end; extra args are URLs or --incognito" }
 webby-nim = { cmd = "scripts/pixi_nim.sh", description = "Same as `webby` (the old name)" }
+
+# `pixi run -e sync deploy-sync` (or `just deploy-sync`): the Cloudflare sync Worker in sync-worker/. Node gives the
+# npx that runs wrangler; uv runs pywrangler. Kept out of the default environment so the app doesn't pull them in.
+[feature.sync.dependencies]
+nodejs = ">=22"
+uv = ">=0.12.3"
+
+[feature.sync.tasks]
+deploy-sync = { cmd = "(npx --yes wrangler r2 bucket info webby-sync >/dev/null 2>&1 || npx --yes wrangler r2 bucket create webby-sync) && uv run pywrangler deploy", cwd = "sync-worker", description = "Deploy the sync server to Cloudflare (wrangler login or CLOUDFLARE_API_TOKEN)" }
+dev-sync = { cmd = "uv run pywrangler dev --port 8787", cwd = "sync-worker", description = "Run the sync server locally on :8787" }
+
+[environments]
+sync = { features = ["sync"], no-default-feature = true }
