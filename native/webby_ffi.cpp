@@ -19,6 +19,7 @@
 #include <LibURL/Parser.h>
 #include <LibWebView/Application.h>
 #include <LibWebView/Menu.h>
+#include <LibWebView/RequestServerManager.h>
 #include <LibWebView/Utilities.h>
 #include <WebbyGeolocation.h>
 #include <WebbyView.h>
@@ -366,7 +367,7 @@ void webby_downloads_resume(uint64_t id)
 void webby_downloads_clear(void)
 {
     if (s_application)
-        (void)s_application->file_downloader().prune_inactive_downloads();
+        (void)s_application->file_downloader().prune_inactive_downloads(WebView::IsPrivate::No);
 }
 
 uint64_t webby_clipboard_serial(void) { return s_application ? s_application->clipboard_serial() : 0; }
@@ -498,9 +499,14 @@ static Webby::VaultCredentialStore* s_vault_store;
 
 void webby_set_offline(int offline)
 {
-    if (!s_application || !WebView::Application::has_request_server_control_client())
+    if (!s_application)
         return;
-    WebView::Application::request_server_control_client().async_set_offline_mode(offline != 0);
+    // Every RequestServer running now. With top-level site isolation on, one launched later for a new site starts
+    // online; the front ends turn site isolation off, so there is only the browser's.
+    WebView::Application::request_server_manager().for_each_instance([&](auto& instance) {
+        instance.control_client().async_set_offline_mode(offline != 0);
+        return IterationDecision::Continue;
+    });
 }
 
 int webby_passkeys_use_vault(char const* json)
