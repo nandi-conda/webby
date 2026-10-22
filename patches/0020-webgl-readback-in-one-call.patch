@@ -1,5 +1,5 @@
 diff --git a/Services/Compositor/OpenGLContext.cpp b/Services/Compositor/OpenGLContext.cpp
-index 0c6abac3ff..b899eaa9b6 100644
+index 65b4f32016..3923f71fef 100644
 --- a/Services/Compositor/OpenGLContext.cpp
 +++ b/Services/Compositor/OpenGLContext.cpp
 @@ -21,6 +21,7 @@ extern "C" {

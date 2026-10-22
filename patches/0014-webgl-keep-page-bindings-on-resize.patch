@@ -1,8 +1,8 @@
 diff --git a/Services/Compositor/OpenGLContext.cpp b/Services/Compositor/OpenGLContext.cpp
-index b7d4730466..0c6abac3ff 100644
+index b7d4730466..65b4f32016 100644
 --- a/Services/Compositor/OpenGLContext.cpp
 +++ b/Services/Compositor/OpenGLContext.cpp
-@@ -608,6 +608,22 @@ void OpenGLContext::allocate_painting_surface_if_needed()
+@@ -608,6 +608,24 @@ void OpenGLContext::allocate_painting_surface_if_needed()
          return;
      m_drawing_buffer_needs_allocation = false;
  
@@ -19,13 +19,15 @@ index b7d4730466..0c6abac3ff 100644
 +    glGetIntegerv(GL_RENDERBUFFER_BINDING, &previous_renderbuffer);
 +    bool page_bound_its_own_framebuffer = previous_framebuffer != 0 && static_cast<GLuint>(previous_framebuffer) != m_impl->framebuffer;
 +    bool page_bound_its_own_renderbuffer = previous_renderbuffer != 0 && static_cast<GLuint>(previous_renderbuffer) != m_impl->depth_buffer;
-+    if (static_cast<GLuint>(previous_texture) == m_impl->color_buffer)
-+        previous_texture = 0;
++    for (auto const& color_buffer : m_impl->color_buffers) {
++        if (color_buffer.texture && static_cast<GLuint>(previous_texture) == color_buffer.texture)
++            previous_texture = 0;
++    }
 +
      free_surface_resources();
  
      VERIFY(!m_size.is_empty());
-@@ -663,6 +679,11 @@ void OpenGLContext::allocate_painting_surface_if_needed()
+@@ -663,6 +681,11 @@ void OpenGLContext::allocate_painting_surface_if_needed()
      }
  
      VERIFY(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);

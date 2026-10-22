@@ -4,6 +4,12 @@
 # checkout at /build/webby and /build kept between runs (ccache, vcpkg binary cache, Android tools).
 # Result: /build/out/webby-android-native-arm64.tar.zst, or a non-zero exit.
 set -euxo pipefail
+# A failed vcpkg port only says "see logs"; print the logs of the ports that failed, which the runner throws away.
+dump_vcpkg_failures() {
+    find /build/ladybird/Build/vcpkg-release/buildtrees -maxdepth 2 \( -name '*-out.log' -o -name '*-err.log' -o -name 'config-*.log' \) \
+        -size +0 2>/dev/null | xargs -r grep -l -i -E 'error|failed' | while read -r log; do echo "=== $log"; tail -n 80 "$log"; done
+}
+trap 'status=$?; [ $status -eq 0 ] || dump_vcpkg_failures; exit $status' EXIT
 export DEBIAN_FRONTEND=noninteractive HOME=/root
 # No host libpulse-dev: the Android configure would find it and build the PulseAudio backend against missing headers.
 apt-get update -qq
