@@ -56,7 +56,7 @@ requirements:
     - zlib
     - libstdcxx
   run:
-    - webby-ladybird >=2026.10.21.1
+    - webby-ladybird >=2026.10.22.1
     # The password vault's key goes in the desktop keyring through libsecret (loaded at runtime).
     - libsecret
     - gtk3
