@@ -1,5 +1,5 @@
 diff --git a/Services/Compositor/OpenGLContext.cpp b/Services/Compositor/OpenGLContext.cpp
-index 325022f9..789e6c27 100644
+index 0c6abac3ff..b899eaa9b6 100644
 --- a/Services/Compositor/OpenGLContext.cpp
 +++ b/Services/Compositor/OpenGLContext.cpp
 @@ -21,6 +21,7 @@ extern "C" {
@@ -10,7 +10,7 @@ index 325022f9..789e6c27 100644
  #include <AK/HashMap.h>
  #include <AK/OwnPtr.h>
  #include <AK/String.h>
-@@ -522,8 +523,21 @@ void OpenGLContext::copy_default_framebuffer_to_cpu_painting_surface()
+@@ -582,8 +583,21 @@ void OpenGLContext::copy_default_framebuffer_to_cpu_painting_surface()
          glPixelStorei(GL_PACK_SKIP_ROWS, 0);
      }
  

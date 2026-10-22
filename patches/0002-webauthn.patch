@@ -1,8 +1,8 @@
 diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
-index 302b118d..493425aa 100644
+index 8a34d87891..65f6c165fd 100644
 --- a/Libraries/LibWeb/CMakeLists.txt
 +++ b/Libraries/LibWeb/CMakeLists.txt
-@@ -991,6 +991,11 @@ set(SOURCES
+@@ -995,6 +995,11 @@ set(SOURCES
      WebAssembly/Table.cpp
      WebAssembly/WebAssembly.cpp
      WebAssembly/WebAssemblyModule.cpp
@@ -15,7 +15,7 @@ index 302b118d..493425aa 100644
      WebAudio/AudioParamMap.cpp
      WebAudio/AudioWorklet.cpp
 diff --git a/Libraries/LibWeb/CredentialManagement/CredentialsContainer.cpp b/Libraries/LibWeb/CredentialManagement/CredentialsContainer.cpp
-index 8487abcf..a101bcd1 100644
+index 8487abcf39..a101bcd1e6 100644
 --- a/Libraries/LibWeb/CredentialManagement/CredentialsContainer.cpp
 +++ b/Libraries/LibWeb/CredentialManagement/CredentialsContainer.cpp
 @@ -7,6 +7,7 @@
@@ -59,10 +59,10 @@ index 8487abcf..a101bcd1 100644
      reject_not_implemented_promise(promise, "create"sv);
  }
 diff --git a/Libraries/LibWeb/Forward.h b/Libraries/LibWeb/Forward.h
-index 5ae4b256..d4306982 100644
+index cfedd36d3b..952abf34ff 100644
 --- a/Libraries/LibWeb/Forward.h
 +++ b/Libraries/LibWeb/Forward.h
-@@ -1240,6 +1240,15 @@ class WebAssemblyCache;
+@@ -1245,6 +1245,15 @@ class WebAssemblyCache;
  
  }
  
@@ -79,19 +79,19 @@ index 5ae4b256..d4306982 100644
  
  class AudioBuffer;
 diff --git a/Libraries/LibWeb/Page/Page.cpp b/Libraries/LibWeb/Page/Page.cpp
-index 81f7319d..00053ac7 100644
+index 6975b6a008..a46365d9c0 100644
 --- a/Libraries/LibWeb/Page/Page.cpp
 +++ b/Libraries/LibWeb/Page/Page.cpp
-@@ -131,6 +131,7 @@ void Page::visit_edges(JS::Cell::Visitor& visitor)
-     visitor.visit(m_window_rect_observer);
-     visitor.visit(m_on_pending_dialog_closed);
-     visitor.visit(m_pending_clipboard_requests);
+@@ -148,6 +148,7 @@ void Page::visit_edges(JS::Cell::Visitor& visitor)
+     visitor.visit(m_pending_spell_check_requests);
+     visitor.visit(m_spell_checking_settled_callbacks);
+     visitor.visit(m_on_spelling_menu_action_for_testing);
 +    visitor.visit(m_pending_webauthn_requests);
      visitor.visit(m_emulated_position_data);
      visitor.visit(m_emulated_position_data_observers);
      visitor.visit(m_offscreen_canvases_pending_placeholder_commit);
-@@ -1260,6 +1261,20 @@ void Page::retrieved_clipboard_entries(u64 request_id, Vector<Clipboard::SystemC
-         (*request)->function()(move(items));
+@@ -1414,6 +1415,20 @@ void Page::notify_spell_check_progress()
+         callback->function()();
  }
  
 +void Page::request_webauthn(String request, WebAuthnCallback callback)
@@ -112,42 +112,40 @@ index 81f7319d..00053ac7 100644
  void Page::set_emulated_position_data(Geolocation::EmulatedPositionData data)
  {
 diff --git a/Libraries/LibWeb/Page/Page.h b/Libraries/LibWeb/Page/Page.h
-index 3e28856e..dab28e3f 100644
+index b22d81e251..69dadc1774 100644
 --- a/Libraries/LibWeb/Page/Page.h
 +++ b/Libraries/LibWeb/Page/Page.h
-@@ -298,6 +298,11 @@ public:
-     void request_clipboard_entries(ClipboardRequest);
-     void retrieved_clipboard_entries(u64 request_id, Vector<Clipboard::SystemClipboardItem>);
- 
+@@ -319,6 +319,10 @@ public:
+     // For tests: Calls the callback once no document of the page has spellchecking queued or in flight.
+     void when_spell_checking_settled(GC::Ref<GC::Function<void()>>);
+     void notify_spell_check_progress();
 +    // Web Authentication requests go to the browser process's authenticator as JSON; see WebAuthn/WebAuthn.h.
 +    using WebAuthnCallback = GC::Ref<GC::Function<void(String)>>;
 +    void request_webauthn(String request, WebAuthnCallback);
 +    void webauthn_response(u64 request_id, String response);
-+
+ 
      using GeolocationPositionResult = Variant<Geolocation::CoordinatesData, Geolocation::GeolocationPositionError::ErrorCode>;
      using GeolocationPositionCallback = GC::Ref<GC::Function<void(GeolocationPositionResult)>>;
-     enum class GeolocationRequestType : u8 {
-@@ -499,6 +504,9 @@ private:
-     HashMap<u64, ClipboardRequest> m_pending_clipboard_requests;
-     u64 m_next_clipboard_request_id { 0 };
- 
+@@ -552,6 +556,8 @@ private:
+     HashMap<u64, SpellCheckRequest> m_pending_spell_check_requests;
+     u64 m_next_spell_check_request_id { 0 };
+     Vector<GC::Ref<GC::Function<void()>>> m_spell_checking_settled_callbacks;
 +    HashMap<u64, WebAuthnCallback> m_pending_webauthn_requests;
 +    u64 m_next_webauthn_request_id { 0 };
-+
+ 
      struct PendingGeolocationRequest {
          GeolocationPositionCallback callback;
-         GeolocationRequestType type;
-@@ -797,6 +805,7 @@ public:
- 
+@@ -873,6 +879,7 @@ public:
      virtual void page_did_insert_clipboard_item(Clipboard::SystemClipboardItem const&, [[maybe_unused]] StringView presentation_style) { }
      virtual void page_did_request_clipboard_entries([[maybe_unused]] u64 request_id) { }
+     virtual void page_did_request_spell_check([[maybe_unused]] u64 request_id, [[maybe_unused]] Utf16String const& text) { }
 +    virtual void page_did_request_webauthn([[maybe_unused]] u64 request_id, [[maybe_unused]] String const& request) { }
      virtual void page_did_request_primary_paste() { }
      virtual void page_did_complete_paste_action() { }
      virtual void page_did_update_primary_selection(Utf16String const&) { }
 diff --git a/Libraries/LibWeb/WebAuthn/AuthenticatorAssertionResponse.cpp b/Libraries/LibWeb/WebAuthn/AuthenticatorAssertionResponse.cpp
 new file mode 100644
-index 00000000..61e2fcda
+index 0000000000..61e2fcda8a
 --- /dev/null
 +++ b/Libraries/LibWeb/WebAuthn/AuthenticatorAssertionResponse.cpp
 @@ -0,0 +1,59 @@
@@ -212,7 +210,7 @@ index 00000000..61e2fcda
 +}
 diff --git a/Libraries/LibWeb/WebAuthn/AuthenticatorAssertionResponse.h b/Libraries/LibWeb/WebAuthn/AuthenticatorAssertionResponse.h
 new file mode 100644
-index 00000000..5712a880
+index 0000000000..5712a880d8
 --- /dev/null
 +++ b/Libraries/LibWeb/WebAuthn/AuthenticatorAssertionResponse.h
 @@ -0,0 +1,52 @@
@@ -270,7 +268,7 @@ index 00000000..5712a880
 +}
 diff --git a/Libraries/LibWeb/WebAuthn/AuthenticatorAssertionResponse.idl b/Libraries/LibWeb/WebAuthn/AuthenticatorAssertionResponse.idl
 new file mode 100644
-index 00000000..82b9299a
+index 0000000000..82b9299aa9
 --- /dev/null
 +++ b/Libraries/LibWeb/WebAuthn/AuthenticatorAssertionResponse.idl
 @@ -0,0 +1,7 @@
@@ -283,7 +281,7 @@ index 00000000..82b9299a
 +};
 diff --git a/Libraries/LibWeb/WebAuthn/AuthenticatorAttestationResponse.cpp b/Libraries/LibWeb/WebAuthn/AuthenticatorAttestationResponse.cpp
 new file mode 100644
-index 00000000..d62198dc
+index 0000000000..d62198dcea
 --- /dev/null
 +++ b/Libraries/LibWeb/WebAuthn/AuthenticatorAttestationResponse.cpp
 @@ -0,0 +1,59 @@
@@ -348,7 +346,7 @@ index 00000000..d62198dc
 +}
 diff --git a/Libraries/LibWeb/WebAuthn/AuthenticatorAttestationResponse.h b/Libraries/LibWeb/WebAuthn/AuthenticatorAttestationResponse.h
 new file mode 100644
-index 00000000..2e3b5b3a
+index 0000000000..2e3b5b3a7e
 --- /dev/null
 +++ b/Libraries/LibWeb/WebAuthn/AuthenticatorAttestationResponse.h
 @@ -0,0 +1,58 @@
@@ -412,7 +410,7 @@ index 00000000..2e3b5b3a
 +}
 diff --git a/Libraries/LibWeb/WebAuthn/AuthenticatorAttestationResponse.idl b/Libraries/LibWeb/WebAuthn/AuthenticatorAttestationResponse.idl
 new file mode 100644
-index 00000000..febe4d38
+index 0000000000..febe4d384a
 --- /dev/null
 +++ b/Libraries/LibWeb/WebAuthn/AuthenticatorAttestationResponse.idl
 @@ -0,0 +1,9 @@
@@ -427,7 +425,7 @@ index 00000000..febe4d38
 +};
 diff --git a/Libraries/LibWeb/WebAuthn/AuthenticatorResponse.cpp b/Libraries/LibWeb/WebAuthn/AuthenticatorResponse.cpp
 new file mode 100644
-index 00000000..02f69acd
+index 0000000000..02f69acd49
 --- /dev/null
 +++ b/Libraries/LibWeb/WebAuthn/AuthenticatorResponse.cpp
 @@ -0,0 +1,41 @@
@@ -474,7 +472,7 @@ index 00000000..02f69acd
 +}
 diff --git a/Libraries/LibWeb/WebAuthn/AuthenticatorResponse.h b/Libraries/LibWeb/WebAuthn/AuthenticatorResponse.h
 new file mode 100644
-index 00000000..978a7510
+index 0000000000..978a751053
 --- /dev/null
 +++ b/Libraries/LibWeb/WebAuthn/AuthenticatorResponse.h
 @@ -0,0 +1,40 @@
@@ -520,7 +518,7 @@ index 00000000..978a7510
 +}
 diff --git a/Libraries/LibWeb/WebAuthn/AuthenticatorResponse.idl b/Libraries/LibWeb/WebAuthn/AuthenticatorResponse.idl
 new file mode 100644
-index 00000000..febb93f6
+index 0000000000..febb93f671
 --- /dev/null
 +++ b/Libraries/LibWeb/WebAuthn/AuthenticatorResponse.idl
 @@ -0,0 +1,5 @@
@@ -531,7 +529,7 @@ index 00000000..febb93f6
 +};
 diff --git a/Libraries/LibWeb/WebAuthn/PublicKeyCredential.cpp b/Libraries/LibWeb/WebAuthn/PublicKeyCredential.cpp
 new file mode 100644
-index 00000000..2be4cb59
+index 0000000000..2be4cb59fe
 --- /dev/null
 +++ b/Libraries/LibWeb/WebAuthn/PublicKeyCredential.cpp
 @@ -0,0 +1,155 @@
@@ -692,7 +690,7 @@ index 00000000..2be4cb59
 +}
 diff --git a/Libraries/LibWeb/WebAuthn/PublicKeyCredential.h b/Libraries/LibWeb/WebAuthn/PublicKeyCredential.h
 new file mode 100644
-index 00000000..a372ceb9
+index 0000000000..a372ceb954
 --- /dev/null
 +++ b/Libraries/LibWeb/WebAuthn/PublicKeyCredential.h
 @@ -0,0 +1,55 @@
@@ -753,7 +751,7 @@ index 00000000..a372ceb9
 +}
 diff --git a/Libraries/LibWeb/WebAuthn/PublicKeyCredential.idl b/Libraries/LibWeb/WebAuthn/PublicKeyCredential.idl
 new file mode 100644
-index 00000000..7b09c6fc
+index 0000000000..7b09c6fc1c
 --- /dev/null
 +++ b/Libraries/LibWeb/WebAuthn/PublicKeyCredential.idl
 @@ -0,0 +1,91 @@
@@ -850,7 +848,7 @@ index 00000000..7b09c6fc
 +};
 diff --git a/Libraries/LibWeb/WebAuthn/WebAuthn.cpp b/Libraries/LibWeb/WebAuthn/WebAuthn.cpp
 new file mode 100644
-index 00000000..3dc6655f
+index 0000000000..3dc6655f59
 --- /dev/null
 +++ b/Libraries/LibWeb/WebAuthn/WebAuthn.cpp
 @@ -0,0 +1,434 @@
@@ -1290,7 +1288,7 @@ index 00000000..3dc6655f
 +}
 diff --git a/Libraries/LibWeb/WebAuthn/WebAuthn.h b/Libraries/LibWeb/WebAuthn/WebAuthn.h
 new file mode 100644
-index 00000000..f604be5d
+index 0000000000..f604be5d11
 --- /dev/null
 +++ b/Libraries/LibWeb/WebAuthn/WebAuthn.h
 @@ -0,0 +1,37 @@
@@ -1332,10 +1330,10 @@ index 00000000..f604be5d
 +
 +}
 diff --git a/Libraries/LibWeb/idl_files.cmake b/Libraries/LibWeb/idl_files.cmake
-index d4d36275..40aeecd6 100644
+index b58ee528b6..03a8168079 100644
 --- a/Libraries/LibWeb/idl_files.cmake
 +++ b/Libraries/LibWeb/idl_files.cmake
-@@ -585,6 +585,10 @@ libweb_js_bindings(WebAssembly/Memory)
+@@ -597,6 +597,10 @@ libweb_js_bindings(WebAssembly/Memory)
  libweb_js_bindings(WebAssembly/Module)
  libweb_js_bindings(WebAssembly/Table)
  libweb_js_bindings(WebAssembly/WebAssembly)
@@ -1347,10 +1345,10 @@ index d4d36275..40aeecd6 100644
  libweb_js_bindings(WebAudio/AudioParamMap)
  libweb_js_bindings(WebAudio/AudioWorklet)
 diff --git a/Libraries/LibWebView/ViewImplementation.h b/Libraries/LibWebView/ViewImplementation.h
-index bef28f96..5f0c2425 100644
+index 24e574ead9..87af09ebec 100644
 --- a/Libraries/LibWebView/ViewImplementation.h
 +++ b/Libraries/LibWebView/ViewImplementation.h
-@@ -480,6 +480,9 @@ public:
+@@ -535,6 +535,9 @@ public:
      Function<void()> on_exit_fullscreen_window;
      Function<void(Color current_color)> on_request_color_picker;
      Function<void(WebContentPage& requesting_page, u64 request_id)> on_request_geolocation_position;
@@ -1361,10 +1359,10 @@ index bef28f96..5f0c2425 100644
      Function<void(WebContentPage& requesting_page, u64 request_id)> on_start_geolocation_position_watch;
      Function<void(WebContentPage& requesting_page, u64 request_id)> on_stop_geolocation_position_watch;
 diff --git a/Libraries/LibWebView/WebContentPage.cpp b/Libraries/LibWebView/WebContentPage.cpp
-index 28587b5d..cd720e0f 100644
+index 717f59f264..2423772d1b 100644
 --- a/Libraries/LibWebView/WebContentPage.cpp
 +++ b/Libraries/LibWebView/WebContentPage.cpp
-@@ -1614,6 +1614,16 @@ void WebContentPage::did_update_indexed_database(String update)
+@@ -1876,6 +1876,16 @@ void WebContentPage::did_update_indexed_database(String update)
          view().notify_indexed_database_changed(parse_json(update, "IndexedDB update"sv));
  }
  
@@ -1382,23 +1380,23 @@ index 28587b5d..cd720e0f 100644
  {
      Vector<Web::Clipboard::SystemClipboardItem> items;
 diff --git a/Libraries/LibWebView/WebContentPage.h b/Libraries/LibWebView/WebContentPage.h
-index b9f49235..320677b1 100644
+index c5dbe1d0a7..b1aac0974f 100644
 --- a/Libraries/LibWebView/WebContentPage.h
 +++ b/Libraries/LibWebView/WebContentPage.h
-@@ -278,6 +278,7 @@ private:
-     virtual void did_change_storage_item(Web::StorageAPI::StorageEndpointType storage_endpoint, String url, Optional<Utf16String> key, Optional<Utf16String> old_value, Optional<Utf16String> new_value) override;
+@@ -295,6 +295,7 @@ private:
      virtual void did_update_indexed_database(String update) override;
      virtual void did_request_clipboard_entries(u64 request_id) override;
+     virtual void did_request_spell_check(u64 request_id, Utf16String text) override;
 +    virtual void did_request_webauthn(u64 request_id, String request) override;
      virtual void did_request_set_system_focus(bool has_system_focus) override;
      virtual void did_request_set_system_visibility_state(Web::HTML::VisibilityState visibility_state) override;
      virtual void did_request_navigation_start(Web::HTML::CrossProcessId navigable_id, Web::NavigationTarget target, URL::URL url, Utf16String navigation_id, Optional<Web::HTML::NavigationStartRequest> start_request) override;
 diff --git a/Services/WebContent/ConnectionFromClient.cpp b/Services/WebContent/ConnectionFromClient.cpp
-index 4c4a13e1..d3a4f8c9 100644
+index 1da8b1c7ff..530968a9f8 100644
 --- a/Services/WebContent/ConnectionFromClient.cpp
 +++ b/Services/WebContent/ConnectionFromClient.cpp
-@@ -3349,6 +3349,12 @@ void ConnectionFromClient::retrieved_clipboard_entries(Web::PageId page_id, u64
-         page->page().retrieved_clipboard_entries(request_id, move(items));
+@@ -3443,6 +3443,12 @@ void ConnectionFromClient::did_complete_spelling_menu_action_for_testing(Web::Pa
+         page->page().did_complete_spelling_menu_action_for_testing(move(menu));
  }
  
 +void ConnectionFromClient::webauthn_response(Web::PageId page_id, u64 request_id, String response)
@@ -1411,23 +1409,23 @@ index 4c4a13e1..d3a4f8c9 100644
  {
      if (auto page = this->page(page_id); page.has_value())
 diff --git a/Services/WebContent/ConnectionFromClient.h b/Services/WebContent/ConnectionFromClient.h
-index 41f552c0..eeaaaffd 100644
+index a2e91ca98d..9622b0af9c 100644
 --- a/Services/WebContent/ConnectionFromClient.h
 +++ b/Services/WebContent/ConnectionFromClient.h
-@@ -269,6 +269,7 @@ private:
-     virtual void select_dropdown_closed(Web::PageId page_id, Optional<u32> selected_item_id) override;
- 
-     virtual void retrieved_clipboard_entries(Web::PageId page_id, u64 request_id, Vector<Web::Clipboard::SystemClipboardItem>) override;
+@@ -281,6 +281,7 @@ private:
+     virtual void accept_spelling_word(Web::PageId page_id, Utf16String word) override;
+     virtual void forget_accepted_spelling_words(Web::PageId page_id) override;
+     virtual void did_complete_spelling_menu_action_for_testing(Web::PageId page_id, String menu) override;
 +    virtual void webauthn_response(Web::PageId page_id, u64 request_id, String response) override;
  
      virtual void toggle_media_play_state(Web::PageId page_id) override;
      virtual void toggle_media_mute_state(Web::PageId page_id) override;
 diff --git a/Services/WebContent/PageClient.cpp b/Services/WebContent/PageClient.cpp
-index 7d41dfbb..07d23f8e 100644
+index 22b124c6b9..519ab3ea03 100644
 --- a/Services/WebContent/PageClient.cpp
 +++ b/Services/WebContent/PageClient.cpp
-@@ -1836,6 +1836,11 @@ void PageClient::page_did_request_clipboard_entries(u64 request_id)
-     client().async_did_request_clipboard_entries(m_id, request_id);
+@@ -1953,6 +1953,11 @@ void PageClient::page_did_request_spell_check(u64 request_id, Utf16String const&
+     client().async_did_request_spell_check(m_id, request_id, text);
  }
  
 +void PageClient::page_did_request_webauthn(u64 request_id, String const& request)
@@ -1439,37 +1437,37 @@ index 7d41dfbb..07d23f8e 100644
  {
      client().async_did_request_primary_paste(m_id);
 diff --git a/Services/WebContent/PageClient.h b/Services/WebContent/PageClient.h
-index 1511b536..cf26ca5f 100644
+index 4be2578385..90e072a1b0 100644
 --- a/Services/WebContent/PageClient.h
 +++ b/Services/WebContent/PageClient.h
-@@ -343,6 +343,7 @@ private:
-     virtual void page_did_change_background_color(Gfx::Color color) override;
+@@ -358,6 +358,7 @@ private:
      virtual void page_did_insert_clipboard_item(Web::Clipboard::SystemClipboardItem const&, StringView presentation_style) override;
      virtual void page_did_request_clipboard_entries(u64 request_id) override;
+     virtual void page_did_request_spell_check(u64 request_id, Utf16String const& text) override;
 +    virtual void page_did_request_webauthn(u64 request_id, String const& request) override;
      virtual void page_did_request_primary_paste() override;
      virtual void page_did_complete_paste_action() override;
      virtual void page_did_update_primary_selection(Utf16String const&) override;
 diff --git a/Services/WebContent/WebContentClient.ipc b/Services/WebContent/WebContentClient.ipc
-index bb558e7a..b196da5f 100644
+index f84f45e3b9..7a00b8c338 100644
 --- a/Services/WebContent/WebContentClient.ipc
 +++ b/Services/WebContent/WebContentClient.ipc
-@@ -231,6 +231,7 @@ endpoint WebContentClient routed by Web::PageId page_id
- 
+@@ -242,6 +242,7 @@ endpoint WebContentClient routed by Web::PageId page_id
      did_insert_clipboard_item(Web::PageId page_id, Web::Clipboard::SystemClipboardItem item, String presentation_style) =|
      did_request_clipboard_entries(Web::PageId page_id, u64 request_id) =|
+     did_request_spell_check(Web::PageId page_id, u64 request_id, Utf16String text) =|
 +    did_request_webauthn(Web::PageId page_id, u64 request_id, String request) =|
      did_request_primary_paste(Web::PageId page_id) =|
      did_update_primary_selection(Web::PageId page_id, String text) =|
  
 diff --git a/Services/WebContent/WebContentServer.ipc b/Services/WebContent/WebContentServer.ipc
-index aa98ca4d..091f3608 100644
+index 1d5353ba89..735bb24cac 100644
 --- a/Services/WebContent/WebContentServer.ipc
 +++ b/Services/WebContent/WebContentServer.ipc
-@@ -275,6 +275,7 @@ endpoint WebContentServer routed by Web::PageId page_id
-     select_dropdown_closed(Web::PageId page_id, Optional<u32> selected_item_id) =|
- 
-     retrieved_clipboard_entries(Web::PageId page_id, u64 request_id, Vector<Web::Clipboard::SystemClipboardItem> items) =|
+@@ -289,6 +289,7 @@ endpoint WebContentServer routed by Web::PageId page_id
+     accept_spelling_word(Web::PageId page_id, Utf16String word) =|
+     forget_accepted_spelling_words(Web::PageId page_id) =|
+     did_complete_spelling_menu_action_for_testing(Web::PageId page_id, String menu) =|
 +    webauthn_response(Web::PageId page_id, u64 request_id, String response) =|
  
      toggle_media_play_state(Web::PageId page_id) =|

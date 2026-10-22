@@ -1,8 +1,8 @@
 diff --git a/Services/WebContent/ConnectionFromClient.cpp b/Services/WebContent/ConnectionFromClient.cpp
-index d3a4f8c9..5a1a6db9 100644
+index 530968a9f8..dd55e550c4 100644
 --- a/Services/WebContent/ConnectionFromClient.cpp
 +++ b/Services/WebContent/ConnectionFromClient.cpp
-@@ -533,7 +533,9 @@ void ConnectionFromClient::populate_navigation(Web::PageId page_id, Web::HTML::N
+@@ -541,7 +541,9 @@ void ConnectionFromClient::populate_navigation(Web::PageId page_id, Web::HTML::N
  
  void ConnectionFromClient::stop_loading(Web::PageId page_id)
  {
@@ -13,7 +13,7 @@ index d3a4f8c9..5a1a6db9 100644
          page->page().local_traversable()->stop_loading();
  }
  
-@@ -3282,7 +3284,9 @@ void ConnectionFromClient::update_visibility_state(Web::PageId page_id, Web::HTM
+@@ -3334,7 +3336,9 @@ void ConnectionFromClient::update_visibility_state(Web::PageId page_id, Web::HTM
  
  void ConnectionFromClient::reset_zoom(Web::PageId page_id)
  {
@@ -25,10 +25,10 @@ index d3a4f8c9..5a1a6db9 100644
  }
  
 diff --git a/Services/WebContent/PageClient.cpp b/Services/WebContent/PageClient.cpp
-index 07d23f8e..58bc129a 100644
+index 519ab3ea03..29df9c58cf 100644
 --- a/Services/WebContent/PageClient.cpp
 +++ b/Services/WebContent/PageClient.cpp
-@@ -2133,6 +2133,12 @@ void PageClient::js_console_input(StringView js_source)
+@@ -2255,6 +2255,12 @@ void PageClient::js_console_input(StringView js_source)
  
  void PageClient::run_javascript(StringView js_source)
  {

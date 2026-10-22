@@ -1,10 +1,10 @@
 diff --git a/Services/Compositor/OpenGLContext.cpp b/Services/Compositor/OpenGLContext.cpp
-index 0395274022..020a9d004d 100644
+index b7d4730466..0c6abac3ff 100644
 --- a/Services/Compositor/OpenGLContext.cpp
 +++ b/Services/Compositor/OpenGLContext.cpp
-@@ -553,6 +553,22 @@ void OpenGLContext::allocate_painting_surface_if_needed()
-     if (m_painting_surface)
+@@ -608,6 +608,22 @@ void OpenGLContext::allocate_painting_surface_if_needed()
          return;
+     m_drawing_buffer_needs_allocation = false;
  
 +    // The page's GL state lives in this same context, and (re)allocating the drawing buffer binds our own texture,
 +    // framebuffer and renderbuffer. Put the page's bindings back afterwards: otherwise a canvas resize leaves the
@@ -25,7 +25,7 @@ index 0395274022..020a9d004d 100644
      free_surface_resources();
  
      VERIFY(!m_size.is_empty());
-@@ -605,6 +621,11 @@ void OpenGLContext::allocate_painting_surface_if_needed()
+@@ -663,6 +679,11 @@ void OpenGLContext::allocate_painting_surface_if_needed()
      }
  
      VERIFY(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);

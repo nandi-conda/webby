@@ -1,53 +1,53 @@
-diff --git a/Libraries/LibMedia/DecoderRegistry.cpp b/Libraries/LibMedia/DecoderRegistry.cpp
-index e153f655..0511c61a 100644
---- a/Libraries/LibMedia/DecoderRegistry.cpp
-+++ b/Libraries/LibMedia/DecoderRegistry.cpp
+diff --git a/Libraries/LibMedia/DecoderRegistrations.cpp b/Libraries/LibMedia/DecoderRegistrations.cpp
+index 2400ee2b89..30a324ab07 100644
+--- a/Libraries/LibMedia/DecoderRegistrations.cpp
++++ b/Libraries/LibMedia/DecoderRegistrations.cpp
 @@ -12,7 +12,7 @@
+ #ifdef AK_OS_MACOS
  #    include <LibMedia/AudioToolbox/AudioToolboxAudioDecoder.h>
- #    include <LibMedia/VideoToolbox/VideoToolboxVideoDecoder.h>
  #endif
 -#ifdef AK_OS_LINUX
 +#if defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)
  #    include <LibMedia/FFmpeg/SystemFFmpegDecoders.h>
  #endif
  
-@@ -54,7 +54,7 @@ static constexpr Array audio_decoders_in_priority_order {
-     AudioDecoderRegistration { AudioToolbox::AudioToolboxAudioDecoder::capabilities, create_audiotoolbox_audio_decoder },
- #endif
-     AudioDecoderRegistration { FFmpeg::FFmpegAudioDecoder::capabilities, create_ffmpeg_audio_decoder },
+@@ -40,7 +40,7 @@ ReadonlySpan<VideoDecoderRegistration> ffmpeg_video_decoders()
+ {
+     static Array const decoders {
+         VideoDecoderRegistration { FFmpeg::FFmpegVideoDecoder::capabilities, create_ffmpeg_video_decoder },
 -#ifdef AK_OS_LINUX
 +#if defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)
-     AudioDecoderRegistration { FFmpeg::system_ffmpeg_audio_decoder_capabilities, FFmpeg::create_system_ffmpeg_audio_decoder },
+         VideoDecoderRegistration { FFmpeg::system_ffmpeg_video_decoder_capabilities, FFmpeg::create_system_ffmpeg_video_decoder },
  #endif
- };
-@@ -71,7 +71,7 @@ static constexpr Array video_decoders_in_priority_order {
-     VideoDecoderRegistration { VideoToolbox::VideoToolboxVideoDecoder::capabilities, create_videotoolbox_video_decoder },
+     };
+@@ -66,7 +66,7 @@ ReadonlySpan<AudioDecoderRegistration> audio_decoders()
+         AudioDecoderRegistration { AudioToolbox::AudioToolboxAudioDecoder::capabilities, create_audiotoolbox_audio_decoder },
  #endif
-     VideoDecoderRegistration { FFmpeg::FFmpegVideoDecoder::capabilities, create_ffmpeg_video_decoder },
+         AudioDecoderRegistration { FFmpeg::FFmpegAudioDecoder::capabilities, create_ffmpeg_audio_decoder },
 -#ifdef AK_OS_LINUX
 +#if defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)
-     VideoDecoderRegistration { FFmpeg::system_ffmpeg_video_decoder_capabilities, FFmpeg::create_system_ffmpeg_video_decoder },
+         AudioDecoderRegistration { FFmpeg::system_ffmpeg_audio_decoder_capabilities, FFmpeg::create_system_ffmpeg_audio_decoder },
  #endif
- };
+     };
 diff --git a/Libraries/LibWebView/CrashReport.cpp b/Libraries/LibWebView/CrashReport.cpp
-index e46c8e7e..219b13e9 100644
+index f6ed976a3c..f55df09d1b 100644
 --- a/Libraries/LibWebView/CrashReport.cpp
 +++ b/Libraries/LibWebView/CrashReport.cpp
-@@ -244,7 +244,8 @@ ErrorOr<void> CrashReport::record_build_description(StringView) { return {}; }
+@@ -252,7 +252,8 @@ ErrorOr<void> CrashReport::record_build_description(StringView) { return {}; }
  
  #endif
  
 -#if !defined(AK_OS_MACOS) && !defined(AK_OS_LINUX)
 +// CrashReportPOSIX.cpp is only built for macOS and desktop Linux.
 +#if !defined(AK_OS_MACOS) && (!defined(AK_OS_LINUX) || defined(AK_OS_ANDROID))
- ByteString CrashReport::symbolicate_frame(ReportFrame const&)
+ void CrashReport::symbolicate_frame(ReportFrame&)
  {
-     return {};
+ }
 diff --git a/Services/Compositor/main.cpp b/Services/Compositor/main.cpp
-index c82d368f..ac7b61b8 100644
+index d2b348e797..b384e7360d 100644
 --- a/Services/Compositor/main.cpp
 +++ b/Services/Compositor/main.cpp
-@@ -68,7 +68,8 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+@@ -74,7 +74,8 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
      if (force_fontconfig)
          Gfx::FontDatabase::the().set_force_freetype_rasterization(true);
  
@@ -58,30 +58,38 @@ index c82d368f..ac7b61b8 100644
      //     thread, so the rest of the sandbox can wait until the driver is done with the syscalls that only its setup uses.
      if (!disable_sandbox)
 diff --git a/Services/MediaServer/main.cpp b/Services/MediaServer/main.cpp
-index b9630561..09877ca7 100644
+index d66d784289..ae83be966e 100644
 --- a/Services/MediaServer/main.cpp
 +++ b/Services/MediaServer/main.cpp
-@@ -53,7 +53,8 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+@@ -19,7 +19,7 @@
+ #include <MediaServer/ConnectionFromClient.h>
+ #include <MediaServer/Sandbox.h>
+ 
+-#if defined(AK_OS_LINUX)
++#if defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)
+ #    include <LibMediaCodecs/FFmpeg/SystemFFmpeg.h>
+ #endif
+ 
+@@ -58,7 +58,7 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
  
      auto& event_loop = Core::EventLoop::initialize_for_current_thread();
  
 -#if defined(AK_OS_LINUX)
-+// Android helpers run unsandboxed (see SandboxUnimplemented.cpp), so they skip the Linux sandbox's setup.
 +#if defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)
-     if (connect_broker_fd != -1)
-         Sandbox::set_connect_broker_fd(connect_broker_fd);
      // The system library's dependencies make syscalls the sandbox will not allow, so it loads first.
-diff --git a/Services/WebContent/main.cpp b/Services/WebContent/main.cpp
-index f730b954..aa81f6c9 100644
---- a/Services/WebContent/main.cpp
-+++ b/Services/WebContent/main.cpp
-@@ -215,7 +215,8 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
-         JS::set_log_all_js_exceptions(true);
+     (void)Media::FFmpeg::SystemFFmpeg::the();
+ #endif
+diff --git a/Services/VideoDecoderServer/main.cpp b/Services/VideoDecoderServer/main.cpp
+index 7bdd6fc6b8..dcd5fb61bb 100644
+--- a/Services/VideoDecoderServer/main.cpp
++++ b/Services/VideoDecoderServer/main.cpp
+@@ -86,7 +86,8 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+             return Error::from_string_literal("Malformed GPU device identity");
      }
  
 -#if defined(AK_OS_LINUX)
 +// Android helpers run unsandboxed (see SandboxUnimplemented.cpp), so they skip the Linux sandbox's setup.
 +#if defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)
-     if (connect_broker_fd != -1)
-         Sandbox::set_connect_broker_fd(connect_broker_fd);
+     if (!disable_sandbox)
+         TRY(VideoDecoderServer::restrict_filesystem(gpu_device_identity.has_value()));
  #endif

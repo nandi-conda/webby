@@ -1,8 +1,8 @@
 diff --git a/Libraries/LibCore/EventLoopImplementationUnix.cpp b/Libraries/LibCore/EventLoopImplementationUnix.cpp
-index ca9c23ea..ccfd2b9e 100644
+index c22ee79d7d..3f148d09a7 100644
 --- a/Libraries/LibCore/EventLoopImplementationUnix.cpp
 +++ b/Libraries/LibCore/EventLoopImplementationUnix.cpp
-@@ -314,10 +314,6 @@ try_select_again:
+@@ -316,10 +316,6 @@ try_select_again:
          for (size_t i = 1; i < thread_data.poll_fds.size(); ++i) {
              auto& notifier = *thread_data.notifiers[i];
  
@@ -13,7 +13,7 @@ index ca9c23ea..ccfd2b9e 100644
              auto revents = thread_data.poll_fds[i].revents;
  
              NotificationType type = NotificationType::None;
-@@ -334,7 +330,6 @@ try_select_again:
+@@ -336,7 +332,6 @@ try_select_again:
  
              if (type != NotificationType::None)
                  ThreadEventQueue::current().post_event(&notifier, Core::Event::Type::NotifierActivation);

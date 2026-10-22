@@ -1,8 +1,21 @@
+diff --git a/Libraries/LibWasm/CMakeLists.txt b/Libraries/LibWasm/CMakeLists.txt
+index 68e2e6e8d2..296d1b3a12 100644
+--- a/Libraries/LibWasm/CMakeLists.txt
++++ b/Libraries/LibWasm/CMakeLists.txt
+@@ -20,7 +20,7 @@ if(WIN32 AND (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|aarch64|ARM64
+     set(WASM_COMPILED_FAULT_RECOVERY_SUPPORTED 1)
+ elseif(APPLE)
+     set(WASM_COMPILED_FAULT_RECOVERY_SUPPORTED 1)
+-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|aarch64)$"))
++elseif(CMAKE_SYSTEM_NAME MATCHES "^(Linux|Android)$" AND (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|aarch64)$"))
+     set(WASM_COMPILED_FAULT_RECOVERY_SUPPORTED 1)
+ endif()
+ 
 diff --git a/Meta/CMake/rust_crate.cmake b/Meta/CMake/rust_crate.cmake
-index 96345943..f9673011 100644
+index ecf66156dc..2146c41e3d 100644
 --- a/Meta/CMake/rust_crate.cmake
 +++ b/Meta/CMake/rust_crate.cmake
-@@ -296,7 +296,14 @@ function(_rust_crate_common_setup)
+@@ -408,7 +408,14 @@ function(_rust_crate_common_setup)
  
      # On Windows, rustc invokes the linker directly with MSVC-style flags, so we must not override it with a
      # compiler driver like clang-cl.
@@ -18,16 +31,3 @@ index 96345943..f9673011 100644
          list(APPEND cargo_env
              "CARGO_TARGET_${target_upper}_LINKER=${CMAKE_C_COMPILER}"
              "AR_${target_underscore}=${CMAKE_AR}"
-diff --git a/Libraries/LibWasm/CMakeLists.txt b/Libraries/LibWasm/CMakeLists.txt
-index 68e2e6e8..296d1b3a 100644
---- a/Libraries/LibWasm/CMakeLists.txt
-+++ b/Libraries/LibWasm/CMakeLists.txt
-@@ -20,7 +20,7 @@ if(WIN32 AND (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|aarch64|ARM64
-     set(WASM_COMPILED_FAULT_RECOVERY_SUPPORTED 1)
- elseif(APPLE)
-     set(WASM_COMPILED_FAULT_RECOVERY_SUPPORTED 1)
--elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|aarch64)$"))
-+elseif(CMAKE_SYSTEM_NAME MATCHES "^(Linux|Android)$" AND (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|aarch64)$"))
-     set(WASM_COMPILED_FAULT_RECOVERY_SUPPORTED 1)
- endif()
- 

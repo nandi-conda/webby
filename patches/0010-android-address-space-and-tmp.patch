@@ -1,5 +1,5 @@
 diff --git a/Libraries/LibCore/MappedFile.cpp b/Libraries/LibCore/MappedFile.cpp
-index fbd02727..27bc8b4f 100644
+index fbd0272769..27bc8b4f3e 100644
 --- a/Libraries/LibCore/MappedFile.cpp
 +++ b/Libraries/LibCore/MappedFile.cpp
 @@ -63,7 +63,12 @@ ErrorOr<NonnullOwnPtr<MappedFile>> MappedFile::map_from_fd_range_and_close(int f
@@ -16,7 +16,7 @@ index fbd02727..27bc8b4f 100644
      case Mode::ReadWrite:
          protection = PROT_READ | PROT_WRITE;
 diff --git a/Libraries/LibCore/StandardPaths.cpp b/Libraries/LibCore/StandardPaths.cpp
-index 9b6c68c5..00203757 100644
+index 9b6c68c5f1..00203757c2 100644
 --- a/Libraries/LibCore/StandardPaths.cpp
 +++ b/Libraries/LibCore/StandardPaths.cpp
 @@ -251,6 +251,11 @@ ByteString StandardPaths::tempfile_directory()
@@ -32,7 +32,7 @@ index 9b6c68c5..00203757 100644
      return "/tmp";
  #endif
 diff --git a/Libraries/LibGC/PrimitiveStorage.h b/Libraries/LibGC/PrimitiveStorage.h
-index 7c0630f0..caa59abe 100644
+index cd71044d7a..8fe5d5b312 100644
 --- a/Libraries/LibGC/PrimitiveStorage.h
 +++ b/Libraries/LibGC/PrimitiveStorage.h
 @@ -10,6 +10,7 @@
@@ -56,12 +56,12 @@ index 7c0630f0..caa59abe 100644
 +#endif
      static_assert(is_power_of_two(default_cage_size));
      static constexpr size_t cage_offset_mask = default_cage_size - 1;
-     static constexpr size_t invalid_offset = NumericLimits<size_t>::max();
+     // NB: JIT code accesses typed array elements at a masked offset plus a
 diff --git a/Libraries/LibJS/Rust/build.rs b/Libraries/LibJS/Rust/build.rs
-index 8e911d0d..d94bfa24 100644
+index 6d6889cc56..65af88f7fb 100644
 --- a/Libraries/LibJS/Rust/build.rs
 +++ b/Libraries/LibJS/Rust/build.rs
-@@ -106,6 +106,15 @@ fn heap_region_size(target: &Target, thread_sanitizer: bool) -> u64 {
+@@ -110,6 +110,15 @@ fn heap_region_size(target: &Target, thread_sanitizer: bool) -> u64 {
      }
  }
  
@@ -77,7 +77,7 @@ index 8e911d0d..d94bfa24 100644
  fn main() {
      let manifest_directory = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
      let output_directory = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
-@@ -130,7 +139,7 @@ fn main() {
+@@ -133,7 +142,7 @@ fn main() {
      let configuration = layout_table::LayoutConfiguration {
          heap_region_offset_mask: heap_region_size(&target, thread_sanitizer) - 1,
          // Mirrors GC::PrimitiveStorage::default_cage_size.

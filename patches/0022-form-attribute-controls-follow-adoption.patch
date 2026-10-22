@@ -1,8 +1,8 @@
 diff --git a/Libraries/LibWeb/DOM/Document.cpp b/Libraries/LibWeb/DOM/Document.cpp
-index 62c1ea4..104caee 100644
+index 402b9db75d..ad924aaa87 100644
 --- a/Libraries/LibWeb/DOM/Document.cpp
 +++ b/Libraries/LibWeb/DOM/Document.cpp
-@@ -3784,6 +3784,16 @@ void Document::adopt_node_steps(Node& node)
+@@ -3963,6 +3963,16 @@ void Document::adopt_node_steps(Node& node)
                  if (!element->custom_element_registry() || !element->custom_element_registry()->is_scoped()) {
                      element->set_custom_element_registry(effective_global_custom_element_registry());
                  }

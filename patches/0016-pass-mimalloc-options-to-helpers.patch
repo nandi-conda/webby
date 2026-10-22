@@ -1,7 +1,8 @@
 diff --git a/Libraries/LibWebView/Process.cpp b/Libraries/LibWebView/Process.cpp
+index ef8df36554..bab99364f7 100644
 --- a/Libraries/LibWebView/Process.cpp
 +++ b/Libraries/LibWebView/Process.cpp
-@@ -88,6 +88,7 @@
+@@ -116,6 +116,7 @@ Vector<ByteString> Process::helper_process_environment(ProcessType type)
          "LIBJS_"sv,
          "LIBWEB_"sv,
          "LSAN_"sv,

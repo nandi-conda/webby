@@ -1,5 +1,5 @@
 diff --git a/Libraries/LibWeb/DOM/DocumentLoading.cpp b/Libraries/LibWeb/DOM/DocumentLoading.cpp
-index ce6a7d9be2..45acee62a9 100644
+index 69a8ef55cb..366c02e6fe 100644
 --- a/Libraries/LibWeb/DOM/DocumentLoading.cpp
 +++ b/Libraries/LibWeb/DOM/DocumentLoading.cpp
 @@ -20,6 +20,7 @@

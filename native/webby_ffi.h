@@ -139,8 +139,8 @@ WEBBY_API void webby_view_file_picker_respond(WebbyView*, char const* paths_json
 WEBBY_API void webby_view_set_message_prefix(WebbyView*, char const* prefix);
 WEBBY_API char const* webby_view_next_message(WebbyView*);
 
-/* Site permissions. When a site asks for a permission-gated feature (so far
- * only "geolocation": navigator.geolocation), the view holds the request until
+/* Site permissions. When a site asks for a permission-gated feature ("geolocation":
+ * navigator.geolocation, or "microphone": getUserMedia()), the view holds the request until
  * the UI answers. webby_view_permission_request() is "" when nothing is
  * waiting, else JSON (it changes together with state_serial()):
  *   { "id": n, "permission": "geolocation", "origin": "https://example.com" }

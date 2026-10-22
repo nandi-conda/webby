@@ -1,7 +1,22 @@
+diff --git a/Libraries/LibWebView/Application.cpp b/Libraries/LibWebView/Application.cpp
+index 51e369d727..fcf7c9bb00 100644
+--- a/Libraries/LibWebView/Application.cpp
++++ b/Libraries/LibWebView/Application.cpp
+@@ -1568,6 +1568,9 @@ void Application::launch_spare_web_content_process()
+     // Disable spare processes when profiling WebContent. This reduces callgrind logging we are not interested in.
+     if (browser_options().profile_helper_process == ProcessType::WebContent)
+         return;
++    // Embedders short of memory can do without the idle process kept ready for the next tab.
++    if (browser_options().disable_spare_web_content_process == DisableSpareWebContentProcess::Yes)
++        return;
+ 
+     if (m_spare_web_content_process || m_has_queued_task_to_launch_spare_web_content_process)
+         return;
 diff --git a/Libraries/LibWebView/Options.h b/Libraries/LibWebView/Options.h
+index ae8bcaff18..8454254970 100644
 --- a/Libraries/LibWebView/Options.h
 +++ b/Libraries/LibWebView/Options.h
-@@ -80,6 +80,11 @@
+@@ -86,6 +86,11 @@ enum class ProfileTool {
      CPU,
  };
  
@@ -13,24 +28,11 @@ diff --git a/Libraries/LibWebView/Options.h b/Libraries/LibWebView/Options.h
  struct BrowserOptions {
      Vector<String> additional_font_directories {};
      Vector<URL::URL> urls;
-@@ -103,6 +108,7 @@
-     EnableContentBlocker enable_content_blocker { EnableContentBlocker::Yes };
+@@ -110,6 +115,7 @@ struct BrowserOptions {
      DisableSandbox disable_sandbox { DisableSandbox::No };
+     ForceVideoDecoderServer force_video_decoder_server { ForceVideoDecoderServer::No };
      Vector<ByteString> content_blocker_list_paths {};
 +    DisableSpareWebContentProcess disable_spare_web_content_process { DisableSpareWebContentProcess::No };
  };
  
  enum class HTTPDiskCacheMode {
-diff --git a/Libraries/LibWebView/Application.cpp b/Libraries/LibWebView/Application.cpp
---- a/Libraries/LibWebView/Application.cpp
-+++ b/Libraries/LibWebView/Application.cpp
-@@ -1500,6 +1500,9 @@
-     // Disable spare processes when profiling WebContent. This reduces callgrind logging we are not interested in.
-     if (browser_options().profile_helper_process == ProcessType::WebContent)
-         return;
-+    // Embedders short of memory can do without the idle process kept ready for the next tab.
-+    if (browser_options().disable_spare_web_content_process == DisableSpareWebContentProcess::Yes)
-+        return;
- 
-     if (m_spare_web_content_process || m_has_queued_task_to_launch_spare_web_content_process)
-         return;

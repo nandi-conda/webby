@@ -106,7 +106,7 @@ public:
     // Hands the page the files at `paths` (none cancels the picker).
     void respond_to_file_picker(Vector<ByteString> const& paths);
 
-    // A site asking to use a permission-gated feature (only "geolocation" so far), as JSON for the UI (empty when
+    // A site asking to use a permission-gated feature ("geolocation" or "microphone"), as JSON for the UI (empty when
     // nothing is waiting). See webby_view_permission_request() in webby_ffi.h.
     ByteString const& permission_request() const { return m_permission_request_json; }
     // Answers the request with that id, and any others waiting from the same site for the same permission.
