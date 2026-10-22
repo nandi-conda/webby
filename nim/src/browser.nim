@@ -263,12 +263,14 @@ proc activateTab*(i: int) =
   if activeIndex in 0 ..< tabs.len and activeIndex != i:
     if tabs[activeIndex].view != nil: webby_view_set_visible(tabs[activeIndex].view, 0)
     kit.removeClass(tabs[activeIndex].button, "webby-active-tab")
+    when defined(android): kit.removeClass(tabs[activeIndex].button, "selected")
   activeIndex = i
   let t = tabs[i]
   ensureView(t)
   webby_view_set_visible(t.view, 1)
   resizeView(t)
   kit.addClass(t.button, "webby-active-tab")
+  when defined(android): kit.addClass(t.button, "selected")   # Host's tint for a selected item (no GTK CSS there)
   kit.reveal(t.button)   # a tab opened past the strip's edge (a link from another app) scrolls into view
   refreshChrome()
   kit.invalidate(page)
