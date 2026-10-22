@@ -112,7 +112,7 @@ To publish a new runtime, bump the version or build number in `conda/webby-ladyb
 
 ## Android
 
-An APK for arm64 phones on Android 11 or newer ("Webby Nim", `dev.webby.nim`) is attached to the
+An APK for arm64 phones on Android 11 or newer ("Webby", `dev.webby.nim`) is attached to the
 `webby-nim-android-*` GitHub Releases: download it on the phone, allow installs from your browser or file manager,
 and open it. It runs the same Nim front end as the desktop under nimkit's Android host (`nim/android-kit`); the
 platform services (the password vault's key in the Android Keystore, location, notifications, downloads, home

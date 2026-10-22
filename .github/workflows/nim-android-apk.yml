@@ -72,7 +72,7 @@ jobs:
         run: |
           source scripts/android/native.env
           gh release create "webby-nim-android-$VERSION" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
-            --title "webby-nim for Android $VERSION" \
-            --notes "The desktop's Nim front end on nimkit's Android host (nim/android-kit), built by CI from $GITHUB_SHA with native part $NATIVE_VERSION. Installs as \"Webby Nim\" (dev.webby.nim), updating earlier Webby Nim builds in place. For arm64 phones on Android 11 or newer (debug-signed)." \
+            --title "Webby for Android $VERSION" \
+            --notes "The desktop's Nim front end on nimkit's Android host (nim/android-kit), built by CI from $GITHUB_SHA with native part $NATIVE_VERSION. Installs as \"Webby\" (dev.webby.nim), updating earlier builds (once labelled Webby Nim) in place. For arm64 phones on Android 11 or newer (debug-signed)." \
             webby-nim-android-arm64.apk webby-nim-android-arm64.apk.sha256
 

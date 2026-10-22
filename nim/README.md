@@ -9,7 +9,7 @@ autofill and passkeys, end-to-end encrypted sync, tabs from other devices, saved
 sessions, pinned and vertical tabs, tab and page context menus, incognito windows, site permissions and settings,
 file inputs, notifications, geolocation (GeoClue), dark mode, favicons, installable web apps (`--app=`), offline
 mode and Summarize. On Android, `nim/android-kit` runs this same front end on nimkit's Android host
-(`nim/android-kit/build.sh`, installed as "Webby Nim", dev.webby.nim); platform services come from its Java host
+(`nim/android-kit/build.sh`, installed as "Webby", dev.webby.nim); platform services come from its Java host
 through `hostCall` (`src/features/android.nim`).
 
 The core is `src/browser.nim` (window, tabs, input, pump, hooks); each feature is a module in `src/features/` whose
