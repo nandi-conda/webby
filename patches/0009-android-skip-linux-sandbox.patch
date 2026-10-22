@@ -43,6 +43,28 @@ index f6ed976a3c..f55df09d1b 100644
  void CrashReport::symbolicate_frame(ReportFrame&)
  {
  }
+diff --git a/Libraries/LibWebView/HelperProcess.cpp b/Libraries/LibWebView/HelperProcess.cpp
+index 824b847fc4..798591f999 100644
+--- a/Libraries/LibWebView/HelperProcess.cpp
++++ b/Libraries/LibWebView/HelperProcess.cpp
+@@ -218,7 +218,7 @@ static ErrorOr<ChildIdentity> launch_helper_process(StringView server_name, Vect
+             }
+         }
+ #endif
+-#if defined(AK_OS_LINUX)
++#if defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)
+         OwnPtr<Sandbox::ConnectBroker> connect_broker;
+         OwnPtr<Core::File> connect_broker_child_file;
+ 
+@@ -251,7 +251,7 @@ static ErrorOr<ChildIdentity> launch_helper_process(StringView server_name, Vect
+             auto process = result.release_value();
+             if (crash_report)
+                 process.set_crash_report(crash_report.release_nonnull());
+-#if defined(AK_OS_LINUX)
++#if defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)
+             if (connect_broker)
+                 process.set_connect_broker(connect_broker.release_nonnull());
+ #endif
 diff --git a/Services/AudioServer/main.cpp b/Services/AudioServer/main.cpp
 index 6f9d021fa5..76792561a2 100644
 --- a/Services/AudioServer/main.cpp
