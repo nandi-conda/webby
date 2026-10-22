@@ -5,10 +5,11 @@
 # Result: /build/out/webby-android-native-arm64.tar.zst, or a non-zero exit.
 set -euxo pipefail
 export DEBIAN_FRONTEND=noninteractive HOME=/root
+# No host libpulse-dev: the Android configure would find it and build the PulseAudio backend against missing headers.
 apt-get update -qq
 apt-get install -y -qq ca-certificates curl git python3 python3-venv ccache cmake ninja-build clang lld llvm \
   autoconf autoconf-archive automake build-essential libtool nasm pkg-config zip unzip tar libgl1-mesa-dev \
-  libdrm-dev libpulse-dev libncurses-dev glslang-tools xz-utils zstd file bison flex gperf default-jdk-headless
+  libdrm-dev libncurses-dev glslang-tools xz-utils zstd file bison flex gperf default-jdk-headless
 git config --global --add safe.directory '*'
 
 export WEBBY_ANDROID_TOOLS=/build/android-tools LADYBIRD_DIR=/build/ladybird
