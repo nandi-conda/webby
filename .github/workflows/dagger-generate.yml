@@ -1,0 +1,30 @@
+# Dagger 1.0 wants the module's generated files (the Python SDK client in .dagger/sdk etc.) committed, and
+# `dagger check` fails when they're stale. This runs `dagger generate` and commits the result to the branch it ran on.
+# Run it by hand after bumping the Dagger version or changing the module's dependencies.
+name: dagger-generate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dagger
+        run: |
+          v=$(sed -n 's/^engineVersion = "v\(.*\)"/\1/p' dagger-module.toml)
+          curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=$HOME/.local/bin DAGGER_VERSION=$v sh && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: dagger generate -y --progress=plain
+      - name: commit
+        run: |
+          git add -A
+          git status --short
+          git diff --cached --quiet && exit 0
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "dagger generate (Dagger $(sed -n 's/^engineVersion = "\(.*\)"/\1/p' dagger-module.toml))"
+          git push origin HEAD:${{ github.ref_name }}
