@@ -8,10 +8,11 @@ type
   Setting* = enum ask = "ask", allow = "allow", blocked = "block"
   Kind* = tuple[name, label, request, icon: string]
 
-const kinds*: array[3, Kind] = [
+const kinds*: array[4, Kind] = [
   ("geolocation", "Location", "Know your location", "location_on_outlined"),
   ("microphone", "Microphone", "Use your microphones", "mic_none"),
-  ("notifications", "Notifications", "Show notifications", "notifications_outlined")]
+  ("notifications", "Notifications", "Show notifications", "notifications_outlined"),
+  ("display-capture", "Screen sharing", "Record your screen", "computer")]
 
 proc kindNamed*(name: string): int =
   for i, k in kinds:

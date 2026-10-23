@@ -31,6 +31,12 @@ glib-networking = "*"
 adwaita-icon-theme = "*"
 librsvg = "*"
 fontconfig = "*"
+# Screen recording for pages (navigator.mediaDevices.getDisplayMedia, MediaRecorder): nim/screencast/ grabs the
+# screen through the desktop portal and PipeWire (or X11) and encodes WebM with GStreamer.
+gstreamer = "*"
+gst-plugins-base = "*"
+gst-plugins-good = "*"
+pipewire = "*"
 
 [tasks]
 webby = { cmd = "scripts/pixi_nim.sh", description = "Build (when changed) and run webby's Nim front end; extra args are URLs or --incognito" }

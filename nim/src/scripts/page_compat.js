@@ -115,8 +115,30 @@
         throw new DOMException('MediaRecorder is not supported in this browser', 'NotSupportedError');
       }
       static isTypeSupported() { return false; }
+      static get __webbyStandIn() { return true; }   // screen_capture.js replaces it where webby can record
     }
     Object.defineProperty(window, 'MediaRecorder', { value: MediaRecorder, writable: true, configurable: true });
+  }
+
+  // detectIncognito (a library Jam's recorder awaits before it submits a recording) tells engines apart by the
+  // length of the RangeError message from (-1).toFixed(-1) and gives up on one it doesn't know, Ladybird's. Firefox's
+  // wording makes it run its Firefox checks, which Ladybird passes.
+  if ((() => { try { (-1).toFixed(-1); } catch (e) { return e instanceof RangeError && e.message.length !== 25; } })()) {
+    const toFixed = Number.prototype.toFixed;
+    Object.defineProperty(Number.prototype, 'toFixed', {
+      value: {
+        toFixed(digits) {
+          try {
+            return toFixed.call(this, digits);
+          } catch (e) {
+            if (!(e instanceof RangeError)) throw e;
+            throw new RangeError(`precision ${Math.trunc(Number(digits))} out of range`);
+          }
+        },
+      }.toFixed,
+      writable: true,
+      configurable: true,
+    });
   }
 
   if (!('canvasKitForceMultiSurfaceRasterizer' in Object.prototype)) {

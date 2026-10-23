@@ -13,6 +13,8 @@ nim c -d:release --hints:off --warnings:off --cc:clang --nimcache:"$SRC_DIR/.nim
   -d:webbyVersion="$PKG_VERSION" -d:webbyCommit="${WEBBY_COMMIT:-}" \
   --passL:"-fuse-ld=lld -L$PREFIX/lib -Wl,-rpath,$PREFIX/lib -Wl,--no-as-needed -lstdc++ -Wl,--as-needed" \
   -o:"$PREFIX/lib/webby/webby" "$SRC_DIR/nim/webby.nim"
+# The screen recorder pages use (getDisplayMedia, MediaRecorder); the app starts it from its own directory.
+"$SRC_DIR/nim/screencast/build.sh" "$PREFIX/lib/webby/webby-screencast"
 install -m 755 "$RECIPE_DIR/webby.sh" "$PREFIX/bin/webby"
 # The launcher's FONTCONFIG_FILE; it goes in webby-ladybird's share/Lagom/fonts so the sandboxed helpers can read it.
 mkdir -p "$PREFIX/lib/webby-ladybird/share/Lagom/fonts"

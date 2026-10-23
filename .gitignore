@@ -4,3 +4,4 @@ nim/webby
 nim/*.log
 .claude/
 __pycache__/
+nim/webby-screencast

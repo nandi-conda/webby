@@ -26,6 +26,12 @@ if [ ! -x "$BIN" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$COMMIT" ] || [ -n "$(
     --passL:"-fuse-ld=lld -L$CONDA_PREFIX/lib -Wl,-rpath,$CONDA_PREFIX/lib -Wl,--no-as-needed -lstdc++ -Wl,--as-needed" -o:"$BIN" "$ROOT/nim/webby.nim"
   echo "$COMMIT" > "$STAMP"
 fi
+# The screen recorder pages use (nim/screencast, started by features/site/screencapture.nim from next to the app).
+CAST="$ROOT/nim/webby-screencast"
+if [ ! -x "$CAST" ] || [ "$ROOT/nim/screencast/webby-screencast.c" -nt "$CAST" ]; then
+  echo "Building nim/webby-screencast..." >&2
+  "$ROOT/nim/screencast/build.sh" "$CAST"
+fi
 if [ -n "${WEBBY_BUILD_ONLY:-}" ]; then exit 0; fi
 # GTK reads favicons through gdk-pixbuf's loaders (.ico, SVG, GIF; PNG and JPEG are built in). conda-forge's loaders.cache
 # names them relative to the program's own prefix, which webby (in nim/ or lib/webby/) isn't in, and pixi doesn't
