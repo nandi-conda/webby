@@ -7,6 +7,9 @@
 #
 # Builds and the dev workspace list conda-forge *first*: under strict channel priority a package name found in an
 # earlier channel hides it in later ones, so nandi-testing first would pin them to these mirrored copies.
+# This solve doesn't use strict priority for the same reason: a new webby that needs a newer conda-forge package
+# than the mirrored copy (or one not mirrored yet) can't be solved with nandi-testing first, so the solve fell back
+# to the previous webby and nothing new got mirrored (2026.10.23.412's xorg-libx11 >=1.8.14).
 set -euo pipefail
 
 CHANNEL="${CHANNEL:-nandi-testing}"
@@ -19,12 +22,13 @@ cat > "$WORK/pixi.toml" <<TOML
 name = "webby-mirror"
 channels = ["https://prefix.dev/$CHANNEL", "conda-forge"]
 platforms = ["linux-64"]
+channel-priority = "disabled"
 
 [system-requirements]
 libc = "$GLIBC"
 
 [dependencies]
-webby = "*"
+webby = "${WEBBY_VERSION:-*}"
 TOML
 pixi lock --manifest-path "$WORK/pixi.toml"
 

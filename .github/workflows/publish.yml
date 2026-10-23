@@ -39,6 +39,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.ladybird == 'true'
     runs-on: depot-ubuntu-24.04
+    outputs:
+      version: ${{ steps.publish.outputs.version }}
     concurrency:
       group: publish-webby-ladybird
       cancel-in-progress: false
@@ -58,6 +60,8 @@ jobs:
     # Run after webby-ladybird when it ran, and on its own when it was skipped.
     if: ${{ !cancelled() && needs.webby-ladybird.result != 'failure' }}
     runs-on: depot-ubuntu-24.04
+    outputs:
+      version: ${{ steps.publish.outputs.version }}
     concurrency:
       group: publish-webby
       cancel-in-progress: false
@@ -69,6 +73,7 @@ jobs:
           echo "$HOME/.pixi/bin" >> "$GITHUB_PATH"
           "$HOME/.pixi/bin/pixi" global install rattler-build
       - name: Build and upload webby
+        id: publish
         env:
           PREFIX_API_KEY: ${{ secrets.PREFIX_API_KEY }}
         run: |
@@ -76,6 +81,7 @@ jobs:
           export WEBBY_VERSION="$(git show -s --format=%cd --date=format:%Y.%m.%d HEAD).$RUN"
           export WEBBY_BUILD_NUMBER="$RUN"
           echo "publishing webby $WEBBY_VERSION build $WEBBY_BUILD_NUMBER"
+          echo "version=$WEBBY_VERSION" >> "$GITHUB_OUTPUT"
           scripts/publish_conda.sh webby
 
   # Copies webby's conda-forge run-time closure into nandi-testing (scripts/mirror_deps.sh) so a single-channel
@@ -97,9 +103,11 @@ jobs:
       - run: scripts/mirror_deps.sh
         env:
           PREFIX_API_KEY: ${{ secrets.PREFIX_API_KEY }}
+          # The webby just published: its closure is what has to be mirrored.
+          WEBBY_VERSION: ${{ needs.webby.outputs.version }}
 
   verify-install:
-    needs: mirror
+    needs: [webby, mirror]
     if: ${{ !cancelled() && needs.mirror.result == 'success' }}
     runs-on: depot-ubuntu-24.04
     container: ubuntu:22.04
@@ -111,7 +119,8 @@ jobs:
           export PATH="$HOME/.pixi/bin:$PATH"
           # The mirror's uploads can take a moment to show up in the channel's repodata.
           for i in 1 2 3 4 5; do
-            pixi global install -c https://prefix.dev/$CHANNEL webby && break
+            # The version just published: a plain `webby` would pass on an older one when the new one can't be solved.
+            pixi global install -c https://prefix.dev/$CHANNEL "webby==${{ needs.webby.outputs.version }}" && break
             [ "$i" = 5 ] && exit 1; sleep 30; pixi clean cache --repodata -y || true
           done
           pixi global list
