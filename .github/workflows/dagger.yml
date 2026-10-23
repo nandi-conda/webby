@@ -22,8 +22,9 @@ concurrency:
 env:
   # The org/repo variable DAGGER_SCALE_OUT ("true", "1" or "yes") runs the checks on a Dagger Cloud engine. One engine
   # for the whole run (--engine=cloud) keeps its cache between runs; a fresh engine per check (0.21's --scale-out) started
-  # with an empty cache every time (runs 19-20), so it bought no speed.
-  SCALE_OUT: ${{ contains(fromJSON('["true","1","yes"]'), vars.DAGGER_SCALE_OUT) && '--engine=cloud' || '' }}
+  # with an empty cache every time (runs 19-20), so it bought no speed. Dagger 1.0 only names the module in its engine
+  # request when it's given with -m, and without that each run got a fresh, cold engine (runs 31-32).
+  SCALE_OUT: ${{ contains(fromJSON('["true","1","yes"]'), vars.DAGGER_SCALE_OUT) && '--engine=cloud -m .dagger' || '' }}
   DAGGER_VERSION: 1.0.0-beta.20  # also in dagger-generate.yml
   DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
   DAGGER_NO_NAG: "1"
@@ -50,7 +51,7 @@ jobs:
           if [ -n "$SCALE_OUT" ]; then
             # The telemetry token is sent as Basic auth, which the engine API turns away ("invalid token type"); the
             # CLI's special value "oidc" trades this job's GitHub OIDC token for a Dagger Cloud one instead.
-            DAGGER_CLOUD_TOKEN=oidc dagger check --progress=plain --engine=cloud 2>&1 | tee "$RUNNER_TEMP/check.log" && exit 0
+            DAGGER_CLOUD_TOKEN=oidc dagger check --progress=plain $SCALE_OUT 2>&1 | tee "$RUNNER_TEMP/check.log" && exit 0
             grep -q -E "provision a remote Engine|OIDC|Cloud Engine" "$RUNNER_TEMP/check.log" || exit 1
             echo "::warning::Dagger Cloud engines unavailable ($(grep -o -m1 -E '(failed to provision a remote Engine|failed to [a-z ]*OIDC).*' "$RUNNER_TEMP/check.log" | head -c 300)); checking on this runner"
             echo "SCALE_OUT=" >> "$GITHUB_ENV"
