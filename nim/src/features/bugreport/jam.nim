@@ -175,7 +175,7 @@ proc createJam(u: Upload, teamId: string, ids: seq[string], eventsId: string, wi
     jam["data"] = %*{"mediaId": ids[0], "posterImageMediaId": ids[1], "durationMs": u.durationMs, "width": u.width,
       "height": u.height, "viewport": "tab", "recordingSurface": "browser_tab", "micEnabled": false}
   else:
-    jam["data"] = %*{"type": "fullscreen", "mediaId": ids[0]}
+    jam["data"] = %*{"type": "fullscreen", "delayMs": 0, "mediaId": ids[0]}
   call(u.token, op, query, %*{"jam": jam, "comment": {"message": "", "attachments": []}}, proc (data: JsonNode, error: string) =
     if data == nil:
       # A screenshot Jam may not take events on every Jam API version; it still beats no Jam.

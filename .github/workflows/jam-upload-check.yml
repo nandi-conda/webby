@@ -66,5 +66,6 @@ jobs:
           ls -la /tmp/recording.webm /tmp/screenshot.png
       - name: Upload to Jam
         run: |
+          set -o pipefail
           /tmp/jam_upload_check /tmp/screenshot.png /tmp/recording.webm | tee /tmp/out.txt
           grep -E '^(SCREENSHOT|VIDEO) ' /tmp/out.txt >> "$GITHUB_STEP_SUMMARY"
