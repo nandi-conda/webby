@@ -60,6 +60,11 @@ else:
     ItemGetLocked = proc (item: pointer): cint {.cdecl.}
     ObjectUnref = proc (o: pointer) {.cdecl.}
     ListFree = proc (l: ptr GList) {.cdecl.}
+    CollectionForAlias = proc (service: pointer, alias: cstring, flags: cint, cancellable: pointer,
+      error: ptr ptr GError): pointer {.cdecl.}
+    CollectionGetLocked = proc (collection: pointer): cint {.cdecl.}
+    ServiceUnlock = proc (service: pointer, objects: ptr GList, cancellable: pointer, unlocked: ptr ptr GList,
+      error: ptr ptr GError): cint {.cdecl.}
     GList = object
       data: pointer
       next, prev: ptr GList
@@ -74,6 +79,9 @@ else:
     itemGetLocked: ItemGetLocked
     objectUnref: ObjectUnref
     listFree: ListFree
+    collectionForAlias: CollectionForAlias
+    collectionGetLocked: CollectionGetLocked
+    serviceUnlock: ServiceUnlock
     schema = SecretSchema(name: "dev.webby.Vault")
 
   proc load(): bool =
@@ -90,6 +98,9 @@ else:
     itemGetLocked = cast[ItemGetLocked](lib.symAddr("secret_item_get_locked"))
     objectUnref = cast[ObjectUnref](lib.symAddr("g_object_unref"))
     listFree = cast[ListFree](lib.symAddr("g_list_free"))
+    collectionForAlias = cast[CollectionForAlias](lib.symAddr("secret_collection_for_alias_sync"))
+    collectionGetLocked = cast[CollectionGetLocked](lib.symAddr("secret_collection_get_locked"))
+    serviceUnlock = cast[ServiceUnlock](lib.symAddr("secret_service_unlock_sync"))
     if lookupV == nil or storeV == nil or passwordFree == nil:
       lookupV = nil
       return false
@@ -107,9 +118,70 @@ else:
     if error != nil: g_error_free(error)
     raise newException(KeyringError, message)
 
-  proc keyringLookup*(profile: string): (bool, string) =
-    ## (found, secret). Raises KeyringError when the keyring can't be reached.
-    if not load(): raise newException(KeyringError, "libsecret-1.so.0 not found")
+  proc canInspect(): bool =
+    serviceGet != nil and serviceSearch != nil and itemGetLocked != nil and objectUnref != nil and listFree != nil and
+      collectionForAlias != nil and collectionGetLocked != nil and serviceUnlock != nil
+
+  proc withService(body: proc (service: pointer)) =
+    var error: ptr GError
+    let service = serviceGet(0, nil, addr error)
+    if error != nil: g_error_free(error)
+    if service == nil: return
+    body(service)
+    objectUnref(service)
+
+  proc withDefaultCollection(service: pointer, body: proc (collection: pointer)) =
+    var error: ptr GError
+    let collection = collectionForAlias(service, "default", 0, nil, addr error)
+    if error != nil: g_error_free(error)
+    if collection == nil: return
+    body(collection)
+    objectUnref(collection)
+
+  proc keyringLocked*(profile: string): bool =
+    ## Whether the profile's key may be in a locked collection: a matching item is locked, or the default collection
+    ## (where it is stored) is. Some keyrings (oo7) don't match attributes of items in a locked collection at all.
+    if not load() or not canInspect(): return false
+    var locked = false
+    withService proc (service: pointer) =
+      let attrs = attributes(profile)
+      const searchAll = 1 shl 1   # SECRET_SEARCH_ALL, without SECRET_SEARCH_UNLOCK
+      var error: ptr GError
+      let items = serviceSearch(service, addr schema, attrs, searchAll, nil, addr error)
+      g_hash_table_unref(attrs)
+      if error != nil: g_error_free(error)
+      var node = items
+      while node != nil:
+        if itemGetLocked(node.data) != 0: locked = true
+        objectUnref(node.data)
+        node = node.next
+      if items != nil: listFree(items)
+      withDefaultCollection(service, proc (collection: pointer) =
+        if collectionGetLocked(collection) != 0: locked = true)
+    locked
+
+  proc unlockDefaultCollection(): bool =
+    ## Asks the keyring to unlock its default collection (it shows its own password prompt). True if it did.
+    var unlockedAny = false
+    withService proc (service: pointer) =
+      withDefaultCollection(service, proc (collection: pointer) =
+        if collectionGetLocked(collection) == 0: return
+        var objects = GList(data: collection)
+        var unlocked: ptr GList
+        var error: ptr GError
+        let n = serviceUnlock(service, addr objects, nil, addr unlocked, addr error)
+        if error != nil:
+          stderr.writeLine "webby: the keyring didn't unlock: ", (if error.message != nil: $error.message else: "")
+          g_error_free(error)
+        var node = unlocked
+        while node != nil:
+          objectUnref(node.data)
+          node = node.next
+        if unlocked != nil: listFree(unlocked)
+        unlockedAny = n > 0)
+    unlockedAny
+
+  proc lookupOnce(profile: string): (bool, string) =
     var error: ptr GError
     let attrs = attributes(profile)
     let secret = lookupV(addr schema, attrs, nil, addr error)
@@ -121,6 +193,14 @@ else:
     result = (true, $secret)
     passwordFree(secret)   # libsecret wipes it
 
+  proc keyringLookup*(profile: string): (bool, string) =
+    ## (found, secret). Raises KeyringError when the keyring can't be reached. When nothing is found and the default
+    ## collection is locked, asks the keyring to unlock it and looks again: libsecret only unlocks items its search
+    ## matched, and some keyrings (oo7) match nothing in a locked collection.
+    if not load(): raise newException(KeyringError, "libsecret-1.so.0 not found")
+    result = lookupOnce(profile)
+    if not result[0] and canInspect() and unlockDefaultCollection(): result = lookupOnce(profile)
+
   proc keyringStore*(profile, secret: string) =
     if not load(): raise newException(KeyringError, "libsecret-1.so.0 not found")
     var error: ptr GError
@@ -130,25 +210,3 @@ else:
     g_hash_table_unref(attrs)
     if error != nil or ok == 0: raiseFrom(error, "The keyring refused the request")
 
-  proc keyringLocked*(profile: string): bool =
-    ## Whether the keyring has the profile's key but in a locked collection. A lookup asks the keyring to unlock it,
-    ## and when that prompt can't be shown or is dismissed it reports the key as missing, without an error.
-    if not load() or serviceGet == nil or serviceSearch == nil or itemGetLocked == nil or objectUnref == nil or
-        listFree == nil: return false
-    var error: ptr GError
-    let service = serviceGet(0, nil, addr error)
-    if error != nil: g_error_free(error)
-    if service == nil: return false
-    let attrs = attributes(profile)
-    const searchAll = 1 shl 1   # SECRET_SEARCH_ALL, without SECRET_SEARCH_UNLOCK
-    error = nil
-    let items = serviceSearch(service, addr schema, attrs, searchAll, nil, addr error)
-    g_hash_table_unref(attrs)
-    if error != nil: g_error_free(error)
-    var node = items
-    while node != nil:
-      if itemGetLocked(node.data) != 0: result = true
-      objectUnref(node.data)
-      node = node.next
-    if items != nil: listFree(items)
-    objectUnref(service)
