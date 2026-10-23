@@ -105,6 +105,20 @@
     relink();
   }
 
+  // Ladybird has no MediaRecorder. Pages that subclass it at the top of a module (`class extends MediaRecorder`, as
+  // Jam's recorder.jam.dev does) die with a ReferenceError before they draw anything, even when they would check for
+  // recording support and say it's missing. A stand-in that can be extended but records nothing lets them get there.
+  if (typeof window.MediaRecorder === 'undefined' && typeof EventTarget !== 'undefined') {
+    class MediaRecorder extends EventTarget {
+      constructor() {
+        super();
+        throw new DOMException('MediaRecorder is not supported in this browser', 'NotSupportedError');
+      }
+      static isTypeSupported() { return false; }
+    }
+    Object.defineProperty(window, 'MediaRecorder', { value: MediaRecorder, writable: true, configurable: true });
+  }
+
   if (!('canvasKitForceMultiSurfaceRasterizer' in Object.prototype)) {
     Object.defineProperty(Object.prototype, 'canvasKitForceMultiSurfaceRasterizer', {
       get() { return true; },
