@@ -37,6 +37,11 @@ jobs:
           pixi run bash -c 'nim c -d:release --hints:off --warnings:off --cc:clang --nimcache:/tmp/nimcache \
             --passL:"-fuse-ld=lld -L$CONDA_PREFIX/lib -Wl,-rpath,$CONDA_PREFIX/lib" \
             -o:/tmp/jam_upload_check nim/tests/jam_upload_check.nim'
+          pixi run bash -c 'nim c -d:release --hints:off --warnings:off --cc:clang --nimcache:/tmp/nimcache2 \
+            --passL:"-fuse-ld=lld -L$CONDA_PREFIX/lib -Wl,-rpath,$CONDA_PREFIX/lib" \
+            -o:/tmp/jam_token_check nim/tests/jam_token_check.nim'
+      - name: Check the token against each Jam endpoint
+        run: /tmp/jam_token_check
       - name: Make a screenshot and a recording
         run: |
           python3 - <<'EOF' | /tmp/webby-tabrec 640 360 /tmp/recording.webm
