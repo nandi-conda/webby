@@ -2,12 +2,13 @@
 // (nim/src/features/site/screencapture.nim, which starts one of these per shared screen).
 //
 // On Wayland it asks the desktop's ScreenCast portal for a screen or window (the desktop shows its own picker) and
-// reads the frames from PipeWire; on X11 (--x11) it grabs the whole screen with ximagesrc. Each recording is
+// reads the frames from PipeWire; on X11 (--x11) it grabs the whole screen with ximagesrc. With --audio it shares
+// no screen and records the default microphone alone (a page recording the microphone stream it already has). Each recording is
 // encoded with GStreamer to WebM (VP8, plus Opus when audio is asked for: the desktop's sound and/or the default
 // microphone, through PulseAudio or pipewire-pulse).
 //
 // stdin, one command per line:  start <system-audio 0|1> <microphone 0|1>,  pause,  resume,  stop.  EOF quits.
-// stdout, framed:  READY <width> <height> <monitor|window>\n   the screen is shared (once)
+// stdout, framed:  READY <width> <height> <monitor|window|audio>\n   the screen is shared (once)
 //                  DATA <n>\n<n bytes>                           more of the current recording's WebM
 //                  STOPPED\n                                     the current recording is complete
 //                  ENDED\n                                       the sharing ended (portal closed, stream gone)
@@ -38,7 +39,7 @@
 
 static GMainLoop *loop;
 static GMutex out_lock;
-static gboolean use_x11;
+static gboolean use_x11, audio_only;
 static int src_width, src_height;   // the shared screen or window, as last known
 static const char *surface = "monitor";
 static gboolean ready_sent, ended;
@@ -508,6 +509,24 @@ static void start_x11(void) {
 // ---------------------------------------------------------------------------------------------------------------
 // Recordings
 
+// webmmux writes Opus's pre-skip as the track's CodecDelay but orders the blocks by their timestamps before it is
+// taken off, so with sound some audio blocks come out earlier than the video block before them. Ladybird's Media
+// Source parser rejects such a stream (Jam plays the recording through one while it records, and stops when it
+// fails), so the header goes out with CodecDelay 0: the sound is 6.5 ms late instead.
+static gboolean in_header;
+
+static void clear_codec_delay(guint8 *data, gsize size) {
+  for (gsize i = 0; i + 3 <= size; i++) {
+    if (data[i] == 0x1F && i + 4 <= size && data[i + 1] == 0x43 && data[i + 2] == 0xB6 && data[i + 3] == 0x75) {
+      in_header = FALSE;   // the first Cluster: the header is over
+      return;
+    }
+    guint8 length = data[i + 2];
+    if (data[i] == 0x56 && data[i + 1] == 0xAA && length >= 0x81 && length <= 0x88 && i + 3 + (length & 0x0F) <= size)
+      memset(data + i + 3, 0, length & 0x0F);
+  }
+}
+
 static GstFlowReturn on_sample(GstAppSink *sink, gpointer data) {
   (void)data;
   GstSample *sample = gst_app_sink_pull_sample(sink);
@@ -515,7 +534,12 @@ static GstFlowReturn on_sample(GstAppSink *sink, gpointer data) {
   GstBuffer *buffer = gst_sample_get_buffer(sample);
   GstMapInfo map;
   if (buffer && gst_buffer_map(buffer, &map, GST_MAP_READ)) {
-    if (map.size > 0) out_data(map.data, map.size);
+    if (map.size > 0 && in_header) {
+      guint8 *copy = g_memdup2(map.data, map.size);
+      clear_codec_delay(copy, map.size);
+      out_data(copy, map.size);
+      g_free(copy);
+    } else if (map.size > 0) out_data(map.data, map.size);
     gst_buffer_unmap(buffer, &map);
   }
   gst_sample_unref(sample);
@@ -571,25 +595,7 @@ static char *audio_branch(gboolean system_audio, gboolean microphone) {
   return g_strdup_printf("pulsesrc %s ! %s ! %s", system_audio ? "device=@DEFAULT_MONITOR@" : "", convert, encode);
 }
 
-static GstElement *build_pipeline(gboolean system_audio, gboolean microphone) {
-  int w = src_width > 0 ? src_width : 1280, h = src_height > 0 ? src_height : 720;
-  if (w > MAX_WIDTH) {
-    h = (int)((gint64)h * MAX_WIDTH / w);
-    w = MAX_WIDTH;
-  }
-  w &= ~1;
-  h &= ~1;
-  const char *source = use_x11
-    ? "ximagesrc use-damage=false show-pointer=true ! video/x-raw,framerate=30/1"
-    : "appsrc name=vsrc is-live=true format=time do-timestamp=true";
-  char *audio = system_audio || microphone ? audio_branch(system_audio, microphone) : g_strdup("");
-  char *desc = g_strdup_printf(
-    "%s ! queue leaky=downstream max-size-buffers=4 ! valve name=vvalve ! videoconvert ! videoscale add-borders=true ! "
-    "video/x-raw,format=I420,width=%d,height=%d,pixel-aspect-ratio=1/1 ! "
-    "vp8enc deadline=1 cpu-used=8 threads=4 end-usage=vbr target-bitrate=3000000 keyframe-max-dist=150 ! queue ! "
-    "webmmux name=mux streamable=true ! appsink name=out sync=false emit-signals=true  %s",
-    source, w, h, audio);
-  g_free(audio);
+static GstElement *parse_pipeline(char *desc) {
   GError *err = NULL;
   GstElement *p = gst_parse_launch(desc, &err);
   g_free(desc);
@@ -600,6 +606,32 @@ static GstElement *build_pipeline(gboolean system_audio, gboolean microphone) {
     return NULL;
   }
   return p;
+}
+
+static GstElement *build_pipeline(gboolean system_audio, gboolean microphone) {
+  int w = src_width > 0 ? src_width : 1280, h = src_height > 0 ? src_height : 720;
+  if (w > MAX_WIDTH) {
+    h = (int)((gint64)h * MAX_WIDTH / w);
+    w = MAX_WIDTH;
+  }
+  w &= ~1;
+  h &= ~1;
+  if (audio_only)
+    return parse_pipeline(g_strdup("webmmux name=mux streamable=true latency=1000000000 ! appsink name=out sync=false "
+      "emit-signals=true  pulsesrc ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! "
+      "valve name=avalve ! audioconvert ! opusenc bitrate=128000 ! queue ! mux."));
+  const char *source = use_x11
+    ? "ximagesrc use-damage=false show-pointer=true ! video/x-raw,framerate=30/1"
+    : "appsrc name=vsrc is-live=true format=time do-timestamp=true";
+  char *audio = system_audio || microphone ? audio_branch(system_audio, microphone) : g_strdup("");
+  char *desc = g_strdup_printf(
+    "%s ! queue leaky=downstream max-size-buffers=4 ! valve name=vvalve ! videoconvert ! videoscale add-borders=true ! "
+    "video/x-raw,format=I420,width=%d,height=%d,pixel-aspect-ratio=1/1 ! "
+    "vp8enc deadline=1 cpu-used=8 threads=4 end-usage=vbr target-bitrate=3000000 keyframe-max-dist=150 ! queue ! "
+    "webmmux name=mux streamable=true latency=1000000000 ! appsink name=out sync=false emit-signals=true  %s",
+    source, w, h, audio);
+  g_free(audio);
+  return parse_pipeline(desc);
 }
 
 static void set_valves(gboolean drop) {
@@ -618,13 +650,14 @@ static void start_recording(gboolean system_audio, gboolean microphone) {
   // Without a sound server the audio sources fail to start; the recording then goes on without sound.
   for (int attempt = 0; attempt < 2; attempt++) {
     gboolean audio = attempt == 0 && (system_audio || microphone);
-    if (attempt == 1 && !(system_audio || microphone)) break;
+    if (attempt == 1 && (audio_only || !(system_audio || microphone))) break;
     GstElement *p = build_pipeline(audio && system_audio, audio && microphone);
     if (p == NULL) continue;
     GstElement *sink = gst_bin_get_by_name(GST_BIN(p), "out");
     g_signal_connect(sink, "new-sample", G_CALLBACK(on_sample), NULL);
     gst_object_unref(sink);
     pipeline = p;
+    in_header = TRUE;
     GstBus *b = gst_element_get_bus(p);
     gst_bus_add_watch(b, on_bus, p);
     gst_object_unref(b);
@@ -644,7 +677,7 @@ static void start_recording(gboolean system_audio, gboolean microphone) {
     g_mutex_unlock(&frame_lock);
     recording = TRUE;
     stopping = FALSE;
-    say("webby-screencast: recording (%s%s%s)\n", use_x11 ? "X11" : "portal", audio && system_audio ? ", desktop sound" : "",
+    say("webby-screencast: recording (%s%s%s)\n", audio_only ? "audio" : use_x11 ? "X11" : "portal", audio && system_audio ? ", desktop sound" : "",
       audio && microphone ? ", microphone" : "");
     return;
   }
@@ -731,19 +764,21 @@ int main(int argc, char **argv) {
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--x11") == 0) use_x11 = TRUE;
     else if (strcmp(argv[i], "--portal") == 0) use_x11 = FALSE;
+    else if (strcmp(argv[i], "--audio") == 0) audio_only = TRUE;
     else {
-      say("usage: webby-screencast [--portal | --x11]\n");
+      say("usage: webby-screencast [--portal | --x11 | --audio]\n");
       return 2;
     }
   }
   open_log();
-  say("webby-screencast: start (%s)\n", use_x11 ? "X11" : "portal");
+  say("webby-screencast: start (%s)\n", audio_only ? "audio" : use_x11 ? "X11" : "portal");
   own_gstreamer();
   gst_init(NULL, NULL);
   input = g_string_new(NULL);
   loop = g_main_loop_new(NULL, FALSE);
   g_unix_fd_add(0, G_IO_IN | G_IO_HUP | G_IO_ERR, on_stdin, NULL);
-  if (use_x11) start_x11();
+  if (audio_only) out_line("READY 0 0 audio");
+  else if (use_x11) start_x11();
   else start_portal();
   g_main_loop_run(loop);
   if (recording) {

@@ -16,6 +16,7 @@ proc g_child_watch_add(pid: cint, fn, data: pointer): cuint {.importc, cdecl.}
 proc g_spawn_close_pid(pid: cint) {.importc, cdecl.}
 proc g_unix_fd_add(fd: cint, condition: cuint, fn, data: pointer): cuint {.importc, cdecl.}
 proc g_source_remove(id: cuint): cint {.importc, cdecl.}
+proc g_timeout_add(ms: cuint, fn, data: pointer): cuint {.importc, cdecl.}
 
 const
   gIoIn = 1.cuint
@@ -31,7 +32,11 @@ type Capture = ref object
   inFd, outFd: cint
   watch: cuint
   buf: string          ## read from the helper, not parsed yet
+  pending: string      ## WebM not passed to the page yet
+  flushTimer: cuint
   ready: bool          ## READY came: the page has its stream
+  microphone: bool     ## records the microphone alone (--audio), for a recorder the page already started
+  idle: bool           ## the tab was seen done loading since; loading again is a new document
   done: bool
 
 var
@@ -51,6 +56,13 @@ proc callPage(c: Capture, js: string) =
   c.tab.runJs("window.__webbyCapture && window.__webbyCapture." & js)
   wake()
 
+proc flush(c: Capture) =
+  ## Passes the WebM read so far to the page. The muxer writes in small pieces (one per sound frame, dozens a
+  ## second), and a page call for each kept Jam's page so busy that it gave up recording or got killed as hung.
+  if c.pending.len == 0: return
+  callPage(c, "data(" & $c.pageId & ", '" & encode(c.pending) & "')")
+  c.pending = ""
+
 proc command(c: Capture, line: string) =
   if c.done or c.inFd < 0: return
   let s = line & "\n"
@@ -60,13 +72,17 @@ proc finish(c: Capture) =
   ## The helper is gone or should go: closing its stdin ends the sharing (and the portal session).
   if c.done: return
   c.done = true
+  flush(c)
+  if c.flushTimer != 0: discard g_source_remove(c.flushTimer)
+  c.flushTimer = 0
   if c.watch != 0: discard g_source_remove(c.watch)
   c.watch = 0
   if c.inFd >= 0: discard posix.close(c.inFd)
   if c.outFd >= 0: discard posix.close(c.outFd)
   c.inFd = -1
   c.outFd = -1
-  if c.ready: callPage(c, "ended(" & $c.pageId & ")")
+  if c.microphone: callPage(c, "stopped(" & $c.pageId & ")")   # no-op when the page ended it
+  elif c.ready: callPage(c, "ended(" & $c.pageId & ")")
   else: callPage(c, "denied(" & $c.pageId & ", 'NotReadableError', 'Could not share the screen')")
   captures.del c.key
 
@@ -75,6 +91,7 @@ proc handle(c: Capture, line: string) =
   case parts[0]
   of "READY":
     c.ready = true
+    if c.microphone: return
     let w = (try: parseInt(parts[1]) except CatchableError: 0)
     let h = (try: parseInt(parts[2]) except CatchableError: 0)
     callPage(c, "granted(" & $c.pageId & ", " & $w & ", " & $h & ", " & $(%parts[^1]) & ")")
@@ -92,8 +109,7 @@ proc handle(c: Capture, line: string) =
   else: discard
 
 proc parse(c: Capture) =
-  ## Handles the complete messages in c.buf; WebM bytes go to the page in one call per read.
-  var data = ""
+  ## Handles the complete messages in c.buf; WebM bytes wait in c.pending for the next flush.
   var i = 0
   while true:
     let nl = c.buf.find('\n', i)
@@ -102,16 +118,14 @@ proc parse(c: Capture) =
     if line.startsWith("DATA "):
       let n = (try: parseInt(line.substr(5)) except CatchableError: -1)
       if n < 0 or nl + 1 + n > c.buf.len: break
-      data.add c.buf[nl + 1 ..< nl + 1 + n]
+      c.pending.add c.buf[nl + 1 ..< nl + 1 + n]
       i = nl + 1 + n
     else:
-      if data.len > 0:
-        callPage(c, "data(" & $c.pageId & ", '" & encode(data) & "')")
-        data = ""
+      flush(c)
       handle(c, line)
       i = nl + 1
-  if data.len > 0: callPage(c, "data(" & $c.pageId & ", '" & encode(data) & "')")
   c.buf = c.buf.substr(i)
+  if c.pending.len >= 4 shl 20: flush(c)
 
 proc onOutput(fd: cint, condition: cuint, data: pointer): cint {.cdecl.} =
   let c = captures.getOrDefault(cast[int](data))
@@ -128,18 +142,25 @@ proc onOutput(fd: cint, condition: cuint, data: pointer): cint {.cdecl.} =
   finish(c)
   0
 
-proc start(t: Tab, origin: string, pageId: int, x11: bool) =
-  let c = Capture(key: nextKey, tab: t, pageId: pageId, origin: origin, inFd: -1, outFd: -1)
+proc start(t: Tab, origin: string, pageId: int, mode: string): Capture =
+  let c = Capture(key: nextKey, tab: t, pageId: pageId, origin: origin, inFd: -1, outFd: -1, idle: not t.loading,
+    microphone: mode == "--audio")
   inc nextKey
-  let argv = allocCStringArray([helperPath(), if x11: "--x11" else: "--portal"])
+  let argv = allocCStringArray([helperPath(), mode])
   defer: deallocCStringArray(argv)
   # G_SPAWN_DO_NOT_REAP_CHILD; the helper's stderr is webby's.
   if g_spawn_async_with_pipes(nil, argv, nil, 2, nil, nil, addr c.pid, addr c.inFd, addr c.outFd, nil, nil) == 0:
     callPage(c, "denied(" & $pageId & ", 'NotReadableError', 'Could not start screen sharing')")
-    return
+    return nil
   discard g_child_watch_add(c.pid, proc (pid, status: cint, d: pointer) {.cdecl.} = g_spawn_close_pid(pid), nil)
   captures[c.key] = c
+  c.flushTimer = g_timeout_add(500, proc (data: pointer): cint {.cdecl.} =
+    let c = captures.getOrDefault(cast[int](data))
+    if c == nil or c.done: return 0
+    flush(c)
+    1, cast[pointer](c.key))
   c.watch = g_unix_fd_add(c.outFd, gIoIn or gIoHup or gIoErr, onOutput, cast[pointer](c.key))
+  c
 
 proc find(t: Tab, pageId: int): Capture =
   for c in captures.values:
@@ -154,13 +175,17 @@ proc onMessage(t: Tab, text: string): bool =
   of "captureRequest":
     let id = m{"id"}.getInt
     # Wayland has only the portal (whose picker asks); on X11 the whole screen is shared once the site may.
-    if getEnv("WAYLAND_DISPLAY").len > 0: start(t, origin, id, x11 = false)
+    if getEnv("WAYLAND_DISPLAY").len > 0: discard start(t, origin, id, "--portal")
     else:
       askPermission(t, origin, "display-capture", proc (allowed: bool) =
         if t.closed or secureOrigin(t.url) != origin: return
-        if allowed: start(t, origin, id, x11 = true)
+        if allowed: discard start(t, origin, id, "--x11")
         else: t.runJs("window.__webbyCapture && window.__webbyCapture.denied(" & $id &
           ", 'NotAllowedError', 'Permission denied')"))
+  of "captureMicrophone":
+    # The page holds a live microphone track (the engine asked for it), so no question here.
+    let c = start(t, origin, m{"capture"}.getInt, "--audio")
+    if c != nil: command(c, "start 0 1")
   of "captureStart":
     let c = find(t, m{"capture"}.getInt)
     if c != nil: command(c, "start " & $int(m{"systemAudio"}.getBool) & " " & $int(m{"microphone"}.getBool))
@@ -180,10 +205,21 @@ proc endFor(t: Tab, keep: string) =
     if c.tab == t and (keep.len == 0 or c.origin != keep): gone.add c
   for c in gone: finish(c)
 
+proc onTabState(t: Tab) =
+  ## A capture belongs to one document. Another one loading in the tab (a reload, or Ladybird replacing a page
+  ## process it killed as hung) can't use it, so the sharing ends instead of running on unseen.
+  endFor(t, secureOrigin(t.url))
+  var gone: seq[Capture]
+  for c in captures.values:
+    if c.tab != t: continue
+    if not t.loading: c.idle = true
+    elif c.idle: gone.add c
+  for c in gone: finish(c)
+
 proc install*() =
   pageScriptHooks.add script
   pageMessageHooks.add onMessage
-  tabStateHooks.add proc (t: Tab) = endFor(t, secureOrigin(t.url))
+  tabStateHooks.add onTabState
   tabClosedHooks.add proc (t: Tab) = endFor(t, "")
   shutdownHooks.add proc () =
     var all: seq[Capture]

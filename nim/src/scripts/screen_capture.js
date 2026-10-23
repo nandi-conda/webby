@@ -11,6 +11,7 @@
   const prompt = window.prompt;
   const send = (message) => { try { prompt.call(window, PREFIX + JSON.stringify(message)); } catch (e) {} };
   const TYPE = 'video/webm;codecs=vp8,opus';
+  const AUDIO_TYPE = 'audio/webm;codecs=opus';
 
   const self = {
     nextId: 1,
@@ -41,12 +42,9 @@
       for (const track of capture.tracks) track.dispatchEvent(new Event('ended'));
     },
     data(id, base64) {
+      // Kept as text until the page asks for the data: decoding is the costly part.
       const capture = self.captures.get(id);
-      if (!capture || !capture.recorder) return;
-      const text = atob(base64);
-      const bytes = new Uint8Array(text.length);
-      for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
-      capture.recorder._chunks.push(bytes);
+      if (capture && capture.recorder) capture.recorder._chunks.push(base64);
     },
     error(id, message) {
       const capture = self.captures.get(id);
@@ -57,6 +55,11 @@
       if (!capture || !capture.recorder) return;
       const recorder = capture.recorder;
       capture.recorder = null;
+      // A microphone recording has its own helper, done with once its recording is.
+      if (capture.audioOnly) {
+        self.captures.delete(id);
+        send({ type: 'captureEnd', capture: id });
+      }
       recorder._finish();
     },
   };
@@ -143,9 +146,16 @@
   }
 
   const supported = (type) => {
-    const m = /^\s*video\/webm\s*(?:;\s*codecs\s*=\s*"?([^"]*)"?\s*)?$/i.exec(String(type));
+    const m = /^\s*(?:video|audio)\/webm\s*(?:;\s*codecs\s*=\s*"?([^"]*)"?\s*)?$/i.exec(String(type));
     if (!m) return false;
     return !m[1] || m[1].split(',').every((c) => ['vp8', 'vp8.0', 'opus'].includes(c.trim().toLowerCase()));
+  };
+
+  const decode = typeof Uint8Array.fromBase64 === 'function' ? (base64) => Uint8Array.fromBase64(base64) : (base64) => {
+    const text = atob(base64);
+    const bytes = new Uint8Array(text.length);
+    for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
+    return bytes;
   };
 
   class BlobEvent extends Event {
@@ -184,7 +194,21 @@
       if (this._state !== 'inactive') throw new DOMException('The MediaRecorder is already recording', 'InvalidStateError');
       const tracks = this._stream.getTracks();
       const screen = tracks.find((t) => t.kind === 'video' && t.__webbyCapture);
-      if (!screen) throw new DOMException('Only a shared screen can be recorded in this browser', 'NotSupportedError');
+      if (!screen) {
+        // The microphone alone (Jam records it beside the screen, for its sound meter).
+        if (!tracks.some((t) => self.micTracks.has(t) && t.readyState === 'live'))
+          throw new DOMException('Only a shared screen or the microphone can be recorded in this browser', 'NotSupportedError');
+        const id = self.nextId++;
+        const capture = { id, tracks: [], ended: false, recorder: this, audio: true, audioOnly: true };
+        self.captures.set(id, capture);
+        this._capture = capture;
+        this._state = 'recording';
+        this._chunks = [];
+        this._mimeType = AUDIO_TYPE;
+        send({ type: 'captureMicrophone', capture: id });
+        this._began(timeslice);
+        return;
+      }
       const capture = screen.__webbyCapture;
       if (capture.ended) throw new DOMException('The shared screen has ended', 'InvalidStateError');
       if (capture.recorder) throw new DOMException('The shared screen is already being recorded', 'NotSupportedError');
@@ -196,6 +220,9 @@
       this._chunks = [];
       this._mimeType = TYPE;
       send({ type: 'captureStart', capture: capture.id, systemAudio: audio && capture.audio, microphone });
+      this._began(timeslice);
+    }
+    _began(timeslice) {
       const slice = Number(timeslice);
       if (slice > 0) this._timer = setInterval(() => this._emit(), Math.max(slice, 100));
       setTimeout(() => this.dispatchEvent(new Event('start')), 0);
@@ -225,7 +252,7 @@
       send({ type: 'captureStop', capture: this._capture.id });
     }
     _emit() {
-      const data = new Blob(this._chunks, { type: this._mimeType });
+      const data = new Blob(this._chunks.map(decode), { type: this._mimeType });
       this._chunks = [];
       this.dispatchEvent(new BlobEvent('dataavailable', { data }));
     }
