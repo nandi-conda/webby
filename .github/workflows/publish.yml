@@ -100,7 +100,12 @@ jobs:
           curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=$PIXI_VERSION bash
           echo "$HOME/.pixi/bin" >> "$GITHUB_PATH"
           "$HOME/.pixi/bin/pixi" global install rattler-build
-      - run: scripts/mirror_deps.sh
+      # The webby upload can take a moment to show up in the channel's repodata (Depot runners get here ~10 s after it).
+      - run: |
+          for i in 1 2 3 4 5; do
+            scripts/mirror_deps.sh && break
+            [ "$i" = 5 ] && exit 1; sleep 30
+          done
         env:
           PREFIX_API_KEY: ${{ secrets.PREFIX_API_KEY }}
           # The webby just published: its closure is what has to be mirrored.
