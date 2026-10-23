@@ -1,5 +1,5 @@
-## The start page (app/lib/src/home_page.dart): blank tabs and startup show a search/address box and the first
-## bookmarks instead of a website. The tab stays on about:blank and the Dart file's page script
+## The start page: blank tabs and startup show a search/address box and the first
+## bookmarks instead of a website. The tab stays on about:blank and the page script (scripts/home_page.js)
 ## draws the page into that document, so blank-tab handling everywhere else is unchanged.
 
 import ../browser

@@ -1,4 +1,4 @@
-## History (app/lib/src/history): every page a tab shows is a visit in history.jsonl; the History sidebar (Ctrl+H)
+## History: every page a tab shows is a visit in history.jsonl; the History sidebar (Ctrl+H)
 ## lists them by day with search and delete; "Clear browsing data…" (Ctrl+Shift+Del) clears the engine's data and
 ## the history; the address bar gets the most visited matches. Incognito records nothing.
 
@@ -83,7 +83,7 @@ proc clearHistoryDialog() =
     if i == 1: clear(sinceMs(combo)))
 
 proc clearBrowsingData*() =
-  ## Chrome's "Clear browsing data" dialog (app/lib/src/site_data.dart).
+  ## Chrome's "Clear browsing data" dialog.
   let combo = rangeCombo()
   let content = kit.column(rangeRow(combo))
   content.spacing = 6

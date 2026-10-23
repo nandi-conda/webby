@@ -1,4 +1,4 @@
-## Markdown for the summary panel (app/lib/src/markdown_view.dart): the same block parser, which copes with
+## Markdown for the summary panel: the same block parser, which copes with
 ## half-written text so a streaming answer can be shown as it comes, and inline markup as Pango markup on GtkLabels
 ## (nimkit's rich labels: Pango markup on GTK, the same tags as HTML on Android).
 
@@ -236,7 +236,7 @@ const markdownCss* = """
 var linkHandler*: proc (url: string)  ## a link clicked in rendered markdown; nil = the platform's default
 
 proc spaced(markup: string): string =
-  ## Body text at markdown_view.dart's 1.3 line height.
+  ## Body text at a 1.3 line height.
   "<span line_height=\"1.3\">" & markup & "</span>"
 
 proc markupLabel*(markup: string, selectable = true): kit.Widget =

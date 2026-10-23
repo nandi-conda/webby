@@ -1,5 +1,4 @@
-## Chat completions from DeepSeek, Xiaomi MiMo or Meta (prompts.Provider), streamed (the HTTP half of
-## app/lib/src/summarize.dart). A small HTTP/1.1 client on
+## Chat completions from DeepSeek, Xiaomi MiMo or Meta (prompts.Provider), streamed. A small HTTP/1.1 client on
 ## GIO's async sockets (TLS from glib-networking), so it runs on the GTK main loop: nothing blocks, every callback
 ## is on the GTK thread. Not std/httpclient: with -d:ssl, Nim loads the system's OpenSSL at startup, and then
 ## libwebby.so can't load the runtime's newer libcrypto. WEBBY_DEEPSEEK_ENDPOINT overrides the endpoint of
@@ -309,7 +308,7 @@ else:
       c.cancellable, onWritten, cast[pointer](c))
 
   proc tick(data: pointer): gboolean {.cdecl.} =
-    # Timeouts as in the Dart client: 15 s to connect, then 60 s for the headers and between pieces.
+    # Timeouts: 15 s to connect, then 60 s for the headers and between pieces.
     let now = getMonoTime()
     for c in chats:
       let late = if c.conn == nil: now - c.started > initDuration(seconds = 15)

@@ -1,5 +1,5 @@
 /*
- * Webby: device location for navigator.geolocation, supplied by the Flutter UI.
+ * Webby: device location for navigator.geolocation, supplied by the UI.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */

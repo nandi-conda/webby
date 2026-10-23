@@ -6,7 +6,7 @@
   const data = __WEBBY_HOME_DATA__;
 
   const scheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
-  // The address bar's rule (omnibox.dart addressToUrl): an address loads, anything else searches Google.
+  // The address bar's rule: an address loads, anything else searches Google.
   const toUrl = (text) => {
     const t = text.trim();
     if (!t) return '';

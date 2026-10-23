@@ -1,4 +1,4 @@
-## Strong passwords for new accounts, as app/lib/src/passwords/generator.dart makes them.
+## Strong passwords for new accounts.
 
 import crypto
 

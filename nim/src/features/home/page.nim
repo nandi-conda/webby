@@ -1,4 +1,4 @@
-## The start page's script and data (app/lib/src/home_page.dart), used by the Nim front end (features/home.nim) on
+## The start page's script and data, used by the Nim front end (features/home.nim) on
 ## the desktop and Android.
 
 import std/[json, strutils]

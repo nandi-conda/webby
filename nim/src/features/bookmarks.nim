@@ -1,4 +1,4 @@
-## Bookmarks (app/lib/src/bookmarks): the star in the URL bar and Ctrl+D bookmark the page and open its editor, the
+## Bookmarks: the star in the URL bar and Ctrl+D bookmark the page and open its editor, the
 ## bookmarks bar under the toolbar (Ctrl+Shift+B) opens them, and the bookmark manager sidebar (Ctrl+Shift+O, the
 ## toolbar's bookmarks button) browses, searches, edits, reorders, imports and exports them. Items drag to reorder
 ## on the bar and in the manager. The address bar gets matching bookmarks.
@@ -44,7 +44,7 @@ proc links(node: Bookmark): seq[Bookmark] =
     if not n.isFolder: result.add n
 
 # ---------------------------------------------------------------------------------------------------------------
-# Dialogs (bookmark_dialog.dart)
+# Dialogs
 
 proc labeled(box: kit.Widget, label: string, w: kit.Widget) =
   let l = kit.label(label)
@@ -148,7 +148,7 @@ proc exportFile() =
         kit.alert("Could not export to " & path, e.msg))
 
 # ---------------------------------------------------------------------------------------------------------------
-# The bookmarks bar (bookmark_bar.dart)
+# The bookmarks bar
 
 proc folderMenu(folder: Bookmark): seq[kit.MenuItem] =
   ## Links in `folder` and its subfolders, each subfolder's links labelled with its path.
@@ -243,7 +243,7 @@ proc buildBar() =
   fillBar()
 
 # ---------------------------------------------------------------------------------------------------------------
-# The bookmark manager sidebar (bookmarks_page.dart)
+# The bookmark manager sidebar
 
 proc fillManager()
 

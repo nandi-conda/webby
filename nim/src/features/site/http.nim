@@ -1,6 +1,5 @@
 ## Small downloads (manifests, app icons, favicons), fetched by the page itself: a script calls fetch() and hands the
-## bytes back through the page-message channel. Same-origin files (and CORS-enabled ones) work; the Dart app used its
-## own HTTP client, which this front end avoids (std/net's OpenSSL setup breaks libwebby loading).
+## bytes back through the page-message channel. Same-origin files (and CORS-enabled ones) work. No HTTP client of our own (std/net's OpenSSL setup breaks libwebby loading).
 
 import std/[base64, strutils, tables, uri]
 import ../../browser

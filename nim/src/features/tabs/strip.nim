@@ -1,6 +1,5 @@
 ## The tab strip: the open tabs coming back at the next start (open_tabs.json), pinned tabs, vertical tabs
-## (tabs.json), the tab right-click menu, reopening closed tabs, unloaded tabs and discarding long-hidden ones
-## (main.dart, tab_strip.dart, web_view.dart).
+## (tabs.json), the tab right-click menu, reopening closed tabs, unloaded tabs and discarding long-hidden ones.
 
 import std/[hashes, os, strutils, tables, times]
 from std/unicode import toRunes, `$`, isAlpha, toUpper
@@ -335,7 +334,7 @@ button.webby-pinned-tab.webby-active-tab { background-color: alpha(@theme_select
 .webby-vertical-tabs button.webby-pinned-tab { padding-left: 10px; }
 .webby-strip-space, .webby-strip-space:hover { background: none; box-shadow: none; border: none; }
 """)
-    # The strip's empty space: a right-click opens the strip's menu, a double click a new tab (tab_strip.dart).
+    # The strip's empty space: a right-click opens the strip's menu, a double click a new tab.
     tabStripSpace.onContext = proc () =
       var items: seq[kit.MenuItem]
       fillTabMenu(nil, items)

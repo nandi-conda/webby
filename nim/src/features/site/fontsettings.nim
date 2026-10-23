@@ -1,5 +1,5 @@
 ## The desktop's UI font and text size, read through the settings portal (org.gnome.desktop.interface font-name and
-## text-scaling-factor), the way the Flutter app gets its text scale. GTK reads them itself only where it can see the
+## text-scaling-factor). GTK reads them itself only where it can see the
 ## desktop's settings (XSETTINGS on X11, gsettings schemas on Wayland); a pixi or conda env usually has neither, so
 ## GTK falls back to "Sans 10" at 96 dpi and everything comes out small. Real GTK settings are left alone.
 

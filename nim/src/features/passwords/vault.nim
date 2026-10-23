@@ -1,5 +1,5 @@
-## One profile's encrypted store of passwords, passkeys and secrets: a port of
-## app/lib/src/passwords/vault.dart that reads and writes the same file, so a profile works in both front ends.
+## One profile's encrypted store of passwords, passkeys and secrets: one JSON file per profile,
+## shared by the desktop and Android front ends.
 ##
 ## On disk: `${XDG_DATA_HOME:-~/.local/share}/webby/profiles/<profile>/vault.json` (or $WEBBY_VAULT_FILE), a JSON
 ## envelope {format: "webby-vault", version: 1, cipher: "AES-256-GCM", nonce, data, mac} (base64; 12-byte nonce,
@@ -7,13 +7,13 @@
 ## keyring under {application: webby, profile: <profile>}, or in `vault.key` beside the vault when there is no
 ## keyring ($WEBBY_VAULT_KEYRING=0 forces the file).
 ##
-## API for sync (passwords/sync in the Dart app does the same on top of Vault):
+## API for sync:
 ##   openVault(readOnly), vaultExists(), v.save(), v.onChange (listeners, run after every change)
 ##   v.passwords / passwordsFor / find / savePassword / updatePassword / deletePassword
 ##   v.neverSave / isNeverSave / setNeverSave, v.passkeys / setPasskeys, secret / setSecret / secretSyncs
 ##   v.secretsSyncDoc() / applySecretsSyncDoc(doc): the secrets that sync ({"secrets": {name: {value, updatedAt}}}),
 ##     in their own blob; names in localSecrets stay on this device
-##   v.syncSettings / setSyncSettings: the "sync" object of the contents, kept as raw JSON (SyncSettings in Dart)
+##   v.syncSettings / setSyncSettings: the "sync" object of the contents, kept as raw JSON
 ##   v.toSyncDoc(): {"passwords": {id: record}, "passkeys": {credentialId: record}, "neverSave": {origin: record}},
 ##     records carry "updatedAt" (seconds) and deletions are tombstones {"updatedAt", "deleted": true}, like SyncDoc
 ##   v.applySyncDoc(doc): replaces the contents with a merged doc of that shape; true if the passkeys changed (hand

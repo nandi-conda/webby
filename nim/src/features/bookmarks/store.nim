@@ -1,7 +1,7 @@
-## One profile's bookmarks (app/lib/src/bookmarks/bookmark_store.dart): a "Bookmarks bar" folder shown under the
+## One profile's bookmarks: a "Bookmarks bar" folder shown under the
 ## toolbar and an "Other bookmarks" folder, kept in `<profile>/bookmarks.json` (or $WEBBY_BOOKMARKS_FILE) in the same
-## format as the Flutter app. Every change is written straight away through a temporary file; incognito keeps none.
-## Also reads and writes the Netscape bookmarks.html format (bookmark_html.dart).
+## format as before. Every change is written straight away through a temporary file; incognito keeps none.
+## Also reads and writes the Netscape bookmarks.html format.
 
 import std/[algorithm, json, os, sequtils, sets, strutils, tables, times]
 from std/unicode import Rune, `$`

@@ -1,5 +1,5 @@
-## The site settings popover behind the button left of the URL bar (app/lib/src/site_settings.dart): the
-## connection, what the page's site may use, and deleting its cookies and data (app/lib/src/site_data.dart).
+## The site settings popover behind the button left of the URL bar: the
+## connection, what the page's site may use, and deleting its cookies and data.
 
 import std/strutils
 import ../../browser

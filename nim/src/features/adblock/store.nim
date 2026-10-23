@@ -1,5 +1,4 @@
-## Ad and tracker blocking, shared by the desktop and Android front ends (app/lib/src/content_blocking.dart in the
-## Flutter app, which keeps the same files).
+## Ad and tracker blocking, shared by the desktop and Android front ends.
 ##
 ## The engine is Ladybird's own content blocker (Brave's adblock engine: network rules and element hiding), fed
 ## EasyList and EasyPrivacy, which Ladybird downloads into the profile's ContentBlocking/Lists and refreshes daily.

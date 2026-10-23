@@ -12,7 +12,7 @@ const
 
 type
   Provider* = enum
-    ## A chat completions service Summarize can ask (SummaryProvider in summarize.dart).
+    ## A chat completions service Summarize can ask.
     deepSeek, mimo, meta
 
   ProviderInfo* = object
@@ -67,7 +67,7 @@ proc pageTextScript*(prefix, id: string): string =
 
 proc jumpToTextScript*(words: string): string = jumpTemplate.replace("${jsonEncode(words)}", $(%words))
 
-# How the model links points to the part of the page they come from (the same text as summarize.dart).
+# How the model links points to the part of the page they come from.
 const sourceLinkRule = "End each bullet with a source link to the part of the page it comes from, written " &
   "[§](#words), where words are 3 to 8 consecutive words copied exactly from the page text; a section heading " &
   "(marked ## in the text) is best. Copy them character for character in the page's own language, even when it " &

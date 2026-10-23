@@ -1,4 +1,4 @@
-## Per-site permissions (app/lib/src/site_permissions.dart): each origin is asked once whether it may use a feature
+## Per-site permissions: each origin is asked once whether it may use a feature
 ## such as the location, and the answer is remembered in the profile's site_permissions.json until changed in the
 ## site settings popover. Requests come from the engine (permissionHandler) and from the browser's own page scripts
 ## (askPermission, for notifications); both wait in a bar under the toolbar for the user's answer.

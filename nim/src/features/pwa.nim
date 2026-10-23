@@ -1,6 +1,6 @@
-## Installable web apps (app/lib/src/pwa): pages with a manifest get an Install app button next to the URL bar;
+## Installable web apps: pages with a manifest get an Install app button next to the URL bar;
 ## an installed app gets a launcher running `webby --app=<url>`, which opens the app in a window without tab strip
-## or URL bar. Also the offline switch (pwa/offline.dart): with no network, pages come from the disk cache.
+## or URL bar. Also the offline switch: with no network, pages come from the disk cache.
 
 import std/[os, strutils, tables, uri]
 import ../browser

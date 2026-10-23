@@ -1,5 +1,5 @@
-# Webby: a C ABI around LibWebView so a Flutter (dart:ffi) UI can drive Ladybird.
-# This directory is copied into the Ladybird tree as UI/Flutter by scripts/build_ladybird.sh.
+# Webby: a C ABI around LibWebView so webby's Nim UI can drive Ladybird.
+# This directory is copied into the Ladybird tree as UI/Flutter (a name kept from the first front end) by scripts/build_ladybird.sh.
 
 find_package(OpenSSL REQUIRED)
 

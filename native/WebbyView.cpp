@@ -1,5 +1,5 @@
 /*
- * Webby: LibWebView embedding for Flutter.
+ * Webby: LibWebView embedding for webby's UI.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -26,7 +26,7 @@ namespace Webby {
 
 void Application::create_platform_options(WebView::BrowserOptions& browser_options, WebView::RequestServerOptions&, WebView::WebContentOptions& web_content_options)
 {
-    // Frames are read back on the CPU and handed to Flutter as pixels, so WebContent must paint into shared memory
+    // Frames are read back on the CPU and handed to the UI as pixels, so WebContent must paint into shared memory
     // bitmaps rather than GPU-only images.
     web_content_options.force_cpu_painting = WebView::ForceCPUPainting::Yes;
     // Ladybird keeps an idle WebContent process (with its own ImageDecoder) ready for the next tab, about 50 MB
@@ -625,7 +625,7 @@ void View::copy_front_bitmap()
     bool force_opaque = bitmap->format() == Gfx::BitmapFormat::BGRx8888 || bitmap->format() == Gfx::BitmapFormat::RGBx8888;
 
     // Pages with a running animation (often one nobody can see) present a new frame every vsync even when no pixel
-    // changed. Comparing costs about what the copy does, and an unchanged frame then isn't handed to Flutter at all.
+    // changed. Comparing costs about what the copy does, and an unchanged frame then isn't handed to the UI at all.
     bool changed = !same_size;
     for (int y = 0; y < height; ++y) {
         auto const* source = bitmap->scanline_u8(y);

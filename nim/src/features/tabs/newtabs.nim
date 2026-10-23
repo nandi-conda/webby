@@ -1,6 +1,6 @@
-## window.open(url, '_blank', 'noopener') as a tab of its own (app/lib/src/tabs/new_tab_requests.dart): Ladybird puts
+## window.open(url, '_blank', 'noopener') as a tab of its own: Ladybird puts
 ## every window a page opens on the opener's WebContent process, so tabs opened from a busy page (Pulseboard) stayed
-## blank while it ran. The Dart app's page script sends {"type": "openTab", "url"} instead; the tab opened here gets a
+## blank while it ran. Our page script sends {"type": "openTab", "url"} instead; the tab opened here gets a
 ## process of its own.
 
 import std/[json, strutils]

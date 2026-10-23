@@ -1,5 +1,4 @@
-## The Flutter app's icons (Material Icons, the glyphs behind Flutter's Icons.*) for the GTK UI, so both front ends
-## look the same and nothing depends on the desktop's icon theme. The glyph outlines are compiled in (icondata.nim,
+## Material Icons glyphs (the names of Flutter's Icons.*) for the UI, so nothing depends on the desktop's icon theme. The glyph outlines are compiled in (icondata.nim,
 ## made by scripts/material_icons.py) and drawn with cairo in the widget's text colour, like a symbolic icon:
 ## they follow light and dark themes and hover/disabled states, and stay sharp at any scale factor.
 ##
@@ -119,7 +118,7 @@ proc onDraw(w: Widget, cr: Cairo, d: pointer): gboolean {.cdecl.} =
   1
 
 proc setIcon*(image: Widget, name: string, size = 0) =
-  ## Shows the Flutter icon `name` (an Icons.* name such as "arrow_back") in a GtkImage; size 0 keeps the size it
+  ## Shows the Material icon `name` (an Icons.* name such as "arrow_back") in a GtkImage; size 0 keeps the size it
   ## had (16 px for a new one).
   let g = glyph(name)
   if g == nil: stderr.writeLine "webby: no icon named ", name, " (add it to scripts/material_icons.py)"
@@ -136,7 +135,7 @@ proc setIcon*(image: Widget, name: string, size = 0) =
   gtk_widget_queue_draw(image)
 
 proc icon*(name: string, size = 16): Widget =
-  ## A GtkImage showing the Flutter icon `name` at `size` px, in the text colour of wherever it is packed.
+  ## A GtkImage showing the Material icon `name` at `size` px, in the text colour of wherever it is packed.
   result = gtk_image_new()
   setIcon(result, name, size)
 

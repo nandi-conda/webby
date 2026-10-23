@@ -20,7 +20,7 @@ proc hostOf*(url: string): string =
   try: parseUri(url).hostname except CatchableError: ""
 
 proc tabTitle*(title, url: string): string =
-  ## The page title, else the URL without its scheme, else "New tab" (tab_strip.dart).
+  ## The page title, else the URL without its scheme, else "New tab".
   if title.strip.len > 0: return title.strip
   if url.len == 0 or url == "about:blank": return "New tab"
   let i = url.find("://")
@@ -35,7 +35,7 @@ proc openInBackgroundTab*(url: string) =
   discard openTab(url, focus = false, index = activeIndex + 1)
 
 proc openIncognitoWindow*(url = "") =
-  ## Starts `<this exe> --incognito [url]`, its own process with an engine that keeps nothing (incognito.dart).
+  ## Starts `<this exe> --incognito [url]`, its own process with an engine that keeps nothing.
   when defined(android):
     # IncognitoHost: the same front end in a process of its own, as its own task in Recents.
     if hostCall("openIncognito", url) != "ok": toast("Could not open an incognito window")

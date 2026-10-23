@@ -1,4 +1,4 @@
-## The "Passwords and passkeys" side panel (vault_page.dart): lists, edits and deletes saved passwords and passkeys.
+## The "Passwords and passkeys" side panel: lists, edits and deletes saved passwords and passkeys.
 
 import std/[algorithm, os, sets, strutils, times]
 import ../../browser

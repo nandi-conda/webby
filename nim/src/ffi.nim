@@ -1,5 +1,5 @@
-## libwebby.so bindings (native/webby_ffi.h). Loaded at run time from $WEBBY_LADYBIRD_PREFIX/lib, like the Flutter
-## app, so the binary doesn't link against a particular runtime. Every call must come from the GTK thread.
+## libwebby.so bindings (native/webby_ffi.h). Loaded at run time from $WEBBY_LADYBIRD_PREFIX/lib,
+## so the binary doesn't link against a particular runtime. Every call must come from the GTK thread.
 
 import std/[dynlib, os]
 

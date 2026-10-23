@@ -1,4 +1,4 @@
-## Saved sessions (sessions_page.dart): the Sessions side panel, the quit prompt that offers to save the open tabs,
+## Saved sessions: the Sessions side panel, the quit prompt that offers to save the open tabs,
 ## and "Close all tabs and save as session". The store is store.nim. Incognito windows have none of it.
 
 import ../../browser

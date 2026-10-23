@@ -1,5 +1,5 @@
-## The synced form of everything and how two copies merge (app/lib/src/passwords/sync/sync_doc.dart). Pure Nim, no
-## GTK, so tests can run it beside the Dart code.
+## The synced form of everything and how two copies merge. Pure Nim, no
+## GTK, so tests can run it on its own.
 ##
 ## A doc is a JsonNode object of sections (passwords, passkeys, neverSave, bookmarks, devices, summaries, sessions,
 ## secrets),

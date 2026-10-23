@@ -1,5 +1,4 @@
-## The parts of a web app manifest (https://www.w3.org/TR/appmanifest/) webby uses, with URLs resolved, as
-## app/lib/src/pwa/manifest.dart parses them.
+## The parts of a web app manifest (https://www.w3.org/TR/appmanifest/) webby uses, with URLs resolved.
 
 import std/[json, strutils, uri]
 

@@ -1,4 +1,4 @@
-## The tab files of a profile, in the Flutter app's formats (app/lib/src/tabs/{sessions,open_tabs,tab_layout}.dart):
+## The tab files of a profile:
 ## sessions.json (saved sessions), open_tabs.json (the open tabs for the next start) and tabs.json (the layout).
 ## Incognito windows write none of them except tabs.json, which is a preference.
 ##
@@ -19,7 +19,7 @@ type
     active*: int         ## the tab that was in front
     updatedAt*: int      ## when it last changed (seconds), so sync keeps the newest version
 
-const tombstoneLifetime* = 180 * 24 * 3600  ## seconds a deletion is remembered (sync_doc.dart)
+const tombstoneLifetime* = 180 * 24 * 3600  ## seconds a deletion is remembered (sync/doc.nim)
 
 var
   sessionList: seq[SavedSession]   # newest first
@@ -281,7 +281,7 @@ proc applySyncDoc*(doc: JsonNode): bool =
   true
 
 # ---------------------------------------------------------------------------------------------------------------
-# open_tabs.json (the open tabs, for the next start) in open_tabs.dart's format, and pinned_tabs.json, which held
+# open_tabs.json (the open tabs, for the next start) and pinned_tabs.json, which held
 # only the pinned ones before open_tabs.json was kept on desktop.
 
 proc openTabsFile*(): string =

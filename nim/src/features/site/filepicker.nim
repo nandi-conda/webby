@@ -1,4 +1,4 @@
-## Pages' <input type=file> pickers (app/lib/src/file_picker.dart), answered with the system file chooser (the
+## Pages' <input type=file> pickers, answered with the system file chooser (the
 ## desktop portal's when there is one).
 
 import std/strutils

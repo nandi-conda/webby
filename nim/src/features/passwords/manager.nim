@@ -1,4 +1,4 @@
-## The profile's open Vault and the passkeys in it (password_manager.dart's PasswordManager): libwebby's
+## The profile's open Vault and the passkeys in it: libwebby's
 ## authenticator keeps passkeys in memory (webby_passkeys_use_vault) and the vault saves them whenever they change.
 
 import std/json

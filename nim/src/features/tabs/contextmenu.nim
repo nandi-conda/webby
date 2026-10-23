@@ -1,4 +1,4 @@
-## The page's right-click menu (context_menu.dart). The Flutter app's page script (read from context_menu.dart at
+## The page's right-click menu. A page script (scripts/context_menu.js, read at
 ## compile time) reports what was clicked with a {"type": "contextmenu", ...} message; a GtkMenu offers what fits.
 ## `pageContextMenuHook` is set to `showPageMenu` unless another feature set its own.
 

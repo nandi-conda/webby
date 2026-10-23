@@ -1,5 +1,5 @@
 ## Keeps the vault, its synced secrets, bookmarks, this device's open tabs, page summaries and saved sessions in sync
-## with the other devices (vault_sync.dart): at startup, a few seconds after each change, every five minutes, and when
+## with the other devices: at startup, a few seconds after each change, every five minutes, and when
 ## asked. Each kind has its own blob under the vault's sync settings. Everything runs on the GTK loop, one request at a time.
 
 import std/[json, sets]

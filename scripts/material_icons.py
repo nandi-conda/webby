@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Regenerates nim/src/icondata.nim: the Material Icons glyphs the Nim front end draws, taken from the same font
-and codepoints the Flutter app uses (Icons.* in flutter/lib/src/material/icons.dart, MaterialIcons-Regular.otf),
-so both front ends show the same icons.
+"""Regenerates nim/src/icondata.nim: the Material Icons glyphs webby draws, taken from the
+MaterialIcons-Regular.otf font and Icons.* codepoint table that ship in the Flutter SDK (only used as the source).
 
 Usage: python3 scripts/material_icons.py <flutter-sdk>   (needs fontTools: pip install fonttools)
 

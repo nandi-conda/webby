@@ -1,7 +1,7 @@
-## Where the encrypted blobs live and one round of sync (sync_store.dart and sync_engine.dart): one blob per kind
+## Where the encrypted blobs live and one round of sync: one blob per kind
 ## behind GET/PUT with ETags, on the webby-sync server (sync-server/) or in a WebDAV folder.
 ##
-## Settings are SyncSettings.toJson() as the Dart app keeps them inside the vault: {code, backend: "webby-sync" |
+## Settings are the settings as kept inside the vault: {code, backend: "webby-sync" |
 ## "webdav", server, username?, password?, etag?, lastSync?, lastError?}.
 
 import std/[base64, json, strutils, times, uri]

@@ -1,6 +1,6 @@
-## Sync for webby-nim (app/lib/src/passwords/sync and tabs/device_tabs*.dart): passwords, passkeys, never-save sites,
+## Sync for webby-nim: passwords, passkeys, never-save sites,
 ## bookmarks, open tabs, page summaries and saved sessions, end-to-end encrypted with a sync code and stored on the
-## webby-sync server or a WebDAV folder, compatible with the Flutter app's devices. Two side panels: "Sync" (turn it
+## webby-sync server or a WebDAV folder. Two side panels: "Sync" (turn it
 ## on, join with a code, show the code) and "Tabs from other devices". Incognito and app windows never sync.
 ## The parts: sync/doc (merge), sync/keys (code and crypto), sync/http + sync/blobs (transport), sync/engine
 ## (scheduling), sync/devicetabs (device.json and the tabs blob).
@@ -145,7 +145,7 @@ proc turnOn(join: bool) =
     except CatchableError as e: kit.alert("Couldn't turn on sync", e.msg))
 
 # ---------------------------------------------------------------------------------------------------------------
-# The Sync panel (sync_page.dart)
+# The Sync panel
 
 proc showDevicesPanel*()
 
@@ -210,7 +210,7 @@ proc fillSync(box: kit.Widget) =
   if s == nil: fillSyncOff(box) else: fillSyncOn(box, s)
 
 # ---------------------------------------------------------------------------------------------------------------
-# Tabs from other devices (device_tabs_page.dart)
+# Tabs from other devices
 
 proc openUrls(urls: seq[string]) =
   for i, u in urls: discard openTab(u, focus = i == 0)

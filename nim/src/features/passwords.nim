@@ -1,12 +1,12 @@
-## Passwords and passkeys for webby-nim, a port of app/lib/src/passwords (except sync/) and passkey_dialog.dart.
+## Passwords and passkeys for webby.
 ##
-##   passwords/vault.nim     the encrypted vault, byte-compatible with vault.dart (same file, key, cipher, JSON)
+##   passwords/vault.nim     the encrypted vault, (one file per profile, key in the keyring)
 ##   passwords/keyring.nim   the vault key in the desktop keyring through libsecret (falls back to vault.key)
 ##   passwords/crypto.nim    AES-256-GCM and random bytes from libcrypto
 ##   passwords/manager.nim   the open vault (theVault, vaultError) and the authenticator's passkeys kept in it
 ##   passwords/panel.nim     the "Passwords and passkeys" side panel
 ##   passwords/generator.nim strong passwords
-## This module: the page script (read from page_script.dart at compile time), save / fill / generate offers in a bar
+## This module: the page script, save / fill / generate offers in a bar
 ## above the page, the passkey dialog (webauthnHandler) and the vault's secrets (getSecret/setSecret/secretSyncs).
 ##
 ## For sync (a separate feature on top of this one), import features/passwords/[vault, manager, panel]:
@@ -21,7 +21,7 @@ import ../browser
 from nimkit/core as kit import nil
 import passwords/[vault, manager, generator, panel]
 
-# page_script.dart's passwordPageScript(prefix), unescaped from its Dart string at compile time.
+# scripts/passwords.js, with the tab's message prefix filled in per tab.
 const prefixMark = "\x01PREFIX\x01"
 const pageScript = staticRead("../scripts/passwords.js").replace("${jsonEncode(prefix)}", prefixMark)
 
@@ -138,7 +138,7 @@ proc showBar() =
   kit.`visible=`(bar, true)
 
 # ---------------------------------------------------------------------------------------------------------------
-# Page messages (see page_script.dart)
+# Page messages
 
 proc onMessage(t: Tab, text: string): bool =
   if not text.startsWith(messageTag): return false
@@ -194,7 +194,7 @@ proc pageScriptFor(t: Tab): string =
   pageScript.replace(prefixMark, js(t.messagePrefix & messageTag))
 
 # ---------------------------------------------------------------------------------------------------------------
-# Passkeys (passkey_dialog.dart)
+# Passkeys
 
 var pendingPasskey: seq[(Tab, JsonNode)]   ## the first one is showing
 

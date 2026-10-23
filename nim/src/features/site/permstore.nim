@@ -1,4 +1,4 @@
-## The remembered per-site permission answers (app/lib/src/site_permissions.dart) in the profile's
+## The remembered per-site permission answers in the profile's
 ## site_permissions.json, and the origin helpers, without UI: used by the desktop (permissions.nim) and Android.
 
 import std/[os, strutils, uri]

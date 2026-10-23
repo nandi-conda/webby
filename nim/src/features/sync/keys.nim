@@ -1,5 +1,5 @@
 ## The sync key, the code devices pair with, and the encryption of what goes to the server
-## (app/lib/src/passwords/sync/sync_crypto.dart, same algorithms and formats):
+## (same algorithms and formats on every device):
 ##   code: "webby1-" + base32(key ‖ CRC-16/CCITT(key)) in groups of five
 ##   HKDF-SHA256(key, salt "webby-sync-v1", info) → blob ids (hex), auth token (base64url, unpadded), AES key
 ##   blob: {"format":"webby-sync","version":1,"nonce","data","mac"} around AES-256-GCM(canonical doc, AAD "webby-sync-v1")

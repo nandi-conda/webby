@@ -1,5 +1,5 @@
-## One profile's browsing history (app/lib/src/history/history_store.dart): every visit with its URL, title and
-## time, as JSON lines in `<profile>/history.jsonl` (or $WEBBY_HISTORY_FILE), the Flutter app's format. New visits
+## One profile's browsing history: every visit with its URL, title and
+## time, as JSON lines in `<profile>/history.jsonl` (or $WEBBY_HISTORY_FILE). New visits
 ## and title changes are appended, so several windows can add to the same file; deleting rewrites the file through a
 ## temporary one. Visits older than 90 days are dropped. Incognito records nothing.
 

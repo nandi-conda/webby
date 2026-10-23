@@ -1,8 +1,8 @@
 /*
- * Webby: a small C ABI over Ladybird's LibWebView so a Flutter app can drive
- * LibWeb (rendering) and LibJS (JavaScript) through dart:ffi.
+ * Webby: a small C ABI over Ladybird's LibWebView so webby's Nim front end can
+ * drive LibWeb (rendering) and LibJS (JavaScript).
  *
- * Threading: every function must be called from the same thread (the Dart
+ * Threading: every function must be called from the same thread (the UI
  * root isolate's thread). Nothing happens unless webby_pump() is called
  * regularly; it runs Ladybird's event loop without blocking.
  *

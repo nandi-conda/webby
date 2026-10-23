@@ -1,4 +1,4 @@
-## Summarize (app/lib/src/summarize.dart): reads the page's text through a page script, streams a summary from
+## Summarize: reads the page's text through a page script, streams a summary from
 ## DeepSeek, Xiaomi MiMo or Meta into the side panel, answers follow-up questions about the page, and saves both (summarize/cache.nim).
 ## Each provider's API key is a secret in the password vault, synced to the other devices unless unticked, and so
 ## is the choice of provider; without the vault (getSecret is nil) they are kept in memory until Webby quits.
@@ -329,7 +329,7 @@ const panelCss = markdownCss & """
 .webby-summary-ask { padding: 8px; }
 """
 
-# Text sizes: markdown_view.dart's (body, then headings 1.35/1.2/1.08x and code 0.92x), in pt so they follow the
+# Text sizes (body, then headings 1.35/1.2/1.08x and code 0.92x), in pt so they follow the
 # desktop's DPI and text scale, times the panel's own zoom (Ctrl+plus/minus/0 or Ctrl+wheel over the panel).
 const baseTextPt = 11.0
 var
@@ -490,7 +490,7 @@ proc showPanel(job: Job) =
   panel.sendButton = kit.iconButton("send", "Ask", askFromEntry)
   let askRow = kit.addClass(kit.row(kit.expand(panel.entry), panel.sendButton), "webby-summary-ask")
   askRow.spacing = 4
-  # markdownCss font sizes, matching the Flutter panel
+  # markdownCss font sizes
   panel.root = kit.addClass(kit.column(bar, kit.separator(), kit.expand(panel.scroller), kit.separator(), askRow),
     "webby-md")
   panel.root.spacing = 0

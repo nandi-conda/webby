@@ -1,5 +1,5 @@
-## Saved summaries (app/lib/src/summary_cache.dart): by page (and by selection), newest last, in
-## profiles/<profile>/summaries.json, the same file and format as the Flutter app. Incognito keeps them in memory only.
+## Saved summaries: by page (and by selection), newest last, in
+## profiles/<profile>/summaries.json. Incognito keeps them in memory only.
 
 import std/[algorithm, os, strutils, times]
 import ../../base

@@ -1,4 +1,4 @@
-## The address bar's suggestions (app/lib/src/omnibox.dart): while the URL bar is edited, a popup under it lists
+## The address bar's suggestions: while the URL bar is edited, a popup under it lists
 ## what `suggestionProviders` offer for the text (history and bookmarks add theirs; open tabs come from here).
 ## Up/Down pick one, Enter opens it (or the typed text, made an address or a search by `addressToUrl`), Esc closes.
 
@@ -18,7 +18,7 @@ var
   selected = -1               ## -1 is the typed text itself
 
 proc go*(input: string) =
-  ## Loads what was typed (or picked) in the current tab, as the Flutter app's _go does.
+  ## Loads what was typed (or picked) in the current tab.
   let text = input.strip
   if text.len == 0: return
   let t = currentTab()

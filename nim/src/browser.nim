@@ -405,7 +405,7 @@ proc refreshPanelButtons() =
 proc addToolbarButton*(icon, tooltip: string, action: proc () {.closure.}, openIcon = "", panel = ""): kit.Widget
     {.discardable.} =
   ## A button right of the URL bar, before the ⋮ menu. A button that toggles a side panel names it (its title) and
-  ## the icon to show while it is open, as the Flutter app swaps Icons.key_outlined for Icons.key.
+  ## the icon to show while it is open (key_outlined -> key).
   result = kit.iconButton(icon, tooltip, action)
   kit.add(toolbarEndRow, result)
   if openIcon.len > 0: panelButtons.add (result, icon, openIcon, panel)
@@ -559,7 +559,7 @@ proc answerRequests(t: Tab) =
 
 # ---------------------------------------------------------------------------------------------------------------
 # The pump: Ladybird's event loop runs on this (the GTK) thread. 4 ms while anything happens, backing off to 100 ms
-# when idle, the same schedule as the Flutter app's web_view.dart.
+# when idle.
 
 proc runPageScripts(t: Tab) =
   t.lastCompat = getMonoTime()
@@ -985,7 +985,7 @@ proc pageWheel(c: kit.Canvas, e: kit.WheelEvent): bool =
   let y = cint(e.y)
   let (dx, dy) = (e.dx, e.dy)
   let precise = e.precise.cint
-  # 53 logical pixels per wheel step, as Flutter's Linux embedder scrolls.
+  # 53 logical pixels per wheel step, as GTK apps commonly scroll.
   let s = 53.0 * viewRatio
   if trace and not wheelPending:
     wheelSent = getMonoTime()

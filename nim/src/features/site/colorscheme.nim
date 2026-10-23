@@ -1,4 +1,4 @@
-## Pages follow the desktop's light or dark setting (app/lib/src/color_scheme.dart): prefers-color-scheme and the
+## Pages follow the desktop's light or dark setting: prefers-color-scheme and the
 ## blank canvas match it, live. The desktop portal's org.freedesktop.appearance color-scheme decides, else the GTK
 ## theme; incognito windows are always dark, like their UI.
 

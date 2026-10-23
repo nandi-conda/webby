@@ -1,4 +1,4 @@
-## What the address bar loads for typed text (app/lib/src/omnibox.dart's addressToUrl), shared by the desktop and
+## What the address bar loads for typed text, shared by the desktop and
 ## Android front ends.
 
 import std/[sequtils, strutils, uri]

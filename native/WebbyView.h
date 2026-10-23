@@ -1,5 +1,5 @@
 /*
- * Webby: LibWebView embedding for Flutter.
+ * Webby: LibWebView embedding for webby's UI.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -35,7 +35,7 @@ private:
     virtual bool should_coordinate_browser_process() const override { return false; }
 
 public:
-    // Ladybird's clipboard, which pages copy into and paste from. The system clipboard lives on the Flutter side, so
+    // Ladybird's clipboard, which pages copy into and paste from. The system clipboard lives on the UI side, so
     // the UI copies out what pages copy (clipboard_serial() changes) and hands in the system clipboard's text before a
     // paste. See webby_clipboard_*() in webby_ffi.h.
     virtual void insert_clipboard_item(Web::Clipboard::SystemClipboardItem) override;
@@ -68,7 +68,7 @@ private:
 };
 
 // A view with no native window: WebContent paints into shared CPU bitmaps, and each presented frame is copied into
-// a buffer the Flutter side turns into an image.
+// a buffer the UI turns into an image.
 class View final : public WebView::HeadlessWebView {
 public:
     static NonnullOwnPtr<View> create(Core::AnonymousBuffer theme, Web::DevicePixelSize size, double device_pixel_ratio);

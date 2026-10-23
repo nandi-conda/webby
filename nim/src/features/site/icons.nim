@@ -1,5 +1,4 @@
-## Site icons (favicons) in the tab strip. The Dart app (app/lib/src/site_icon.dart) shows them only in saved-tab
-## lists, from Google's favicon service; here each page reports its own <link rel=icon> (else /favicon.ico) and
+## Site icons (favicons) in the tab strip. Each page reports its own <link rel=icon> (else /favicon.ico) and
 ## fetches it for the tab strip, so no host names go to a third party.
 
 import std/[os, strutils, tables]

@@ -1,6 +1,6 @@
-## This device's open tabs as other devices see them, and the tabs they published (app/lib/src/tabs/device_tabs.dart).
+## This device's open tabs as other devices see them, and the tabs they published.
 ## The device id, its name and whether it shares its tabs are in `<profile>/device.json` (or $WEBBY_DEVICE_FILE), the
-## same file as the Flutter app's. Other devices' tabs live only in memory and come from the tabs blob.
+## same file as before. Other devices' tabs live only in memory and come from the tabs blob.
 
 import std/[algorithm, json, os, posix, strutils, uri]
 from std/unicode import runes, Rune, `$`

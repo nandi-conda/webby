@@ -7,7 +7,7 @@ export json, tables
 
 var
   appUrl*: string              ## --app=<url>: an installed web app's own window (no tab strip, no URL bar)
-  incognito*: bool             ## --incognito: this process keeps nothing (see app/lib/src/incognito.dart)
+  incognito*: bool             ## --incognito: this process keeps nothing
   incognitoProfile*: string    ## incognito: the throwaway Ladybird profile directory (deleted on exit)
   originalLadybirdArgs*: seq[string]  ## $WEBBY_LADYBIRD_ARGS before incognito swapped the profile out
 
@@ -36,7 +36,7 @@ var
   deviceDescription*: string   ## e.g. "Pixel 6a" on Android (sync names the device after it); "" on the desktop
 
 # ---------------------------------------------------------------------------------------------------------------
-# Files: the same places the Flutter app keeps its data, so both front ends share a profile.
+# Files: where each profile keeps its data (XDG data dir).
 
 proc dataHome*(): string =
   let xdg = getEnv("XDG_DATA_HOME")

@@ -1,4 +1,4 @@
-## Installed web apps (app/lib/src/pwa/app_store.dart): one folder per app under ${XDG_DATA_HOME}/webby/apps/
+## Installed web apps: one folder per app under ${XDG_DATA_HOME}/webby/apps/
 ## (app.json and the icon) and a dev.webby.WebApp-<slug>.desktop launcher in ${XDG_DATA_HOME}/applications/ that
 ## runs `webby --app=<url>`.
 

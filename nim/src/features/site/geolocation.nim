@@ -1,4 +1,4 @@
-## The device's location for pages' navigator.geolocation (app/lib/src/geolocation.dart): GeoClue over the system
+## The device's location for pages' navigator.geolocation: GeoClue over the system
 ## D-Bus on the desktop, the app's Java host on Android (WebbyHost locationStart/locationStop, LocationManager),
 ## running only while a page that was allowed to is waiting for a position or watching.
 
