@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DAGGER_VERSION: 1.0.0-beta.20  # dagger-module.toml's engineVersion
+  DAGGER_VERSION: 1.0.0-beta.20  # also in dagger-generate.yml
   DAGGER_NO_NAG: "1"
 
 permissions:

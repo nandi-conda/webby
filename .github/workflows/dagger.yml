@@ -24,7 +24,7 @@ env:
   # for the whole run (--engine=cloud) keeps its cache between runs; a fresh engine per check (0.21's --scale-out) started
   # with an empty cache every time (runs 19-20), so it bought no speed.
   SCALE_OUT: ${{ contains(fromJSON('["true","1","yes"]'), vars.DAGGER_SCALE_OUT) && '--engine=cloud' || '' }}
-  DAGGER_VERSION: 1.0.0-beta.20  # dagger-module.toml's engineVersion
+  DAGGER_VERSION: 1.0.0-beta.20  # also in dagger-generate.yml
   DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
   DAGGER_NO_NAG: "1"
 

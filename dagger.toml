@@ -1,5 +1,5 @@
 [modules.webby-ci]
-source = "."
+source = ".dagger"
 main = true
 
 [modules.dagger-python-sdk]
@@ -8,5 +8,5 @@ source = "github.com/dagger/python-sdk"
 [sdks.python]
 module = "dagger-python-sdk"
 
-[sdks.python.scopes."."]
+[sdks.python.scopes.".dagger"]
 is-module = true

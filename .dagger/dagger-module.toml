@@ -1,6 +1,5 @@
 name = "webby-ci"
 engineVersion = "v1.0.0-0"
-source = ".dagger"
 
 [runtime]
   source = "dagger.io/sdk/python/runtime@v1"
