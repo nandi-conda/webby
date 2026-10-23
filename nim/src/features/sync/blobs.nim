@@ -1,5 +1,5 @@
 ## Where the encrypted blobs live and one round of sync: one blob per kind
-## behind GET/PUT with ETags, on the webby-sync server (sync-server/) or in a WebDAV folder.
+## behind GET/PUT with ETags, on the webby-sync server (sync-worker/) or in a WebDAV folder.
 ##
 ## Settings are the settings as kept inside the vault: {code, backend: "webby-sync" |
 ## "webdav", server, username?, password?, etag?, lastSync?, lastError?}.

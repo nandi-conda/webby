@@ -1,4 +1,4 @@
-"""webby-sync as a Cloudflare Python Worker: the same API as sync-server/, with blobs in an R2 bucket.
+"""webby-sync as a Cloudflare Python Worker, with blobs in an R2 bucket.
 
   GET    /v1/blobs/<64 hex>   -> 200 blob + ETag, or 404
   PUT    /v1/blobs/<64 hex>   If-None-Match: * (create) or If-Match: <etag> -> 200/201 + ETag, or 412

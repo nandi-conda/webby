@@ -95,7 +95,7 @@ proc setupDialog(join: bool, onDone: proc (s: JsonNode)) =
     let isDav = kit.selected(storage) == 2
     kit.`visible=`(serverBox, isCustom or isDav)
     kit.`visible=`(loginBox, isDav)
-    kit.`text=`(serverLabel, if isDav: "Folder address" else: "Server address (runs sync-server from the webby repo)")
+    kit.`text=`(serverLabel, if isDav: "Folder address" else: "Server address (runs sync-worker from the webby repo)")
     kit.`placeholder=`(server,
       if isDav: "https://cloud.example.com/remote.php/dav/files/me/webby" else: "https://sync.example.com")
   storage.onSelect = proc (i: int) = storageChanged()

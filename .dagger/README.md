@@ -10,9 +10,7 @@ Each check runs in containers and gets only the files it reads, so a step whose 
 |---|---|---|
 | `nim-desktop` | builds the Nim front end the way `pixi run webby` does (`WEBBY_BUILD_ONLY=1 scripts/pixi_nim.sh`) | nim/, framework/, icons/, pixi.toml/lock change |
 | `nimkit-demo` | builds framework/demo for GTK and for the web (`framework/web/build.sh`) | same |
-| `sync-server-test` | `dart test` in sync-server/ | sync-server/ changes |
-| `sync-server-roundtrip` | sync-worker/test/roundtrip.py against the Dart server built from its Dockerfile | sync-server/ or roundtrip.py change |
-| `sync-worker-roundtrip` | roundtrip.py against the Cloudflare Worker under `pywrangler dev` (local R2) | sync-worker/ changes |
+| `sync-worker-roundtrip` | sync-worker/test/roundtrip.py against the Cloudflare Worker under `pywrangler dev` (local R2) | sync-worker/ changes |
 
 The pixi environment (`pixi-env`) is installed from pixi.toml + pixi.lock alone, so it's reused until those change.
 
@@ -34,9 +32,9 @@ Needs Docker (or Podman) and the dagger CLI at the version in .github/workflows/
 
     dagger check                    # run every check
     dagger check -l                 # list them
-    dagger check nim-desktop        # just one (globs work: 'sync-*')
+    dagger check nim-desktop        # just one (globs work: 'nim*')
     dagger call nim-desktop         # the same check as a plain function call
-    dagger call sync-server up --ports 8080:8080   # run the Dart sync server locally
+    dagger call sync-worker up --ports 8787:8787   # run the sync Worker locally
     dagger call pixi-env terminal   # a shell in the pixi env the checks use
 
 `just check` runs `dagger check`.

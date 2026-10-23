@@ -10,7 +10,6 @@ from dagger import DefaultPath, Doc, ExecError, Ignore, check, function, object_
 from dagger_clients.core import Container, Directory, File, Service, core
 
 PIXI_IMAGE = "ghcr.io/prefix-dev/pixi:0.82.0"  # new enough for pixi.toml's platform tables
-DART_IMAGE = "dart:3.9"  # sync-server/Dockerfile's
 PYTHON_IMAGE = "python:3.13-slim"
 NODE_IMAGE = "node:22-bookworm"
 UV_IMAGE = "ghcr.io/astral-sh/uv:0.13.5"  # pywrangler wants uv >= 0.13.4
@@ -83,34 +82,6 @@ class WebbyCi:
             .with_exec(["pixi", "run", "--frozen", "framework/web/build.sh", "framework/demo/demo.nim", "/tmp/web"])
         )
 
-    def _sync_server_dir(self) -> Directory:
-        return self.source.directory("sync-server").filter(exclude=[".dart_tool/**", "build/**"])
-
-    @function
-    @check
-    async def sync_server_test(self) -> None:
-        """`dart test` for the self-hosted sync server (sync-server/)."""
-        await run(
-            core().container()
-            .from_(DART_IMAGE)
-            .with_mounted_cache("/root/.pub-cache", core().cache_volume("webby-pub-cache"))
-            .with_workdir("/src")
-            .with_file("/src/pubspec.yaml", self._sync_server_dir().file("pubspec.yaml"))
-            .with_exec(["dart", "pub", "get"])
-            .with_directory("/src", self._sync_server_dir())
-            .with_exec(["dart", "test"])
-        )
-
-    @function
-    def sync_server(self) -> Service:
-        """The sync server built from sync-server/Dockerfile, on :8080."""
-        return (
-            self._sync_server_dir()
-            .docker_build()
-            .with_exposed_port(8080)
-            .as_service(use_entrypoint=True)
-        )
-
     @function
     def sync_worker(self) -> Service:
         """The Cloudflare sync Worker (sync-worker/) under `pywrangler dev` with a local R2, on :8787."""
@@ -137,12 +108,6 @@ class WebbyCi:
             .with_file("/roundtrip.py", self.source.file("sync-worker/test/roundtrip.py"))
             .with_exec(["python3", "/roundtrip.py", url])
         )
-
-    @function
-    @check
-    async def sync_server_roundtrip(self) -> None:
-        """sync-worker/test/roundtrip.py against the Dart sync server: both servers must speak the same API."""
-        await self._roundtrip(self.sync_server(), "http://sync:8080")
 
     @function
     @check
