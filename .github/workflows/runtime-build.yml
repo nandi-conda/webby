@@ -24,7 +24,7 @@ jobs:
     runs-on: depot-ubuntu-22.04-32
     timeout-minutes: 355
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Free disk space
         run: |
           # Depot's 32-CPU runner has ~200 GB, so the slow cleanup (~95 s) only runs when space is short.
@@ -35,7 +35,7 @@ jobs:
           fi
           df -h /
           sudo mkdir -p /build/ccache /build/ladybird/Build/caches/vcpkg-binary-cache && sudo chown -R "$USER" /build
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: |
             /build/ccache
@@ -63,7 +63,7 @@ jobs:
           test -f /build/BUILD_OK
       - name: Save caches
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             /build/ccache

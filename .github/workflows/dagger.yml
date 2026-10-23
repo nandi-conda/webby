@@ -41,7 +41,7 @@ jobs:
       run:
         shell: bash -o pipefail -e {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install dagger
         run: curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=$HOME/.local/bin DAGGER_VERSION=$DAGGER_VERSION sh && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: dagger check
