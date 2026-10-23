@@ -13,7 +13,15 @@ Each check runs in containers and gets only the files it reads, so a step whose 
 
 The pixi environment (`pixi-env`) is installed from pixi.toml + pixi.lock alone, so it's reused until those change.
 
-Not here: the Ladybird runtime and Android native builds (hours; runtime-build.yml, android-native-build.yml).
+`runtime` (not a check) builds the Ladybird engine the way runtime-build.yml does (Ubuntu 22.04, `scripts/build_ladybird.sh`,
+`scripts/pack_prebuilt.sh`) and returns the runtime tarball. ccache, vcpkg's binary cache and the build tree live in cache
+volumes, so a rebuild on the same engine only recompiles what changed:
+
+    dagger call runtime export --path webby-prebuilt-linux-x64.tar.zst
+    dagger call runtime --poke x export --path ...   # adds a one-line LibWeb patch, to time a small change
+
+`.github/workflows/dagger-runtime.yml` runs it on a Dagger Cloud engine by hand. Not here: the Android native build
+(android-native-build.yml).
 
 ## Day to day
 

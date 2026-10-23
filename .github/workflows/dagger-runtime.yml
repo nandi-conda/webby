@@ -1,0 +1,64 @@
+# Builds the Ladybird runtime with the Dagger function `runtime` (.dagger/) on a Dagger Cloud engine, by hand only, to
+# time cold builds against rebuilds. The real releases still come from runtime-build.yml.
+# Run it once cold, again with nothing changed, then with "poke" set (a one-line LibWeb patch) to see what the cache
+# volumes (ccache, vcpkg, the build tree) save. The step summary has the time.
+name: dagger-runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      poke:
+        description: Text for a one-line patch to a LibWeb file (empty = the real patch set only)
+        type: string
+        default: ""
+      cloud:
+        description: Build on a Dagger Cloud engine (off = on this runner, which has too little disk for a cold build)
+        type: boolean
+        default: true
+
+concurrency:
+  group: dagger-runtime
+  cancel-in-progress: false
+
+env:
+  DAGGER_VERSION: 0.21.11  # dagger.json's engineVersion
+  DAGGER_NO_NAG: "1"
+
+permissions:
+  contents: read
+  id-token: write  # Cloud Engines sign in with GitHub's OIDC token (DAGGER_CLOUD_TOKEN=oidc)
+
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    defaults:
+      run:
+        shell: bash -o pipefail -e {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dagger
+        run: curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=$HOME/.local/bin DAGGER_VERSION=$DAGGER_VERSION sh && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: dagger call runtime
+        env:
+          POKE: ${{ inputs.poke }}
+          DAGGER_CLOUD_TOKEN: ${{ inputs.cloud && 'oidc' || secrets.DAGGER_CLOUD_TOKEN }}
+          CLOUD: ${{ inputs.cloud && '--cloud' || '' }}
+        run: |
+          start=$(date +%s)
+          dagger call --progress=plain $CLOUD runtime --poke "$POKE" export --path out/webby-prebuilt-linux-x64.tar.zst \
+            2>&1 | tee "$RUNNER_TEMP/call.log"
+          took=$(( $(date +%s) - start ))
+          {
+            echo "### dagger call runtime: $((took / 60))m$((took % 60))s"
+            echo "engine: ${CLOUD:-runner}, poke: \`${POKE:-none}\`, commit $GITHUB_SHA"
+            echo '```'
+            grep -E "build_ladybird.sh took|Hits:|Misses:|cache hit|cache miss|Cacheable calls|needs glibc|CACHED" "$RUNNER_TEMP/call.log" | tail -n 30 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          ls -l out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webby-prebuilt-linux-x64
+          path: out/webby-prebuilt-linux-x64.tar.zst
+          retention-days: 3
