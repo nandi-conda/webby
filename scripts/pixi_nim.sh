@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds the Nim front end (nim/) with the pixi env's Nim, clang and GTK when its sources changed, then runs it
 # against the webby-ladybird package (or your own WEBBY_LADYBIRD_PREFIX). Arguments go to the browser (URLs, --incognito).
+# WEBBY_BUILD_ONLY=1 stops after the build (the Dagger `nim-desktop` check, .dagger/).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,6 +26,7 @@ if [ ! -x "$BIN" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$COMMIT" ] || [ -n "$(
     --passL:"-fuse-ld=lld -L$CONDA_PREFIX/lib -Wl,-rpath,$CONDA_PREFIX/lib -Wl,--no-as-needed -lstdc++ -Wl,--as-needed" -o:"$BIN" "$ROOT/nim/webby.nim"
   echo "$COMMIT" > "$STAMP"
 fi
+if [ -n "${WEBBY_BUILD_ONLY:-}" ]; then exit 0; fi
 # A fontconfig file Ladybird's sandboxed helpers can read, as conda/webby's launcher sets up: they may only read
 # share/Lagom/fonts, so without it each one prints "Cannot load default config file".
 fonts_conf="$WEBBY_LADYBIRD_PREFIX/share/Lagom/fonts/webby-fonts.conf"
