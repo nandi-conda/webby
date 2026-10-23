@@ -144,8 +144,9 @@ proc actionEvent(e: JsonNode): JsonNode =
 
 proc jamEvents*(c: Captured, startedAt: int64, href: string, viewport: tuple[width, height: int],
                 video: bool): JsonNode =
-  ## The events for a Jam. A video's timeline starts at the Meta event, so for a video that is `startedAt` and
-  ## nothing earlier goes along; a screenshot keeps everything.
+  ## The events for a Jam. A video's timeline starts at the Meta event, so for a video that is `startedAt`; what the
+  ## page did before the recording started still goes along, before the video's start (a short recording of a page
+  ## that already logged its error would otherwise carry nothing). A screenshot's timeline starts at the first event.
   let (console, network, actions) = c.sorted
   var events: seq[JsonNode]
   for e in network:
@@ -162,7 +163,6 @@ proc jamEvents*(c: Captured, startedAt: int64, href: string, viewport: tuple[wid
     ev.pageContext(e{"page"}.getStr(e{"url"}.getStr), e{"tab"}.getInt)
     events.add ev
   events.sort(proc (a, b: JsonNode): int = cmp(a{"timestamp"}.getBiggestInt, b{"timestamp"}.getBiggestInt))
-  if video: events.keepItIf(it{"timestamp"}.getBiggestInt >= startedAt)
   result = newJArray()
   if events.len == 0: return
   let first = if video: startedAt else: min(startedAt, events[0]{"timestamp"}.getBiggestInt)

@@ -44,7 +44,8 @@ proc check(video: bool, media: string, next: proc ()) =
     description: "Made by nim/tests/jam_upload_check.nim.\n- console, network and actions attached\n- safe to delete",
     url: "https://example.com/checkout", width: 640, height: 360, durationMs: 3000, viewport: (640, 360),
     browser: "Webby", browserVersion: "check", os: "Linux", osVersion: "ci")
-  u.events = sample(start).jamEvents(start, u.url, (640, 360), video)
+  # The video starts 1 s in, after the navigation, the first console message and the first request.
+  u.events = sample(start).jamEvents((if video: start + 1000 else: start), u.url, (640, 360), video)
   jam.upload(u, proc (text: string) = echo("  ", text), proc (ok: bool, url, error: string) =
     if ok: echo (if video: "VIDEO " else: "SCREENSHOT "), url
     else:
