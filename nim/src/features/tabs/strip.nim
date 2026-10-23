@@ -181,6 +181,37 @@ proc togglePinned*(t: Tab) =
   notifyTabStrip()
 
 # ---------------------------------------------------------------------------------------------------------------
+# Dragging tabs: a tab dropped on another goes before or after it (by which half it lands on); dropped on the
+# strip's empty end it goes last. Pinned tabs stay among the pinned ones, the others after them.
+
+var
+  dragIds: Table[Tab, string]
+  nextDragId = 0
+
+proc draggedTab(data: string): Tab =
+  for t, id in dragIds:
+    if id == data and t in tabs: return t
+
+proc dropTab(t: Tab, slot: int) =
+  ## Moves `t` to `slot`, a gap between tabs counted before `t` leaves (0 = before the first, tabs.len = last).
+  let i = tabs.find(t)
+  if i < 0: return
+  var dest = if slot > i: slot - 1 else: slot
+  let pinned = pinnedCount()
+  dest = if t.pinned: min(dest, pinned - 1) else: max(dest, pinned)
+  moveTab(t, clamp(dest, 0, tabs.high))
+
+proc makeDraggable(t: Tab) =
+  inc nextDragId
+  dragIds[t] = "webby-tab-" & $nextDragId
+  kit.`dragData=`(t.button, dragIds[t])
+  kit.`onDrop=`(t.button, proc (data: string, x, y: float) =
+    let d = draggedTab(data)
+    let j = tabs.find(t)
+    if d == nil or d == t or j < 0: return
+    dropTab(d, j + int((if vertical: y else: x) >= 0.5)))
+
+# ---------------------------------------------------------------------------------------------------------------
 # Vertical tabs: the strip becomes a column left of the page.
 
 proc setVertical*(on: bool, save = true) =
@@ -292,10 +323,12 @@ proc startTabs(urls: seq[string]): bool =
 proc install*() =
   initialTabsHooks.add startTabs
   tabCreatedHooks.add proc (t: Tab) =
+    makeDraggable(t)
     if t != currentTab(): t.props["hiddenSince"] = $epochTime()
   tabClosedHooks.add proc (t: Tab) =
     if lastActive == t: lastActive = nil
     badges.del(t)
+    dragIds.del(t)
     if isSessionUrl(t.url):
       closedTabs.add DeviceTab(title: tabTitle(t.title, t.url), url: t.url)
       if closedTabs.len > 25: closedTabs.delete(0)
@@ -340,6 +373,9 @@ button.webby-pinned-tab.webby-active-tab { background-color: alpha(@theme_select
       fillTabMenu(nil, items)
       kit.popupMenu(items)
     tabStripSpace.onDoubleClick = newTab
+    kit.`onDrop=`(tabStripSpace, proc (data: string, x, y: float) =
+      let d = draggedTab(data)
+      if d != nil: dropTab(d, tabs.len))
     if readVerticalTabs(): setVertical(true, save = false)
     moreMenuHooks.add addRecentlyClosed   # rebuilt each time the menu opens
     addMenuSeparator()
