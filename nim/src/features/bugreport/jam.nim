@@ -173,8 +173,7 @@ proc createJam(u: Upload, teamId: string, ids: seq[string], eventsId: string, wi
   if withEvents and eventsId.len > 0: jam["eventsId"] = %eventsId
   if u.video:
     jam["data"] = %*{"mediaId": ids[0], "posterImageMediaId": ids[1], "durationMs": u.durationMs, "width": u.width,
-      "height": u.height, "viewport": {"width": u.viewport.width, "height": u.viewport.height},
-      "recordingSurface": "browser", "micEnabled": false}
+      "height": u.height, "viewport": "tab", "recordingSurface": "browser_tab", "micEnabled": false}
   else:
     jam["data"] = %*{"mediaId": ids[0]}
   call(u.token, op, query, %*{"jam": jam, "comment": {"message": "", "attachments": []}}, proc (data: JsonNode, error: string) =
