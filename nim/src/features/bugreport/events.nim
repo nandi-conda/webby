@@ -106,7 +106,7 @@ proc consoleEvent(e: JsonNode): JsonNode =
   var args = newJArray()
   for a in e{"args"}.getElems: args.add %($(%a.getStr))
   %*{"type": 6, "timestamp": e{"t"}.getBiggestInt, "data": {"plugin": "rrweb/console@1", "payload": {
-    "level": e{"level"}.getStr("log"), "payload": args, "trace": e{"trace"}}}}
+    "level": e{"level"}.getStr("log"), "payload": args, "trace": (if e{"trace"} != nil: e{"trace"} else: newJArray())}}}
 
 proc actionEvent(e: JsonNode): JsonNode =
   let t = e{"t"}.getBiggestInt
@@ -117,9 +117,9 @@ proc actionEvent(e: JsonNode): JsonNode =
   of "click":
     payload["device"] = %"mouse"
     payload["type"] = %"click"
-    payload["modifiers"] = e{"modifiers"}
-    payload["x"] = e{"x"}
-    payload["y"] = e{"y"}
+    payload["modifiers"] = (if e{"modifiers"} != nil: e{"modifiers"} else: %*{"altKey": false, "ctrlKey": false, "metaKey": false, "shiftKey": false})
+    payload["x"] = %e{"x"}.getFloat
+    payload["y"] = %e{"y"}.getFloat
     payload["target"] = target
   of "input", "key":
     let typed = if e{"kind"}.getStr == "input": e{"text"}.getStr else: e{"key"}.getStr

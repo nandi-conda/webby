@@ -14,8 +14,8 @@ import std/[json, strutils, times]
 import nimkit/services
 
 const
-  apiUrl = "https://api.jam.dev"
-  graphqlUrl = "https://graphql.jam.dev/graphql"
+  apiUrl {.strdefine: "jamApiUrl".} = "https://api.jam.dev"
+  graphqlUrl {.strdefine: "jamGraphqlUrl".} = "https://graphql.jam.dev/graphql"
   chunkBytes = 16 * 256 * 1024   ## GCS wants chunks in multiples of 256 KiB; 4 MiB each keeps a request short
   shareUrl* = "https://jam.dev/c/"
   tokenSite* = "https://jam.dev/s/settings/mcp"
