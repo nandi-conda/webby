@@ -26,6 +26,10 @@ env:
   DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
   DAGGER_NO_NAG: "1"
 
+permissions:
+  contents: read
+  id-token: write  # Cloud Engines sign in with GitHub's OIDC token (DAGGER_CLOUD_TOKEN=oidc), not the telemetry token
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -42,12 +46,16 @@ jobs:
           # When Dagger Cloud won't hand out an engine (wrong token type, plan without Cloud Engines), check on this
           # runner instead of failing the push, and say so on the run.
           if [ -n "$SCALE_OUT" ]; then
-            dagger check --progress=plain --scale-out 2>&1 | tee "$RUNNER_TEMP/check.log" && exit 0
-            grep -q "failed to provision a remote Engine" "$RUNNER_TEMP/check.log" || exit 1
-            echo "::warning::Dagger Cloud engines unavailable ($(grep -o -m1 'failed to provision a remote Engine: .*' "$RUNNER_TEMP/check.log")); checking on this runner"
+            # The telemetry token is sent as Basic auth, which the engine API turns away ("invalid token type"); the
+            # CLI's special value "oidc" trades this job's GitHub OIDC token for a Dagger Cloud one instead.
+            DAGGER_CLOUD_TOKEN=oidc dagger check --progress=plain --scale-out 2>&1 | tee "$RUNNER_TEMP/check.log" && exit 0
+            grep -q -E "failed to provision a remote Engine|OIDC" "$RUNNER_TEMP/check.log" || exit 1
+            echo "::warning::Dagger Cloud engines unavailable ($(grep -o -m1 -E '(failed to provision a remote Engine|failed to [a-z ]*OIDC).*' "$RUNNER_TEMP/check.log" | head -c 300)); checking on this runner"
             echo "SCALE_OUT=" >> "$GITHUB_ENV"
           fi
           dagger check --progress=plain
       - name: dagger check again (cache)
         if: inputs.twice
-        run: dagger check --progress=plain $SCALE_OUT
+        run: |
+          if [ -n "$SCALE_OUT" ]; then export DAGGER_CLOUD_TOKEN=oidc; fi
+          dagger check --progress=plain $SCALE_OUT
