@@ -75,7 +75,7 @@ requirements:
     # Linked in so this libstdc++ (new enough for Ladybird's C++23) loads before any older system one.
     - libstdcxx
     - libgcc
-    # The screen recorder's encoders and sources (vp8enc, webmmux, ximagesrc, pulsesrc, opusenc).
+    # The screen and tab recorders' encoders and sources (vp8enc, webmmux, ximagesrc, pulsesrc, opusenc).
     - gstreamer
     - gst-plugins-base
     - gst-plugins-good
@@ -87,6 +87,7 @@ tests:
         - bin/webby
         - lib/webby/webby
         - lib/webby/webby-screencast
+        - lib/webby/webby-tabrec
         - lib/webby-ladybird/share/Lagom/fonts/webby-fonts.conf
         - Menu/webby.json
         - Menu/webby.png

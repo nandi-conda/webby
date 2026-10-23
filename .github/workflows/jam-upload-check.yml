@@ -1,0 +1,64 @@
+# Checks webby's own Jam upload (nim/src/features/bugreport/jam.nim, behind ⋮ > Report a bug) against the real Jam
+# API: makes a screenshot Jam and a video Jam (WebM from webby-tabrec) with made-up console, network and user
+# events, and prints their links. Needs the JAM_TOKEN secret: a Jam personal access token (jam_pat_..., scopes
+# mcp:read + mcp:write) from https://jam.dev/s/settings/mcp.
+name: jam-upload-check
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['nim/src/features/bugreport/jam.nim', 'nim/src/features/bugreport/events.nim',
+            'nim/tests/jam_upload_check.nim', '.github/workflows/jam-upload-check.yml']
+
+jobs:
+  check:
+    runs-on: depot-ubuntu-24.04
+    env:
+      JAM_TOKEN: ${{ secrets.JAM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check JAM_TOKEN
+        run: |
+          if [ -z "$JAM_TOKEN" ]; then echo "::error::JAM_TOKEN secret is not set (or not visible to this repository)"; exit 1; fi
+          echo "JAM_TOKEN is set (${#JAM_TOKEN} chars)"
+      - name: Install pixi
+        run: |
+          curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.83.0 bash
+          echo "$HOME/.pixi/bin" >> "$GITHUB_PATH"
+      - name: Xvfb
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+          Xvfb :99 -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 &
+          echo DISPLAY=:99 >> "$GITHUB_ENV"
+      - name: Build the check and webby-tabrec
+        run: |
+          pixi run bash nim/tabrec/build.sh /tmp/webby-tabrec
+          pixi run bash -c 'nim c -d:release --hints:off --warnings:off --cc:clang --nimcache:/tmp/nimcache \
+            --passL:"-fuse-ld=lld -L$CONDA_PREFIX/lib -Wl,-rpath,$CONDA_PREFIX/lib" \
+            -o:/tmp/jam_upload_check nim/tests/jam_upload_check.nim'
+      - name: Make a screenshot and a recording
+        run: |
+          python3 - <<'EOF' | /tmp/webby-tabrec 640 360 /tmp/recording.webm
+          import sys
+          w, h = 640, 360
+          out = sys.stdout.buffer
+          for i in range(30):
+              out.write(b'F %d\n' % (i * 100))
+              row = bytes([(x + i * 8) % 256 for x in range(w)])
+              out.write(b''.join(bytes([row[x], 120, 200 - i * 4, 255]) for x in range(w)) * h)
+          out.write(b'E 3000\n')
+          EOF
+          python3 - <<'EOF'
+          import struct, zlib
+          w, h = 640, 360
+          rows = b''.join(b'\x00' + b''.join(bytes([x % 256, (y * 2) % 256, 160]) for x in range(w)) for y in range(h))
+          def chunk(t, d): return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+          png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b'')
+          open('/tmp/screenshot.png', 'wb').write(png)
+          EOF
+          ls -la /tmp/recording.webm /tmp/screenshot.png
+      - name: Upload to Jam
+        run: |
+          /tmp/jam_upload_check /tmp/screenshot.png /tmp/recording.webm | tee /tmp/out.txt
+          grep -E '^(SCREENSHOT|VIDEO) ' /tmp/out.txt >> "$GITHUB_STEP_SUMMARY"

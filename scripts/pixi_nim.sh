@@ -32,6 +32,12 @@ if [ ! -x "$CAST" ] || [ "$ROOT/nim/screencast/webby-screencast.c" -nt "$CAST" ]
   echo "Building nim/webby-screencast..." >&2
   "$ROOT/nim/screencast/build.sh" "$CAST"
 fi
+# The tab recorder bug reports use (nim/tabrec, started by features/bugreport.nim from next to the app).
+TABREC="$ROOT/nim/webby-tabrec"
+if [ ! -x "$TABREC" ] || [ "$ROOT/nim/tabrec/webby-tabrec.c" -nt "$TABREC" ]; then
+  echo "Building nim/webby-tabrec..." >&2
+  "$ROOT/nim/tabrec/build.sh" "$TABREC"
+fi
 if [ -n "${WEBBY_BUILD_ONLY:-}" ]; then exit 0; fi
 # GTK reads favicons through gdk-pixbuf's loaders (.ico, SVG, GIF; PNG and JPEG are built in). conda-forge's loaders.cache
 # names them relative to the program's own prefix, which webby (in nim/ or lib/webby/) isn't in, and pixi doesn't

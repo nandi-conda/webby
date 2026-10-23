@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bug report</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fff; --fg: #1d1d1f; --dim: #6e6e73; --line: #e3e3e8; --err: #c62828;
+          --warn: #9a6700; --chip: #f2f2f5; --accent: #5b4bdb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #18181b; --fg: #ececf1; --dim: #a1a1aa; --line: #2e2e34; --err: #ff6b6b; --warn: #e3b341;
+            --chip: #26262b; --accent: #a99cff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, sans-serif; }
+  header { padding: 20px 24px 8px; }
+  h1 { margin: 0 0 4px; font-size: 20px; }
+  .dim { color: var(--dim); }
+  a { color: var(--accent); }
+  main { display: grid; grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr); gap: 20px; padding: 12px 24px 24px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .media img, .media video { width: 100%; border: 1px solid var(--line); border-radius: 8px; background: #000; }
+  .notes { white-space: pre-wrap; margin: 12px 0; }
+  table.info { border-collapse: collapse; width: 100%; }
+  table.info td { padding: 3px 8px 3px 0; vertical-align: top; overflow-wrap: anywhere; }
+  table.info td:first-child { color: var(--dim); white-space: nowrap; width: 1%; }
+  nav { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+  nav button { border: 0; background: none; color: var(--dim); padding: 8px 10px; font: inherit; cursor: pointer;
+               border-bottom: 2px solid transparent; }
+  nav button.on { color: var(--fg); border-bottom-color: var(--accent); }
+  .list { font: 12px/1.4 ui-monospace, monospace; max-height: 75vh; overflow: auto; }
+  .row { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; padding: 5px 2px;
+         border-bottom: 1px solid var(--line); }
+  .row .t { color: var(--dim); }
+  .row .body { overflow-wrap: anywhere; white-space: pre-wrap; }
+  .error .body { color: var(--err); }
+  .warn .body { color: var(--warn); }
+  .chip { display: inline-block; padding: 0 6px; border-radius: 4px; background: var(--chip); margin-right: 6px; }
+  details summary { cursor: pointer; }
+  details pre { margin: 4px 0 0; white-space: pre-wrap; color: var(--dim); }
+  .empty { color: var(--dim); padding: 12px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title"></h1>
+  <div class="dim" id="sub"></div>
+</header>
+<main>
+  <section>
+    <div class="media" id="media"></div>
+    <div class="notes" id="notes"></div>
+    <table class="info" id="info"></table>
+  </section>
+  <section>
+    <nav id="tabs"></nav>
+    <div class="list" id="list"></div>
+  </section>
+</main>
+<script>
+const report = /*REPORT*/null;
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+const start = report.startedAt;
+const at = (t) => {
+  const s = (t - start) / 1000;
+  return (s < 0 ? '-' : '') + Math.floor(Math.abs(s) / 60) + ':' + String(Math.floor(Math.abs(s) % 60)).padStart(2, '0');
+};
+$('title').textContent = report.title || 'Bug report';
+document.title = report.title || 'Bug report';
+$('sub').textContent = new Date(report.createdAt).toLocaleString() + ' · ' + (report.video ? 'Recording' : 'Screenshot') + ' of ' + (report.page.title || report.page.url);
+if (report.video) {
+  const v = el('video'); v.src = report.media; v.poster = 'poster.png'; v.controls = true; $('media').append(v);
+  $('list').addEventListener('click', (e) => {
+    const row = e.target.closest('.row');
+    if (row && row.dataset.t) { v.currentTime = Math.max(0, (Number(row.dataset.t) - start) / 1000); v.play(); }
+  });
+} else {
+  const i = el('img'); i.src = report.media; i.alt = 'Screenshot'; $('media').append(i);
+}
+$('notes').textContent = report.notes || '';
+const info = [
+  ['Page', report.page.url], ['Jam', report.jam || ''], ['Browser', report.browser],
+  ['Engine', report.engine], ['User agent', report.userAgent], ['OS', report.os],
+  ['Viewport', report.viewport.width + ' × ' + report.viewport.height + (report.viewport.dpr ? ' @' + report.viewport.dpr + 'x' : '')],
+  ['Language', report.language || ''],
+];
+for (const [k, v] of info) {
+  if (!v) continue;
+  const tr = el('tr'); tr.append(el('td', '', k));
+  const td = el('td');
+  if (/^https?:/.test(v)) { const a = el('a', '', v); a.href = v; td.append(a); } else td.textContent = v;
+  tr.append(td); $('info').append(tr);
+}
+const views = {
+  Console: () => report.console.map((e) => {
+    const r = el('div', 'row ' + (e.level === 'error' ? 'error' : e.level === 'warn' ? 'warn' : ''));
+    r.dataset.t = e.t;
+    r.append(el('div', 't', at(e.t)));
+    const b = el('div', 'body');
+    b.append(el('span', 'chip', e.level), document.createTextNode(e.args.join(' ')));
+    if (e.trace && e.trace.length) { const d = el('details'); d.append(el('summary', 'dim', 'stack'), el('pre', '', e.trace.join('\n'))); b.append(d); }
+    r.append(b); return r;
+  }),
+  Network: () => report.network.map((e) => {
+    const bad = e.status >= 400 || e.status === 0;
+    const r = el('div', 'row ' + (bad ? 'error' : ''));
+    r.dataset.t = e.t;
+    r.append(el('div', 't', at(e.t)));
+    const b = el('div', 'body');
+    b.append(el('span', 'chip', (e.method || 'GET') + ' ' + (e.status === undefined ? '' : e.status || 'failed')),
+      document.createTextNode(e.url + (e.duration ? '  ' + e.duration + ' ms' : '') + (e.error ? '  ' + e.error : '')));
+    const extra = ['requestHeaders', 'requestBody', 'responseHeaders', 'responseBody'].filter((k) => e[k] && (typeof e[k] === 'string' || Object.keys(e[k]).length));
+    if (extra.length) {
+      const d = el('details'); d.append(el('summary', 'dim', 'details'));
+      for (const k of extra) d.append(el('pre', '', k + ': ' + (typeof e[k] === 'string' ? e[k] : JSON.stringify(e[k], null, 2))));
+      b.append(d);
+    }
+    r.append(b); return r;
+  }),
+  Actions: () => report.actions.map((e) => {
+    const r = el('div', 'row');
+    r.dataset.t = e.t;
+    r.append(el('div', 't', at(e.t)));
+    const target = e.target ? (e.target.text || e.target.attributes.tagName) : '';
+    const what = e.kind === 'click' ? 'Clicked ' + JSON.stringify(target)
+      : e.kind === 'input' ? 'Typed ' + JSON.stringify(e.text) + ' into ' + (e.target && (e.target.attributes.name || e.target.attributes.placeholder || e.target.attributes.tagName))
+      : e.kind === 'key' ? 'Pressed ' + e.key
+      : e.kind === 'navigation' ? (e.how === 'tab' ? 'Switched to ' : 'Went to ') + e.url
+      : e.kind;
+    r.append(el('div', 'body', what)); return r;
+  }),
+};
+const show = (name) => {
+  for (const b of $('tabs').children) b.classList.toggle('on', b.textContent.startsWith(name));
+  const rows = views[name]();
+  $('list').replaceChildren(...(rows.length ? rows : [el('div', 'empty', 'Nothing captured.')]));
+};
+for (const name of Object.keys(views)) {
+  const b = el('button', '', name + ' (' + report[name.toLowerCase()].length + ')');
+  b.onclick = () => show(name);
+  $('tabs').append(b);
+}
+show(report.console.some((e) => e.level === 'error') || !report.network.some((e) => e.status >= 400) ? 'Console' : 'Network');
+</script>
+</body>
+</html>

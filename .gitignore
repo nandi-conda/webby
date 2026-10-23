@@ -5,3 +5,4 @@ nim/*.log
 .claude/
 __pycache__/
 nim/webby-screencast
+nim/webby-tabrec

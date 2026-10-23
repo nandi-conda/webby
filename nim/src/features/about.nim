@@ -29,7 +29,7 @@ proc runtimeVersion(): string =
       if parts.len >= 4: return "webby-ladybird " & parts[2] & " (" & parts[3] & ")"
     result = "custom runtime at " & prefix
 
-proc buildInfo(): tuple[version, commit, runtime: string] =
+proc buildInfo*(): tuple[version, commit, runtime: string] =
   result.version = if webbyVersion.len > 0: webbyVersion else: "local build"
   result.commit = if commit.len > 0: commit else: "unknown"
   result.runtime = runtimeVersion()
