@@ -91,6 +91,13 @@ proc vaultFile*(): string =
 
 proc vaultExists*(): bool = fileExists(vaultFile())
 
+proc setAsideVault*(): string =
+  ## Renames a vault that can't be opened to vault.json.unreadable-<time> (kept, never deleted, in case its key turns
+  ## up), so the next open starts an empty one. Returns the new name.
+  let file = vaultFile()
+  result = file & ".unreadable-" & times.now().format("yyyyMMdd'T'HHmmss")
+  moveFile(file, result)
+
 proc writePrivate(path, content: string) =
   ## Atomically, readable only by the user.
   let tmp = path & ".tmp"

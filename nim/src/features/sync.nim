@@ -199,7 +199,12 @@ proc fillSyncOn(box: kit.Widget, s: JsonNode) =
 proc fillSync(box: kit.Widget) =
   if theVault == nil:
     kit.add(box, text(if vaultError.len > 0: vaultError else: "Opening the vault…", dim = true))
-    if vaultError.len > 0: kit.add(box, buttonRow(btn("Try again", proc () = (retryVault(); refresh()))))
+    if vaultError.len > 0:
+      kit.add(box, buttonRow(btn("Try again", proc () = (retryVault(); refresh())), btn("Start a new vault",
+        proc () = kit.confirm("Start a new password vault?", "The vault that can't be opened is kept beside it " &
+            "(vault.json.unreadable-…), in case its key turns up. Join sync with the code from another device to " &
+            "get your passwords back.", "Start new vault",
+          onResult = proc (ok: bool) = (if ok: (startNewVault(); refresh()))), flat = true)))
     return
   let s = settings()
   if s == nil: fillSyncOff(box) else: fillSyncOn(box, s)

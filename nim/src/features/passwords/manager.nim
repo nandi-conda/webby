@@ -79,3 +79,14 @@ proc retryVault*() =
   ## Tries to open the vault again after it couldn't be (say the keyring was locked and has been unlocked since).
   if theVault != nil or incognito: return
   startManager()
+
+proc startNewVault*() =
+  ## Keeps the unreadable vault file under another name and opens a new, empty vault (passwords come back by joining
+  ## sync from another device).
+  if theVault != nil or incognito or not vaultExists(): return
+  try:
+    stderr.writeLine "webby: kept the unreadable password vault as ", setAsideVault()
+  except CatchableError as e:
+    vaultError = "Could not move the old password vault aside: " & e.msg
+    return
+  startManager()
