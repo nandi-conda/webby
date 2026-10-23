@@ -58,12 +58,18 @@ proc busyMessage*(p: Provider): string =
 # The page scripts (scripts/page_text.js, scripts/jump_to_text.js). pageTextScript posts
 # {"type": "pagetext", "id", "selection", "title", "url", "lang", "text"} as a page message (headings as "## ...");
 # jumpToTextScript scrolls to the words a summary's [§](#words) link cites and flashes them.
+# askSelectionScript (scripts/ask_selection.js, run on every page) shows an "Ask AI about this" button by selected
+# text and posts {"type": "askselection", "text", "title", "url"} when it's clicked.
 const pageTextTemplate = staticRead("../../scripts/page_text.js")
 const jumpTemplate = staticRead("../../scripts/jump_to_text.js")
+const askSelectionTemplate = staticRead("../../scripts/ask_selection.js")
 
-proc pageTextScript*(prefix, id: string): string =
+proc pageTextScript*(prefix, id: string, wholePage = false): string =
+  ## `wholePage`: the page's text even when some of it is selected.
   pageTextTemplate.multiReplace(("${jsonEncode(prefix)}", $(%prefix)), ("${jsonEncode(id)}", $(%id)),
-    ("$maxSummaryInputChars", $maxSummaryInputChars))
+    ("$maxSummaryInputChars", $maxSummaryInputChars), ("$minSelection", if wholePage: "Infinity" else: "200"))
+
+proc askSelectionScript*(prefix: string): string = askSelectionTemplate.replace("${jsonEncode(prefix)}", $(%prefix))
 
 proc jumpToTextScript*(words: string): string = jumpTemplate.replace("${jsonEncode(words)}", $(%words))
 
@@ -84,6 +90,11 @@ const questionPrompt = "You answer questions about a web page the user is readin
   "(bullet lists, **bold**, `code`; no tables or images). If the page doesn't say, say so before adding what you " &
   "know. Where a point comes from the page, you may end it with a source link written [§](#words), where words " &
   "are 3 to 8 consecutive words copied exactly from the page text, in its own language."
+
+const selectionPrompt = "You answer questions about a passage the user selected on a web page they are reading, " &
+  "in a browser's side panel. The rest of the page is there for context. This needs to be in English: answer in " &
+  "English, concisely, in markdown (bullet lists, **bold**, `code`; no tables or images). Explain terms, claims " &
+  "and references in the passage when asked; if the page doesn't say, say so before adding what you know. No links."
 
 
 type PageText* = object
@@ -126,6 +137,22 @@ proc questionRequest*(hasPage: bool, page: PageText, title, url, summary: string
       (if page.title.len == 0: title else: page.title) & "\" (" & page.url & "):\n\n" & page.text
   var messages = %*[{"role": "system", "content": questionPrompt}, {"role": "user", "content": context},
     {"role": "assistant", "content": summary}]
+  for qa in earlier:
+    messages.add %*{"role": "user", "content": qa.question}
+    messages.add %*{"role": "assistant", "content": qa.answer}
+  messages.add %*{"role": "user", "content": question}
+  withProvider(%*{"model": "deepseek-chat", "stream": true, "temperature": 0.3, "messages": messages}, provider)
+
+proc selectionQuestionRequest*(selected: string, hasPage: bool, page: PageText, title, url: string,
+                               earlier: seq[tuple[question, answer: string]], question: string,
+                               provider = deepSeek): JsonNode =
+  ## A question about `selected`, with the page's text (when it was read) and the earlier questions and answers.
+  let name = if page.title.len > 0: page.title else: title
+  var context = "The page \"" & name & "\" (" & (if page.url.len > 0: page.url else: url) & ")"
+  if hasPage and page.text.strip.len > 0: context.add ":\n\n" & page.text & "\n\n---\n\n"
+  else: context.add ". "
+  context.add "The user selected this passage:\n\n" & selected
+  var messages = %*[{"role": "system", "content": selectionPrompt}, {"role": "user", "content": context}]
   for qa in earlier:
     messages.add %*{"role": "user", "content": qa.question}
     messages.add %*{"role": "assistant", "content": qa.answer}

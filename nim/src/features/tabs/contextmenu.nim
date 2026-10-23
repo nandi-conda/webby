@@ -264,6 +264,8 @@ proc showPageMenu*(t: Tab, info: JsonNode, x, y: float) =
   elif selection.strip.len > 0:
     group()
     item("Copy", proc () = copyText(selection))
+    if askSelectionHandler != nil:
+      item("Ask AI about this", proc () = askSelectionHandler(t, selection.strip))
     item("Search the web for “" & ellipsize(selection.strip, 30) & "”",
       proc () = openInBackgroundTab(selection.strip))
   if link.len == 0 and image.len == 0 and not editable:

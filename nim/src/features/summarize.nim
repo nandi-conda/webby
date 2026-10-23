@@ -28,6 +28,10 @@ type
     madeAt: int64
     chat: Chat
     provider: Provider         ## who the summary was asked of
+    asking: bool               ## "Ask AI about this": questions about `selected`, no summary
+    selected: string
+    reading: bool              ## the page's text is still being read for `asking`
+    afterRead: seq[proc ()]    ## questions waiting for it
 
   Panel = object
     root, busyLabel, copyButton, redoButton, content, scroller, entry, sendButton: kit.Widget
@@ -133,15 +137,16 @@ proc showSummarizeSettings*(onSaved: proc () = nil) =
 # ---------------------------------------------------------------------------------------------------------------
 # Reading the page
 
-proc readPageText(t: Tab, done: proc (ok: bool, page: PageText)) =
-  ## Runs the page-text script in `t`; `done` gets its message, or ok = false after 8 s.
+proc readPageText(t: Tab, done: proc (ok: bool, page: PageText), wholePage = false) =
+  ## Runs the page-text script in `t`; `done` gets its message, or ok = false after 8 s. `wholePage` reads the
+  ## page's text even when some of it is selected.
   if t == nil or t.closed or t.messagePrefix.len == 0:
     done(false, PageText())
     return
   var id = ""
   for _ in 0 ..< 8: id.add toHex(rand(255), 2).toLowerAscii
   pendingReads[id] = done
-  t.runJs(pageTextScript(t.messagePrefix, id))
+  t.runJs(pageTextScript(t.messagePrefix, id, wholePage))
   wake()
   later(8000, proc () =
     if id in pendingReads:
@@ -150,6 +155,7 @@ proc readPageText(t: Tab, done: proc (ok: bool, page: PageText)) =
       cb(false, PageText()))
 
 proc jumpElsewhere(job: Job, words: string)
+proc askAboutSelection*(t: Tab, text: string)
 
 proc onPageMessage(t: Tab, msg: string): bool =
   if msg.startsWith("{") and "\"summaryjumpmiss\"" in msg:
@@ -157,6 +163,10 @@ proc onPageMessage(t: Tab, msg: string): bool =
     if j == nil or j.kind != JObject or j{"type"}.getStr != "summaryjumpmiss": return false
     let job = jobs.getOrDefault(t.messagePrefix)
     if job != nil: job.jumpElsewhere(j{"words"}.getStr)
+    return true
+  if msg.startsWith("{\"type\":\"askselection\""):
+    let j = try: parseJson(msg) except CatchableError: nil
+    if j != nil and j.kind == JObject and t == currentTab(): askAboutSelection(t, j{"text"}.getStr.strip)
     return true
   if not msg.startsWith("{") or "\"pagetext\"" notin msg: return false
   let j = try: parseJson(msg) except CatchableError: nil
@@ -190,6 +200,7 @@ proc answering(job: Job): bool = job.questions.len > 0 and job.questions[^1].run
 
 proc showSaved(job: Job, key: string, saved: CachedSummary) =
   inc job.generation
+  job.asking = false
   job.key = key
   job.questions.setLen 0
   for qa in saved.questions: job.questions.add Question(question: qa.question, answer: qa.answer)
@@ -205,7 +216,7 @@ proc showSaved(job: Job, key: string, saved: CachedSummary) =
   changed(job)
 
 proc save(job: Job) =
-  if job.key.len == 0 or job.text.strip.len == 0: return
+  if job.asking or job.key.len == 0 or job.text.strip.len == 0: return
   if job.madeAt == 0: job.madeAt = nowMs()
   var s = CachedSummary(title: job.title, url: job.url, text: job.text, at: job.madeAt, selection: job.selection)
   for qa in job.questions:
@@ -224,6 +235,7 @@ proc start(job: Job, key: string, provider: Provider, fresh = false) =
   let generation = job.generation
   let t = job.tab
   job.open = true
+  job.asking = false
   job.running = true
   job.error = ""
   job.text = ""
@@ -276,7 +288,7 @@ proc start(job: Job, key: string, provider: Provider, fresh = false) =
 proc ask(job: Job, key, text: string, provider: Provider) =
   ## Asks a follow-up question with the page text, the summary and the earlier questions as context.
   let question = text.strip
-  if question.len == 0 or job.running or job.answering or job.text.strip.len == 0: return
+  if question.len == 0 or job.running or job.answering or (job.text.strip.len == 0 and not job.asking): return
   let generation = job.generation
   var earlier: seq[Question]
   for qa in job.questions:
@@ -288,8 +300,11 @@ proc ask(job: Job, key, text: string, provider: Provider) =
     if generation != job.generation: return
     var context: seq[tuple[question, answer: string]]
     for qa in earlier: context.add (qa.question, qa.answer)
-    job.chat = streamChat(provider, key,
-      questionRequest(job.hasPage, job.page, job.title, job.url, job.text, context, question, provider),
+    let request =
+      if job.asking: selectionQuestionRequest(job.selected, job.hasPage, job.page, job.title, job.url, context,
+        question, provider)
+      else: questionRequest(job.hasPage, job.page, job.title, job.url, job.text, context, question, provider)
+    job.chat = streamChat(provider, key, request,
       proc (piece: string) =
         if generation != job.generation: return
         entry.answer.add piece
@@ -303,8 +318,11 @@ proc ask(job: Job, key, text: string, provider: Provider) =
                       else: ""
         if entry.error.len == 0: job.save()
         changed(job))
+  if job.asking:
+    if job.reading: job.afterRead.add send   # the page's text comes first, for context
+    else: send()
   # A saved summary has no page text with it: read the page again if the tab still shows it.
-  if not job.hasPage and not job.selection and summaryKey(job.tab.url) == summaryKey(job.url):
+  elif not job.hasPage and not job.selection and summaryKey(job.tab.url) == summaryKey(job.url):
     readPageText(job.tab, proc (ok: bool, page: PageText) =
       if ok:
         job.page = page
@@ -365,6 +383,7 @@ proc close(job: Job) =
 # The panel
 
 const panelCss = markdownCss & """
+.webby-summary-quote { border-left: 3px solid alpha(currentColor, 0.3); padding: 2px 0 2px 10px; }
 .webby-summary-question { background-color: alpha(currentColor, 0.07); border-radius: 6px; padding: 7px 10px; }
 .webby-summary-bar { margin: 2px 4px 2px 0; }
 .webby-summary-content { padding: 14px; }
@@ -461,17 +480,34 @@ proc note(text: string, small = false): kit.Widget =
   result = kit.addClass(if small: kit.richLabel("<small>" & kit.escapeRich(text) & "</small>") else: kit.label(text),
     "dim")
 
+proc copyable(job: Job): string =
+  ## What Copy copies: the summary, or in "Ask AI" the latest answer.
+  if not job.asking: return withoutSourceLinks(job.text)
+  for i in countdown(job.questions.high, 0):
+    if job.questions[i].answer.strip.len > 0: return job.questions[i].answer.strip
+
+const quickQuestions = [("Explain", "Explain this passage in plain words."),
+  ("Summarize", "Summarize this passage in a few bullets."),
+  ("Define terms", "Define the terms, names and references in this passage.")]
+
+proc askQuick(question: string)
+
+proc quickButton(label, question: string): kit.Widget =
+  # A proc of its own so each button's closure keeps its own question (a loop's closures would share one).
+  kit.addClass(kit.button(label, proc () = askQuick(question)), "flat")
+
 proc render() =
   let job = panelJob
   if job == nil or panel.content == nil: return
   let key = apiKey()
   let busy = job.running or job.answering
-  setSidePanelTitle(if job.selection: "Summary of selection" else: "Summary")
+  setSidePanelTitle(if job.asking: "Ask AI" elif job.selection: "Summary of selection" else: "Summary")
   kit.`visible=`(panel.busyLabel, busy)
   kit.`text=`(panel.busyLabel, if job.answering: "Answering…" else: "Summarizing…")
-  kit.`enabled=`(panel.copyButton, job.text.len > 0)
+  kit.`enabled=`(panel.copyButton, job.copyable.len > 0)
+  kit.`visible=`(panel.redoButton, not job.asking)
   kit.`enabled=`(panel.redoButton, not busy and key.len > 0)
-  let canAsk = key.len > 0 and job.text.strip.len > 0 and not job.running and job.error.len == 0
+  let canAsk = key.len > 0 and (job.text.strip.len > 0 or job.asking) and not job.running and job.error.len == 0
   kit.`enabled=`(panel.entry, canAsk)
   kit.`enabled=`(panel.sendButton, canAsk and not job.answering)
 
@@ -481,9 +517,21 @@ proc render() =
     let url = note(job.url, small = true)
     kit.`maxChars=`(url, 200)
     add url
+  if job.asking:
+    let quote = kit.addClass(kit.label(job.selected), "webby-summary-quote")
+    kit.`selectable=`(quote, true)
+    add(quote, 12)
+    if job.questions.len == 0:
+      if key.len == 0: add(note("Add an API key in Summarize settings… (⋮ menu) to ask about it."), 12)
+      else:
+        let quick = kit.row()
+        quick.spacing = 4
+        for (label, question) in quickQuestions: kit.add(quick, quickButton(label, question))
+        add(quick, 12)
   if job.savedAt != 0 and not job.running:
     add note("Saved summary from " & whenText(job.savedAt) & ". Summarize again for a new one.", small = true)
   if job.error.len > 0: add(kit.addClass(kit.label(job.error), "error"), 12)
+  elif job.asking: discard
   elif job.text.len == 0 and job.running:
     add(note(waitingText(job.hasPage, job.chat != nil and job.chat.queued, job.provider)), 12)
   else: add(markdownView(job.text.strip), 12)
@@ -492,6 +540,14 @@ proc render() =
     if qa.answer.strip.len > 0: add(markdownView(qa.answer.strip), 8)
     elif qa.running: add(note("Thinking…"), 8)
     if qa.error.len > 0: add(kit.addClass(kit.label(qa.error), "error"), 8)
+
+proc askQuick(question: string) =
+  let job = panelJob
+  let key = apiKey()
+  if job == nil or key.len == 0 or job.running or job.answering: return
+  job.ask(key, question, provider())
+  render()
+  kit.`followEnd=`(panel.scroller, true)
 
 proc askFromEntry() =
   let job = panelJob
@@ -517,9 +573,9 @@ proc showPanel(job: Job) =
       kit.`followEnd=`(panel.scroller, false)
       job.start(key, provider(), fresh = true)
       render())
-  panel.copyButton = kit.iconButton("copy", "Copy summary", proc () =
-    if panelJob != nil and panelJob.text.len > 0:
-      copyText(withoutSourceLinks(panelJob.text)))
+  panel.copyButton = kit.iconButton("copy", if job.asking: "Copy answer" else: "Copy summary", proc () =
+    if panelJob != nil and panelJob.copyable.len > 0:
+      copyText(panelJob.copyable))
   panel.busyLabel = note("", small = true)
   let bar = kit.addClass(kit.row(kit.spacer(), panel.busyLabel, panel.copyButton, panel.redoButton),
     "webby-summary-bar")
@@ -527,7 +583,7 @@ proc showPanel(job: Job) =
   panel.content = kit.addClass(kit.column(), "webby-summary-content")
   panel.content.spacing = 0
   panel.scroller = kit.scroll(panel.content)
-  panel.entry = kit.entry("Ask about this page")
+  panel.entry = kit.entry(if job.asking: "Ask about the selection" else: "Ask about this page")
   panel.entry.onSubmit = proc (t: string) = askFromEntry()
   panel.sendButton = kit.iconButton("send", "Ask", askFromEntry)
   let askRow = kit.addClass(kit.row(kit.expand(panel.entry), panel.sendButton), "webby-summary-ask")
@@ -536,7 +592,7 @@ proc showPanel(job: Job) =
   panel.root = kit.addClass(kit.column(bar, kit.separator(), kit.expand(panel.scroller), kit.separator(), askRow),
     "webby-md")
   panel.root.spacing = 0
-  showSidePanel("Summary", panel.root, 380, proc () =
+  showSidePanel(if job.asking: "Ask AI" else: "Summary", panel.root, 380, proc () =
     let shown = panelJob
     panelJob = nil
     panel = Panel()
@@ -580,13 +636,61 @@ proc summarizePage*() =
   job.start(key, provider())
   showPanel(job)
 
+proc askAboutSelection*(t: Tab, text: string) =
+  ## "Ask AI about this": the side panel with `text` (selected in `t`) quoted and the question box focused. The
+  ## page's text is read alongside, as context for the questions.
+  if t == nil or t.closed or text.len == 0: return
+  let job = jobOf(t)
+  job.stopChat()
+  inc job.generation
+  let generation = job.generation
+  job.asking = true
+  job.selected = text
+  job.open = true
+  job.running = false
+  job.error = ""
+  job.text = ""
+  job.title = t.title
+  job.url = t.url
+  job.savedAt = 0
+  job.questions.setLen 0
+  job.key = ""
+  job.selection = true
+  job.provider = provider()
+  job.hasPage = false
+  job.reading = true
+  job.afterRead.setLen 0
+  readPageText(t, proc (ok: bool, page: PageText) =
+    if generation != job.generation: return
+    job.reading = false
+    if ok:
+      job.page = page
+      job.hasPage = true
+      if page.title.len > 0: job.title = page.title
+    let waiting = job.afterRead
+    job.afterRead.setLen 0
+    for send in waiting:
+      send()
+  , wholePage = true)
+  showPanel(job)
+  # After the page menu (which gives the page the focus back) and the click in the page are done with.
+  later(50, proc () =
+    if panelJob == job and panel.entry != nil:
+      if apiKey().len > 0: kit.focus(panel.entry)
+      else: showSummarizeSettings(proc () =
+        render()
+        if panelJob == job and panel.entry != nil: kit.focus(panel.entry)))
+
 proc toggleSummary() =
   let t = currentTab()
-  if t != nil and panelJob != nil and panelJob.tab == t: closeSidePanel()
+  if t != nil and panelJob != nil and panelJob.tab == t and not panelJob.asking: closeSidePanel()
   else: summarizePage()
 
 proc install*() =
   pageMessageHooks.add onPageMessage
+  askSelectionHandler = askAboutSelection
+  pageScriptHooks.add proc (t: Tab): string =
+    if t.messagePrefix.len == 0: "" else: askSelectionScript(t.messagePrefix)
   windowHooks.add proc () =
     let saved = readJsonFile(zoomFile())
     if saved != nil and saved.kind == JObject: textZoom = clamp(saved{"zoom"}.getFloat(1.0), 0.6, 2.5)

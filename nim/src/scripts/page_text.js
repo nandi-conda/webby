@@ -34,7 +34,7 @@
   let selection = false;
   try {
     const selected = String(window.getSelection ? window.getSelection() : '').trim();
-    if (selected.length >= 200) { text = selected; selection = true; }
+    if (selected.length >= $minSelection) { text = selected; selection = true; }
   } catch (e) {}
   if (!text) {
     const body = document.body || document.documentElement;

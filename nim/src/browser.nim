@@ -118,6 +118,7 @@ var
   # Requests from pages. nil = declined by the core.
   webauthnHandler*: proc (t: Tab, request: JsonNode)
   filePickerHandler*: proc (t: Tab, request: JsonNode)
+  askSelectionHandler*: proc (t: Tab, text: string)  ## "Ask AI about this" for text selected in the page (Summarize)
   permissionHandler*: proc (t: Tab, request: JsonNode)
 
   viewPxW, viewPxH = 0         # the page canvas, in pixels
