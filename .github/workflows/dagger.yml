@@ -22,9 +22,9 @@ concurrency:
 env:
   # The org/repo variable DAGGER_SCALE_OUT ("true", "1" or "yes") runs the checks on a Dagger Cloud engine. One engine
   # for the whole run (--engine=cloud) keeps its cache between runs; a fresh engine per check (0.21's --scale-out) started
-  # with an empty cache every time (runs 19-20), so it bought no speed. Dagger 1.0 only names the module in its engine
-  # request when it's given with -m, and without that each run got a fresh, cold engine (runs 31-32).
-  SCALE_OUT: ${{ contains(fromJSON('["true","1","yes"]'), vars.DAGGER_SCALE_OUT) && '--engine=cloud -m .dagger' || '' }}
+  # with an empty cache every time (runs 19-20), so it bought no speed. On 0.21.11 a rerun was all CACHED (run 23); on
+  # 1.0.0-beta.20 each run gets a fresh, cold engine (runs 31-34, with or without -m), ~70 s for the checks.
+  SCALE_OUT: ${{ contains(fromJSON('["true","1","yes"]'), vars.DAGGER_SCALE_OUT) && '--engine=cloud' || '' }}
   DAGGER_VERSION: 1.0.0-beta.20  # also in dagger-generate.yml
   DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
   DAGGER_NO_NAG: "1"
