@@ -1,0 +1,81 @@
+# Records webby loading a page under Xvfb and uploads the video as a Jam (https://jam.dev), so a fix can be shown
+# working without anyone running it by hand. Needs the JAM_TOKEN secret: a Jam personal access token (jam_pat_...,
+# scopes mcp:read + mcp:write) from https://jam.dev/s/settings/mcp.
+#
+# Ladybird has no Chrome DevTools protocol, so the Jam is video only (no Console/Network panels).
+name: jam-proof
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Page to open in webby
+        default: https://en.wikipedia.org/wiki/Web_browser
+      seconds:
+        description: How long to record
+        default: '15'
+      title:
+        description: Jam title
+        default: webby proof recording
+  push:
+    branches: [main]
+    paths: ['.github/workflows/jam-proof.yml']
+
+env:
+  PIXI_VERSION: v0.56.0
+  URL: ${{ inputs.url || 'https://en.wikipedia.org/wiki/Web_browser' }}
+  SECONDS_TO_RECORD: ${{ inputs.seconds || '15' }}
+  TITLE: ${{ inputs.title || 'webby proof recording' }}
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    env:
+      JAM_TOKEN: ${{ secrets.JAM_TOKEN }}
+      JAM_NO_TELEMETRY: '1'
+    steps:
+      - name: Check JAM_TOKEN
+        run: |
+          if [ -z "$JAM_TOKEN" ]; then echo "::error::JAM_TOKEN secret is not set"; exit 1; fi
+          echo "JAM_TOKEN is set (${#JAM_TOKEN} chars, prefix ${JAM_TOKEN:0:8})"
+      - name: Install X11 tools, ffmpeg, jam, webby
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg wmctrl x11-xserver-utils x11-utils xvfb openbox util-linux jq
+          curl -fsSL https://native.jam.dev/install | bash
+          curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=$PIXI_VERSION bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.pixi/bin" >> "$GITHUB_PATH"
+          "$HOME/.pixi/bin/pixi" global install -c https://prefix.dev/nandi-testing -c conda-forge webby
+      - name: Check jam
+        run: |
+          jam --version
+          jam auth status
+      - name: Start Xvfb and openbox
+        run: |
+          Xvfb :99 -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 &
+          sleep 1
+          DISPLAY=:99 openbox >/tmp/openbox.log 2>&1 &
+          echo DISPLAY=:99 >> "$GITHUB_ENV"
+      - name: Record webby
+        run: |
+          webby "$URL" >/tmp/webby.log 2>&1 &
+          PID=$!
+          # Give the window a moment to map, then record it; fall back to the whole (otherwise empty) display.
+          for i in $(seq 30); do
+            WIN=$(jam record windows --json | jq -r '[.. | objects | select(has("windowId")) | select((.app // "" | ascii_downcase | test("openbox")) | not)][0].windowId // empty' 2>/dev/null || true)
+            [ -n "$WIN" ] && break
+            sleep 1
+          done
+          jam record windows || true
+          if [ -n "$WIN" ]; then SEL="--window-id $WIN"; else SEL="--display 0"; fi
+          jam record run $SEL --url "$URL" --title "$TITLE" \
+            --description "webby at ${{ github.sha }} under Xvfb on GitHub Actions run ${{ github.run_id }}" \
+            --json -- sleep "$SECONDS_TO_RECORD" | tee /tmp/jam.json
+          kill $PID || true
+          LINK=$(jq -r '.. | strings | select(test("^https://jam.dev/"))' /tmp/jam.json | head -1)
+          echo "Jam: $LINK"
+          echo "### Jam recording: $LINK" >> "$GITHUB_STEP_SUMMARY"
+      - name: webby log
+        if: always()
+        run: tail -50 /tmp/webby.log || true
