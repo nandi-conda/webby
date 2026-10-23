@@ -1,0 +1,38 @@
+# Builds the image runtime-build.yml runs in (scripts/runtime_toolchain.Dockerfile: Ubuntu 22.04 + clang 21, CMake,
+# Rust, gh) on Depot and pushes it to ghcr.io/nandi-conda/webby-runtime-toolchain. Runs when the toolchain changes.
+name: runtime-toolchain
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/portable_toolchain.sh
+      - scripts/runtime_toolchain.Dockerfile
+      - .github/workflows/runtime-toolchain.yml
+  workflow_dispatch:
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # Depot signs in with GitHub's OIDC token
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: depot/setup-action@v1
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: depot/build-push-action@v1
+        with:
+          project: 19lr1crmn0
+          context: .
+          file: scripts/runtime_toolchain.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/nandi-conda/webby-runtime-toolchain:latest
+            ghcr.io/nandi-conda/webby-runtime-toolchain:${{ github.sha }}

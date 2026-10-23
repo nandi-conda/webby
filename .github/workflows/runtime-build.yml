@@ -18,10 +18,17 @@ on:
 
 permissions:
   contents: write
+  packages: read  # the toolchain image on ghcr.io
 
 jobs:
   build:
     runs-on: depot-ubuntu-22.04-32
+    # clang 21, CMake, Rust and gh already installed (runtime-toolchain.yml); portable_build.sh skips its installs.
+    container:
+      image: ghcr.io/nandi-conda/webby-runtime-toolchain:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v7
@@ -34,7 +41,7 @@ jobs:
             sudo docker image prune -af >/dev/null 2>&1 || true
           fi
           df -h /
-          sudo mkdir -p /build/ccache /build/ladybird/Build/caches/vcpkg-binary-cache && sudo chown -R "$USER" /build
+          sudo mkdir -p /build/ccache /build/ladybird/Build/caches/vcpkg-binary-cache && sudo chown -R "$(id -un)" /build
       - uses: actions/cache/restore@v6
         with:
           path: |
@@ -50,7 +57,7 @@ jobs:
           start=$(date +%s)
           sudo -E env "PATH=$PATH" bash scripts/portable_build.sh || true
           took=$(( $(date +%s) - start ))
-          sudo chown -R "$USER" /build
+          sudo chown -R "$(id -un)" /build
           {
             echo "### Build Ladybird: $((took / 60))m$((took % 60))s on $(nproc) CPUs"
             echo '```'
