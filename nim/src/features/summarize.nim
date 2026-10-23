@@ -38,6 +38,7 @@ var
   pendingReads: Table[string, proc (ok: bool, page: PageText)]
   panelJob: Job                ## the job the side panel shows, nil when it shows something else
   panel: Panel
+  pendingJump: tuple[tab: Tab, words: string]  ## a source link to scroll to once its tab has loaded the page again
   switchingPanel = false
   renderQueued = false
 
@@ -303,12 +304,34 @@ proc ask(job: Job, key, text: string, provider: Provider) =
       send())
   else: send()
 
+proc runJump(t: Tab, words: string, retries = 0) =
+  ## Runs the jump script, trying again every half second (up to retries times) while a page that just loaded
+  ## hasn't put the words on screen yet.
+  if retries == 0: t.runJs(jumpToTextScript(words))
+  else: t.runJs("(function retry(n) { if (!" & jumpToTextScript(words).strip(chars = {';', '\n', ' '}) &
+    " && n > 0) setTimeout(() => retry(n - 1), 500); })(" & $retries & ");")
+  wake()
+
 proc jumpTo(job: Job, words: string): bool =
   ## Scrolls the page to the part a source link points at; false when the tab shows another page by now.
   if summaryKey(job.tab.url) != summaryKey(job.url): return false
-  job.tab.runJs(jumpToTextScript(words))
-  wake()
+  job.tab.runJump(words)
   true
+
+proc summarizePage*()
+
+proc jumpElsewhere(job: Job, words: string) =
+  ## A source link clicked after the summary's tab moved on: another tab still showing the page is brought
+  ## forward and scrolled, otherwise the summary's tab goes back to the page and scrolls once it has loaded.
+  let want = summaryKey(job.url)
+  for t in tabs:
+    if t != job.tab and not t.closed and summaryKey(t.url) == want:
+      activateTab(t)
+      if panelJob == nil and lookupSummary(summaryKey(t.url))[0]: summarizePage()   # keep the summary beside it
+      t.runJump(words, retries = 10)
+      return
+  pendingJump = (job.tab, words)
+  job.tab.loadUrl(job.url)
 
 proc close(job: Job) =
   job.stopChat()
@@ -562,7 +585,7 @@ proc install*() =
     linkHandler = proc (url: string) =
       if not url.startsWith(anchorPrefix): discard openTab(url)
       elif panelJob != nil and not panelJob.jumpTo(url[anchorPrefix.len .. ^1]):
-        kit.alert("Go back to the summarized page to jump to that part.")
+        panelJob.jumpElsewhere(url[anchorPrefix.len .. ^1])
     discard addToolbarButton("summarize_outlined", "Summarize this page", toggleSummary, "summarize", "Summary")
     addMenuSeparator()
     addMenuItem("Summarize this page", summarizePage)
@@ -574,7 +597,14 @@ proc install*() =
       if wanted: showPanel(job) else: hidePanel()
     elif panelJob == nil and wanted and not sidePanelShowing():
       showPanel(job)
+  navigationHooks.add proc (t: Tab) =
+    if pendingJump.tab != t: return
+    let words = pendingJump.words
+    pendingJump = (nil, "")
+    let job = jobs.getOrDefault(t.messagePrefix)
+    if job != nil and summaryKey(t.url) == summaryKey(job.url): t.runJump(words, retries = 10)
   tabClosedHooks.add proc (t: Tab) =
+    if pendingJump.tab == t: pendingJump = (nil, "")
     let job = jobs.getOrDefault(t.messagePrefix)
     if job == nil: return
     if panelJob == job: closeSidePanel()
