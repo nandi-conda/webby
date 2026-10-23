@@ -32,16 +32,12 @@ jobs:
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v7
-      - name: Free disk space
+      - name: Prepare /build
         run: |
-          # Depot's 32-CPU runner has ~200 GB, so the slow cleanup (~95 s) only runs when space is short.
-          if (( $(df --output=avail -BG / | tail -1 | tr -dc '0-9') < 100 )); then
-            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
-              /usr/local/.ghcup /usr/share/swift /usr/local/lib/node_modules
-            sudo docker image prune -af >/dev/null 2>&1 || true
-          fi
           df -h /
-          sudo mkdir -p /build/ccache /build/ladybird/Build/caches/vcpkg-binary-cache && sudo chown -R "$(id -un)" /build
+          # The job runs as root in the toolchain container; a recursive chown there would copy the whole image's /build
+          # (Rust, CMake) up through overlayfs, which took ~2 min.
+          mkdir -p /build/ccache /build/ladybird/Build/caches/vcpkg-binary-cache
       - uses: actions/cache/restore@v6
         with:
           path: |
@@ -57,7 +53,6 @@ jobs:
           start=$(date +%s)
           sudo -E env "PATH=$PATH" bash scripts/portable_build.sh || true
           took=$(( $(date +%s) - start ))
-          sudo chown -R "$(id -un)" /build
           {
             echo "### Build Ladybird: $((took / 60))m$((took % 60))s on $(nproc) CPUs"
             echo '```'
