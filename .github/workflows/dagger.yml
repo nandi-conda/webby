@@ -30,12 +30,24 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash -o pipefail -e {0}
     steps:
       - uses: actions/checkout@v4
       - name: Install dagger
         run: curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=$HOME/.local/bin DAGGER_VERSION=$DAGGER_VERSION sh && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: dagger check
-        run: dagger check --progress=plain $SCALE_OUT
+        run: |
+          # When Dagger Cloud won't hand out an engine (wrong token type, plan without Cloud Engines), check on this
+          # runner instead of failing the push, and say so on the run.
+          if [ -n "$SCALE_OUT" ]; then
+            dagger check --progress=plain --scale-out 2>&1 | tee "$RUNNER_TEMP/check.log" && exit 0
+            grep -q "failed to provision a remote Engine" "$RUNNER_TEMP/check.log" || exit 1
+            echo "::warning::Dagger Cloud engines unavailable ($(grep -o -m1 'failed to provision a remote Engine: .*' "$RUNNER_TEMP/check.log")); checking on this runner"
+            echo "SCALE_OUT=" >> "$GITHUB_ENV"
+          fi
+          dagger check --progress=plain
       - name: dagger check again (cache)
         if: inputs.twice
         run: dagger check --progress=plain $SCALE_OUT
