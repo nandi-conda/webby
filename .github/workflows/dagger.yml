@@ -1,7 +1,7 @@
 # Runs the Dagger checks (.dagger/, `dagger check`) on every push to main and on demand.
 # With the repo secret DAGGER_CLOUD_TOKEN (dagger.cloud > your org > Settings > Tokens) each run's trace shows up in
 # Dagger Cloud; without it the checks still run, just with no trace.
-# Set the repo variable DAGGER_SCALE_OUT to "true" to run each check on a Dagger Cloud engine instead of this runner,
+# Set the org or repo variable DAGGER_SCALE_OUT to "true" to run each check on a Dagger Cloud engine instead of this runner,
 # whose cache is kept between runs (needs the token, and Cloud Engines on the Dagger Cloud plan).
 name: dagger
 
@@ -20,6 +20,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # The org/repo variable DAGGER_SCALE_OUT ("true", "1" or "yes") turns on Cloud engines.
+  SCALE_OUT: ${{ contains(fromJSON('["true","1","yes"]'), vars.DAGGER_SCALE_OUT) && '--scale-out' || '' }}
   DAGGER_VERSION: 0.21.11  # dagger.json's engineVersion
   DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
   DAGGER_NO_NAG: "1"
@@ -33,7 +35,7 @@ jobs:
       - name: Install dagger
         run: curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=$HOME/.local/bin DAGGER_VERSION=$DAGGER_VERSION sh && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: dagger check
-        run: dagger check --progress=plain ${{ vars.DAGGER_SCALE_OUT == 'true' && '--scale-out' || '' }}
+        run: dagger check --progress=plain $SCALE_OUT
       - name: dagger check again (cache)
         if: inputs.twice
-        run: dagger check --progress=plain
+        run: dagger check --progress=plain $SCALE_OUT
