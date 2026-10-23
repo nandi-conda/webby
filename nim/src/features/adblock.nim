@@ -1,7 +1,9 @@
 ## Ad and tracker blocking on the desktop: ⋮ > "Block ads and trackers" (on by default). The engine and the switch
 ## are in adblock/store.nim; this seeds the engine before Ladybird starts and adds the menu item.
+## YouTube serves its ads from the video hosts, out of reach of URL rules, so YouTube pages also get a page script
+## (scripts/youtube_ads.js) that strips the ads from the player's data and skips any that still play.
 
-import std/os
+import std/[os, strutils, uri]
 import ../browser
 import adblock/store
 import tabs/common
@@ -30,7 +32,17 @@ proc seedIncognitoProfile() =
     for f in downloadedLists(originalLadybirdArgs): copyFile(f, lists / f.extractFilename)
   except CatchableError: discard
 
+const youTubeScript = staticRead("../scripts/youtube_ads.js")
+
+proc isYouTube(url: string): bool =
+  let host = try: parseUri(url).hostname.toLowerAscii except CatchableError: ""
+  host == "youtube.com" or host.endsWith(".youtube.com")
+
+proc youTubePageScript(t: Tab): string =
+  if enabled() and isYouTube(t.url): youTubeScript else: ""
+
 proc install*() =
+  pageScriptHooks.add youTubePageScript
   startupHooks.add proc () =
     if incognito and incognitoProfile.len > 0: seedIncognitoProfile()
     else: prepareEngine()
