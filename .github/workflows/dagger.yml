@@ -1,4 +1,4 @@
-# Runs the Dagger checks (.dagger/, `dagger check`) on every push and on demand.
+# Runs the Dagger checks (.dagger/, `dagger check`) on every push to main and on demand.
 # With the repo secret DAGGER_CLOUD_TOKEN (dagger.cloud > your org > Settings > Tokens) each run's trace shows up in
 # Dagger Cloud; without it the checks still run, just with no trace.
 # Set the repo variable DAGGER_SCALE_OUT to "true" to run each check on a Dagger Cloud engine instead of this runner,
@@ -7,6 +7,7 @@ name: dagger
 
 on:
   push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       twice:

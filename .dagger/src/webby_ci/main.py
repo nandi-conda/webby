@@ -8,7 +8,7 @@ from typing import Annotated
 import dagger
 from dagger import DefaultPath, Doc, Ignore, check, dag, function, object_type
 
-PIXI_IMAGE = "ghcr.io/prefix-dev/pixi:0.56.0"  # the pixi publish.yml installs
+PIXI_IMAGE = "ghcr.io/prefix-dev/pixi:0.82.0"  # new enough for pixi.toml's platform tables
 DART_IMAGE = "dart:3.9"  # sync-server/Dockerfile's
 PYTHON_IMAGE = "python:3.13-slim"
 NODE_IMAGE = "node:22-bookworm"
