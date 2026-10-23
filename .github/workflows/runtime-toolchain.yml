@@ -13,7 +13,7 @@ on:
 
 jobs:
   image:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     permissions:
       contents: read
       id-token: write  # Depot signs in with GitHub's OIDC token

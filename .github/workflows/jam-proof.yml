@@ -29,7 +29,7 @@ env:
 
 jobs:
   record:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     env:
       JAM_TOKEN: ${{ secrets.JAM_TOKEN }}
       JAM_NO_TELEMETRY: '1'

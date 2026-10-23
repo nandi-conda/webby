@@ -1,6 +1,6 @@
 # Cross-builds the Android native part (Ladybird with every patch in patches/, for arm64) in an ubuntu:26.04
 # container (scripts/android/ci_build.sh) and publishes it as the GitHub Release `webby-android-native-<version>`,
-# which nim-android-apk.yml builds the APK from once scripts/android/native.env names it. A cold build takes hours;
+# which nim-android-apk.yml builds the APK from once scripts/android/native.env names it. Runs on a 32-CPU Depot runner;
 # ccache, vcpkg's binary cache and the Android tools carry over between runs, also from a run that timed out.
 name: android-native-build
 
@@ -16,15 +16,18 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: depot-ubuntu-24.04-32
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v7
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost \
-            /usr/local/.ghcup /usr/share/swift /usr/local/lib/node_modules /usr/local/share/powershell /usr/local/share/chromium
-          sudo docker image prune -af >/dev/null 2>&1 || true
+          # Depot's 32-CPU runner has ~200 GB, so the slow cleanup only runs when space is short.
+          if (( $(df --output=avail -BG / | tail -1 | tr -dc '0-9') < 100 )); then
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost \
+              /usr/local/.ghcup /usr/share/swift /usr/local/lib/node_modules /usr/local/share/powershell /usr/local/share/chromium
+            sudo docker image prune -af >/dev/null 2>&1 || true
+          fi
           sudo mkdir -p /build && sudo chown -R "$USER" /build
           df -h /
       - uses: actions/cache/restore@v6

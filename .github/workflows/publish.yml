@@ -22,7 +22,7 @@ env:
 
 jobs:
   changes:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     outputs:
       ladybird: ${{ steps.filter.outputs.ladybird }}
     steps:
@@ -38,7 +38,7 @@ jobs:
   webby-ladybird:
     needs: changes
     if: needs.changes.outputs.ladybird == 'true'
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     concurrency:
       group: publish-webby-ladybird
       cancel-in-progress: false
@@ -57,7 +57,7 @@ jobs:
     needs: webby-ladybird
     # Run after webby-ladybird when it ran, and on its own when it was skipped.
     if: ${{ !cancelled() && needs.webby-ladybird.result != 'failure' }}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     concurrency:
       group: publish-webby
       cancel-in-progress: false
@@ -83,7 +83,7 @@ jobs:
   mirror:
     needs: webby
     if: ${{ !cancelled() && needs.webby.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     concurrency:
       group: publish-mirror
       cancel-in-progress: false
@@ -101,7 +101,7 @@ jobs:
   verify-install:
     needs: mirror
     if: ${{ !cancelled() && needs.mirror.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     container: ubuntu:22.04
     steps:
       - name: Install from nandi-testing only
@@ -131,7 +131,7 @@ jobs:
 
   # `pixi run webby` (the Nim front end) from a fresh checkout: installs the workspace, builds and starts it.
   pixi-webby:
-    runs-on: ubuntu-22.04
+    runs-on: depot-ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
       - name: Install pixi
