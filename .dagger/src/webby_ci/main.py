@@ -6,8 +6,8 @@ Also `runtime`, the Ladybird engine build (not a check: half an hour or more col
 
 from typing import Annotated
 
-import dagger
-from dagger import DefaultPath, Doc, Ignore, check, dag, function, object_type
+from dagger import DefaultPath, Doc, ExecError, Ignore, check, function, object_type
+from dagger_clients.core import Container, Directory, File, Service, core
 
 PIXI_IMAGE = "ghcr.io/prefix-dev/pixi:0.82.0"  # new enough for pixi.toml's platform tables
 DART_IMAGE = "dart:3.9"  # sync-server/Dockerfile's
@@ -18,34 +18,34 @@ RUNTIME_IMAGE = "ubuntu:22.04"  # glibc 2.35, as scripts/portable_build.sh: the 
 LADYBIRD_REPO = "https://github.com/LadybirdBrowser/ladybird.git"
 
 
-async def run(ctr: dagger.Container) -> None:
+async def run(ctr: Container) -> None:
     """Evaluates ctr; on a failed command, the error carries the command and its output."""
     try:
         await ctr.sync()
-    except dagger.ExecError as e:
+    except ExecError as e:
         raise RuntimeError(f"`{' '.join(e.command)}` exited {e.exit_code}\n{e.stdout[-3000:]}\n{e.stderr[-6000:]}") from None
 
 
 @object_type
 class WebbyCi:
     source: Annotated[
-        dagger.Directory,
+        Directory,
         DefaultPath("/"),
         Ignore([".git", ".pixi", "third_party", "nim/webby", "**/.venv", "**/node_modules", "**/__pycache__"]),
         Doc("The webby checkout"),
     ]
 
     @function
-    def pixi_env(self) -> dagger.Container:
+    def pixi_env(self) -> Container:
         """The pixi default environment from pixi.toml/pixi.lock: Nim, clang, GTK 3 and webby-ladybird.
 
         Only pixi.toml and pixi.lock go in before the install, so it reruns only when they change.
         """
         # The env's package downloads are kept between runs, so even a changed lock fetches only what's new.
         return (
-            dag.container()
+            core().container()
             .from_(PIXI_IMAGE)
-            .with_mounted_cache("/root/.cache/rattler", dag.cache_volume("webby-rattler"))
+            .with_mounted_cache("/root/.cache/rattler", core().cache_volume("webby-rattler"))
             .with_workdir("/src")
             .with_file("/src/pixi.toml", self.source.file("pixi.toml"))
             .with_file("/src/pixi.lock", self.source.file("pixi.lock"))
@@ -54,7 +54,7 @@ class WebbyCi:
             .with_exec(["pixi", "install"])
         )
 
-    def _nim_sources(self) -> dagger.Directory:
+    def _nim_sources(self) -> Directory:
         return self.source.filter(
             include=["nim/**", "framework/**", "icons/**", "scripts/pixi_nim.sh", "conda/webby/webby-fonts.conf"],
             exclude=["nim/android-kit/**", "framework/android/**"],
@@ -83,7 +83,7 @@ class WebbyCi:
             .with_exec(["pixi", "run", "--frozen", "framework/web/build.sh", "framework/demo/demo.nim", "/tmp/web"])
         )
 
-    def _sync_server_dir(self) -> dagger.Directory:
+    def _sync_server_dir(self) -> Directory:
         return self.source.directory("sync-server").filter(exclude=[".dart_tool/**", "build/**"])
 
     @function
@@ -91,9 +91,9 @@ class WebbyCi:
     async def sync_server_test(self) -> None:
         """`dart test` for the self-hosted sync server (sync-server/)."""
         await run(
-            dag.container()
+            core().container()
             .from_(DART_IMAGE)
-            .with_mounted_cache("/root/.pub-cache", dag.cache_volume("webby-pub-cache"))
+            .with_mounted_cache("/root/.pub-cache", core().cache_volume("webby-pub-cache"))
             .with_workdir("/src")
             .with_file("/src/pubspec.yaml", self._sync_server_dir().file("pubspec.yaml"))
             .with_exec(["dart", "pub", "get"])
@@ -102,7 +102,7 @@ class WebbyCi:
         )
 
     @function
-    def sync_server(self) -> dagger.Service:
+    def sync_server(self) -> Service:
         """The sync server built from sync-server/Dockerfile, on :8080."""
         return (
             self._sync_server_dir()
@@ -112,14 +112,14 @@ class WebbyCi:
         )
 
     @function
-    def sync_worker(self) -> dagger.Service:
+    def sync_worker(self) -> Service:
         """The Cloudflare sync Worker (sync-worker/) under `pywrangler dev` with a local R2, on :8787."""
         return (
-            dag.container()
+            core().container()
             .from_(NODE_IMAGE)
-            .with_file("/usr/local/bin/uv", dag.container().from_(UV_IMAGE).file("/uv"))
-            .with_mounted_cache("/root/.cache/uv", dag.cache_volume("webby-uv"))
-            .with_mounted_cache("/root/.npm", dag.cache_volume("webby-npm"))
+            .with_file("/usr/local/bin/uv", core().container().from_(UV_IMAGE).file("/uv"))
+            .with_mounted_cache("/root/.cache/uv", core().cache_volume("webby-uv"))
+            .with_mounted_cache("/root/.npm", core().cache_volume("webby-npm"))
             .with_env_variable("WRANGLER_SEND_METRICS", "false")
             .with_env_variable("CI", "1")
             .with_directory("/src", self.source.directory("sync-worker"))
@@ -129,9 +129,9 @@ class WebbyCi:
             .as_service(args=["uv", "run", "pywrangler", "dev", "--ip", "0.0.0.0", "--port", "8787"])
         )
 
-    async def _roundtrip(self, server: dagger.Service, url: str) -> None:
+    async def _roundtrip(self, server: Service, url: str) -> None:
         await run(
-            dag.container()
+            core().container()
             .from_(PYTHON_IMAGE)
             .with_service_binding("sync", server)
             .with_file("/roundtrip.py", self.source.file("sync-worker/test/roundtrip.py"))
@@ -151,10 +151,10 @@ class WebbyCi:
         await self._roundtrip(self.sync_worker(), "http://sync:8787")
 
     @function
-    def runtime_toolchain(self) -> dagger.Container:
+    def runtime_toolchain(self) -> Container:
         """Ubuntu 22.04 with what Ladybird needs: clang 21, libstdc++ 14, CMake 3.30+, Rust (scripts/portable_build.sh's)."""
         return (
-            dag.container()
+            core().container()
             .from_(RUNTIME_IMAGE)
             .with_env_variable("DEBIAN_FRONTEND", "noninteractive")
             .with_exec(["sh", "-ec", """
@@ -179,7 +179,7 @@ class WebbyCi:
     async def runtime(
         self,
         poke: Annotated[str, Doc("If set, a one-line patch to a LibWeb file on top of patches/, to time a small change")] = "",
-    ) -> dagger.File:
+    ) -> File:
         """The Ladybird runtime tarball (webby-prebuilt-linux-x64.tar.zst): scripts/build_ladybird.sh, then pack_prebuilt.sh.
 
         Cache volumes keep ccache, vcpkg's binary cache, cargo's downloads and the build tree (per Ladybird commit, so
@@ -191,7 +191,7 @@ class WebbyCi:
         )
         ctr = (
             self.runtime_toolchain()
-            .with_directory("/ladybird", dag.git(LADYBIRD_REPO).commit(commit).tree())
+            .with_directory("/ladybird", core().git(LADYBIRD_REPO).commit(commit).tree())
             .with_directory("/webby", webby)
         )
         if poke:
@@ -205,10 +205,10 @@ class WebbyCi:
                 cp /tmp/orig $f
             """])
         ctr = (
-            ctr.with_mounted_cache("/ladybird/Build", dag.cache_volume(f"webby-ladybird-build-{commit[:12]}"))
-            .with_mounted_cache("/ccache", dag.cache_volume("webby-ladybird-ccache"))
-            .with_mounted_cache("/vcpkg-cache", dag.cache_volume("webby-ladybird-vcpkg"))
-            .with_mounted_cache("/root/.cargo/registry", dag.cache_volume("webby-cargo-registry"))
+            ctr.with_mounted_cache("/ladybird/Build", core().cache_volume(f"webby-ladybird-build-{commit[:12]}"))
+            .with_mounted_cache("/ccache", core().cache_volume("webby-ladybird-ccache"))
+            .with_mounted_cache("/vcpkg-cache", core().cache_volume("webby-ladybird-vcpkg"))
+            .with_mounted_cache("/root/.cargo/registry", core().cache_volume("webby-cargo-registry"))
             .with_env_variable("LADYBIRD_DIR", "/ladybird")
             .with_env_variable("CC", "clang")
             .with_env_variable("CXX", "clang++")
