@@ -51,7 +51,7 @@ proc check(video: bool, media: string, next: proc ()) =
     mediaType: (if video: "video/webm" else: "image/png"), poster: readFile(paramStr(1)),
     title: "webby jam.nim check (" & (if video: "video" else: "screenshot") & ") - safe to delete",
     description: "Made by nim/tests/jam_upload_check.nim.\n- console, network and actions attached\n- safe to delete",
-    url: "https://example.com/checkout", width: 640, height: 360, durationMs: 3000, viewport: (640, 360),
+    url: "https://example.com/checkout", width: 640, height: 360, durationMs: (if video: 6000 else: 3000), viewport: (640, 360),
     browser: "Webby", browserVersion: "check", os: "Linux", osVersion: "ci")
   # The video starts 1 s in, after the navigation, the first console message and the first request.
   u.events = sample(start).jamEvents((if video: start + 1000 else: start), u.url, (640, 360), video)

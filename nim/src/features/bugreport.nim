@@ -12,7 +12,7 @@ import std/[json, monotimes, os, osproc, streams, strutils, tables, times, uri]
 import std/posix except Timer
 import ../browser
 import about, downloads
-import bugreport/[enginelog, events, jam, system]
+import bugreport/[enginelog, events, jam, replay, system]
 import adblock/store as adblockStore
 from nimkit/core as kit import nil
 
@@ -43,6 +43,7 @@ type
     captured: Captured
     title, notes, jamUrl, folder: string
     sampler: Sampler
+    replayed: bool                  ## a video from instant replay, not a recording
 
   Recording = ref object
     report: Report
@@ -64,6 +65,9 @@ var
   recording: Recording
   bar, barLabel, barStop, barCancel: kit.Widget
   memoryToken: string            ## without a vault, the token lives until Webby quits
+  recentNavigations: seq[JsonNode]   ## loads and tab switches of the last minutes, for instant replay reports
+  recentSystem: seq[JsonNode]        ## memory/CPU every 10 s over the last minutes, likewise
+  recentSampler = newSampler()
 
 proc nowMs(): int64 = (epochTime() * 1000).int64
 
@@ -95,6 +99,9 @@ proc showJamSettings(onSaved: proc () = nil) =
   kit.add(box, entry)
   kit.add(box, show)
   if setSecret != nil: kit.add(box, sync)
+  if not incognito:
+    kit.add(box, kit.check("Keep the last 2 minutes of the tab for bug reports (instant replay)", replay.enabled(),
+      proc (on: bool) = replay.setEnabled(on)))
   kit.add(box, kit.addClass(kit.addClass(help, "dim"), "small"))
   var d: kit.Dialog
   d = kit.dialog("Jam settings", box, @["Remove token", "Cancel", "Save"], destructive = 0, onResult = proc (r: int) =
@@ -238,11 +245,16 @@ proc save(r: Report): string =
   writeFile(r.folder / "report.html", reportPage.replace("/*REPORT*/null", ($j).replace("</", "<\\/")))
   r.folder
 
+proc formatClock(ms: int): string =
+  let s = ms div 1000
+  $(s div 60) & ":" & align($(s mod 60), 2, '0')
+
 proc summary(r: Report): string =
   let (errors, failed) = r.captured.errorCount
   let (console, network, actions) = r.captured.sorted
   proc n(count: int, what: string): string = $count & " " & what & (if count == 1: "" else: "s")
-  var parts = @[(if r.video: "Recording of " & $(r.durationMs div 1000) & " s" else: "Screenshot")]
+  var parts = @[(if r.replayed: "Replay of the last " & formatClock(r.durationMs)
+                elif r.video: "Recording of " & $(r.durationMs div 1000) & " s" else: "Screenshot")]
   parts.add n(console.len, "console message") & (if errors > 0: " (" & n(errors, "error") & ")" else: "")
   parts.add n(network.len, "request") & (if failed > 0: " (" & $failed & " failed)" else: "")
   parts.add n(actions.len, "action")
@@ -432,10 +444,6 @@ proc sendFrame(rec: Recording, t: Tab, force: bool) =
     ok = ok and sendAll(rec.inFd, addr buf[0], buf.len)
   if ok: inc rec.frames
 
-proc formatClock(ms: int): string =
-  let s = ms div 1000
-  $(s div 60) & ":" & align($(s mod 60), 2, '0')
-
 proc finishRecording(dropIt: bool)
 
 proc stopRecording*() = finishRecording(false)
@@ -454,6 +462,7 @@ proc startRecording() =
     kit.toast("This tab has nothing to show yet")
     return
   let rec = Recording(report: newReport(t, true), width: f.width, height: f.height, inFd: -1)
+  replay.paused = true
   rec.path = getTempDir() / ("webby-recording-" & $getpid() & "-" & $nowMs() & ".webm")
   try:
     rec.process = startProcess(tabrecPath(), args = [$f.width, $f.height, rec.path], options = {poStdErrToStdOut})
@@ -523,6 +532,7 @@ proc finishRecording(dropIt: bool) =
       cancel(check)
       try: rec.process.close() except CatchableError: discard
       recording = nil
+      replay.paused = false
       hideBar()
       if dropIt:
         removeFile(rec.path)
@@ -560,26 +570,81 @@ proc buildBar() =
   kit.`visible=`(bar, false)
   kit.add(barSlot, bar)
 
+proc takeReplay() =
+  let t = currentTab()
+  if t == nil: return
+  showBar("Preparing the last 2 minutes…", false)
+  replay.take(proc (path: string, startMs, endMs: int64, width, height: int, error: string) =
+    hideBar()
+    if error.len > 0:
+      kit.alert("No replay", error)
+      return
+    let r = newReport(t, true)
+    r.startedAt = startMs
+    r.replayed = true
+    r.durationMs = int(endMs - startMs)
+    try:
+      r.media = readFile(path)
+      removeFile(path)
+    except CatchableError as e:
+      kit.alert("No replay", e.msg)
+      return
+    r.mediaType = "video/webm"
+    (r.width, r.height) = (width, height)
+    r.poster = screenshot(t).png
+    for e in recentNavigations:
+      if e{"t"}.getBiggestInt >= startMs: r.captured.navigations.add e
+    var samples: seq[JsonNode]
+    for e in recentSystem:
+      if e{"t"}.getBiggestInt >= startMs: samples.add e
+    r.captured.system = samples & r.captured.system
+    collect(r, t, proc () = (r.addInternals; showDetails(r))))
+
 proc reportBug() =
   if recording != nil:
     stopRecording()
     return
   let t = currentTab()
   if t == nil: return
-  let text = kit.label("Take a screenshot of this page, or record what you do in this tab. Either way the " &
-    "report gets the page's console messages, network requests and your clicks, and Webby's engine log, tabs, memory and CPU.")
-  discard kit.sized(text, 420)
-  discard kit.dialog("Report a bug", text, @["Cancel", "Record the tab", "Screenshot"], proc (i: int) =
+  let past = replay.span()
+  let hasReplay = replay.enabled() and past >= 2000
+  let text = kit.label((if hasReplay: "Send what already happened (the last " & formatClock(past) & " of this tab), " &
+      "take a screenshot of this page, or record what you do next. " else:
+      "Take a screenshot of this page, or record what you do in this tab. ") &
+    "Every report gets the page's console messages, network requests and your clicks, and Webby's engine log, " &
+    "tabs, memory and CPU.")
+  discard kit.sized(text, 440)
+  var buttons = @["Cancel", "Record the tab", "Screenshot"]
+  if hasReplay: buttons.add "Last " & formatClock(past)
+  discard kit.dialog("Report a bug", text, buttons, proc (i: int) =
     # After the dialog is gone, so the page is what gets captured.
     # The bar goes up first, so the recording is of the page at the size it keeps while recording.
     if i == 1:
       showBar("● Recording this tab  0:00", true)
       discard after(400, proc () = (if kit.visible(bar): startRecording()))
-    elif i == 2: discard after(150, takeScreenshot))
+    elif i == 2: discard after(150, takeScreenshot)
+    elif i == 3: discard after(150, takeReplay))
 
 proc install*() =
   enginelog.start()   # before the engine starts its helpers, so they write into it
   shutdownHooks.add enginelog.stop
+  shutdownHooks.add replay.stop
+  windowHooks.add proc () =
+    replay.start()
+    discard every(10_000, proc () =
+      if not replay.enabled(): return
+      recentSystem.add recentSampler.sample
+      if recentSystem.len > 15: recentSystem.delete(0)
+      while recentNavigations.len > 0 and recentNavigations[0]{"t"}.getBiggestInt < nowMs() - 3 * 60_000:
+        recentNavigations.delete(0))
+  proc remember(t: Tab, how: string) =
+    if t == nil or t.loading: return
+    if recentNavigations.len > 0 and recentNavigations[^1]{"url"}.getStr == t.url and
+        recentNavigations[^1]{"tab"}.getInt == tabId(t): return
+    recentNavigations.add %*{"t": nowMs(), "kind": "navigation", "url": t.url, "title": t.title, "tab": tabId(t),
+                             "how": how}
+  tabStateHooks.add proc (t: Tab) = remember(t, "load")
+  activeTabHooks.add proc (t: Tab) = remember(t, "tab")
   pageScriptHooks.add script
   pageMessageHooks.add onMessage
   windowHooks.add proc () =

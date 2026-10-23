@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['nim/src/features/bugreport/jam.nim', 'nim/src/features/bugreport/events.nim',
+    paths: ['nim/src/features/bugreport/jam.nim', 'nim/tabrec/**', 'nim/src/features/bugreport/events.nim',
             'nim/tests/jam_upload_check.nim', 'nim/tests/jam_token_check.nim',
             '.github/workflows/jam-upload-check.yml']
 
@@ -63,9 +63,11 @@ jobs:
           png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b'')
           open('/tmp/screenshot.png', 'wb').write(png)
           EOF
-          ls -la /tmp/recording.webm /tmp/screenshot.png
+          # Instant replay's join of 30 s pieces (here the same piece twice), which is what goes up as the video
+          /tmp/webby-tabrec --join /tmp/replay.webm 640 360 /tmp/recording.webm /tmp/recording.webm
+          ls -la /tmp/recording.webm /tmp/replay.webm /tmp/screenshot.png
       - name: Upload to Jam
         run: |
           set -o pipefail
-          /tmp/jam_upload_check /tmp/screenshot.png /tmp/recording.webm | tee /tmp/out.txt
+          /tmp/jam_upload_check /tmp/screenshot.png /tmp/replay.webm | tee /tmp/out.txt
           grep -E '^(SCREENSHOT|VIDEO) ' /tmp/out.txt >> "$GITHUB_STEP_SUMMARY"
