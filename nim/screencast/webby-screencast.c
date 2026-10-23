@@ -48,6 +48,35 @@ static GstElement *pipeline, *appsrc;
 static gboolean recording, stopping;
 static guint stop_timeout;
 
+static FILE *log_file;
+
+// Diagnostics go to stderr and to ~/.cache/webby/screencast.log (webby is often started from a launcher, where
+// stderr goes nowhere anyone can read).
+static void say(const char *fmt, ...) G_GNUC_PRINTF(1, 2);
+static void say(const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  char *s = g_strdup_vprintf(fmt, ap);
+  va_end(ap);
+  fputs(s, stderr);
+  if (log_file) {
+    char *now = g_date_time_format(g_date_time_new_now_local(), "%F %T");
+    fprintf(log_file, "%s [%d] %s", now, getpid(), s);
+    fflush(log_file);
+    g_free(now);
+  }
+  g_free(s);
+}
+
+static void open_log(void) {
+  char *dir = g_build_filename(g_get_user_cache_dir(), "webby", NULL);
+  g_mkdir_with_parents(dir, 0700);
+  char *path = g_build_filename(dir, "screencast.log", NULL);
+  log_file = fopen(path, "a");
+  g_free(dir);
+  g_free(path);
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Output
 
@@ -110,7 +139,7 @@ static gboolean end_sharing(gpointer data) {
 }
 
 static void fail(const char *what) {
-  fprintf(stderr, "webby-screencast: %s\n", what);
+  say("webby-screencast: %s\n", what);
   out_line("ERROR %s", what);
   g_idle_add(quit_idle, NULL);
 }
@@ -130,6 +159,7 @@ static GstBuffer *last_frame;
 static GstCaps *frame_caps;
 static gboolean frame_caps_changed;
 static gint64 last_push;
+static long frames_seen, buffers_skipped;
 
 static const char *gst_format(uint32_t f) {
   switch (f) {
@@ -163,7 +193,7 @@ static void on_param_changed(void *data, uint32_t id, const struct spa_pod *para
   pw_format = info.format;
   pw_width = (int)info.size.width;
   pw_height = (int)info.size.height;
-  fprintf(stderr, "webby-screencast: stream format %s %dx%d\n", gst_format(pw_format), pw_width, pw_height);
+  say("webby-screencast: stream format %s %dx%d\n", gst_format(pw_format), pw_width, pw_height);
   g_mutex_lock(&frame_lock);
   if (frame_caps) gst_caps_unref(frame_caps);
   frame_caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, gst_format(pw_format),
@@ -185,6 +215,8 @@ static void on_process(void *data) {
   struct pw_buffer *b = pw_stream_dequeue_buffer(pw_stream);
   if (b == NULL) return;
   struct spa_data *d = &b->buffer->datas[0];
+  if (frames_seen == 0 && ++buffers_skipped <= 3)
+    say("webby-screencast: buffer type %u data %p size %u flags %d\n", d->type, d->data, d->chunk->size, d->chunk->flags);
   if (d->data != NULL && d->chunk->size > 0 && !(d->chunk->flags & SPA_CHUNK_FLAG_CORRUPTED) && pw_width > 0) {
     int row = pw_width * 4;
     int stride = d->chunk->stride > 0 ? d->chunk->stride : row;
@@ -195,6 +227,7 @@ static void on_process(void *data) {
       const guint8 *src = (const guint8 *)d->data + d->chunk->offset;
       for (int y = 0; y < pw_height; y++) memcpy(map.data + (gsize)y * row, src + (gsize)y * stride, (size_t)row);
       gst_buffer_unmap(frame, &map);
+      if (++frames_seen == 1 || frames_seen % 300 == 0) say("webby-screencast: frame %ld (stride %d, size %u)\n", frames_seen, stride, d->chunk->size);
       g_mutex_lock(&frame_lock);
       if (last_frame) gst_buffer_unref(last_frame);
       last_frame = frame;
@@ -208,7 +241,7 @@ static void on_process(void *data) {
 static void on_state_changed(void *data, enum pw_stream_state old, enum pw_stream_state state, const char *error) {
   (void)data;
   (void)old;
-  fprintf(stderr, "webby-screencast: stream %s%s%s\n", pw_stream_state_as_string(state), error ? ": " : "",
+  say("webby-screencast: stream %s%s%s\n", pw_stream_state_as_string(state), error ? ": " : "",
     error ? error : "");
   if (state == PW_STREAM_STATE_STREAMING) pw_streaming = TRUE;
   if (state == PW_STREAM_STATE_ERROR || (state == PW_STREAM_STATE_UNCONNECTED && pw_streaming))
@@ -337,7 +370,7 @@ static void portal_request(const char *method, const char *session_path, const c
 static void on_session_closed(GDBusConnection *c, const char *from, const char *path, const char *iface,
                               const char *signal, GVariant *params, gpointer data) {
   (void)c; (void)from; (void)path; (void)iface; (void)signal; (void)params; (void)data;
-  fprintf(stderr, "webby-screencast: the portal closed the session\n");
+  say("webby-screencast: the portal closed the session\n");
   end_sharing(NULL);
 }
 
@@ -388,7 +421,7 @@ static void on_started(guint32 code, GVariant *results) {
     fail("ScreenCast portal: no PipeWire connection");
     return;
   }
-  fprintf(stderr, "webby-screencast: sharing node %u (%dx%d %s)\n", node, src_width, src_height, surface);
+  say("webby-screencast: sharing node %u (%dx%d %s)\n", node, src_width, src_height, surface);
   start_pipewire(fd, node);
   send_ready();
 }
@@ -519,7 +552,7 @@ static gboolean on_bus(GstBus *b, GstMessage *msg, gpointer data) {
     GError *err = NULL;
     char *debug = NULL;
     gst_message_parse_error(msg, &err, &debug);
-    fprintf(stderr, "webby-screencast: %s: %s (%s)\n", GST_OBJECT_NAME(msg->src), err->message, debug ? debug : "");
+    say("webby-screencast: %s: %s (%s)\n", GST_OBJECT_NAME(msg->src), err->message, debug ? debug : "");
     out_line("ERROR %s", err->message);
     g_error_free(err);
     g_free(debug);
@@ -561,7 +594,7 @@ static GstElement *build_pipeline(gboolean system_audio, gboolean microphone) {
   GstElement *p = gst_parse_launch(desc, &err);
   g_free(desc);
   if (err != NULL) {
-    fprintf(stderr, "webby-screencast: pipeline: %s\n", err->message);
+    say("webby-screencast: pipeline: %s\n", err->message);
     g_error_free(err);
     if (p) gst_object_unref(p);
     return NULL;
@@ -596,7 +629,7 @@ static void start_recording(gboolean system_audio, gboolean microphone) {
     gst_bus_add_watch(b, on_bus, p);
     gst_object_unref(b);
     if (gst_element_set_state(p, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
-      fprintf(stderr, "webby-screencast: the recording could not start%s\n", audio ? " with sound; trying without" : "");
+      say("webby-screencast: the recording could not start%s\n", audio ? " with sound; trying without" : "");
       gst_element_set_state(p, GST_STATE_NULL);
       gst_object_unref(p);
       pipeline = NULL;
@@ -611,6 +644,8 @@ static void start_recording(gboolean system_audio, gboolean microphone) {
     g_mutex_unlock(&frame_lock);
     recording = TRUE;
     stopping = FALSE;
+    say("webby-screencast: recording (%s%s%s)\n", use_x11 ? "X11" : "portal", audio && system_audio ? ", desktop sound" : "",
+      audio && microphone ? ", microphone" : "");
     return;
   }
   out_line("ERROR the recording could not start");
@@ -620,7 +655,7 @@ static void start_recording(gboolean system_audio, gboolean microphone) {
 static gboolean stop_timed_out(gpointer data) {
   (void)data;
   stop_timeout = 0;
-  fprintf(stderr, "webby-screencast: no end of stream after 5 s\n");
+  say("webby-screencast: no end of stream after 5 s\n");
   finished();
   return G_SOURCE_REMOVE;
 }
@@ -648,7 +683,7 @@ static void command(const char *line) {
   else if (strcmp(line, "pause") == 0) set_valves(TRUE);
   else if (strcmp(line, "resume") == 0) set_valves(FALSE);
   else if (strcmp(line, "stop") == 0) stop_recording();
-  else fprintf(stderr, "webby-screencast: unknown command %s\n", line);
+  else say("webby-screencast: unknown command %s\n", line);
 }
 
 static gboolean on_stdin(gint fd, GIOCondition cond, gpointer data) {
@@ -697,10 +732,12 @@ int main(int argc, char **argv) {
     if (strcmp(argv[i], "--x11") == 0) use_x11 = TRUE;
     else if (strcmp(argv[i], "--portal") == 0) use_x11 = FALSE;
     else {
-      fprintf(stderr, "usage: webby-screencast [--portal | --x11]\n");
+      say("usage: webby-screencast [--portal | --x11]\n");
       return 2;
     }
   }
+  open_log();
+  say("webby-screencast: start (%s)\n", use_x11 ? "X11" : "portal");
   own_gstreamer();
   gst_init(NULL, NULL);
   input = g_string_new(NULL);
