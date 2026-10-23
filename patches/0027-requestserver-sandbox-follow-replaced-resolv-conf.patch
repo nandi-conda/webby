@@ -1,0 +1,40 @@
+diff --git a/Services/RequestServer/SandboxLinux.cpp b/Services/RequestServer/SandboxLinux.cpp
+index 348bb66..ac15aa1 100644
+--- a/Services/RequestServer/SandboxLinux.cpp
++++ b/Services/RequestServer/SandboxLinux.cpp
+@@ -5,6 +5,7 @@
+  */
+ 
+ #include <AK/CharacterTypes.h>
++#include <AK/LexicalPath.h>
+ #include <AK/String.h>
+ #include <LibCore/Directory.h>
+ #include <LibCore/Environment.h>
+@@ -15,9 +16,10 @@
+ #include <RequestServer/Sandbox.h>
+ #include <curl/curl.h>
+ #include <dlfcn.h>
+ #include <openssl/conf.h>
+ #include <openssl/crypto.h>
+ #include <openssl/x509.h>
++#include <stdlib.h>
+ #include <string.h>
+ 
+ namespace RequestServer {
+@@ -103,6 +105,16 @@ ErrorOr<void> apply_sandbox(StringView, Vector<ByteString> const& certificates,
+     TRY(Sandbox::add_landlock_path_if_exists(paths, "/etc/hosts"sv, Sandbox::LandlockPath::Access::ReadOnly));
+     TRY(Sandbox::add_landlock_path_if_exists(paths, "/etc/nsswitch.conf"sv, Sandbox::LandlockPath::Access::ReadOnly));
+     TRY(Sandbox::add_landlock_path_if_exists(paths, "/etc/resolv.conf"sv, Sandbox::LandlockPath::Access::ReadOnly));
++    // webby: Landlock binds to inodes, and NetworkManager, resolvconf and VPN clients replace resolv.conf (and editors
++    // replace hosts) with a new file rather than rewriting it. glibc notices the change, cannot open the new file,
++    // and falls back to a nameserver on 127.0.0.1, so every lookup fails until the browser restarts. Grant the
++    // directories those files are replaced in instead: /etc, and wherever a resolv.conf symlink points.
++    TRY(Sandbox::add_landlock_path_if_exists(paths, "/etc"sv, Sandbox::LandlockPath::Access::ReadOnly));
++    if (char* resolv_conf = realpath("/etc/resolv.conf", nullptr)) {
++        auto directory = LexicalPath::dirname(ByteString { resolv_conf });
++        free(resolv_conf);
++        TRY(Sandbox::add_landlock_path_if_exists(paths, directory, Sandbox::LandlockPath::Access::ReadOnly));
++    }
+     TRY(Sandbox::add_landlock_path_if_exists(paths, "/run/systemd/resolve"sv, Sandbox::LandlockPath::Access::ReadOnly));
+     // nss-resolve checks this sysctl to decide whether to ask for AAAA records.
+     TRY(Sandbox::add_landlock_path_if_exists(paths, "/proc/sys/net/ipv6/conf/all/disable_ipv6"sv, Sandbox::LandlockPath::Access::ReadOnly));
