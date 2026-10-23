@@ -281,8 +281,8 @@ proc install*() =
   browser.secretSyncs = proc (name: string): bool = theVault == nil or vault.secretSyncs(theVault, name)
   webauthnHandler = onWebauthn
   windowHooks.add proc () =
+    vaultOpenHooks.add proc () = (theVault.onChange.add refreshPanel; refreshPanel())
     startManager()
-    if theVault != nil: theVault.onChange.add refreshPanel
     loadCss(""".webby-password-bar { padding: 4px 12px; border-left: 3px solid @theme_selected_bg_color;
       border-bottom: 1px solid alpha(currentColor, 0.15); }
 .webby-vault { padding: 8px; }

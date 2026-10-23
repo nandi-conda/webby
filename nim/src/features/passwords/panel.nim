@@ -136,6 +136,9 @@ proc fillPasswords() =
   let v = theVault
   if v == nil:
     emptyNote(passwordList, if vaultError.len > 0: vaultError else: "Opening the vault…")
+    if vaultError.len > 0:
+      kit.add(passwordList, kit.addClass(kit.button("Try again", proc () = (retryVault(); refreshPanel())),
+        "webby-vault-note"))
     return
   var entries: seq[SavedPassword]
   for p in v.passwords:

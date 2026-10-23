@@ -10,6 +10,7 @@ var
   vaultError*: string        ## why it couldn't be opened
   passkeysInVault*: bool     ## the authenticator's passkeys live in the vault (else in its own passkeys.json)
   passkeySerial: uint64
+  vaultOpenHooks*: seq[proc ()]  ## run once the vault opens (at start, or on a later retryVault)
 
 proc exportPasskeys(): seq[JsonNode] =
   try:
@@ -60,6 +61,8 @@ proc startManager*() =
   if theVault == nil:
     stderr.writeLine "webby: ", vaultError
     return
+  vaultError = ""
+  for h in vaultOpenHooks: h()
   if not usePasskeyVault(theVault.passkeys): return
   # The authenticator now has the vault's passkeys plus any from the old file. Save that, then drop the file.
   passkeysInVault = true
@@ -71,3 +74,8 @@ proc startManager*() =
     syncPasskeys()
     discard startTimer(250, tick)
   discard startTimer(250, tick)
+
+proc retryVault*() =
+  ## Tries to open the vault again after it couldn't be (say the keyring was locked and has been unlocked since).
+  if theVault != nil or incognito: return
+  startManager()

@@ -17,6 +17,8 @@ when defined(android):
     if androidKeyring.store == nil: raise newException(KeyringError, "no Android keystore")
     androidKeyring.store(profile, secret)
 
+  proc keyringLocked*(profile: string): bool = false
+
 else:
   import std/dynlib
 
@@ -52,12 +54,26 @@ else:
     StoreV = proc (schema: ptr SecretSchema, attributes: pointer, collection, label, password: cstring,
       cancellable: pointer, error: ptr ptr GError): cint {.cdecl.}
     PasswordFree = proc (p: cstring) {.cdecl.}
+    ServiceGet = proc (flags: cint, cancellable: pointer, error: ptr ptr GError): pointer {.cdecl.}
+    ServiceSearch = proc (service: pointer, schema: ptr SecretSchema, attributes: pointer, flags: cint,
+      cancellable: pointer, error: ptr ptr GError): ptr GList {.cdecl.}
+    ItemGetLocked = proc (item: pointer): cint {.cdecl.}
+    ObjectUnref = proc (o: pointer) {.cdecl.}
+    ListFree = proc (l: ptr GList) {.cdecl.}
+    GList = object
+      data: pointer
+      next, prev: ptr GList
 
   var
     loaded = false
     lookupV: LookupV
     storeV: StoreV
     passwordFree: PasswordFree
+    serviceGet: ServiceGet
+    serviceSearch: ServiceSearch
+    itemGetLocked: ItemGetLocked
+    objectUnref: ObjectUnref
+    listFree: ListFree
     schema = SecretSchema(name: "dev.webby.Vault")
 
   proc load(): bool =
@@ -68,6 +84,12 @@ else:
     lookupV = cast[LookupV](lib.symAddr("secret_password_lookupv_sync"))
     storeV = cast[StoreV](lib.symAddr("secret_password_storev_sync"))
     passwordFree = cast[PasswordFree](lib.symAddr("secret_password_free"))
+    # Only for telling a locked item from a missing one; optional.
+    serviceGet = cast[ServiceGet](lib.symAddr("secret_service_get_sync"))
+    serviceSearch = cast[ServiceSearch](lib.symAddr("secret_service_search_sync"))
+    itemGetLocked = cast[ItemGetLocked](lib.symAddr("secret_item_get_locked"))
+    objectUnref = cast[ObjectUnref](lib.symAddr("g_object_unref"))
+    listFree = cast[ListFree](lib.symAddr("g_list_free"))
     if lookupV == nil or storeV == nil or passwordFree == nil:
       lookupV = nil
       return false
@@ -107,3 +129,26 @@ else:
       nil, addr error)
     g_hash_table_unref(attrs)
     if error != nil or ok == 0: raiseFrom(error, "The keyring refused the request")
+
+  proc keyringLocked*(profile: string): bool =
+    ## Whether the keyring has the profile's key but in a locked collection. A lookup asks the keyring to unlock it,
+    ## and when that prompt can't be shown or is dismissed it reports the key as missing, without an error.
+    if not load() or serviceGet == nil or serviceSearch == nil or itemGetLocked == nil or objectUnref == nil or
+        listFree == nil: return false
+    var error: ptr GError
+    let service = serviceGet(0, nil, addr error)
+    if error != nil: g_error_free(error)
+    if service == nil: return false
+    let attrs = attributes(profile)
+    const searchAll = 1 shl 1   # SECRET_SEARCH_ALL, without SECRET_SEARCH_UNLOCK
+    error = nil
+    let items = serviceSearch(service, addr schema, attrs, searchAll, nil, addr error)
+    g_hash_table_unref(attrs)
+    if error != nil: g_error_free(error)
+    var node = items
+    while node != nil:
+      if itemGetLocked(node.data) != 0: result = true
+      objectUnref(node.data)
+      node = node.next
+    if items != nil: listFree(items)
+    objectUnref(service)

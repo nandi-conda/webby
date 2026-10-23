@@ -199,6 +199,7 @@ proc fillSyncOn(box: kit.Widget, s: JsonNode) =
 proc fillSync(box: kit.Widget) =
   if theVault == nil:
     kit.add(box, text(if vaultError.len > 0: vaultError else: "Opening the vault…", dim = true))
+    if vaultError.len > 0: kit.add(box, buttonRow(btn("Try again", proc () = (retryVault(); refresh()))))
     return
   let s = settings()
   if s == nil: fillSyncOff(box) else: fillSyncOn(box, s)
@@ -325,7 +326,8 @@ proc install*() =
     addMenuItem("Tabs from other devices", proc () = toggle(panelDevices))
     statusListeners.add refresh
     deviceListeners.add proc () = (if shown == panelDevices: refresh())
-    engine.start()
+    if theVault != nil: engine.start()
+    else: vaultOpenHooks.add proc () = (engine.start(); refresh())
   panelActionHooks.add proc (box: kit.Widget) =
     kit.add(box, kit.button(if enabled(): "Synced" else: "Sync", showSyncPanel))
   tabStateHooks.add proc (t: Tab) = publishTabs()

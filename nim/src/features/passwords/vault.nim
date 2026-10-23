@@ -206,6 +206,14 @@ proc changed(v: Vault) =
 # ---------------------------------------------------------------------------------------------------------------
 # Opening
 
+proc keyringStoreVerified(profile, encodedKey: string) =
+  ## Stores the key and reads it back. Some Secret Service providers accept a store into a collection that a later
+  ## lookup doesn't search (or that doesn't outlive the session); the key file must not be dropped on their word.
+  keyringStore(profile, encodedKey)
+  let (found, back) = keyringLookup(profile)
+  if not found or back != encodedKey:
+    raise newException(KeyringError, "the keyring accepted the vault key but doesn't return it")
+
 proc openVault*(readOnly = false): Vault =
   ## Opens (or creates) the vault of the current profile ($WEBBY_PROFILE, default "default"). Raises VaultUnavailable.
   let profile = profileName()
@@ -234,7 +242,7 @@ proc openVault*(readOnly = false): Vault =
     # A keyring has turned up since the key was written to a file: move the key into it.
     if keyringError.len == 0 and not readOnly:
       try:
-        keyringStore(profile, encodedKey)
+        keyringStoreVerified(profile, encodedKey)
         removeFile(keyFile)
         keyStore = ksKeyring
       except CatchableError as e:
@@ -246,10 +254,14 @@ proc openVault*(readOnly = false): Vault =
       raise newException(VaultUnavailable, if keyringError.len > 0:
         "The password vault at " & file & " is locked: its key is in the keyring, which isn't reachable (" &
           keyringError & ")."
-      else: "The key for the password vault at " & file & " is missing from the keyring.")
+      elif keyringLocked(profile):
+        "The password vault is locked: its key is in a keyring collection that is locked. Unlock the keyring " &
+          "(your desktop's wallet or keyring manager), then press Try again."
+      else: "The key for the password vault at " & file & " is missing from the keyring. If you switched " &
+        "keyring programs, start the old one again (only one can answer for the Secret Service), then press Try again.")
     encodedKey = encode(randomBytes(32))
     if keyringError.len == 0:
-      try: keyringStore(profile, encodedKey)
+      try: keyringStoreVerified(profile, encodedKey)
       except CatchableError as e: keyringError = e.msg
     if keyringError.len > 0:
       stderr.writeLine "webby: no keyring (", keyringError, "); keeping the vault key in ", keyFile
