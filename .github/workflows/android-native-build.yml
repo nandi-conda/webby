@@ -35,6 +35,7 @@ jobs:
           path: |
             /build/ccache
             /build/vcpkg-cache
+            /build/ladybird/Build/caches/vcpkg-binary-cache
           key: android-native-${{ github.sha }}
           restore-keys: android-native-
       - name: Build
@@ -51,6 +52,7 @@ jobs:
           path: |
             /build/ccache
             /build/vcpkg-cache
+            /build/ladybird/Build/caches/vcpkg-binary-cache
           key: android-native-${{ github.sha }}-${{ github.run_attempt }}-${{ github.run_id }}
       - name: Publish
         env:
