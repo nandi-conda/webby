@@ -149,7 +149,15 @@ proc readPageText(t: Tab, done: proc (ok: bool, page: PageText)) =
       pendingReads.del id
       cb(false, PageText()))
 
+proc jumpElsewhere(job: Job, words: string)
+
 proc onPageMessage(t: Tab, msg: string): bool =
+  if msg.startsWith("{") and "\"summaryjumpmiss\"" in msg:
+    let j = try: parseJson(msg) except CatchableError: nil
+    if j == nil or j.kind != JObject or j{"type"}.getStr != "summaryjumpmiss": return false
+    let job = jobs.getOrDefault(t.messagePrefix)
+    if job != nil: job.jumpElsewhere(j{"words"}.getStr)
+    return true
   if not msg.startsWith("{") or "\"pagetext\"" notin msg: return false
   let j = try: parseJson(msg) except CatchableError: nil
   if j == nil or j.kind != JObject or j{"type"}.getStr != "pagetext": return false
@@ -306,17 +314,26 @@ proc ask(job: Job, key, text: string, provider: Provider) =
 
 proc runJump(t: Tab, words: string, retries = 0) =
   ## Runs the jump script, trying again every half second (up to retries times) while a page that just loaded
-  ## hasn't put the words on screen yet.
-  if retries == 0: t.runJs(jumpToTextScript(words))
-  else: t.runJs("(function retry(n) { if (!" & jumpToTextScript(words).strip(chars = {';', '\n', ' '}) &
-    " && n > 0) setTimeout(() => retry(n - 1), 500); })(" & $retries & ");")
+  ## hasn't put the words on screen yet. A page that already jumped to these words isn't scrolled again.
+  let marker = $(%("webby-jump:" & words))
+  t.runJs("(function retry(n) { if (window.__webbyJump === " & marker & ") return; if (" &
+    jumpToTextScript(words).strip(chars = {';', '\n', ' '}) & ") window.__webbyJump = " & marker &
+    "; else if (n > 0) setTimeout(() => retry(n - 1), 500); })(" & $retries & ");")
   wake()
 
-proc jumpTo(job: Job, words: string): bool =
-  ## Scrolls the page to the part a source link points at; false when the tab shows another page by now.
-  if summaryKey(job.tab.url) != summaryKey(job.url): return false
-  job.tab.runJump(words)
-  true
+proc jumpTo(job: Job, words: string) =
+  ## Scrolls the page to the part a source link points at. When the tab's URL doesn't look like the summarized
+  ## page's, the page itself decides (location.href is what the summary recorded, the tab's URL can be spelled
+  ## differently) and reports a miss as a "summaryjumpmiss" page message (jumpElsewhere).
+  if summaryKey(job.tab.url) == summaryKey(job.url):
+    job.tab.runJump(words)
+    return
+  job.tab.runJs("(() => { const norm = (u) => { try { u = new URL(u); u.hash = ''; return decodeURI(u.href)" &
+    ".replace(/\\/+$/, ''); } catch (e) { return u; } }; if (norm(location.href) === norm(" & $(%job.url) &
+    ")) { delete window.__webbyJump; " & jumpToTextScript(words) & " return; } if (document.readyState !== 'loading') try { window.prompt(" &
+    $(%job.tab.messagePrefix) & " + JSON.stringify({ type: 'summaryjumpmiss', words: " & $(%words) &
+    " })); } catch (e) {} })();")
+  wake()
 
 proc summarizePage*()
 
@@ -326,9 +343,11 @@ proc jumpElsewhere(job: Job, words: string) =
   let want = summaryKey(job.url)
   for t in tabs:
     if t != job.tab and not t.closed and summaryKey(t.url) == want:
+      let asleep = t.view == nil or t.loading   # a restored tab only starts loading when it's brought forward
       activateTab(t)
       if panelJob == nil and lookupSummary(summaryKey(t.url))[0]: summarizePage()   # keep the summary beside it
-      t.runJump(words, retries = 10)
+      if asleep: pendingJump = (t, words)
+      else: t.runJump(words, retries = 10)
       return
   pendingJump = (job.tab, words)
   job.tab.loadUrl(job.url)
@@ -584,8 +603,7 @@ proc install*() =
     loadCss(panelCss)
     linkHandler = proc (url: string) =
       if not url.startsWith(anchorPrefix): discard openTab(url)
-      elif panelJob != nil and not panelJob.jumpTo(url[anchorPrefix.len .. ^1]):
-        panelJob.jumpElsewhere(url[anchorPrefix.len .. ^1])
+      elif panelJob != nil: panelJob.jumpTo(url[anchorPrefix.len .. ^1])
     discard addToolbarButton("summarize_outlined", "Summarize this page", toggleSummary, "summarize", "Summary")
     addMenuSeparator()
     addMenuItem("Summarize this page", summarizePage)
@@ -598,11 +616,15 @@ proc install*() =
     elif panelJob == nil and wanted and not sidePanelShowing():
       showPanel(job)
   navigationHooks.add proc (t: Tab) =
+    # The page the source link needs has loaded again (or is about to: the hook can come before the new document
+    # has its text), so jump now and twice more; runJump skips a page that already jumped.
     if pendingJump.tab != t: return
     let words = pendingJump.words
     pendingJump = (nil, "")
-    let job = jobs.getOrDefault(t.messagePrefix)
-    if job != nil and summaryKey(t.url) == summaryKey(job.url): t.runJump(words, retries = 10)
+    t.runJump(words, retries = 10)
+    for ms in [1000, 2500]:
+      later(ms, proc () =
+        if not t.closed: t.runJump(words, retries = 4))
   tabClosedHooks.add proc (t: Tab) =
     if pendingJump.tab == t: pendingJump = (nil, "")
     let job = jobs.getOrDefault(t.messagePrefix)
