@@ -130,14 +130,36 @@ const views = {
       : e.kind;
     r.append(el('div', 'body', what)); return r;
   }),
+  Engine: () => (report.engineLog || []).map((e) => {
+    const r = el('div', 'row ' + (e.level === 'error' ? 'error' : e.level === 'warn' ? 'warn' : ''));
+    r.dataset.t = e.t;
+    r.append(el('div', 't', at(e.t)));
+    const b = el('div', 'body');
+    b.append(el('span', 'chip', e.process + ' ' + e.pid), document.createTextNode(e.text));
+    r.append(b); return r;
+  }),
+  Webby: () => [report.state, ...(report.system || [])].filter(Boolean).map((e) => {
+    const r = el('div', 'row');
+    r.dataset.t = e.t;
+    r.append(el('div', 't', at(e.t)));
+    const b = el('div', 'body');
+    if (e.kind === 'state') {
+      b.append(el('span', 'chip', 'state'), document.createTextNode(e.text));
+      const d = el('details'); d.append(el('summary', 'dim', 'settings'), el('pre', '', JSON.stringify(e.settings, null, 2))); b.append(d);
+    } else {
+      b.append(el('span', 'chip', 'memory · CPU'), document.createTextNode(e.text));
+    }
+    r.append(b); return r;
+  }),
 };
+const counts = { Engine: (report.engineLog || []).length, Webby: (report.system || []).length + (report.state ? 1 : 0) };
 const show = (name) => {
   for (const b of $('tabs').children) b.classList.toggle('on', b.textContent.startsWith(name));
   const rows = views[name]();
   $('list').replaceChildren(...(rows.length ? rows : [el('div', 'empty', 'Nothing captured.')]));
 };
 for (const name of Object.keys(views)) {
-  const b = el('button', '', name + ' (' + report[name.toLowerCase()].length + ')');
+  const b = el('button', '', name + ' (' + (counts[name] ?? report[name.toLowerCase()].length) + ')');
   b.onclick = () => show(name);
   $('tabs').append(b);
 }

@@ -10,6 +10,9 @@ type
     seen: HashSet[string]                        ## "doc/seq" and resource keys already kept
     since*: Table[string, int]                   ## per page document: the last seq taken
     navigations*: seq[JsonNode]                  ## {t, url, title, tab, how}: loads and tab switches webby saw
+    engine*: seq[JsonNode]                       ## {t, process, pid, level, text}: the engine's log (enginelog.nim)
+    system*: seq[JsonNode]                       ## {t, text, ...}: webby's memory and CPU (system.nim)
+    state*: JsonNode                             ## {t, text, tabs, settings, ...}: webby when the report began
 
 const keep = 2000
 
@@ -108,6 +111,10 @@ proc consoleEvent(e: JsonNode): JsonNode =
   %*{"type": 6, "timestamp": e{"t"}.getBiggestInt, "data": {"plugin": "rrweb/console@1", "payload": {
     "level": e{"level"}.getStr("log"), "payload": args, "trace": (if e{"trace"} != nil: e{"trace"} else: newJArray())}}}
 
+proc webbyConsole(e: JsonNode, level, text: string): JsonNode =
+  ## Webby's and the engine's own lines, as console messages ("[WebContent 553] FIXME: ...").
+  consoleEvent(%*{"t": e{"t"}.getBiggestInt, "level": level, "args": [text]})
+
 proc actionEvent(e: JsonNode): JsonNode =
   let t = e{"t"}.getBiggestInt
   var payload = %*{"isTrusted": true, "composed": true, "targetsJamUi": false, "originalTimestamp": t,
@@ -156,6 +163,15 @@ proc jamEvents*(c: Captured, startedAt: int64, href: string, viewport: tuple[wid
   for e in console:
     let ev = consoleEvent(e)
     ev.pageContext(e{"page"}.getStr, e{"tab"}.getInt)
+    events.add ev
+  for e in c.engine:
+    let ev = webbyConsole(e, e{"level"}.getStr("debug"), "[" & e{"process"}.getStr & " " & $e{"pid"}.getInt & "] " &
+      e{"text"}.getStr)
+    ev.pageContext(href, 0)
+    events.add ev
+  for e in c.system & (if c.state != nil: @[c.state] else: @[]):
+    let ev = webbyConsole(e, (if e == c.state: "info" else: "debug"), "[webby] " & e{"text"}.getStr)
+    ev.pageContext(href, 0)
     events.add ev
   for e in actions:
     let ev = actionEvent(e)

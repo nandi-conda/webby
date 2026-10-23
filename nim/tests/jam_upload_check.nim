@@ -35,6 +35,15 @@ proc sample(start: int64): Captured =
     "resources": []}
   result.addDump(dump, 1)
   result.addNavigation(start + 100, "https://example.com/checkout", "Checkout", 1, "load")
+  result.engine = @[
+    %*{"t": start + 600, "kind": "engine", "process": "WebContent", "pid": 553, "level": "warn",
+       "text": "FIXME: Unimplemented IDL interface: 'Notification.permission'"},
+    %*{"t": start + 1600, "kind": "engine", "process": "WebContent", "pid": 553, "level": "error",
+       "text": "Unhandled JavaScript exception: [TypeError] Cannot access property \"total\" on null object\n    at https://example.com/app.js:12:3"}]
+  result.state = %*{"t": start, "kind": "state",
+    "text": "Webby check (ci), engine check; ad blocking on; x11; 1 tab:\n1. Checkout <https://example.com/checkout> (active)"}
+  result.system = @[%*{"t": start + 50, "kind": "system",
+    "text": "memory 244 MB, CPU 4% (webby 1323 87 MB 2%, WebContent 553 107 MB 1%)"}]
 
 proc check(video: bool, media: string, next: proc ()) =
   let start = (epochTime() * 1000).int64 - 3000

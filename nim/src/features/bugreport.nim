@@ -12,7 +12,8 @@ import std/[json, monotimes, os, osproc, streams, strutils, tables, times, uri]
 import std/posix except Timer
 import ../browser
 import about, downloads
-import bugreport/[events, jam]
+import bugreport/[enginelog, events, jam, system]
+import adblock/store as adblockStore
 from nimkit/core as kit import nil
 
 const
@@ -41,6 +42,7 @@ type
     userAgent, language: string
     captured: Captured
     title, notes, jamUrl, folder: string
+    sampler: Sampler
 
   Recording = ref object
     report: Report
@@ -218,7 +220,8 @@ proc reportJson(r: Report): JsonNode =
     "viewport": {"width": r.viewport.width, "height": r.viewport.height, "dpr": r.viewport.dpr},
     "browser": "Webby " & b.version & " (" & b.commit & ")", "engine": b.runtime,
     "userAgent": r.userAgent, "language": r.language, "os": osName() & " (Linux " & kernel() & ")",
-    "jam": r.jamUrl, "console": console, "network": network, "actions": actions}
+    "jam": r.jamUrl, "console": console, "network": network, "actions": actions,
+    "engineLog": r.captured.engine, "system": r.captured.system, "state": r.captured.state}
 
 proc save(r: Report): string =
   ## Writes the report's folder (once; later calls rewrite report.json/html, e.g. with the Jam link) and returns it.
@@ -243,6 +246,11 @@ proc summary(r: Report): string =
   parts.add n(console.len, "console message") & (if errors > 0: " (" & n(errors, "error") & ")" else: "")
   parts.add n(network.len, "request") & (if failed > 0: " (" & $failed & " failed)" else: "")
   parts.add n(actions.len, "action")
+  var engineErrors = 0
+  for e in r.captured.engine:
+    if e{"level"}.getStr == "error": inc engineErrors
+  parts.add n(r.captured.engine.len, "engine log line") &
+    (if engineErrors > 0: " (" & n(engineErrors, "error") & ")" else: "")
   parts.join(" · ")
 
 proc description(r: Report): string =
@@ -318,9 +326,60 @@ proc showDetails(r: Report) =
   notes.onSubmit = proc (t: string) = kit.dialogResult(d, 2)
   kit.focus(notes)
 
+proc webbyState(): JsonNode =
+  ## Webby itself when the report begins: build, settings and tabs (addresses scrubbed like the engine log).
+  let b = buildInfo()
+  var tabList = newJArray()
+  var lines: seq[string]
+  for i, t in tabs:
+    let state = (if t == currentTab(): "active" elif t.view == nil: "asleep" else: "open") &
+      (if t.pinned: ", pinned" else: "") & (if t.loading: ", loading" else: "")
+    tabList.add %*{"index": i + 1, "title": t.title, "url": scrub(t.url), "state": state}
+    lines.add $(i + 1) & ". " & (if t.title.len > 0: t.title & " " else: "") & "<" & scrub(t.url) & "> (" & state & ")"
+  let session = getEnv("XDG_SESSION_TYPE", if getEnv("WAYLAND_DISPLAY").len > 0: "wayland" else: "x11")
+  let desktop = getEnv("XDG_CURRENT_DESKTOP")
+  let settings = %*{"adBlocking": adblockStore.enabled(), "incognito": incognito, "session": session,
+    "desktop": desktop, "gtkTheme": getEnv("GTK_THEME"), "ladybirdArgs": getEnv("WEBBY_LADYBIRD_ARGS")}
+  %*{"t": nowMs(), "kind": "state", "browser": b.version, "commit": b.commit, "engine": b.runtime,
+     "settings": settings, "tabs": tabList,
+     "text": "Webby " & b.version & " (" & b.commit & "), engine " & b.runtime & "; ad blocking " &
+       (if adblockStore.enabled(): "on" else: "off") & (if incognito: "; incognito" else: "") & "; " & session &
+       (if desktop.len > 0: " on " & desktop else: "") & "; " & $tabs.len & " tab" & (if tabs.len == 1: "" else: "s") &
+       ":\n" & lines.join("\n")}
+
 proc newReport(t: Tab, video: bool): Report =
-  result = Report(video: video, startedAt: nowMs(), url: t.url, pageTitle: t.title, captured: newCaptured())
+  result = Report(video: video, startedAt: nowMs(), url: t.url, pageTitle: t.title, captured: newCaptured(),
+    sampler: newSampler())
   result.captured.addNavigation(result.startedAt, t.url, t.title, tabId(t), "tab")
+  result.captured.state = webbyState()
+  result.captured.system.add result.sampler.sample
+
+proc addInternals(r: Report) =
+  ## The engine's log over the report's span (from its first page entry, at most 10 minutes back) and a last
+  ## memory/CPU sample.
+  var first = r.startedAt
+  for list in [r.captured.console, r.captured.network, r.captured.actions]:
+    for e in list: first = min(first, e{"t"}.getBiggestInt(first))
+  first = max(first - 2000, r.startedAt - 10 * 60_000)
+  if r.video: r.captured.system.add r.sampler.sample
+  # The engine prints the page's console too ("(js error) ..."); keep only what the page capture missed (messages
+  # from before it was in place, errors thrown from timers).
+  proc plain(s: string): string = s.multiReplace(("\"", ""), (" ", ""))
+  var pageMessages: seq[(int64, string)]
+  for e in r.captured.console:
+    var args: seq[string]
+    for a in e{"args"}.getElems: args.add a.getStr
+    pageMessages.add (e{"t"}.getBiggestInt, plain(args.join(" ")))
+  r.captured.engine = @[]
+  for e in enginelog.entries(first, nowMs()):
+    let text = e{"text"}.getStr
+    if text.startsWith("(js "):
+      let message = plain(text[text.find(')') + 1 .. ^1])
+      var dup = false
+      for (t, m) in pageMessages:
+        if m == message and abs(t - e{"t"}.getBiggestInt) < 3000: dup = true
+      if dup: continue
+    r.captured.engine.add e
 
 proc takeScreenshot() =
   let t = currentTab()
@@ -332,7 +391,7 @@ proc takeScreenshot() =
   let r = newReport(t, false)
   (r.media, r.width, r.height) = shot
   r.mediaType = "image/png"
-  collect(r, t, proc () = showDetails(r))
+  collect(r, t, proc () = (r.addInternals; showDetails(r)))
 
 # ---------------------------------------------------------------------------------------------------------------
 # Recording the tab
@@ -421,7 +480,9 @@ proc startRecording() =
     if cur != nil: sendFrame(rec, cur, false)
     kit.`text=`(barLabel, "● Recording this tab  " & formatClock(ms)))
   rec.pollTimer = every(pollMs, proc () =
-    if recording == rec and not rec.stopping: collect(rec.report, currentTab(), proc () = discard))
+    if recording == rec and not rec.stopping:
+      rec.report.captured.system.add rec.report.sampler.sample
+      collect(rec.report, currentTab(), proc () = discard))
   showBar("● Recording this tab  0:00", true)
 
 proc finishRecording(dropIt: bool) =
@@ -478,6 +539,7 @@ proc finishRecording(dropIt: bool) =
       r.width = rec.width and not 1
       r.height = rec.height and not 1
       if r.width > 1920: (r.width, r.height) = (1920, (r.height * 1920 div rec.width) and not 1)
+      r.addInternals
       showDetails(r)))
 
 proc showBar(text: string, recordingControls: bool) =
@@ -505,7 +567,7 @@ proc reportBug() =
   let t = currentTab()
   if t == nil: return
   let text = kit.label("Take a screenshot of this page, or record what you do in this tab. Either way the " &
-    "report gets the page's console messages, network requests and your clicks.")
+    "report gets the page's console messages, network requests and your clicks, and Webby's engine log, tabs, memory and CPU.")
   discard kit.sized(text, 420)
   discard kit.dialog("Report a bug", text, @["Cancel", "Record the tab", "Screenshot"], proc (i: int) =
     # After the dialog is gone, so the page is what gets captured.
@@ -516,6 +578,8 @@ proc reportBug() =
     elif i == 2: discard after(150, takeScreenshot))
 
 proc install*() =
+  enginelog.start()   # before the engine starts its helpers, so they write into it
+  shutdownHooks.add enginelog.stop
   pageScriptHooks.add script
   pageMessageHooks.add onMessage
   windowHooks.add proc () =
