@@ -33,6 +33,6 @@ Needs Docker (or Podman) and the dagger CLI at the version in dagger.json:
 ## In CI
 
 `.github/workflows/dagger.yml` runs `dagger check` on every push. With the repo secret `DAGGER_CLOUD_TOKEN` (dagger.cloud,
-org Settings > Tokens) each run's trace is in Dagger Cloud. Repo variable `DAGGER_SCALE_OUT=true` runs the checks on
-Dagger Cloud engines, which keep their cache between pushes. Run the workflow by hand with "twice" ticked to see the
+org Settings > Tokens) each run's trace is in Dagger Cloud. Org/repo variable `DAGGER_SCALE_OUT=true` runs the checks on
+a Dagger Cloud engine (`dagger check --cloud`, signed in with GitHub OIDC). Run the workflow by hand with "twice" ticked to see the
 second `dagger check` come from the cache.

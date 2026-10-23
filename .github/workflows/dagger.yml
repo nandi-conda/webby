@@ -1,8 +1,8 @@
 # Runs the Dagger checks (.dagger/, `dagger check`) on every push to main and on demand.
 # With the repo secret DAGGER_CLOUD_TOKEN (dagger.cloud > your org > Settings > Tokens) each run's trace shows up in
 # Dagger Cloud; without it the checks still run, just with no trace.
-# Set the org or repo variable DAGGER_SCALE_OUT to "true" to run each check on a Dagger Cloud engine instead of this runner,
-# whose cache is kept between runs (needs the token, and Cloud Engines on the Dagger Cloud plan).
+# Set the org or repo variable DAGGER_SCALE_OUT to "true" to run the checks on a Dagger Cloud engine instead of this runner
+# (signs in with GitHub OIDC; needs the Dagger Cloud GitHub integration and Cloud Engines on the plan).
 name: dagger
 
 on:
@@ -20,8 +20,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # The org/repo variable DAGGER_SCALE_OUT ("true", "1" or "yes") turns on Cloud engines.
-  SCALE_OUT: ${{ contains(fromJSON('["true","1","yes"]'), vars.DAGGER_SCALE_OUT) && '--scale-out' || '' }}
+  # The org/repo variable DAGGER_SCALE_OUT ("true", "1" or "yes") runs the checks on a Dagger Cloud engine. --cloud
+  # (one engine for the whole run) rather than --scale-out (a fresh engine per check): fresh engines start with an empty
+  # cache every time (runs 19-20), so they bought no speed.
+  SCALE_OUT: ${{ contains(fromJSON('["true","1","yes"]'), vars.DAGGER_SCALE_OUT) && '--cloud' || '' }}
   DAGGER_VERSION: 0.21.11  # dagger.json's engineVersion
   DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
   DAGGER_NO_NAG: "1"
@@ -48,8 +50,8 @@ jobs:
           if [ -n "$SCALE_OUT" ]; then
             # The telemetry token is sent as Basic auth, which the engine API turns away ("invalid token type"); the
             # CLI's special value "oidc" trades this job's GitHub OIDC token for a Dagger Cloud one instead.
-            DAGGER_CLOUD_TOKEN=oidc dagger check --progress=plain --scale-out 2>&1 | tee "$RUNNER_TEMP/check.log" && exit 0
-            grep -q -E "failed to provision a remote Engine|OIDC" "$RUNNER_TEMP/check.log" || exit 1
+            DAGGER_CLOUD_TOKEN=oidc dagger check --progress=plain --cloud 2>&1 | tee "$RUNNER_TEMP/check.log" && exit 0
+            grep -q -E "provision a remote Engine|OIDC|Cloud Engine" "$RUNNER_TEMP/check.log" || exit 1
             echo "::warning::Dagger Cloud engines unavailable ($(grep -o -m1 -E '(failed to provision a remote Engine|failed to [a-z ]*OIDC).*' "$RUNNER_TEMP/check.log" | head -c 300)); checking on this runner"
             echo "SCALE_OUT=" >> "$GITHUB_ENV"
           fi
