@@ -92,10 +92,19 @@ proc picture(w: Widget, scale: int): pointer =
   var pix: pointer
   let bytes = w.image
   let l = gdk_pixbuf_loader_new()
+  # An SVG is drawn at the size it's shown at, not drawn small and scaled up.
+  if imageMime(bytes) == "image/svg+xml": gdk_pixbuf_loader_set_size(l, px.cint, px.cint)
   if gdk_pixbuf_loader_write(l, unsafeAddr bytes[0], bytes.len.csize_t, nil) != 0 and
       gdk_pixbuf_loader_close(l, nil) != 0:
     let full = gdk_pixbuf_loader_get_pixbuf(l)
-    if full != nil: pix = gdk_pixbuf_scale_simple(full, px.cint, px.cint, GDK_INTERP_BILINEAR)
+    if full != nil:
+      # Fitted into the square keeping its shape; HYPER filters a big picture (a 256 px .ico, a touch icon) down
+      # without the jaggies BILINEAR leaves.
+      let (fw, fh) = (gdk_pixbuf_get_width(full).int, gdk_pixbuf_get_height(full).int)
+      let k = px / max(max(fw, fh), 1)
+      let (w, h) = (max(int(fw.float * k + 0.5), 1), max(int(fh.float * k + 0.5), 1))
+      pix = if (fw, fh) == (w, h): g_object_ref(full)
+            else: gdk_pixbuf_scale_simple(full, w.cint, h.cint, (if k < 1: GDK_INTERP_HYPER else: GDK_INTERP_BILINEAR))
   else:
     discard gdk_pixbuf_loader_close(l, nil)
   g_object_unref(l)
@@ -111,10 +120,11 @@ proc onIconDraw(area: GtkWidget, cr: pointer, data: pointer): gboolean {.cdecl.}
     let scale = max(gtk_widget_get_scale_factor(area).int, 1)
     let p = w.picture(scale)
     if p != nil:
-      let size = w.iconSize.float
+      let pw = gdk_pixbuf_get_width(p).float / scale.float
+      let ph = gdk_pixbuf_get_height(p).float / scale.float
       cairo_save(cr)
-      cairo_translate(cr, ((gtk_widget_get_allocated_width(area).float - size) / 2).int.float,
-        ((gtk_widget_get_allocated_height(area).float - size) / 2).int.float)
+      cairo_translate(cr, ((gtk_widget_get_allocated_width(area).float - pw) / 2).int.float,
+        ((gtk_widget_get_allocated_height(area).float - ph) / 2).int.float)
       cairo_scale(cr, 1 / scale.float, 1 / scale.float)
       gdk_cairo_set_source_pixbuf(cr, p, 0, 0)
       cairo_paint(cr)
@@ -378,6 +388,8 @@ proc syncClasses(w: Widget) =
   if w.kind in {wkButton, wkToggle, wkItem}:
     gtk_button_set_relief(w.native, (if "flat" in want or w.kind == wkItem: GTK_RELIEF_NONE else: 0.cint))
   shownClasses[w.id] = want
+  if w.kind == wkLabel and ("centered" in want) != ("centered" in have):
+    gtk_label_set_xalign(w.native, (if "centered" in want: 0.5 else: 0).cfloat)
   if w.kind == wkRow and ("top" in want) != ("top" in have):
     for c in w.children:
       if c.native != nil: c.applyExpand()

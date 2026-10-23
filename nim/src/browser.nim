@@ -105,6 +105,7 @@ var
   quitHooks*: seq[proc (): bool]                  ## false cancels quitting
   shutdownHooks*: seq[proc ()]                    ## quitting for real
   tabStripHooks*: seq[proc ()]                    ## tabs added, removed, moved or pinned
+  tabButtonHooks*: seq[proc (t: Tab)]             ## the tab's strip widget was updated (updateTabButton)
   pumpHooks*: seq[proc ()]                        ## every pump tick, after Ladybird's events ran (keep them cheap)
   suggestionProviders*: seq[proc (text: string): seq[Suggestion]]
   tabMenuHooks*: seq[proc (t: Tab, items: var seq[kit.MenuItem])]  ## right-click on a tab: append menu items
@@ -249,6 +250,7 @@ proc updateTabButton*(t: Tab) =
   kit.`text=`(t.label, if t.pinned: "" else: s)
   kit.`visible=`(t.label, not t.pinned)
   kit.`tooltip=`(t.button, s)
+  for h in tabButtonHooks: h(t)
 
 proc notifyTabStrip*() =
   for h in tabStripHooks: h()

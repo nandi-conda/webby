@@ -292,7 +292,7 @@ proc addClass*(w: Widget, name: string): Widget {.discardable.} =
   ## Style names the backends know: "heading" (larger, bold), "bold", "dim" (secondary text), "small", "mono",
   ## "error", "flat" (a button without a frame), "suggested" and "destructive" (a button's emphasis), "selected"
   ## (an item shown as the current one), "card" (a framed box), "top" (a row whose children line up at their tops,
-  ## not their middles: a list bullet beside text that wraps). Others are passed on where the platform can use
+  ## not their middles: a list bullet beside text that wraps), "centered" (a label's text in its middle). Others are passed on where the platform can use
   ## them (GTK style classes, web CSS classes). Returns `w`.
   if name notin w.classesValue:
     w.classesValue.add name

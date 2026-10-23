@@ -2,8 +2,8 @@
 ## (tabs.json), the tab right-click menu, reopening closed tabs, unloaded tabs and discarding long-hidden ones
 ## (main.dart, tab_strip.dart, web_view.dart).
 
-import std/[os, strutils, times]
-from std/unicode import toRunes, `$`
+import std/[hashes, os, strutils, tables, times]
+from std/unicode import toRunes, `$`, isAlpha, toUpper
 import ../../browser
 from nimkit/core as kit import nil
 import store, common
@@ -89,12 +89,50 @@ proc pinnedCount*(): int =
     if not t.pinned: break
     inc result
 
+proc hash(t: Tab): Hash = hash(cast[pointer](t))
+
+var badges: Table[Tab, kit.Widget]   ## a pinned tab's letter, shown while its site has no icon
+
+proc siteLetter(url: string): string =
+  ## The site's first letter or digit ("G" for www.github.com), "" for pages without a host.
+  var host = hostOf(url).toLowerAscii
+  if host.startsWith("www."): host = host[4 .. ^1]
+  for r in host.toRunes:
+    if r.isAlpha or ($r)[0] in {'0'..'9'}: return $r.toUpper
+
+proc badgeColor(url: string): int =
+  ## One of eight colours, the same for a site every time.
+  var h = 0'u32
+  for c in hostOf(url).toLowerAscii: h = h * 31 + uint32(ord(c))
+  int(h mod 8)
+
+proc updateBadge(t: Tab) =
+  ## A pinned tile shows the site's icon, or a coloured square with its letter when it has none (yet); a page
+  ## without a site (the start page, file:) keeps the globe.
+  let letter = if t.pinned and kit.image(t.icon).len == 0: siteLetter(t.url) else: ""
+  var b = badges.getOrDefault(t)
+  if letter.len == 0:
+    if b != nil: kit.`visible=`(b, false)
+    kit.`visible=`(t.icon, true)
+    return
+  if b == nil:
+    b = kit.label("")
+    kit.addClass(b, "webby-site-badge")
+    kit.addClass(b, "centered")
+    kit.insert(t.button, b, 0)
+    badges[t] = b
+  kit.`text=`(b, letter)
+  for i in 0 .. 7: kit.setClass(b, "webby-badge-" & $i, i == badgeColor(t.url))
+  kit.`visible=`(b, true)
+  kit.`visible=`(t.icon, false)
+
 proc styleTab(t: Tab) =
   kit.`visible=`(t.closeButton, not t.pinned)
   kit.setClass(t.button, "webby-pinned-tab", t.pinned)
-  # A 40 px tile with the icon in the middle, like tab_strip.dart's.
+  # A 40 px tile with a 16 px icon in the middle (the CSS padding centres it), like Chrome's.
   discard kit.sized(t.button, (if t.pinned and not vertical: 40 else: 0))
-  updateTabButton(t)
+  kit.`iconSize=`(t.icon, if t.pinned: 16 else: 14)
+  updateTabButton(t)   # and updateBadge, through tabButtonHooks
 
 # ---------------------------------------------------------------------------------------------------------------
 # The open tabs, kept in open_tabs.json as they change (a second after, so a burst of changes is one write) and
@@ -258,6 +296,7 @@ proc install*() =
     if t != currentTab(): t.props["hiddenSince"] = $epochTime()
   tabClosedHooks.add proc (t: Tab) =
     if lastActive == t: lastActive = nil
+    badges.del(t)
     if isSessionUrl(t.url):
       closedTabs.add DeviceTab(title: tabTitle(t.title, t.url), url: t.url)
       if closedTabs.len > 25: closedTabs.delete(0)
@@ -272,6 +311,7 @@ proc install*() =
     if t.isUnloaded: showPending(t)   # a fresh view reports an empty page; keep showing what it will load
     if t.pinned: styleTab(t)
     saveOpenTabsSoon()
+  tabButtonHooks.add updateBadge
   tabStripHooks.add proc () =
     fixOrder()
     saveOpenTabsSoon()
@@ -279,9 +319,20 @@ proc install*() =
   tabMenuHooks.add fillTabMenu
   windowHooks.add proc () =
     loadCss("""
-button.webby-pinned-tab { padding: 4px 0; }
+button.webby-pinned-tab { padding: 4px 12px; border-radius: 8px; margin: 3px 1px; }
+button.webby-pinned-tab:hover { background-color: alpha(currentColor, 0.08); background-image: none;
+  border-color: transparent; }
+button.webby-pinned-tab.webby-active-tab { background-color: alpha(@theme_selected_bg_color, 0.22);
+  box-shadow: inset 0 -2px @theme_selected_bg_color; }
+.webby-site-badge { min-width: 16px; min-height: 16px; border-radius: 4px; color: white; font-size: 10px;
+  font-weight: bold; text-shadow: none; }
+.webby-badge-0 { background-color: #c5221f; } .webby-badge-1 { background-color: #b06000; }
+.webby-badge-2 { background-color: #137333; } .webby-badge-3 { background-color: #1967d2; }
+.webby-badge-4 { background-color: #8430ce; } .webby-badge-5 { background-color: #007b83; }
+.webby-badge-6 { background-color: #c2185b; } .webby-badge-7 { background-color: #5f6368; }
 .webby-vertical-tabs { border-right: 1px solid alpha(currentColor, 0.15); }
 .webby-vertical-tabs button.webby-tab { border-radius: 6px; margin: 1px 4px; }
+.webby-vertical-tabs button.webby-pinned-tab { padding-left: 10px; }
 .webby-strip-space, .webby-strip-space:hover { background: none; box-shadow: none; border: none; }
 """)
     # The strip's empty space: a right-click opens the strip's menu, a double click a new tab (tab_strip.dart).

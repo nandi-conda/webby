@@ -41,6 +41,7 @@ const
   PANGO_ELLIPSIZE_NONE* = 0.cint
   PANGO_ELLIPSIZE_END* = 3.cint
   GDK_INTERP_BILINEAR* = 2.cint
+  GDK_INTERP_HYPER* = 3.cint
   GDK_SCROLL_UP* = 0.cint
   GDK_SCROLL_DOWN* = 1.cint
   GDK_SCROLL_LEFT* = 2.cint

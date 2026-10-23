@@ -27,6 +27,18 @@ if [ ! -x "$BIN" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$COMMIT" ] || [ -n "$(
   echo "$COMMIT" > "$STAMP"
 fi
 if [ -n "${WEBBY_BUILD_ONLY:-}" ]; then exit 0; fi
+# GTK reads favicons through gdk-pixbuf's loaders (.ico, SVG, GIF; PNG and JPEG are built in). conda-forge's loaders.cache
+# names them relative to the program's own prefix, which webby (in nim/ or lib/webby/) isn't in, and pixi doesn't
+# write the cache at all (no post-link scripts), so webby gets its own copy with whole paths.
+if [ -z "${GDK_PIXBUF_MODULE_FILE:-}" ] && [ -x "$CONDA_PREFIX/bin/gdk-pixbuf-query-loaders" ]; then
+  pixbuf_cache="${XDG_CACHE_HOME:-$HOME/.cache}/webby/gdk-pixbuf-loaders-$(printf %s "$CONDA_PREFIX" | cksum | cut -d' ' -f1).cache"
+  if [ ! -s "$pixbuf_cache" ] || [ "$CONDA_PREFIX/lib/gdk-pixbuf-2.0/2.10.0/loaders" -nt "$pixbuf_cache" ]; then
+    mkdir -p "$(dirname "$pixbuf_cache")"
+    "$CONDA_PREFIX/bin/gdk-pixbuf-query-loaders" 2>/dev/null | sed "s|^\"lib/|\"$CONDA_PREFIX/lib/|" > "$pixbuf_cache.tmp" &&
+      mv "$pixbuf_cache.tmp" "$pixbuf_cache" || rm -f "$pixbuf_cache.tmp"
+  fi
+  if [ -s "$pixbuf_cache" ]; then export GDK_PIXBUF_MODULE_FILE="$pixbuf_cache"; fi
+fi
 # A fontconfig file Ladybird's sandboxed helpers can read, as conda/webby's launcher sets up: they may only read
 # share/Lagom/fonts, so without it each one prints "Cannot load default config file".
 fonts_conf="$WEBBY_LADYBIRD_PREFIX/share/Lagom/fonts/webby-fonts.conf"

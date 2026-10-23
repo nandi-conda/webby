@@ -739,6 +739,7 @@ public class Host extends Activity {
             if (c.contains("error")) t.setTextColor(0xffd93025);
             else if (!button) t.setTextColor(textColor());
             t.setAlpha(c.contains("dim") ? 0.6f : 1f);
+            if (c.contains("centered") && !button) t.setGravity(Gravity.CENTER);
             if (button) {
                 if (c.contains("flat")) {
                     t.setBackground(ripple(0));
