@@ -1,7 +1,7 @@
 # Builds the Ladybird runtime (scripts/portable_build.sh: Ubuntu 22.04, so glibc 2.35) with every patch in patches/,
 # packs it (scripts/pack_prebuilt.sh) and publishes it as the GitHub Release `webby-prebuilt-<version>`, which
-# conda/webby-ladybird downloads. A cold build takes a few hours on a hosted runner; ccache and vcpkg's binary cache
-# carry over between runs.
+# conda/webby-ladybird downloads. Runs on a 32-CPU Depot runner (depot-ubuntu-22.04-32); ccache and vcpkg's binary
+# cache carry over between runs through actions/cache, which Depot backs with its own cache (no 10 GB limit).
 name: runtime-build
 
 on:
@@ -10,13 +10,17 @@ on:
       version:
         description: Runtime version (e.g. 2026.10.13.1); conda/webby-ladybird's version gets bumped to it afterwards
         required: true
+      publish:
+        description: Publish the GitHub Release (off = build and time it only)
+        type: boolean
+        default: true
 
 permissions:
   contents: write
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: depot-ubuntu-22.04-32
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
@@ -53,6 +57,7 @@ jobs:
             /build/vcpkg-cache
           key: runtime-${{ github.sha }}
       - name: Pack and publish
+        if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
