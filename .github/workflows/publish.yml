@@ -134,8 +134,13 @@ jobs:
           ENV="$HOME/.pixi/envs/webby"
           if ldd "$ENV/lib/webby/webby" "$ENV"/lib/webby-ladybird/lib/libwebby.so | grep 'not found'; then exit 1; fi
           xvfb-run -a webby https://example.com > webby.log 2>&1 &
-          sleep 25
-          pgrep -a WebContent || { cat webby.log; exit 1; }
+          # Wait (up to 60 s) for the page's helper processes instead of a fixed sleep, then check they are still
+          # up a few seconds later, so a crash right after start still fails the job.
+          up() { pgrep WebContent >/dev/null && pgrep RequestServer >/dev/null; }
+          for i in $(seq 120); do up && break; sleep 0.5; done
+          up && sleep 3 && up || { cat webby.log; exit 1; }
+          echo "helpers up after ~$((i / 2)) s"
+          pgrep -a WebContent
           pgrep -a RequestServer
 
   # `pixi run webby` (the Nim front end) from a fresh checkout: installs the workspace, builds and starts it.
