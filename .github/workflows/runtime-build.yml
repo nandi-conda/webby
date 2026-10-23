@@ -54,7 +54,7 @@ jobs:
           {
             echo "### Build Ladybird: $((took / 60))m$((took % 60))s on $(nproc) CPUs"
             echo '```'
-            CCACHE_DIR=/build/ccache ccache -s || true
+            CCACHE_DIR=/build/ccache ccache -s | tee /dev/stderr || true
             echo "vcpkg binary cache: $(find /build/ladybird/Build/caches/vcpkg-binary-cache -name '*.zip' | wc -l) packages"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
