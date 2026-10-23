@@ -19,6 +19,9 @@ const
   chunkBytes = 16 * 256 * 1024   ## GCS wants chunks in multiples of 256 KiB; 4 MiB each keeps a request short
   shareUrl* = "https://jam.dev/c/"
   tokenSite* = "https://jam.dev/s/settings/mcp"
+  ## Jam lets a personal access token make media and Jams only from its CLI, which says so with these headers;
+  ## without them bulkRegisterMedia answers 403 "You are not authorized to perform this action".
+  clientHeaders* = @[("x-jam-origin", "native_cli"), ("x-jam-cli-version", "1.31.1")]
 
 type
   Upload* = object
@@ -64,7 +67,7 @@ proc call(token, op, query: string, variables: JsonNode, done: proc (data: JsonN
       done(nil, op & ": " & (if errors.len > 0: errors else: "Jam answered HTTP " & $r.status))
     else: done(j{"data"}, ""),
     headers = @[("Authorization", "Bearer " & token), ("Content-Type", "application/json"),
-                ("Accept", "application/json")], body = body)
+                ("Accept", "application/json")] & clientHeaders, body = body)
 
 proc whoami(token: string, done: proc (teamId, error: string)) =
   request("GET", apiUrl & "/whoami", proc (r: Response) =

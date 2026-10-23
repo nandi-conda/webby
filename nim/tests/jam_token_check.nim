@@ -3,10 +3,11 @@
 ##
 ## Usage (with the desktop session's D-Bus for the keyring): pixi run nim/tests/jam_token_check
 
-import std/[json, os, strutils]
+import std/[json, os, strutils, sugar]
 from nimkit/backend/gtk as nkgtk import nil   # nimkit's services on GLib: HTTP over GIO, timers
 import nimkit/services
 import ../src/features/passwords/vault
+import ../src/features/bugreport/jam
 
 proc g_main_loop_new(ctx: pointer, running: cint): pointer {.importc, cdecl.}
 proc g_main_loop_run(loop: pointer) {.importc, cdecl.}
@@ -21,10 +22,14 @@ proc show(label: string, r: Response) =
   echo label, ": HTTP ", r.status, " ", r.error, "\n  ", r.body[0 ..< min(r.body.len, 400)].replace("\n", " ")
 
 let auth = ("Authorization", "Bearer " & token.strip)
+var teamId = ""
 let gql = $(%*{"query": "query { __typename }"})
 var steps: seq[proc (next: proc ())]
 steps.add proc (next: proc ()) =
-  request("GET", "https://api.jam.dev/whoami", proc (r: Response) = (show("whoami", r); next()), @[auth])
+  request("GET", "https://api.jam.dev/whoami", proc (r: Response) =
+    show("whoami", r)
+    try: teamId = parseJson(r.body){"data"}{"attributes"}{"team"}{"id"}.getStr except CatchableError: discard
+    next(), @[auth])
 steps.add proc (next: proc ()) =
   request("GET", "https://api.jam.dev/whoami", proc (r: Response) = (show("whoami + Accept json", r); next()),
     @[auth, ("Accept", "application/json")])
@@ -34,6 +39,16 @@ steps.add proc (next: proc ()) =
 steps.add proc (next: proc ()) =
   request("POST", "https://graphql.jam.dev/graphql", proc (r: Response) = (show("graphql + x-jam-origin", r); next()),
     @[auth, ("Content-Type", "application/json"), ("x-jam-origin", "native_cli")], gql)
+
+# Registering a media slot makes no Jam; it shows whether the token may write, and which headers it needs.
+proc register(): string =
+  $(%*{"operationName": "bulkRegisterMedia", "variables": {"teamId": teamId, "items": [{"key": "0", "type": "Screenshot",
+    "contentType": "image/png", "uncompressedBytes": 67, "chunked": true}]}, "query": "mutation bulkRegisterMedia($teamId: String!, $items: [MediaRegistrationItemInput!]!) { bulkRegisterMedia(teamId: $teamId, items: $items) { items { key media { id } } } }"})
+for (label, extra) in [("bulkRegisterMedia", newSeq[(string, string)]()), ("bulkRegisterMedia + CLI headers", clientHeaders)]:
+  capture label, extra:
+    steps.add proc (next: proc ()) =
+      request("POST", "https://graphql.jam.dev/graphql?op=bulkRegisterMedia", proc (r: Response) = (show(label, r); next()),
+        @[auth, ("Content-Type", "application/json")] & extra, register())
 
 proc run(i: int) =
   if i == steps.len: g_main_loop_quit(loop)
