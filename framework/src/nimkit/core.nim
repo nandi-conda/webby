@@ -659,9 +659,15 @@ proc dialogResult*(d: Dialog, index: int) =
   if backend.closeDialog != nil: backend.closeDialog(d)
   if d.onResult != nil: d.onResult(index)
 
+proc selectableLabels(w: Widget) =
+  if w.kind == wkLabel: w.selectable = true
+  for c in w.children: selectableLabels(c)
+
 proc dialog*(title: string, content: Widget, buttons: seq[string], onResult: proc (index: int) = nil,
              destructive = -1): Dialog =
   ## Shows a modal dialog and returns it. onResult gets the pressed button's index, or -1 if dismissed.
+  ## Its labels' text can be selected and copied (an error's path or message, say).
+  selectableLabels(content)
   result = Dialog(title: title, content: content, buttons: buttons, onResult: onResult, destructive: destructive)
   showDialog(result)
 

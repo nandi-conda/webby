@@ -35,6 +35,15 @@ type
 
   Done* = proc (ok: bool, jamUrl, error: string)
 
+proc answer(r: Response): string =
+  ## What Jam said, for error messages: its error text if it gave one, else the start of the body.
+  try:
+    let j = parseJson(r.body)
+    if j{"error_description"} != nil: return j{"error_description"}.getStr
+    if j{"errors"} != nil and j{"errors"}.len > 0: return j{"errors"}[0]{"message"}.getStr
+  except CatchableError: discard
+  r.body[0 ..< min(r.body.len, 200)].strip
+
 proc graphqlErrors(j: JsonNode): string =
   if j.kind != JObject or j{"errors"} == nil: return ""
   var messages: seq[string]
@@ -45,12 +54,14 @@ proc call(token, op, query: string, variables: JsonNode, done: proc (data: JsonN
   let body = $(%*{"operationName": op, "query": query, "variables": variables})
   request("POST", graphqlUrl & "?op=" & op, proc (r: Response) =
     if r.status == 0: done(nil, r.error); return
-    if r.status in [401, 403]: done(nil, "Jam refused the token (HTTP " & $r.status & "). Check it in Jam settings."); return
+    if r.status in [401, 403]:
+      done(nil, op & ": Jam refused the token (HTTP " & $r.status & "): " & answer(r))
+      return
     let j = try: parseJson(r.body) except CatchableError: nil
-    if j == nil: done(nil, "Jam answered HTTP " & $r.status & " " & r.body[0 ..< min(r.body.len, 200)]); return
+    if j == nil: done(nil, op & ": Jam answered HTTP " & $r.status & " " & answer(r)); return
     let errors = graphqlErrors(j)
     if errors.len > 0 or j{"data"} == nil or j{"data"}.kind != JObject:
-      done(nil, if errors.len > 0: errors else: "Jam answered HTTP " & $r.status)
+      done(nil, op & ": " & (if errors.len > 0: errors else: "Jam answered HTTP " & $r.status))
     else: done(j{"data"}, ""),
     headers = @[("Authorization", "Bearer " & token), ("Content-Type", "application/json"),
                 ("Accept", "application/json")], body = body)
@@ -58,7 +69,9 @@ proc call(token, op, query: string, variables: JsonNode, done: proc (data: JsonN
 proc whoami(token: string, done: proc (teamId, error: string)) =
   request("GET", apiUrl & "/whoami", proc (r: Response) =
     if r.status == 0: done("", r.error); return
-    if r.status in [401, 403]: done("", "Jam refused the token (HTTP " & $r.status & "). Check it in Jam settings."); return
+    if r.status in [401, 403]:
+      done("", "Jam refused the token (HTTP " & $r.status & "): " & answer(r))
+      return
     try:
       let team = parseJson(r.body){"data"}{"attributes"}{"team"}{"id"}.getStr
       if team.len > 0: done(team, "") else: done("", "Jam's /whoami named no team (HTTP " & $r.status & ")")
