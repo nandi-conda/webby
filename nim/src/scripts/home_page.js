@@ -6,11 +6,12 @@
   const data = __WEBBY_HOME_DATA__;
 
   const scheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
-  // The address bar's rule: an address loads, anything else searches Google.
+  // The address bar's rule: an address loads, anything else searches the engine the address bar uses.
+  const queryUrl = data.queryUrl || 'https://www.google.com/search?q=%s';
   const toUrl = (text) => {
     const t = text.trim();
     if (!t) return '';
-    const search = 'https://www.google.com/search?q=' + encodeURIComponent(t);
+    const search = queryUrl.split('%s').join(encodeURIComponent(t));
     if (/\s/.test(t)) return search;
     const s = scheme.exec(t);
     if (s && !/^[^:]+:\d/.test(t)) {
@@ -99,7 +100,7 @@
   const form = el('form');
   const input = el('input');
   input.type = 'text';
-  input.placeholder = 'Search Google or type a URL';
+  input.placeholder = 'Search ' + (data.engine || 'Google') + ' or type a URL';
   input.autocomplete = 'off';
   input.spellcheck = false;
   form.append(input);

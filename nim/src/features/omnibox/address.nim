@@ -55,7 +55,11 @@ proc looksLikeAddress(text: string): bool =
   labels.len >= 2 and isTld(labels[^1]) and
     labels[0 ..< ^1].allIt(it.len > 0 and it.allCharsInSet({'a'..'z'} + Digits + {'-'}))
 
-proc addressToUrl*(input: string): string =
-  ## What the address bar loads for `input`: the address itself when it looks like one, otherwise a Google search.
+proc isAddress*(input: string): bool = looksLikeAddress(input.strip)
+  ## Whether the address bar loads `input` as it is rather than searching for it.
+
+proc addressToUrl*(input: string, queryUrl = "https://www.google.com/search?q=%s"): string =
+  ## What the address bar loads for `input`: the address itself when it looks like one, otherwise a search,
+  ## `queryUrl` with the text in place of its %s (omnibox/search.nim has the user's engine).
   let text = input.strip
-  if looksLikeAddress(text): text else: "https://www.google.com/search?q=" & encodeUrl(text, usePlus = true)
+  if looksLikeAddress(text): text else: queryUrl.replace("%s", encodeUrl(text, usePlus = false))

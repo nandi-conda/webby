@@ -4,6 +4,7 @@
 import std/[json, strutils]
 import ../../base
 import ../bookmarks/store as bookmarkStore
+import ../omnibox/search
 
 const homePageSource* = staticRead("../../scripts/home_page.js")
 
@@ -17,7 +18,8 @@ proc homePageData*(limit = 8): JsonNode =
   bookmarkStore.ensureLoaded()
   walk(bookmarkStore.bar)
   walk(bookmarkStore.other)
-  %*{"bookmarks": marks}
+  let engine = currentEngine().engine
+  %*{"bookmarks": marks, "engine": engine.name, "queryUrl": engine.queryUrl}
 
 proc homePageScript*(): string =
   ## The script that draws the start page into an about:blank document.
