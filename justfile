@@ -19,3 +19,7 @@ deploy-sync:
 # Run the sync server locally on :8787 (local R2); `python3 sync-worker/test/roundtrip.py` tests it
 dev-sync:
     pixi run -e sync dev-sync
+
+# Run the Dagger checks in .dagger/ (needs Docker and the dagger CLI); `just check nim-desktop` runs one
+check *args:
+    dagger check "$@"

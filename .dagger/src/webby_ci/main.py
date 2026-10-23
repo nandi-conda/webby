@@ -12,7 +12,15 @@ PIXI_IMAGE = "ghcr.io/prefix-dev/pixi:0.56.0"  # the pixi publish.yml installs
 DART_IMAGE = "dart:3.9"  # sync-server/Dockerfile's
 PYTHON_IMAGE = "python:3.13-slim"
 NODE_IMAGE = "node:22-bookworm"
-UV_IMAGE = "ghcr.io/astral-sh/uv:0.9.5"
+UV_IMAGE = "ghcr.io/astral-sh/uv:0.13.5"  # pywrangler wants uv >= 0.13.4
+
+
+async def run(ctr: dagger.Container) -> None:
+    """Evaluates ctr; on a failed command, the error carries the command and its output."""
+    try:
+        await ctr.sync()
+    except dagger.ExecError as e:
+        raise RuntimeError(f"`{' '.join(e.command)}` exited {e.exit_code}\n{e.stdout[-3000:]}\n{e.stderr[-6000:]}") from None
 
 
 @object_type
@@ -53,25 +61,23 @@ class WebbyCi:
     @check
     async def nim_desktop(self) -> None:
         """Builds the Nim front end (nim/) the way `pixi run webby` does, without starting it."""
-        await (
+        await run(
             self.pixi_env()
             .with_directory("/src", self._nim_sources())
             .with_env_variable("WEBBY_BUILD_ONLY", "1")
             .with_exec(["pixi", "run", "--frozen", "webby"])
-            .sync()
         )
 
     @function
     @check
     async def nimkit_demo(self) -> None:
         """Builds the nimkit demo (framework/) for GTK and for the web."""
-        await (
+        await run(
             self.pixi_env()
             .with_directory("/src", self._nim_sources())
             .with_exec(["pixi", "run", "--frozen", "nim", "c", "-d:release", "--hints:off", "--cc:clang",
                         "--path:framework/src", "-o:/tmp/nimkit-demo", "framework/demo/demo.nim"])
             .with_exec(["pixi", "run", "--frozen", "framework/web/build.sh", "framework/demo/demo.nim", "/tmp/web"])
-            .sync()
         )
 
     def _sync_server_dir(self) -> dagger.Directory:
@@ -81,7 +87,7 @@ class WebbyCi:
     @check
     async def sync_server_test(self) -> None:
         """`dart test` for the self-hosted sync server (sync-server/)."""
-        await (
+        await run(
             dag.container()
             .from_(DART_IMAGE)
             .with_mounted_cache("/root/.pub-cache", dag.cache_volume("webby-pub-cache"))
@@ -90,7 +96,6 @@ class WebbyCi:
             .with_exec(["dart", "pub", "get"])
             .with_directory("/src", self._sync_server_dir())
             .with_exec(["dart", "test"])
-            .sync()
         )
 
     @function
@@ -122,13 +127,12 @@ class WebbyCi:
         )
 
     async def _roundtrip(self, server: dagger.Service, url: str) -> None:
-        await (
+        await run(
             dag.container()
             .from_(PYTHON_IMAGE)
             .with_service_binding("sync", server)
             .with_file("/roundtrip.py", self.source.file("sync-worker/test/roundtrip.py"))
             .with_exec(["python3", "/roundtrip.py", url])
-            .sync()
         )
 
     @function
