@@ -1,0 +1,31 @@
+# One-off: runs `dagger workspace migrate` (Dagger 1.0) on a runner, since the session container's Dagger execs have no
+# network, and prints the result so it can be committed. Dispatch only; delete after the migration lands.
+name: dagger-migrate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Dagger CLI version
+        default: 1.0.0-beta.20
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=$HOME/.local/bin DAGGER_VERSION=${{ inputs.version }} sh && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: dagger workspace migrate -y --progress=plain
+      - name: result
+        if: always()
+        run: |
+          git add -A -N .
+          git status --short
+          git diff
+          for f in $(git ls-files --others --exclude-standard) .dagger/migration-report.md; do [ -f "$f" ] && { echo "=== $f"; cat "$f"; }; done
+      - name: dagger check (migrated)
+        run: dagger check --progress=plain
