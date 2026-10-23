@@ -1,8 +1,8 @@
-## Instant replay for bug reports: webby keeps the last two minutes of the active tab, so a bug that already
-## happened can go into a report without recording it again (⋮ > Report a bug > Last 2 minutes).
+## Instant replay for bug reports: webby keeps the last five minutes of the active tab, so a bug that already
+## happened can go into a report without recording it again (⋮ > Report a bug > Last M:SS).
 ##
 ## The frames go to webby-tabrec as they change (at most ~3 a second, scaled to 960 px wide) in 30-second pieces,
-## each its own WebM in the runtime directory; pieces older than two minutes are deleted. Taking the replay ends the
+## each its own WebM in the runtime directory; pieces older than five minutes are deleted. Taking the replay ends the
 ## current piece and joins the kept ones into one WebM (webby-tabrec --join). Cost: nothing while the page is
 ## still; while it changes, one encoder process (~6% of a core at 1320×900 in measurements) and a few MB of files.
 ## Off in incognito windows. The choice is <profile>/instant_replay.json ({"enabled": bool}), on by default.
@@ -14,7 +14,7 @@ import nimkit/services
 
 const
   pieceMs = 30_000
-  keepMs = 120_000
+  keepMs = 5 * 60_000            ## the pieces live in tmpfs (RAM): a few MB a minute, ~20 MB a minute of video playback
   frameGapMs = 333
   replayWidth = 960
 
@@ -162,6 +162,11 @@ proc tick() =
   current.sendFrame(px)
 
 proc start*() =
+  # Pieces left by webby processes that are gone (killed before they could clean up).
+  try:
+    for d in walkDirs(dir().parentDir / "replay-*"):
+      if not dirExists("/proc" / d.extractFilename["replay-".len .. ^1]): removeDir(d)
+  except CatchableError: discard
   if ticker == nil: ticker = every(100, tick)
 
 proc stop*() =
@@ -185,7 +190,7 @@ proc span*(): int =
   int(nowMs() - max(first, nowMs() - keepMs))
 
 proc take*(done: proc (path: string, startMs, endMs: int64, width, height: int, error: string)) =
-  ## Ends the current piece and joins the last two minutes into one WebM (a temporary file the caller removes).
+  ## Ends the current piece and joins everything kept (up to five minutes) into one WebM (a temporary file the caller removes).
   endPiece()
   let wanted = pieces
   var waited = 0

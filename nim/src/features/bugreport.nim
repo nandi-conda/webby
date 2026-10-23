@@ -100,7 +100,7 @@ proc showJamSettings(onSaved: proc () = nil) =
   kit.add(box, show)
   if setSecret != nil: kit.add(box, sync)
   if not incognito:
-    kit.add(box, kit.check("Keep the last 2 minutes of the tab for bug reports (instant replay)", replay.enabled(),
+    kit.add(box, kit.check("Keep the last 5 minutes of the tab for bug reports (instant replay)", replay.enabled(),
       proc (on: bool) = replay.setEnabled(on)))
   kit.add(box, kit.addClass(kit.addClass(help, "dim"), "small"))
   var d: kit.Dialog
@@ -367,12 +367,12 @@ proc newReport(t: Tab, video: bool): Report =
   result.captured.system.add result.sampler.sample
 
 proc addInternals(r: Report) =
-  ## The engine's log over the report's span (from its first page entry, at most 10 minutes back) and a last
+  ## The engine's log over the report's span (from its first page entry, at most 30 minutes back) and a last
   ## memory/CPU sample.
   var first = r.startedAt
   for list in [r.captured.console, r.captured.network, r.captured.actions]:
     for e in list: first = min(first, e{"t"}.getBiggestInt(first))
-  first = max(first - 2000, r.startedAt - 10 * 60_000)
+  first = max(first - 2000, r.startedAt - 30 * 60_000)
   if r.video: r.captured.system.add r.sampler.sample
   # The engine prints the page's console too ("(js error) ..."); keep only what the page capture missed (messages
   # from before it was in place, errors thrown from timers).
@@ -573,7 +573,7 @@ proc buildBar() =
 proc takeReplay() =
   let t = currentTab()
   if t == nil: return
-  showBar("Preparing the last 2 minutes…", false)
+  showBar("Preparing the replay…", false)
   replay.take(proc (path: string, startMs, endMs: int64, width, height: int, error: string) =
     hideBar()
     if error.len > 0:
@@ -592,13 +592,20 @@ proc takeReplay() =
     r.mediaType = "video/webm"
     (r.width, r.height) = (width, height)
     r.poster = screenshot(t).png
-    for e in recentNavigations:
-      if e{"t"}.getBiggestInt >= startMs: r.captured.navigations.add e
-    var samples: seq[JsonNode]
-    for e in recentSystem:
-      if e{"t"}.getBiggestInt >= startMs: samples.add e
-    r.captured.system = samples & r.captured.system
-    collect(r, t, proc () = (r.addInternals; showDetails(r))))
+    # Everything held goes along, not only the video's span: the navigations and memory/CPU of the last
+    # 30 minutes, and what every open tab's pages captured since they loaded.
+    for e in recentNavigations: r.captured.navigations.add e
+    r.captured.system = recentSystem & r.captured.system
+    collect(r, t, proc () =   # first, so its page info (viewport, user agent) is what the report keeps
+      var others: seq[Tab]
+      for o in tabs:
+        if o.view != nil and o != t: others.add o
+      var left = others.len
+      if left == 0: (r.addInternals; showDetails(r)); return
+      for o in others:   # all at once: a background tab may take until the 3 s timeout to answer
+        collect(r, o, proc () =
+          dec left
+          if left == 0: (r.addInternals; showDetails(r)))))
 
 proc reportBug() =
   if recording != nil:
@@ -634,11 +641,11 @@ proc install*() =
     discard every(10_000, proc () =
       if not replay.enabled(): return
       recentSystem.add recentSampler.sample
-      if recentSystem.len > 15: recentSystem.delete(0)
-      while recentNavigations.len > 0 and recentNavigations[0]{"t"}.getBiggestInt < nowMs() - 3 * 60_000:
+      if recentSystem.len > 180: recentSystem.delete(0)   # 30 minutes
+      while recentNavigations.len > 0 and recentNavigations[0]{"t"}.getBiggestInt < nowMs() - 30 * 60_000:
         recentNavigations.delete(0))
   proc remember(t: Tab, how: string) =
-    if t == nil or t.loading: return
+    if t == nil or t.loading or t.url.len == 0: return
     if recentNavigations.len > 0 and recentNavigations[^1]{"url"}.getStr == t.url and
         recentNavigations[^1]{"tab"}.getInt == tabId(t): return
     recentNavigations.add %*{"t": nowMs(), "kind": "navigation", "url": t.url, "title": t.title, "tab": tabId(t),
