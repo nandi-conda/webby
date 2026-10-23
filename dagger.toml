@@ -1,0 +1,12 @@
+[modules.webby-ci]
+source = "."
+main = true
+
+[modules.dagger-python-sdk]
+source = "github.com/dagger/python-sdk"
+
+[sdks.python]
+module = "dagger-python-sdk"
+
+[sdks.python.scopes."."]
+is-module = true

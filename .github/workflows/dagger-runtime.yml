@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DAGGER_VERSION: 0.21.11  # dagger.json's engineVersion
+  DAGGER_VERSION: 1.0.0-beta.20  # dagger-module.toml's engineVersion
   DAGGER_NO_NAG: "1"
 
 permissions:
@@ -43,7 +43,7 @@ jobs:
         env:
           POKE: ${{ inputs.poke }}
           DAGGER_CLOUD_TOKEN: ${{ inputs.cloud && 'oidc' || secrets.DAGGER_CLOUD_TOKEN }}
-          CLOUD: ${{ inputs.cloud && '--cloud' || '' }}
+          CLOUD: ${{ inputs.cloud && '--engine=cloud' || '' }}
         run: |
           start=$(date +%s)
           dagger call --progress=plain $CLOUD runtime --poke "$POKE" export --path out/webby-prebuilt-linux-x64.tar.zst \

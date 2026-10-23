@@ -1,6 +1,6 @@
 # webby's Dagger checks
 
-`dagger.json` (repo root) points here: a Python Dagger module whose `@check` functions are webby's fast checks.
+`dagger.toml` (the workspace) and `dagger-module.toml` (the module, both at the repo root) point here: a Python Dagger module whose `@check` functions are webby's fast checks.
 Each check runs in containers and gets only the files it reads, so a step whose inputs didn't change is a cache hit.
 
 | Check | What it does | Reruns when |
@@ -25,9 +25,9 @@ volumes, so a rebuild on the same engine only recompiles what changed:
 
 ## Day to day
 
-Needs Docker (or Podman) and the dagger CLI at the version in dagger.json:
+Needs Docker (or Podman) and the dagger CLI at the version in dagger-module.toml (Dagger 1.0):
 
-    curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=$HOME/.local/bin DAGGER_VERSION=0.21.11 sh
+    curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=$HOME/.local/bin DAGGER_VERSION=1.0.0-beta.20 sh
 
     dagger check                    # run every check
     dagger check -l                 # list them
@@ -42,6 +42,6 @@ Needs Docker (or Podman) and the dagger CLI at the version in dagger.json:
 
 `.github/workflows/dagger.yml` runs `dagger check` on every push. With the repo secret `DAGGER_CLOUD_TOKEN` (dagger.cloud,
 org Settings > Tokens) each run's trace is in Dagger Cloud. Org/repo variable `DAGGER_SCALE_OUT=true` runs the checks on
-a Dagger Cloud engine (`dagger check --cloud`, signed in with GitHub OIDC), whose cache carries over between runs: an
+a Dagger Cloud engine (`dagger check --engine=cloud`, signed in with GitHub OIDC), whose cache carries over between runs: an
 unchanged push is all CACHED in ~5 s. (`--scale-out`, a fresh engine per check, started cold every time.) Run the workflow by hand with "twice" ticked to see the
 second `dagger check` come from the cache.

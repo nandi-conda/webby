@@ -1,0 +1,6 @@
+name = "webby-ci"
+engineVersion = "v1.0.0-beta.20"
+source = ".dagger"
+
+[runtime]
+  source = "python"
