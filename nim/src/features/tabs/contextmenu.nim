@@ -23,7 +23,10 @@ proc actionScript(action: string, text = ""): string =
   "window.__webbyContextMenu && window.__webbyContextMenu.act(" & $(%action) & ", " &
     (if text.len > 0: $(%text) else: "null") & ");"
 
-proc inspectScript(): string = inspectWrapper.replace("$erudaSource", erudaSource)
+proc inspectScript(t: Tab, tool = "", select = false): string =
+  ## Opens the devtools (eruda) in `t`'s page. Placeholders go in before eruda's source, which may contain them.
+  inspectWrapper.replace("$tool", $(%tool)).replace("$select", $select)
+    .replace("$prefix", $(%t.messagePrefix)).replace("$erudaSource", erudaSource)
 
 proc webUrl(url: string): string =
   ## Only links the browser would follow; javascript: and the like are dropped.
@@ -277,7 +280,7 @@ proc showPageMenu*(t: Tab, info: JsonNode, x, y: float) =
     item("Select all", proc () = t.runJs(actionScript("selectAll")))
     item("Copy page address", proc () = copyText(t.url))
   group()
-  item("Inspect", proc () = t.runJs(inspectScript()))
+  item("Inspect", proc () = t.runJs(inspectScript(t, select = true)))
   kit.popupMenu(items, page, x, y)
 
 proc show(info: JsonNode) =
@@ -299,7 +302,24 @@ proc onPagePointer(t: Tab, e: kit.PointerEvent): bool =
     menuTab = t
     fallback = after(400, onFallback)
 
+proc onDevtools(t: Tab, msg: string) =
+  ## The page's devtools opened, closed or switched panel. t.props["devtools"] = the open panel while they are open.
+  let info = try: parseJson(msg) except CatchableError: nil
+  if info == nil: return
+  if not info{"open"}.getBool: t.props.del("devtools")
+  else:
+    let tool = info{"tool"}.getStr
+    t.props["devtools"] = if tool.len > 0: tool else: t.props.getOrDefault("devtools", "elements")
+
+proc reopenDevtools(t: Tab) =
+  # A reload or navigation replaced the page (and the devtools living in it): bring them back on the same panel.
+  if t.loading or not t.props.hasKey("devtools"): return
+  t.runJs(inspectScript(t, t.props["devtools"]))
+
 proc onMessage(t: Tab, msg: string): bool =
+  if msg.startsWith("{\"type\":\"devtools\""):
+    onDevtools(t, msg)
+    return true
   if not msg.startsWith("{\"type\":\"contextmenu\""): return false
   # Only right-clicks the user made here open a menu; a report without one is ignored.
   if menuTab != t: return true
@@ -314,5 +334,6 @@ proc onMessage(t: Tab, msg: string): bool =
 proc install*() =
   pageScriptHooks.add pageScript
   pageMessageHooks.add onMessage
+  navigationHooks.add reopenDevtools
   if pageContextMenuHook == nil: pageContextMenuHook = showPageMenu
   pagePointerHooks.add onPagePointer
