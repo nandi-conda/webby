@@ -399,11 +399,14 @@ proc install*() =
   tabMenuHooks.add fillTabMenu
   windowHooks.add proc () =
     loadCss("""
-button.webby-pinned-tab { padding: 4px 12px; border-radius: 8px; margin: 3px 1px; }
-button.webby-pinned-tab:hover { background-color: alpha(currentColor, 0.08); background-image: none;
-  border-color: transparent; }
+.webby-vertical-tabs button.webby-tab { border-radius: 6px; margin: 1px 4px; }
+button.webby-pinned-tab, .webby-vertical-tabs button.webby-pinned-tab { padding: 4px 12px; border-radius: 8px;
+  margin: 3px 1px; border: 1px solid transparent; background-image: none; box-shadow: none; outline: none; }
+button.webby-pinned-tab:hover { background-color: alpha(currentColor, 0.12); background-image: none;
+  border-color: transparent; box-shadow: none; }
 button.webby-pinned-tab.webby-active-tab { background-color: alpha(@theme_selected_bg_color, 0.22);
-  box-shadow: inset 0 -2px @theme_selected_bg_color; }
+  border-color: transparent; box-shadow: inset 0 -2px @theme_selected_bg_color; }
+button.webby-pinned-tab.webby-active-tab:hover { background-color: alpha(@theme_selected_bg_color, 0.32); }
 .webby-site-badge { min-width: 16px; min-height: 16px; border-radius: 4px; color: white; font-size: 10px;
   font-weight: bold; text-shadow: none; }
 .webby-badge-0 { background-color: #c5221f; } .webby-badge-1 { background-color: #b06000; }
@@ -411,7 +414,6 @@ button.webby-pinned-tab.webby-active-tab { background-color: alpha(@theme_select
 .webby-badge-4 { background-color: #8430ce; } .webby-badge-5 { background-color: #007b83; }
 .webby-badge-6 { background-color: #c2185b; } .webby-badge-7 { background-color: #5f6368; }
 .webby-vertical-tabs { border-right: 1px solid alpha(currentColor, 0.15); }
-.webby-vertical-tabs button.webby-tab { border-radius: 6px; margin: 1px 4px; }
 .webby-pinned-grid { margin: 2px 3px; }
 .webby-strip-space, .webby-strip-space:hover { background: none; box-shadow: none; border: none; }
 """)
