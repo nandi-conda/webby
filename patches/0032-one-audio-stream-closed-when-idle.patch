@@ -1,3 +1,95 @@
+diff --git a/Libraries/LibWeb/WebAudio/AudioContext.cpp b/Libraries/LibWeb/WebAudio/AudioContext.cpp
+index b1c63966..2f5eae51 100644
+--- a/Libraries/LibWeb/WebAudio/AudioContext.cpp
++++ b/Libraries/LibWeb/WebAudio/AudioContext.cpp
+@@ -86,15 +86,16 @@ WebIDL::ExceptionOr<GC::Ref<AudioContext>> AudioContext::create_for_constructor(
+         context->set_sample_rate(44100);
+ 
+     // 11. If context is allowed to start, send a control message to start processing.
+-    // FIXME: The context is currently always allowed to start; this should be gated on sticky activation.
++    // AD-HOC: As in other browsers, a context is allowed to start once its page has had a user activation. Pages
++    //         make contexts on load that never play (to fingerprint, or ahead of a click), and each running one held
++    //         an output stream on the sound server, rendering silence.
++    context->m_allowed_to_start = context->relevant_window().has_sticky_activation();
+     if (context->m_allowed_to_start) {
+         // FIXME: 1. Let document be the current settings object's relevant global object's associated Document.
+ 
+         // 2. Attempt to acquire system resources to use a following audio output device based on [[sink ID]] for
+         //    rendering.
+-        context->m_renderer = Rendering::RealtimeAudioRenderer::create(context->control_message_queue(), context->destination()->node_id(), context->sample_rate(), render_quantum_size());
+-        context->set_renderer_callbacks();
+-        context->m_renderer->start_rendering();
++        context->create_renderer();
+ 
+         // 2. Set this [[rendering thread state]] to running on the AudioContext.
+         context->set_rendering_state(AudioContextState::Running);
+@@ -191,11 +192,16 @@ WebIDL::ExceptionOr<void> AudioContext::resume(GC::Ref<WebIDL::Promise> promise)
+     // 4. Set [[suspended by user]] to true.
+     m_suspended_by_user = true;
+ 
++    // AD-HOC: A context that was not allowed to start is, once its page has had a user activation.
++    if (!m_allowed_to_start && relevant_window().has_sticky_activation())
++        m_allowed_to_start = true;
++
+     // 5. If the context is not allowed to start, append promise to [[pending promises]] and [[pending resume promises]] and abort these steps, returning promise.
+-    if (m_allowed_to_start) {
+-        m_pending_promises.append(promise);
+-        m_pending_resume_promises.append(promise);
+-    }
++    // NB: The promises are kept in both lists either way; the steps below settle them once the context starts.
++    m_pending_promises.append(promise);
++    m_pending_resume_promises.append(promise);
++    if (!m_allowed_to_start)
++        return {};
+ 
+     // 6. Set the [[control thread state]] on the AudioContext to running.
+     set_control_state(AudioContextState::Running);
+@@ -371,11 +377,23 @@ WebIDL::ExceptionOr<void> AudioContext::close(GC::Ref<WebIDL::Promise> promise)
+ 
+ bool AudioContext::start_rendering_audio_graph()
+ {
+-    if (m_renderer)
+-        m_renderer->resume();
++    // A context that was not allowed to start when it was made has no renderer yet.
++    if (!m_renderer) {
++        create_renderer();
++        return true;
++    }
++    m_renderer->resume();
+     return true;
+ }
+ 
++void AudioContext::create_renderer()
++{
++    VERIFY(!m_renderer);
++    m_renderer = Rendering::RealtimeAudioRenderer::create(control_message_queue(), destination()->node_id(), sample_rate(), render_quantum_size());
++    set_renderer_callbacks();
++    m_renderer->start_rendering();
++}
++
+ // The renderer's callback captures a GC root on this context, keeping it alive while it renders. That root is released
+ // by clearing the callbacks when the context is suspended, closed, or its document becomes inactive, so this is called
+ // again to re-establish it whenever rendering resumes.
+diff --git a/Libraries/LibWeb/WebAudio/AudioContext.h b/Libraries/LibWeb/WebAudio/AudioContext.h
+index 4eabc201..62365179 100644
+--- a/Libraries/LibWeb/WebAudio/AudioContext.h
++++ b/Libraries/LibWeb/WebAudio/AudioContext.h
+@@ -54,13 +54,14 @@ private:
+     double m_base_latency { 0 };
+     double m_output_latency { 0 };
+ 
+-    bool m_allowed_to_start = true;
++    bool m_allowed_to_start = false;
+     Vector<GC::Ref<WebIDL::Promise>> m_pending_resume_promises;
+     bool m_suspended_by_user = false;
+ 
+     RefPtr<Rendering::RealtimeAudioRenderer> m_renderer;
+ 
+     bool start_rendering_audio_graph();
++    void create_renderer();
+     void set_renderer_callbacks();
+ };
+ 
 diff --git a/Services/AudioServer/PlaybackStreamMixer.cpp b/Services/AudioServer/PlaybackStreamMixer.cpp
 index e02cb01e..6c5a63ae 100644
 --- a/Services/AudioServer/PlaybackStreamMixer.cpp
