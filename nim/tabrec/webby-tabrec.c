@@ -52,15 +52,53 @@ static void wait_done(GstElement *p) {
   gst_object_unref(bus);
 }
 
+// The muxer, with a nominal frame rate set on its input. Frames come only when the page changes, so the encoder's
+// caps say framerate=0/1 and webmmux then writes no DefaultDuration for the track; Ladybird can't seek a WebM
+// without one (it shows nothing after a seek), while Chrome and Firefox don't mind. Block timestamps still carry the
+// real timing. capssetter is in gst-plugins-good's debug plugin; without it the file just stays as before.
+static const char *mux_caps(int fps) {
+  static char buf[128];
+  GstElementFactory *f = gst_element_factory_find("capssetter");
+  if (!f) return "webmmux";
+  gst_object_unref(f);
+  snprintf(buf, sizeof buf, "capssetter caps=\"video/x-vp8,framerate=%d/1\" ! webmmux", fps);
+  return buf;
+}
+
+// Frames reach the muxer without durations, so it writes SimpleBlocks (with their keyframe flag). With a duration
+// that differs from the nominal one it writes BlockGroups instead, which mark only keyframes by what they lack
+// (a ReferenceBlock, which webmmux never writes), and Ladybird then takes every frame for a keyframe and seeks to
+// a frame it can't decode on its own. Gap events (stretches with no frames, where the page didn't change) and
+// empty buffers would become empty BlockGroups, which Ladybird takes for keyframes too, so they are dropped.
+static GstPadProbeReturn drop_duration(GstPad *pad, GstPadProbeInfo *info, gpointer data) {
+  if (info->type & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM)
+    return GST_EVENT_TYPE(GST_PAD_PROBE_INFO_EVENT(info)) == GST_EVENT_GAP ? GST_PAD_PROBE_DROP : GST_PAD_PROBE_OK;
+  if (gst_buffer_get_size(GST_PAD_PROBE_INFO_BUFFER(info)) == 0) return GST_PAD_PROBE_DROP;
+  GstBuffer *buf = gst_buffer_make_writable(GST_PAD_PROBE_INFO_BUFFER(info));
+  GST_BUFFER_DURATION(buf) = GST_CLOCK_TIME_NONE;
+  GST_PAD_PROBE_INFO_DATA(info) = buf;
+  return GST_PAD_PROBE_OK;
+}
+
+static void plain_blocks(GstElement *pipeline) {
+  GstElement *enc = gst_bin_get_by_name(GST_BIN(pipeline), "enc");
+  GstPad *pad = gst_element_get_static_pad(enc, "src");
+  gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, drop_duration, NULL, NULL);
+  gst_object_unref(pad);
+  gst_object_unref(enc);
+}
+
 static int join(int count, char **inputs, const char *out, int width, int height) {
   // Decoded and encoded again: pieces made at different window sizes come out at one size, and concat keeps the
   // timestamps running on from piece to piece. Every piece is converted to one fixed format (colorimetry and chroma
   // siting too: GStreamer picks bt709 for taller frames and bt601 for shorter ones) before concat, so the encoder
   // and muxer never see caps change mid-stream, which Matroska can't take ("Could not multiplex stream").
+  // A keyframe every 6 frames (replay frames come at most 3 a second): a seek decodes on from the keyframe before
+  // it, so that keeps scrubbing quick.
   GString *desc = g_string_new("");
   g_string_append_printf(desc,
-    "concat name=c ! vp8enc deadline=1 cpu-used=8 end-usage=vbr target-bitrate=2000000 keyframe-max-dist=150 "
-    "threads=4 ! webmmux ! filesink name=sink");
+    "concat name=c ! vp8enc name=enc deadline=1 cpu-used=8 end-usage=vbr target-bitrate=2000000 keyframe-max-dist=6 "
+    "threads=4 ! %s ! filesink name=sink", mux_caps(3));
   for (int i = 0; i < count; i++) {
     char *quoted = g_strescape(inputs[i], NULL);
     g_string_append_printf(desc, "  filesrc location=\"%s\" ! matroskademux ! vp8dec ! videoscale ! "
@@ -73,6 +111,7 @@ static int join(int count, char **inputs, const char *out, int width, int height
   GstElement *p = gst_parse_launch(desc->str, &err);
   g_string_free(desc, TRUE);
   if (!p) fail(err ? err->message : "could not join");
+  plain_blocks(p);
   GstElement *sink = gst_bin_get_by_name(GST_BIN(p), "sink");
   g_object_set(sink, "location", out, NULL);
   gst_object_unref(sink);
@@ -101,18 +140,20 @@ int main(int argc, char **argv) {
   }
   out_w &= ~1;
   out_h &= ~1;
+  // A keyframe every 30 frames (2 s at the full 15 a second) keeps the recording quick to scrub.
   char *desc = g_strdup_printf(
     "appsrc name=src format=time is-live=false do-timestamp=false block=true max-bytes=%d "
     "caps=video/x-raw,format=BGRA,width=%d,height=%d,framerate=0/1 ! "
     "videoscale method=bilinear ! video/x-raw,width=%d,height=%d,pixel-aspect-ratio=1/1 ! videoconvert ! "
     "video/x-raw,format=I420,colorimetry=bt601,chroma-site=jpeg ! "
-    "vp8enc deadline=1 cpu-used=8 end-usage=vbr target-bitrate=2500000 keyframe-max-dist=150 threads=4 ! "
-    "webmmux ! filesink name=sink",
-    width * height * 4 * 4, width, height, out_w, out_h);
+    "vp8enc name=enc deadline=1 cpu-used=8 end-usage=vbr target-bitrate=2500000 keyframe-max-dist=30 threads=4 ! "
+    "%s ! filesink name=sink",
+    width * height * 4 * 4, width, height, out_w, out_h, mux_caps(15));
   GError *err = NULL;
   pipeline = gst_parse_launch(desc, &err);
   g_free(desc);
   if (!pipeline) fail(err ? err->message : "could not make the encoder");
+  plain_blocks(pipeline);
   appsrc = gst_bin_get_by_name(GST_BIN(pipeline), "src");
   GstElement *sink = gst_bin_get_by_name(GST_BIN(pipeline), "sink");
   g_object_set(sink, "location", argv[3], NULL);
