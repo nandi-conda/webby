@@ -149,8 +149,7 @@ type
     barGrab: float                ## where in the thumb it was grabbed, in pixels from its start
     textReaders: seq[TextReader]  ## Summarize waiting for the document's text
     jumpWords: string             ## a summary source link to show once every page's text is here
-    flash: seq[Match]             ## the words a source link pointed at, highlighted for a moment
-    flashGen: int
+    flash: seq[Match]             ## the words a source link pointed at, highlighted until the next one
     lastJump: tuple[words: string, at: float]  ## Summarize asks again after a page loads; once is enough
 
   TextReader = tuple[id: int, wholePage: bool, done: proc (ok: bool, text: string, selection: bool)]
@@ -1144,7 +1143,7 @@ proc docWords(d: Doc): seq[tuple[w: string, page, first, last: int]] =
     if cur.len > 0: result.add (cur, i, first, last)
 
 proc showWords(d: Doc, words: seq[tuple[w: string, page, first, last: int]], a, b: int) =
-  ## Scrolls words a .. b to a third of the way down and highlights them for a moment.
+  ## Scrolls words a .. b to a third of the way down and highlights them until the next source link.
   d.flash.setLen 0
   let pa = words[a].page
   let pb = words[b].page
@@ -1158,12 +1157,6 @@ proc showWords(d: Doc, words: seq[tuple[w: string, page, first, last: int]], a, 
   let sx = if d.totalWidth > vw.float and (x < d.scrollX or x > d.scrollX + vw.float * 0.9): x - vw.float / 3
            else: -1.0
   d.scrollTo(d.tops[pa] + c.y0 * s - vh.float / 3, sx)
-  inc d.flashGen
-  let gen = d.flashGen
-  discard after(1800, proc () =
-    if d.flashGen == gen and d.flash.len > 0:
-      d.flash.setLen 0
-      invalidate(d))
 
 proc jumpNow(d: Doc, quote: string) =
   ## As scripts/jump_to_text.js does on web pages: the quote's words in order, else the longest run of them, else
