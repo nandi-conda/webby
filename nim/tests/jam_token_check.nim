@@ -50,6 +50,26 @@ for (label, extra) in [("bulkRegisterMedia", newSeq[(string, string)]()), ("bulk
       request("POST", "https://graphql.jam.dev/graphql?op=bulkRegisterMedia", proc (r: Response) = (show(label, r); next()),
         @[auth, ("Content-Type", "application/json")] & extra, register())
 
+# What GCS says to an empty file's upload ("bytes 0--1/0", as webby sent before it refused empty files).
+steps.add proc (next: proc ()) =
+  let body = $(%*{"operationName": "bulkRegisterMedia", "variables": {"teamId": teamId, "items": [{"key": "0",
+    "type": "Screenshot", "contentType": "image/png", "uncompressedBytes": 0, "chunked": true}]},
+    "query": "mutation bulkRegisterMedia($teamId: String!, $items: [MediaRegistrationItemInput!]!) { bulkRegisterMedia(teamId: $teamId, items: $items) { items { key uploadUrl extraHeaders { name value } } } }"})
+  request("POST", "https://graphql.jam.dev/graphql?op=bulkRegisterMedia", proc (r: Response) =
+    let items = try: parseJson(r.body){"data"}{"bulkRegisterMedia"}{"items"} except CatchableError: nil
+    if items == nil or items.len == 0:
+      show("register empty file", r)
+      next()
+      return
+    let item = items[0]
+    var headers: seq[(string, string)]
+    for h in item{"extraHeaders"}.getElems: headers.add (h{"name"}.getStr, h{"value"}.getStr)
+    headers.add ("Content-Type", "image/png")
+    headers.add ("Content-Range", "bytes 0--1/0")
+    request("PUT", item{"uploadUrl"}.getStr, proc (r: Response) = (show("PUT empty file, bytes 0--1/0", r); next()),
+      headers, ""),
+    @[auth, ("Content-Type", "application/json")] & clientHeaders, body)
+
 proc run(i: int) =
   if i == steps.len: g_main_loop_quit(loop)
   else: steps[i](proc () = run(i + 1))

@@ -275,12 +275,22 @@ proc description(r: Report): string =
 proc showBar(text: string, recordingControls: bool)
 proc hideBar()
 
+proc blankPng(): string =
+  ## A poster for a video whose tab had no frame to show when it was taken (Jam wants one).
+  var pixels = newString(16 * 16 * 4)
+  for i in countup(0, pixels.high, 4): pixels[i .. i + 3] = "\xf0\xf0\xf0\xff"
+  encodePng(addr pixels[0], 16, 16, 16 * 4)
+
 proc uploadReport(r: Report) =
   if token().len == 0:
     showJamSettings(proc () = uploadReport(r))
     return
   try: discard save(r)
   except CatchableError as e: kit.toast("Couldn't save the report: " & e.msg)
+  if r.media.len == 0:
+    kit.alert("Nothing to upload", "The report's " & (if r.video: "video" else: "screenshot") & " is empty.")
+    return
+  if r.video and r.poster.len == 0: r.poster = blankPng()
   let b = buildInfo()
   var u = Upload(token: token(), video: r.video, media: r.media,
     mediaType: (if r.video: "video/webm" else: "image/png"), poster: r.poster, title: r.title,
@@ -589,6 +599,9 @@ proc takeReplay() =
       removeFile(path)
     except CatchableError as e:
       kit.alert("No replay", e.msg)
+      return
+    if r.media.len == 0:
+      kit.alert("No replay", "Joining the replay made an empty video")
       return
     r.mediaType = "video/webm"
     (r.width, r.height) = (width, height)

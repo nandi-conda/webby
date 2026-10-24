@@ -87,7 +87,9 @@ proc putChunks(url: string, extra: seq[(string, string)], data, contentType: str
   let last = min(offset + chunkBytes, data.len)
   var headers = extra
   headers.add ("Content-Type", contentType)
-  headers.add ("Content-Range", "bytes " & $offset & "-" & $(last - 1) & "/" & $data.len)
+  # "bytes a-b/total"; with nothing left to send (GCS still answered 308), "bytes */total" asks it to finish.
+  headers.add ("Content-Range", if offset >= data.len: "bytes */" & $data.len
+                                else: "bytes " & $offset & "-" & $(last - 1) & "/" & $data.len)
   request("PUT", url, proc (r: Response) =
     if r.status == 0: done("Upload failed: " & r.error)
     elif r.status in [200, 201]: done("")
@@ -99,7 +101,7 @@ proc putChunks(url: string, extra: seq[(string, string)], data, contentType: str
         try: next = parseInt(range.split('-')[^1]) + 1 except ValueError: next = last
       if next <= offset: done("Upload stalled at " & $offset & " of " & $data.len & " bytes")
       else: putChunks(url, extra, data, contentType, next, done)
-    else: done("Upload failed (HTTP " & $r.status & "): " & r.body[0 ..< min(r.body.len, 200)]),
+    else: done("Upload failed (HTTP " & $r.status & ", " & headers[^1][1] & "): " & r.body[0 ..< min(r.body.len, 200)]),
     headers = headers, body = data[offset ..< last])
 
 const registerQuery = """
@@ -197,7 +199,11 @@ proc upload*(u: Upload, progress: proc (text: string), done: Done) =
     let hasEvents = u.events != nil and u.events.len > 0
     if hasEvents: files.add (kind: "Events", contentType: "application/json", data: $u.events)
     var size = 0
-    for f in files: size += f.data.len
+    for f in files:
+      if f.data.len == 0:   # GCS can't take an empty upload ("bytes 0--1/0" is no Content-Range)
+        done(false, "", "The report's " & f.kind.toLowerAscii & " (" & f.contentType & ") is empty")
+        return
+      size += f.data.len
     progress("Uploading " & formatSize(size, includeSpace = true) & "…")
     uploadMedia(u.token, teamId, files, proc (ids: seq[string], error: string) =
       if error.len > 0: done(false, "", error); return
