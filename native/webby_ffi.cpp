@@ -388,6 +388,15 @@ void webby_clipboard_set_text(char const* text)
         s_application->set_clipboard_from_system(string.release_value());
 }
 
+void webby_clipboard_set_image(char const* mime, uint8_t const* data, size_t size)
+{
+    if (!s_application || !data)
+        return;
+    auto name = String::from_utf8(StringView { mime, strlen(mime) });
+    if (!name.is_error())
+        s_application->set_clipboard_image_from_system(name.release_value(), ByteString { ReadonlyBytes { data, size } });
+}
+
 char const* webby_view_dialog(WebbyView* handle) { return handle->view->dialog().characters(); }
 
 void webby_view_dialog_respond(WebbyView* handle, uint64_t id, int accepted, char const* text)

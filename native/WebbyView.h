@@ -40,6 +40,7 @@ public:
     // paste. See webby_clipboard_*() in webby_ffi.h.
     virtual void insert_clipboard_item(Web::Clipboard::SystemClipboardItem) override;
     void set_clipboard_from_system(String);
+    void set_clipboard_image_from_system(String mime_type, ByteString data);
     u64 clipboard_serial() const { return m_clipboard_serial; }
 
     // A site's cookies and stored data (see webby_clear_site_data() in webby_ffi.h).

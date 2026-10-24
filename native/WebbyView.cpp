@@ -57,6 +57,12 @@ void Application::set_clipboard_from_system(String text)
     WebView::Application::set_clipboard_text(move(text));
 }
 
+void Application::set_clipboard_image_from_system(String mime_type, ByteString data)
+{
+    // Like set_clipboard_from_system(): not a page's copy, so the serial stays and the UI doesn't copy it back out.
+    WebView::Application::insert_clipboard_item({ { { move(mime_type), move(data) } } });
+}
+
 // Whether a cookie for `domain` belongs to the site of `host`: the host itself, its parent domains (cookies such as
 // ".google.com" that maps.google.com uses) and its subdomains.
 static bool cookie_domain_matches(StringView domain, StringView host)

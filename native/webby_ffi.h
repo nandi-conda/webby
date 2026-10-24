@@ -13,6 +13,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -203,10 +204,15 @@ WEBBY_API void webby_clear_browsing_data(int64_t since_ms, int what);
  * changes whenever a page copies; the UI then puts webby_clipboard_text()
  * (UTF-8, valid until the next call) on the system clipboard. Before a paste the
  * UI hands the system clipboard's text to webby_clipboard_set_text(), which
- * doesn't change the serial. */
+ * doesn't change the serial. When the system clipboard holds an image and no
+ * text (a screenshot, "Copy image"), the UI hands it in encoded as `mime`
+ * (image/png, the only image type pages get from a paste or
+ * navigator.clipboard) with webby_clipboard_set_image() instead; the paste
+ * event then carries it in clipboardData.files / items. */
 WEBBY_API uint64_t webby_clipboard_serial(void);
 WEBBY_API char const* webby_clipboard_text(void);
 WEBBY_API void webby_clipboard_set_text(char const* text);
+WEBBY_API void webby_clipboard_set_image(char const* mime, uint8_t const* data, size_t size);
 
 /* Downloads. Ladybird saves what pages download (Content-Disposition:
  * attachment, <a download>, types it can't show, blob: URLs) into

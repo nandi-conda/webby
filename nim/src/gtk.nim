@@ -310,6 +310,11 @@ proc g_object_set*(o: pointer, first: cstring) {.varargs.}
 proc gtk_clipboard_get*(selection: pointer): pointer
 proc gtk_clipboard_set_text*(cb: pointer, text: cstring, len: cint)
 proc gtk_clipboard_wait_for_text*(cb: pointer): cstring
+proc gtk_clipboard_request_contents*(cb, target: pointer, callback, data: pointer)  # (cb, GtkSelectionData*, data)
+proc gtk_clipboard_request_image*(cb: pointer, callback, data: pointer)            # (cb, GdkPixbuf* or nil, data)
+proc gtk_selection_data_get_data*(sd: pointer): pointer
+proc gtk_selection_data_get_length*(sd: pointer): cint
+proc gdk_pixbuf_save_to_buffer*(pb: pointer, buf: ptr pointer, size: ptr csize_t, kind: cstring, err: pointer): gboolean {.varargs.}  # g_free buf
 proc gdk_atom_intern*(name: cstring, onlyIfExists: gboolean): pointer
 proc gdk_window_set_cursor*(w, cursor: pointer)
 proc gdk_cursor_new_from_name*(display: pointer, name: cstring): pointer
