@@ -82,6 +82,7 @@ var
   webby_set_offline*: proc (offline: cint) {.cdecl, gcsafe.}
   # Optional (nil with a runtime older than 2026.10.14.2): native find in page.
   webby_set_content_blocking*: proc (on: cint) {.cdecl, gcsafe.}  ## optional: runtimes since 2026.10.15
+  webby_wake_fd*: proc (): cint {.cdecl, gcsafe.}  ## optional: runtimes since 2026.10.24.4
   webby_view_find*: proc (v: View, query: cstring, caseSensitive: cint) {.cdecl, gcsafe.}
   webby_view_find_next*: proc (v: View) {.cdecl, gcsafe.}
   webby_view_find_previous*: proc (v: View) {.cdecl, gcsafe.}
@@ -179,6 +180,7 @@ proc loadWebbyLib*(path: string) =
   optional webby_view_find_current
   optional webby_view_find_total
   optional webby_set_content_blocking
+  optional webby_wake_fd
   optional webby_downloads_set_directory
   optional webby_downloads_serial
   optional webby_downloads_json

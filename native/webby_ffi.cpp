@@ -11,6 +11,7 @@
 #include <AK/Utf16String.h>
 #include <AK/Vector.h>
 #include <LibCore/EventLoop.h>
+#include <LibCore/EventLoopImplementationUnix.h>
 #include <LibGfx/SystemTheme.h>
 #include <LibMain/Main.h>
 #include <LibWebCommon/CSS/PreferredColorScheme.h>
@@ -25,8 +26,14 @@
 #include <WebbyView.h>
 #include <webby_ffi.h>
 
+#include <condition_variable>
 #include <errno.h>
+#include <fcntl.h>
+#include <mutex>
+#include <poll.h>
 #include <stdlib.h>
+#include <sys/eventfd.h>
+#include <thread>
 #include <unistd.h>
 
 struct WebbyView {
@@ -106,11 +113,107 @@ int webby_init(char const* prefix)
     return 0;
 }
 
+// webby_wake_fd(): the front end pumps from a timer, so a page waiting on a synchronous request to the UI process
+// (localStorage, document.cookie = ...) used to wait for the next tick, 4-100 ms, for every single call. A watcher
+// thread polls what the UI event loop would wait on (patches/0030) and signals an eventfd the front end watches.
+namespace {
+
+struct Waker {
+    int event_fd { -1 };
+    int control_pipe[2] { -1, -1 }; // a new wait set interrupts the watcher's poll
+    std::mutex mutex;
+    std::condition_variable armed_changed;
+    bool armed { false };
+    u64 generation { 0 };
+    Vector<int> fds;
+    int timeout_ms { -1 };
+};
+
+Waker* s_waker;
+
+void watch_for_work(Waker& waker)
+{
+    Vector<pollfd> poll_fds;
+    for (;;) {
+        u64 generation;
+        int timeout_ms;
+        {
+            std::unique_lock lock(waker.mutex);
+            waker.armed_changed.wait(lock, [&] { return waker.armed; });
+            generation = waker.generation;
+            timeout_ms = waker.timeout_ms;
+            poll_fds.clear_with_capacity();
+            poll_fds.append({ .fd = waker.control_pipe[0], .events = POLLIN, .revents = 0 });
+            for (int fd : waker.fds)
+                poll_fds.append({ .fd = fd, .events = POLLIN, .revents = 0 });
+        }
+        int marked = ::poll(poll_fds.data(), poll_fds.size(), timeout_ms);
+        if (marked < 0 && errno != EINTR)
+            marked = 1; // a closed fd, say: let the pump sort it out, it re-arms with the current set
+        if (marked < 0)
+            continue;
+        if (poll_fds[0].revents & POLLIN) {
+            char buf[64];
+            while (::read(waker.control_pipe[0], buf, sizeof(buf)) > 0) { }
+            continue; // re-armed with a newer set
+        }
+        std::lock_guard lock(waker.mutex);
+        if (!waker.armed || waker.generation != generation)
+            continue;
+        waker.armed = false;
+        u64 one = 1;
+        (void)!::write(waker.event_fd, &one, sizeof(one));
+    }
+}
+
+void arm_waker()
+{
+    auto& waker = *s_waker;
+    Vector<int> fds;
+    int timeout_ms = Core::EventLoopManagerUnix::current_thread_wait_set(fds);
+    {
+        std::lock_guard lock(waker.mutex);
+        waker.fds = move(fds);
+        waker.timeout_ms = timeout_ms;
+        waker.armed = true;
+        ++waker.generation;
+    }
+    waker.armed_changed.notify_one();
+    char byte = 0;
+    (void)!::write(waker.control_pipe[1], &byte, 1);
+}
+
+}
+
 int webby_pump(void)
 {
     if (!s_application)
         return 0;
-    return static_cast<int>(Core::EventLoop::current().pump(Core::EventLoop::WaitMode::PollForEvents));
+    auto events = static_cast<int>(Core::EventLoop::current().pump(Core::EventLoop::WaitMode::PollForEvents));
+    if (s_waker)
+        arm_waker();
+    return events;
+}
+
+int webby_wake_fd(void)
+{
+    if (!s_application)
+        return -1;
+    if (s_waker)
+        return s_waker->event_fd;
+    auto* waker = new Waker;
+    waker->event_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (waker->event_fd < 0 || pipe2(waker->control_pipe, O_CLOEXEC | O_NONBLOCK) < 0) {
+        if (waker->event_fd >= 0)
+            close(waker->event_fd);
+        delete waker;
+        return -1;
+    }
+    // Deliberately leaked, like s_application: the thread runs until the process exits.
+    s_waker = waker;
+    std::thread([waker] { watch_for_work(*waker); }).detach();
+    arm_waker();
+    return waker->event_fd;
 }
 
 WebbyView* webby_view_create(int width, int height, double device_pixel_ratio)

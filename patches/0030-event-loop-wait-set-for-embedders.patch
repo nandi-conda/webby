@@ -1,0 +1,60 @@
+diff --git a/Libraries/LibCore/EventLoopImplementationUnix.cpp b/Libraries/LibCore/EventLoopImplementationUnix.cpp
+index c22ee79d7d..c14f4ab103 100644
+--- a/Libraries/LibCore/EventLoopImplementationUnix.cpp
++++ b/Libraries/LibCore/EventLoopImplementationUnix.cpp
+@@ -591,6 +591,30 @@ void EventLoopManagerUnix::unregister_timer(intptr_t timer_id)
+     }
+ }
+ 
++int EventLoopManagerUnix::current_thread_wait_set(Vector<int>& read_fds)
++{
++    auto& thread_data = ThreadData::the();
++    MutexLocker locker(thread_data.mutex);
++
++    read_fds.clear_with_capacity();
++    for (auto const& poll_fd : thread_data.poll_fds) {
++        if (poll_fd.events & POLLIN)
++            read_fds.append(poll_fd.fd);
++    }
++
++    if (ThreadEventQueue::current().has_pending_events())
++        return 0;
++    auto now = MonotonicTime::now();
++    thread_data.timeouts.absolutize_relative_timeouts(now);
++    auto next_timer_expiration = thread_data.timeouts.next_timer_expiration();
++    if (!next_timer_expiration.has_value())
++        return -1;
++    auto timeout = next_timer_expiration.value() - now;
++    if (timeout.is_negative())
++        return 0;
++    return static_cast<int>(min<i64>(AK::NumericLimits<i32>::max(), timeout.to_ceiled_milliseconds()));
++}
++
+ void EventLoopManagerUnix::register_notifier(Notifier& notifier)
+ {
+     auto& thread_data = ThreadData::the();
+diff --git a/Libraries/LibCore/EventLoopImplementationUnix.h b/Libraries/LibCore/EventLoopImplementationUnix.h
+index 9c787dc75b..6af39ae1db 100644
+--- a/Libraries/LibCore/EventLoopImplementationUnix.h
++++ b/Libraries/LibCore/EventLoopImplementationUnix.h
+@@ -8,6 +8,7 @@
+ 
+ #include <AK/NonnullOwnPtr.h>
+ #include <AK/Time.h>
++#include <AK/Vector.h>
+ #include <AK/kmalloc.h>
+ #include <LibCore/EventLoopImplementation.h>
+ 
+@@ -35,6 +36,12 @@ public:
+     void wait_for_events(EventLoopImplementation::PumpMode);
+     static Optional<MonotonicTime> get_next_timer_expiration();
+ 
++    // What this thread's event loop would wait for: fills read_fds with the file descriptors it waits on to read (its
++    // wake pipe and read notifiers) and returns how long until its next timer in ms (0 with events already queued, -1
++    // with no timers). An embedder that drives the loop with pump(PollForEvents) from its own main loop polls these
++    // on another thread to know when to pump.
++    static int current_thread_wait_set(Vector<int>& read_fds);
++
+ private:
+     void dispatch_signal(int signal_number);
+     void dispatch_pending_signals();
