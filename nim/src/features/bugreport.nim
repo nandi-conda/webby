@@ -227,8 +227,7 @@ proc showDetails(r: Report) =
   ## The report is saved as soon as it's taken, with its folder's path on the clipboard; no dialog.
   r.title = "Bug on " & (if host(r.url).len > 0: host(r.url) else: r.pageTitle)
   let folder = writeReport(r)
-  if folder.len > 0: kit.toast("Bug report saved, path copied: " &
-    folder.replace(getHomeDir().strip(leading = false, chars = {'/'}), "~"))
+  if folder.len > 0: kit.toast("Path copied")
 
 proc webbyState(): JsonNode =
   ## Webby itself when the report begins: build, settings and tabs (addresses scrubbed like the engine log).
