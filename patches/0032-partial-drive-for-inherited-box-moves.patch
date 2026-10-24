@@ -1,0 +1,49 @@
+diff --git a/Libraries/LibWeb/Rust/src/css/style/publication.rs b/Libraries/LibWeb/Rust/src/css/style/publication.rs
+index d1fe5afa..0fd547ea 100644
+--- a/Libraries/LibWeb/Rust/src/css/style/publication.rs
++++ b/Libraries/LibWeb/Rust/src/css/style/publication.rs
+@@ -761,10 +761,18 @@ impl RetainedState {
+         if goal == FontDriveGoal::RootInputs && delta.is_empty() && !flips_are_reflected {
+             return Ok(ElementAnswer::RootInputs(None));
+         }
+-        let inherited_text_moved = parent_inputs_moved.inherited_style
+-            && parent_inputs_moved.inherited_style_groups
+-                == 1 << crate::css::computed_value_types::STYLE_GROUP_INDEX_INHERITED_TEXT;
+-        let inherited_text_can_be_partial = inherited_text_moved
++        // A parent that moved only its inherited text or inherited box values (color, visibility and the like) moves
++        // those groups of the child alone, so the child's drive selects them and leaves the rest of its record
++        // standing. A moved direction or writing mode reaches further, and its reaction drives the child in full.
++        let partially_drivable_inherited_groups = (1 << crate::css::computed_value_types::STYLE_GROUP_INDEX_INHERITED_TEXT)
++            | (1 << crate::css::computed_value_types::STYLE_GROUP_INDEX_INHERITED_BOX);
++        let moved_inherited_groups = u32::from(parent_inputs_moved.inherited_style_groups);
++        let inherited_groups_moved = parent_inputs_moved.inherited_style
++            && moved_inherited_groups != 0
++            && moved_inherited_groups & !partially_drivable_inherited_groups == 0;
++        let inherited_text_moved = inherited_groups_moved
++            && moved_inherited_groups & (1 << crate::css::computed_value_types::STYLE_GROUP_INDEX_INHERITED_TEXT) != 0;
++        let inherited_text_can_be_partial = inherited_groups_moved
+             && !parent_inputs_moved.display
+             && !root_inputs_moved
+             && !drive_in_full
+@@ -959,10 +967,10 @@ impl RetainedState {
+         if inherited_text_can_be_partial {
+             // NB: Group members are validated while selecting them, after cohort lookup, so
+             //     siblings reusing the same result do not repeat the phase checks.
+-            groups_to_rebuild |= 1 << crate::css::computed_value_types::STYLE_GROUP_INDEX_INHERITED_TEXT;
++            groups_to_rebuild |= moved_inherited_groups;
+             for property in FIRST_LONGHAND_PROPERTY_ID..=crate::css::property_metadata::LAST_LONGHAND_PROPERTY_ID {
+                 if crate::css::property_metadata::property_style_group_index(property)
+-                    == Some(crate::css::computed_value_types::STYLE_GROUP_INDEX_INHERITED_TEXT as u8)
++                    .is_some_and(|group| moved_inherited_groups & (1 << group) != 0)
+                 {
+                     inherited_text_needs_full_drive |= !property_computes_in_remaining_phase(property);
+                     select(property);
+@@ -1001,7 +1009,7 @@ impl RetainedState {
+         if delta
+             .properties()
+             .contains(&crate::css::property_metadata::property_id::COLOR)
+-            || inherited_text_can_be_partial
++            || (inherited_text_can_be_partial && inherited_text_moved)
+         {
+             // A record holding no table cannot say which values read currentcolor: it is driven
+             // in full, as a partial drive of it is.

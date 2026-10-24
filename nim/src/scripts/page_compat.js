@@ -163,6 +163,35 @@
     }
   }
 
+  // virtua, the list virtualizer behind Colibri's chat and member lists (and many React, Vue, Solid and Svelte apps),
+  // gives its list container pointer-events: none while the list scrolls and takes it off when scrolling stops, to save
+  // hover work. pointer-events is inherited, so in Ladybird each toggle restyles every row of the list: 250-350 ms on a
+  // Colibri channel, several times while a space opens (the list scrolls itself to the newest message) and twice per
+  // scroll gesture. The container is the element whose inline style has virtua's contain: size style; it never gets
+  // the 'none', which only changes what the pointer hovers mid-scroll.
+  if (typeof CSSStyleDeclaration !== 'undefined') {
+    const proto = CSSStyleDeclaration.prototype;
+    const getPropertyValue = proto.getPropertyValue, setProperty = proto.setProperty;
+    const isVirtuaContainer = (style) => getPropertyValue.call(style, 'contain') === 'size style';
+    proto.setProperty = function (name, value) {
+      if (name === 'pointer-events' && String(value) === 'none' && isVirtuaContainer(this)) return;
+      return setProperty.apply(this, arguments);
+    };
+    let owner = Object.getPrototypeOf(document.documentElement.style), accessor;
+    while (owner && !(accessor = Object.getOwnPropertyDescriptor(owner, 'pointerEvents'))) owner = Object.getPrototypeOf(owner);
+    if (accessor && accessor.set && accessor.configurable) {
+      Object.defineProperty(owner, 'pointerEvents', {
+        configurable: true,
+        enumerable: accessor.enumerable,
+        get: accessor.get,
+        set(value) {
+          if (String(value) === 'none' && isVirtuaContainer(this)) return;
+          accessor.set.call(this, value);
+        },
+      });
+    }
+  }
+
   // The same menus lock the page's scrolling with react-remove-scroll, which blocks wheel and touch scrolling itself
   // and also sets body[data-scroll-locked], a style that gives body overflow: hidden. Body's overflow is the
   // viewport's, so Ladybird lays the whole page out again for it (1.2 s on that feed) and again when the menu closes.
