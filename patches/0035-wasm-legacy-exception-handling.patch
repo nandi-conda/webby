@@ -1,0 +1,658 @@
+diff --git a/Libraries/LibWasm/Parser/Parser.cpp b/Libraries/LibWasm/Parser/Parser.cpp
+index b9e4bb7a..8454166a 100644
+--- a/Libraries/LibWasm/Parser/Parser.cpp
++++ b/Libraries/LibWasm/Parser/Parser.cpp
+@@ -9,8 +9,10 @@
+ #include <AK/Debug.h>
+ #include <AK/Endian.h>
+ #include <AK/Enumerate.h>
++#include <AK/HashMap.h>
+ #include <AK/LEB128.h>
+ #include <AK/MemoryStream.h>
++#include <AK/ScopeGuard.h>
+ #include <AK/ScopeLogger.h>
+ #include <AK/UFixedBigInt.h>
+ #include <LibWasm/Types.h>
+@@ -421,12 +423,16 @@ ParseResult<Catch> Catch::parse(ConstrainedStream& stream)
+ 
+ ParseResult<Instruction> Instruction::parse(ConstrainedStream& stream)
+ {
+-    ScopeLogger<WASM_BINPARSER_DEBUG> logger("Instruction"sv);
+     u8 byte;
+     if (auto result = stream.read_some({ &byte, 1 }); result.is_error() || result.value().size() != 1)
+         return ParseError::ExpectedKindTag;
+ 
+-    OpCode opcode { byte };
++    return parse(stream, OpCode { byte });
++}
++
++ParseResult<Instruction> Instruction::parse(ConstrainedStream& stream, OpCode opcode)
++{
++    ScopeLogger<WASM_BINPARSER_DEBUG> logger("Instruction"sv);
+ 
+     switch (opcode.value()) {
+     case Instructions::block.value():
+@@ -1701,11 +1707,578 @@ ParseResult<Locals> Locals::parse(ConstrainedStream& stream)
+     return Locals { count, type };
+ }
+ 
++// Proposal "exception-handling", legacy form: try / catch / catch_all / delegate / rethrow (opcodes 0x06, 0x07, 0x19,
++// 0x18, 0x09). Toolchains still emit it (wasm-bindgen, Emscripten), and browsers still run it. The engine only runs the
++// standardized try_table / throw_ref form, so a function body that uses the legacy instructions is lowered to that
++// form here, while it is parsed, much as Binaryen's translate-to-exnref pass does it:
++//
++//   try bt                             block $outer bt
++//     body                               block $c1 (result exnref | t)    ;; one per catch clause, the last outermost
++//   catch $t                               try_table bt (catch[_ref] $t $c1) (catch_all_ref $c2)...
++//     handler                                block $done bt
++//   catch_all                                  block $landing (result exnref)
++//     handler                                    body
++//   end                                          br $done
++//                                              end
++//                                              throw_ref                   ;; where delegated exceptions are thrown
++//                                            end
++//                                          end
++//                                          br $outer
++//                                        end
++//                                        local.set/tee $exn                ;; kept for rethrow
++//                                        handler
++//                                        br $outer
++//                                      end
++//
++// "try ... delegate l" catches everything with catch_all_ref and branches with the exnref to the landing block of the
++// try that l names (or the next one out), skipping the handlers in between, as delegate does. A catch of a tag with one
++// value keeps that value (catch, not catch_ref, so no new block types are needed) and rethrow throws the tag again.
++// Labels in the function are renumbered for the blocks that were added.
++
++namespace {
++
++struct LegacyExceptionContext {
++    TypeSection const& types;
++    Vector<TypeIndex> const& function_types;
++    Vector<TypeIndex> tag_types;
++    size_t next_function { 0 };
++};
++
++thread_local LegacyExceptionContext* s_legacy_exception_context = nullptr;
++
++enum class LegacyOp : u8 {
++    Try,
++    Catch,
++    CatchAll,
++    Delegate,
++    Rethrow,
++};
++
++struct LegacyInstruction {
++    LegacyOp op;
++    BlockType block_type {};
++    u32 index { 0 };
++};
++
++class LegacyExceptionLowering {
++public:
++    LegacyExceptionLowering(Vector<Instruction>& raw, HashMap<size_t, LegacyInstruction> const& legacy, LegacyExceptionContext& context, u32 first_new_local)
++        : m_raw(raw)
++        , m_legacy(legacy)
++        , m_context(context)
++        , m_next_local(first_new_local)
++    {
++    }
++
++    ParseResult<Vector<Instruction>> lower(bool needs_function_landing)
++    {
++        m_frames.append({ .kind = Frame::Kind::Function, .target = -1 });
++        if (needs_function_landing) {
++            // block (result exnref) body return end throw_ref: an exception delegated to the caller.
++            open(Instructions::block, BlockType { exnref_type() });
++            m_frames.last().landing = m_depth - 1;
++        }
++        auto end = TRY(lower_sequence(0));
++        if (end >= m_raw.size() || !is_plain(end, Instructions::structured_end))
++            return ParseError::UnknownInstruction;
++        if (needs_function_landing) {
++            m_out.empend(Instructions::return_);
++            close();
++            m_out.empend(Instructions::throw_ref);
++        }
++        m_out.empend(Instructions::structured_end);
++        return move(m_out);
++    }
++
++    Vector<Locals> take_locals() { return move(m_locals); }
++
++private:
++    struct Frame {
++        enum class Kind : u8 {
++            Function,
++            Plain,
++            Try,
++        };
++        enum class Rethrow : u8 {
++            None,
++            Ref,
++            Tag,
++        };
++        Kind kind;
++        i32 target; // Position of the emitted label a branch to this label goes to (-1: the function's).
++        i32 landing { -1 }; // Position of the block that delegated exceptions go to, while in a try's body.
++        Rethrow rethrow { Rethrow::None };
++        u32 rethrow_local { 0 };
++        TagIndex rethrow_tag {};
++    };
++
++    static ValueType exnref_type() { return ValueType(ValueType::ExceptionReference, true); }
++
++    bool is_plain(size_t index, OpCode opcode) const
++    {
++        return !m_legacy.contains(index) && m_raw[index].opcode() == opcode;
++    }
++
++    void open(OpCode opcode, BlockType block_type)
++    {
++        m_out.append(Instruction { opcode, Instruction::StructuredInstructionArgs { block_type, {}, {} } });
++        ++m_depth;
++    }
++
++    void close()
++    {
++        m_out.empend(Instructions::structured_end);
++        --m_depth;
++    }
++
++    LabelIndex label_to(i32 position) const { return LabelIndex(static_cast<u32>(m_depth - 1 - position)); }
++
++    void branch_to(i32 position) { m_out.append(Instruction { Instructions::br, Instruction::BranchArgs { label_to(position) } }); }
++
++    ParseResult<Frame const*> frame_for(LabelIndex label) const
++    {
++        if (label.value() >= m_frames.size())
++            return ParseError::InvalidIndex;
++        return &m_frames[m_frames.size() - 1 - label.value()];
++    }
++
++    ParseResult<LabelIndex> remap(LabelIndex label) const
++    {
++        auto const* frame = TRY(frame_for(label));
++        return label_to(frame->target);
++    }
++
++    u32 allocate_local(ValueType type)
++    {
++        m_locals.append(Locals { 1, type });
++        return m_next_local++;
++    }
++
++    ParseResult<Vector<ValueType>> tag_parameters(TagIndex tag) const
++    {
++        if (tag.value() >= m_context.tag_types.size())
++            return ParseError::InvalidIndex;
++        auto type_index = m_context.tag_types[tag.value()];
++        if (type_index.value() >= m_context.types.types().size() || !m_context.types.types()[type_index.value()].is_function())
++            return ParseError::InvalidType;
++        return m_context.types.types()[type_index.value()].function().parameters();
++    }
++
++    ParseResult<void> check_block_type(BlockType const& block_type) const
++    {
++        if (block_type.kind() != BlockType::Index)
++            return {};
++        auto index = block_type.type_index().value();
++        if (index >= m_context.types.types().size() || !m_context.types.types()[index].is_function())
++            return ParseError::InvalidType;
++        // FIXME: Blocks that take parameters would need new block types for the added blocks.
++        if (!m_context.types.types()[index].function().parameters().is_empty())
++            return ParseError::UnknownInstruction;
++        return {};
++    }
++
++    // Branches with the exnref on the stack to where an exception delegated to `label` is thrown again.
++    ParseResult<void> delegate_to(LabelIndex label)
++    {
++        if (label.value() >= m_frames.size())
++            return ParseError::InvalidIndex;
++        for (size_t i = m_frames.size() - 1 - label.value() + 1; i-- > 0;) {
++            auto const& frame = m_frames[i];
++            if (frame.landing >= 0) {
++                branch_to(frame.landing);
++                return {};
++            }
++            if (frame.kind == Frame::Kind::Function)
++                break;
++        }
++        return ParseError::InvalidIndex;
++    }
++
++    // Copies and lowers instructions from `index` until the end, else, catch, catch_all or delegate of the current
++    // block, and returns that instruction's index.
++    ParseResult<size_t> lower_sequence(size_t index)
++    {
++        while (index < m_raw.size()) {
++            if (auto legacy = m_legacy.get(index); legacy.has_value()) {
++                switch (legacy->op) {
++                case LegacyOp::Try:
++                    index = TRY(lower_try(index, *legacy));
++                    continue;
++                case LegacyOp::Catch:
++                case LegacyOp::CatchAll:
++                case LegacyOp::Delegate:
++                    return index;
++                case LegacyOp::Rethrow: {
++                    auto const* frame = TRY(frame_for(LabelIndex(legacy->index)));
++                    if (frame->kind != Frame::Kind::Try || frame->rethrow == Frame::Rethrow::None)
++                        return ParseError::InvalidIndex;
++                    m_out.append(Instruction { Instructions::local_get, LocalIndex(frame->rethrow_local) });
++                    if (frame->rethrow == Frame::Rethrow::Ref)
++                        m_out.empend(Instructions::throw_ref);
++                    else
++                        m_out.append(Instruction { Instructions::throw_, frame->rethrow_tag });
++                    ++index;
++                    continue;
++                }
++                }
++                VERIFY_NOT_REACHED();
++            }
++
++            auto& instruction = m_raw[index];
++            auto opcode = instruction.opcode();
++            if (opcode == Instructions::structured_end || opcode == Instructions::structured_else)
++                return index;
++
++            if (opcode == Instructions::block || opcode == Instructions::loop || opcode == Instructions::if_ || opcode == Instructions::try_table) {
++                if (auto* args = instruction.arguments().get_pointer<Instruction::TryTableArgs>()) {
++                    // The catch labels are relative to the block around the try_table.
++                    Vector<Catch> catches;
++                    for (auto const& catch_ : args->catches()) {
++                        auto label = TRY(remap(catch_.target_label()));
++                        if (catch_.matching_tag_index().has_value())
++                            catches.append(Catch { catch_.is_ref(), *catch_.matching_tag_index(), label });
++                        else
++                            catches.append(Catch { catch_.is_ref(), label });
++                    }
++                    m_out.append(Instruction { opcode, Instruction::TryTableArgs { args->block_type, {}, catches.span() } });
++                } else {
++                    m_out.append(move(instruction));
++                }
++                ++m_depth;
++                m_frames.append({ .kind = Frame::Kind::Plain, .target = m_depth - 1 });
++                index = TRY(lower_sequence(index + 1));
++                while (index < m_raw.size() && is_plain(index, Instructions::structured_else)) {
++                    m_out.append(move(m_raw[index]));
++                    index = TRY(lower_sequence(index + 1));
++                }
++                if (index >= m_raw.size() || !is_plain(index, Instructions::structured_end))
++                    return ParseError::UnknownInstruction;
++                m_frames.take_last();
++                close();
++                ++index;
++                continue;
++            }
++
++            TRY(instruction.arguments().visit(
++                [&](Instruction::BranchArgs& args) -> ParseResult<void> {
++                    args.label = TRY(remap(args.label));
++                    return {};
++                },
++                [&](Instruction::BranchOnCastArgs& args) -> ParseResult<void> {
++                    args.branch.label = TRY(remap(args.branch.label));
++                    return {};
++                },
++                [&](Instruction::TableBranchArgs& args) -> ParseResult<void> {
++                    for (auto& label : args.labels)
++                        label = TRY(remap(label));
++                    args.default_ = TRY(remap(args.default_));
++                    return {};
++                },
++                [](auto&) -> ParseResult<void> { return {}; }));
++            m_out.append(move(instruction));
++            ++index;
++        }
++        return ParseError::UnexpectedEof;
++    }
++
++    ParseResult<size_t> lower_try(size_t index, LegacyInstruction const& try_)
++    {
++        TRY(check_block_type(try_.block_type));
++
++        // Find the try's catch clauses and how it ends (end, or delegate).
++        struct Clause {
++            size_t index;
++            Optional<TagIndex> tag;
++        };
++        Vector<Clause> clauses;
++        size_t nesting = 0;
++        size_t closing = index + 1;
++        for (; closing < m_raw.size(); ++closing) {
++            if (auto legacy = m_legacy.get(closing); legacy.has_value()) {
++                if (legacy->op == LegacyOp::Try) {
++                    ++nesting;
++                } else if (legacy->op == LegacyOp::Delegate) {
++                    if (nesting == 0)
++                        break;
++                    --nesting;
++                } else if (nesting == 0 && legacy->op == LegacyOp::Catch) {
++                    clauses.append({ closing, TagIndex(legacy->index) });
++                } else if (nesting == 0 && legacy->op == LegacyOp::CatchAll) {
++                    clauses.append({ closing, {} });
++                }
++                continue;
++            }
++            auto opcode = m_raw[closing].opcode();
++            if (opcode == Instructions::block || opcode == Instructions::loop || opcode == Instructions::if_ || opcode == Instructions::try_table) {
++                ++nesting;
++            } else if (opcode == Instructions::structured_end) {
++                if (nesting == 0)
++                    break;
++                --nesting;
++            }
++        }
++        if (closing >= m_raw.size())
++            return ParseError::UnexpectedEof;
++
++        auto const& closing_legacy = m_legacy.get(closing);
++        if (closing_legacy.has_value() && closing_legacy->op == LegacyOp::Delegate) {
++            if (!clauses.is_empty())
++                return ParseError::UnknownInstruction;
++            // block $after bt
++            //   block $delegated (result exnref)
++            //     try_table bt (catch_all_ref $delegated)
++            //       body
++            //     end
++            //     br $after
++            //   end
++            //   br <the landing of the try that the delegate names>
++            // end
++            open(Instructions::block, try_.block_type);
++            auto after = m_depth - 1;
++            open(Instructions::block, BlockType { exnref_type() });
++            auto delegated = m_depth - 1;
++            Catch catch_all { true, LabelIndex(0) };
++            m_out.append(Instruction { Instructions::try_table, Instruction::TryTableArgs { try_.block_type, {}, ReadonlySpan<Catch> { &catch_all, 1 } } });
++            ++m_depth;
++            m_frames.append({ .kind = Frame::Kind::Try, .target = after, .landing = delegated });
++            auto end = TRY(lower_sequence(index + 1));
++            if (end != closing)
++                return ParseError::UnknownInstruction;
++            m_frames.take_last();
++            close();
++            branch_to(after);
++            close();
++            // The delegate's label is relative to the block around the try.
++            TRY(delegate_to(LabelIndex(closing_legacy->index)));
++            close();
++            return closing + 1;
++        }
++
++        struct Handler {
++            i32 block;
++            Frame::Rethrow rethrow;
++            ValueType value_type;
++            Optional<TagIndex> tag;
++        };
++        Vector<Handler> handlers;
++        for (auto const& clause : clauses) {
++            if (!clause.tag.has_value()) {
++                handlers.append({ 0, Frame::Rethrow::Ref, exnref_type(), {} });
++                continue;
++            }
++            auto parameters = TRY(tag_parameters(*clause.tag));
++            if (parameters.is_empty()) {
++                handlers.append({ 0, Frame::Rethrow::Ref, exnref_type(), clause.tag });
++            } else if (parameters.size() == 1 && parameters.first().is_defaultable()) {
++                handlers.append({ 0, Frame::Rethrow::Tag, parameters.first(), clause.tag });
++            } else {
++                // FIXME: Tags with several values would need new block types.
++                return ParseError::UnknownInstruction;
++            }
++        }
++
++        open(Instructions::block, try_.block_type);
++        auto outer = m_depth - 1;
++        for (size_t i = handlers.size(); i-- > 0;) {
++            open(Instructions::block, BlockType { handlers[i].value_type });
++            handlers[i].block = m_depth - 1;
++        }
++
++        Vector<Catch> catches;
++        for (auto const& handler : handlers) {
++            auto label = label_to(handler.block);
++            if (!handler.tag.has_value())
++                catches.append(Catch { true, label });
++            else
++                catches.append(Catch { handler.rethrow == Frame::Rethrow::Ref, *handler.tag, label });
++        }
++        m_out.append(Instruction { Instructions::try_table, Instruction::TryTableArgs { try_.block_type, {}, catches.span() } });
++        ++m_depth;
++        open(Instructions::block, try_.block_type);
++        auto done = m_depth - 1;
++        open(Instructions::block, BlockType { exnref_type() });
++        m_frames.append({ .kind = Frame::Kind::Try, .target = outer, .landing = m_depth - 1 });
++
++        auto next = TRY(lower_sequence(index + 1));
++        branch_to(done);
++        close();
++        m_out.empend(Instructions::throw_ref);
++        close();
++        close(); // try_table
++        branch_to(outer);
++
++        // NB: Lowering the handlers adds frames, so this one is found by its index.
++        auto frame_index = m_frames.size() - 1;
++        m_frames[frame_index].landing = -1; // A handler's exceptions are not caught by its own try.
++        for (size_t i = 0; i < handlers.size(); ++i) {
++            if (next != clauses[i].index)
++                return ParseError::UnknownInstruction;
++            close();
++            auto& handler = handlers[i];
++            auto local = allocate_local(handler.value_type);
++            auto& frame = m_frames[frame_index];
++            frame.rethrow = handler.rethrow;
++            frame.rethrow_local = local;
++            if (handler.tag.has_value())
++                frame.rethrow_tag = *handler.tag;
++            if (handler.rethrow == Frame::Rethrow::Ref)
++                m_out.append(Instruction { Instructions::local_set, LocalIndex(local) });
++            else
++                m_out.append(Instruction { Instructions::local_tee, LocalIndex(local) });
++            next = TRY(lower_sequence(next + 1));
++            branch_to(outer);
++        }
++        if (next != closing || !is_plain(closing, Instructions::structured_end))
++            return ParseError::UnknownInstruction;
++        m_frames.take_last();
++        close();
++        return closing + 1;
++    }
++
++    Vector<Instruction>& m_raw;
++    HashMap<size_t, LegacyInstruction> const& m_legacy;
++    LegacyExceptionContext& m_context;
++    Vector<Instruction> m_out;
++    Vector<Frame> m_frames;
++    Vector<Locals> m_locals;
++    i32 m_depth { 0 };
++    u32 m_next_local { 0 };
++};
++
++
++// Sets the end and else positions of the structured instructions, as Expression::parse does.
++ParseResult<Expression> finish_expression(Vector<Instruction> instructions)
++{
++    Vector<InstructionPointer> stack;
++    Vector<Instruction> result;
++    result.ensure_capacity(instructions.size() + 1);
++    InstructionPointer ip { 0 };
++    for (auto& instruction : instructions) {
++        switch (instruction.opcode().value()) {
++        case Instructions::block.value():
++        case Instructions::loop.value():
++        case Instructions::if_.value():
++        case Instructions::try_table.value():
++            stack.append(ip);
++            break;
++        case Instructions::structured_end.value(): {
++            if (stack.is_empty()) {
++                result.empend(Instructions::synthetic_end_expression);
++                return Expression { move(result) };
++            }
++            auto entry = stack.take_last();
++            bool valid_type = result[entry.value()].arguments().visit(
++                [&](Instruction::StructuredInstructionArgs& args) {
++                    args.end_ip = ip + (args.else_ip().has_value() ? 1 : 0);
++                    return true;
++                },
++                [&](Instruction::TryTableArgs& args) {
++                    args.end_ip = ip;
++                    return true;
++                },
++                [](auto&) { return false; });
++            if (!valid_type)
++                return ParseError::InvalidType;
++            break;
++        }
++        case Instructions::structured_else.value(): {
++            if (stack.is_empty())
++                return ParseError::UnknownInstruction;
++            auto* args = result[stack.last().value()].arguments().get_pointer<Instruction::StructuredInstructionArgs>();
++            if (!args)
++                return ParseError::InvalidType;
++            args->else_ip() = ip + 1;
++            break;
++        }
++        }
++        result.append(move(instruction));
++        ++ip;
++    }
++    return ParseError::UnexpectedEof;
++}
++
++// Parses a function body that may use the legacy exception instructions, and lowers them (see above).
++ParseResult<Expression> parse_function_body(ConstrainedStream& stream, Vector<Locals>& locals, size_t size_hint)
++{
++    Vector<Instruction> raw;
++    raw.ensure_capacity(size_hint);
++    HashMap<size_t, LegacyInstruction> legacy;
++    bool has_delegate = false;
++    size_t nesting = 0;
++    while (true) {
++        auto byte = TRY_READ(stream, u8, ParseError::ExpectedKindTag);
++        switch (byte) {
++        case 0x06: // try bt
++            legacy.set(raw.size(), { LegacyOp::Try, TRY(BlockType::parse(stream)), 0 });
++            raw.empend(Instructions::nop);
++            ++nesting;
++            continue;
++        case 0x07: // catch x
++            legacy.set(raw.size(), { LegacyOp::Catch, {}, TRY(GenericIndexParser<TagIndex>::parse(stream)).value() });
++            raw.empend(Instructions::nop);
++            continue;
++        case 0x19: // catch_all
++            legacy.set(raw.size(), { LegacyOp::CatchAll, {}, 0 });
++            raw.empend(Instructions::nop);
++            continue;
++        case 0x18: // delegate l
++            if (nesting == 0)
++                return ParseError::UnknownInstruction;
++            --nesting;
++            legacy.set(raw.size(), { LegacyOp::Delegate, {}, TRY(GenericIndexParser<LabelIndex>::parse(stream)).value() });
++            raw.empend(Instructions::nop);
++            has_delegate = true;
++            continue;
++        case 0x09: // rethrow l
++            legacy.set(raw.size(), { LegacyOp::Rethrow, {}, TRY(GenericIndexParser<LabelIndex>::parse(stream)).value() });
++            raw.empend(Instructions::nop);
++            continue;
++        default:
++            break;
++        }
++
++        auto instruction = TRY(Instruction::parse(stream, OpCode { byte }));
++        auto opcode = instruction.opcode();
++        if (opcode == Instructions::block || opcode == Instructions::loop || opcode == Instructions::if_ || opcode == Instructions::try_table) {
++            ++nesting;
++        } else if (opcode == Instructions::structured_end) {
++            if (nesting == 0) {
++                raw.append(move(instruction));
++                break;
++            }
++            --nesting;
++        }
++        raw.append(move(instruction));
++    }
++
++    if (legacy.is_empty())
++        return finish_expression(move(raw));
++
++    auto* context = s_legacy_exception_context;
++    if (!context || context->next_function == 0 || context->next_function > context->function_types.size())
++        return ParseError::UnknownInstruction;
++    auto type_index = context->function_types[context->next_function - 1].value();
++    if (type_index >= context->types.types().size() || !context->types.types()[type_index].is_function())
++        return ParseError::InvalidType;
++    u64 first_new_local = context->types.types()[type_index].function().parameters().size();
++    for (auto const& entry : locals)
++        first_new_local += entry.n();
++    if (first_new_local > NumericLimits<u32>::max())
++        return ParseError::HugeAllocationRequested;
++
++    LegacyExceptionLowering lowering { raw, legacy, *context, static_cast<u32>(first_new_local) };
++    auto instructions = TRY(lowering.lower(has_delegate));
++    locals.extend(lowering.take_locals());
++    return finish_expression(move(instructions));
++}
++
++}
++
+ ParseResult<CodeSection::Func> CodeSection::Func::parse(ConstrainedStream& stream, size_t size_hint)
+ {
+     ScopeLogger<WASM_BINPARSER_DEBUG> logger("Func"sv);
+     auto locals = TRY(parse_vector<Locals>(stream));
+-    auto body = TRY(Expression::parse(stream, size_hint));
++    auto body = TRY(parse_function_body(stream, locals, size_hint));
+     return Func { move(locals), move(body) };
+ }
+ 
+@@ -1717,6 +2290,9 @@ ParseResult<CodeSection::Code> CodeSection::Code::parse(ConstrainedStream& strea
+     // Constrain to the declared size so an invalid entry fails here instead of desyncing the remaining entries in the section.
+     auto code_stream = ConstrainedStream { MaybeOwned<Stream>(stream), size };
+ 
++    if (s_legacy_exception_context)
++        ++s_legacy_exception_context->next_function;
++
+     // Empirically, if there are `size` bytes to be read, then there's around
+     // `size / 2` instructions, so we pass that as our size hint.
+     auto func = TRY(Func::parse(code_stream, size / 2));
+@@ -1890,9 +2466,20 @@ ParseResult<NonnullRefPtr<Module>> Module::parse(Stream& stream)
+         case SectionId::SectionIdKind::Element:
+             module.element_section() = TRY(ElementSection::parse(section_stream));
+             break;
+-        case SectionId::SectionIdKind::Code:
++        case SectionId::SectionIdKind::Code: {
++            // The function types and tags that lowering legacy exception instructions needs (see parse_function_body).
++            LegacyExceptionContext context { module.type_section(), module.function_section().types(), {} };
++            for (auto const& import : module.import_section().imports()) {
++                if (auto const* tag = import.description().get_pointer<TagType>())
++                    context.tag_types.append(tag->type());
++            }
++            for (auto const& tag : module.tag_section().tags())
++                context.tag_types.append(tag.type());
++            s_legacy_exception_context = &context;
++            ScopeGuard clear_context = [] { s_legacy_exception_context = nullptr; };
+             module.code_section() = TRY(CodeSection::parse(section_stream));
+             break;
++        }
+         case SectionId::SectionIdKind::Data:
+             module.data_section() = TRY(DataSection::parse(section_stream));
+             break;
+diff --git a/Libraries/LibWasm/Types.h b/Libraries/LibWasm/Types.h
+index ca98a12b..79986b20 100644
+--- a/Libraries/LibWasm/Types.h
++++ b/Libraries/LibWasm/Types.h
+@@ -900,6 +900,7 @@ public:
+     }
+ 
+     static ParseResult<Instruction> parse(ConstrainedStream& stream);
++    static ParseResult<Instruction> parse(ConstrainedStream& stream, OpCode);
+ 
+     auto& opcode() const { return m_opcode; }
+     auto& arguments() const { return m_arguments; }
