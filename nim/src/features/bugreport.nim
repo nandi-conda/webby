@@ -210,28 +210,12 @@ proc formatClock(ms: int): string =
   let s = ms div 1000
   $(s div 60) & ":" & align($(s mod 60), 2, '0')
 
-proc summary(r: Report): string =
-  let (errors, failed) = r.captured.errorCount
-  let (console, network, actions) = r.captured.sorted
-  proc n(count: int, what: string): string = $count & " " & what & (if count == 1: "" else: "s")
-  var parts = @[(if r.replayed: "Replay of the last " & formatClock(r.durationMs)
-                elif r.video: "Recording of " & $(r.durationMs div 1000) & " s" else: "Screenshot")]
-  parts.add n(console.len, "console message") & (if errors > 0: " (" & n(errors, "error") & ")" else: "")
-  parts.add n(network.len, "request") & (if failed > 0: " (" & $failed & " failed)" else: "")
-  parts.add n(actions.len, "action")
-  var engineErrors = 0
-  for e in r.captured.engine:
-    if e{"level"}.getStr == "error": inc engineErrors
-  parts.add n(r.captured.engine.len, "engine log line") &
-    (if engineErrors > 0: " (" & n(engineErrors, "error") & ")" else: "")
-  parts.join(" · ")
-
 proc showBar(text: string, recordingControls: bool)
 proc hideBar()
 
 proc writeReport(r: Report): string =
-  ## Saves the report's folder (rewriting report.json/html, so title and notes go in) and returns its path, which
-  ## also goes on the clipboard, or "" after telling why it failed.
+  ## Saves the report's folder and returns its path, which also goes on the clipboard, or "" after telling why it
+  ## failed.
   try:
     result = save(r)
     copyText(result)
@@ -239,46 +223,12 @@ proc writeReport(r: Report): string =
     kit.alert("Couldn't save the report", e.msg)
     result = ""
 
-proc discardReport(r: Report) =
-  if r.folder.len == 0: return
-  try: removeDir(r.folder)
-  except CatchableError as e: kit.toast("Couldn't delete the report: " & e.msg)
-
 proc showDetails(r: Report) =
-  ## The report is saved as soon as it's taken, with its folder's path on the clipboard; the dialog adds a title
-  ## and notes or throws it away.
+  ## The report is saved as soon as it's taken, with its folder's path on the clipboard; no dialog.
   r.title = "Bug on " & (if host(r.url).len > 0: host(r.url) else: r.pageTitle)
   let folder = writeReport(r)
-  if folder.len == 0: return
-  kit.toast("Bug report saved, its folder's path is on the clipboard")
-  let box = kit.column()
-  box.spacing = 6
-  discard kit.sized(box, 460)
-  let title = kit.entry("Title", r.title)
-  let notes = kit.entry("What went wrong? (optional)")
-  kit.add(box, kit.addClass(kit.label(r.summary), "dim"))
-  kit.add(box, kit.label("Title"))
-  kit.add(box, title)
-  kit.add(box, kit.label("Notes"))
-  kit.add(box, notes)
-  kit.add(box, kit.addClass(kit.addClass(kit.label("Saved in " &
-    folder.replace(getHomeDir().strip(leading = false, chars = {'/'}), "~") & "; the path is on the clipboard. " &
-    "Its report.html shows the " & (if r.video: "recording" else: "screenshot") &
-    " with the console, network, actions and engine log."), "dim"), "small"))
-  var d: kit.Dialog
-  d = kit.dialog("Report a bug", box, @["Delete", "Show in folder", "Save"], destructive = 0, onResult = proc (i: int) =
-    if i == 0:
-      discardReport(r)
-      return
-    if i notin [1, 2]: return   # closed: the report stays as first written
-    let newTitle = kit.text(title).strip
-    if newTitle.len > 0: r.title = newTitle
-    r.notes = kit.text(notes).strip
-    if writeReport(r).len == 0: return
-    if i == 1: showInFolder(folder / "report.html")
-    elif i == 2: kit.toast("Bug report saved, its folder's path is on the clipboard"))
-  notes.onSubmit = proc (t: string) = kit.dialogResult(d, 2)
-  kit.focus(notes)
+  if folder.len > 0: kit.toast("Bug report saved, path copied: " &
+    folder.replace(getHomeDir().strip(leading = false, chars = {'/'}), "~"))
 
 proc webbyState(): JsonNode =
   ## Webby itself when the report begins: build, settings and tabs (addresses scrubbed like the engine log).

@@ -53,10 +53,3 @@ proc byTime(a, b: JsonNode): int = cmp(a{"t"}.getBiggestInt, b{"t"}.getBiggestIn
 
 proc sorted*(c: Captured): tuple[console, network, actions: seq[JsonNode]] =
   (c.console.sorted(byTime), c.network.sorted(byTime), (c.actions & c.navigations).sorted(byTime))
-
-proc errorCount*(c: Captured): tuple[console, network: int] =
-  for e in c.console:
-    if e{"level"}.getStr == "error": inc result.console
-  for e in c.network:
-    let s = e{"status"}.getInt
-    if s >= 400 or (e{"status"} != nil and s == 0): inc result.network
