@@ -418,7 +418,14 @@ proc parseOutput(d: Doc) =
   while true:
     let nl = d.buf.find('\n')
     if nl < 0: return
-    let j = try: parseJson(d.buf[0 ..< nl]) except CatchableError: newJObject()
+    var j: JsonNode
+    try: j = parseJson(d.buf[0 ..< nl])
+    except CatchableError:
+      # Never silently: a lost "open" answer left the viewer on "Opening…" for good.
+      stderr.writeLine "webby: unreadable answer from webby-pdf: ", d.buf[0 ..< min(nl, 200)]
+      d.buf = d.buf[nl + 1 .. ^1]
+      if d.state == dsOpening: fail(d, "Couldn't read this PDF")
+      continue
     let n = j{"bytes"}.getInt
     if d.buf.len < nl + 1 + n: return
     let pixels = if n > 0: d.buf[nl + 1 ..< nl + 1 + n] else: ""

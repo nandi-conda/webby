@@ -16,6 +16,7 @@
  *   Page sizes and positions are in points, from the page's top left. A link inside the document has page >= 0
  *   (and uri ""), an outside one page -1. */
 #include <mupdf/fitz.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +24,10 @@
 static fz_context *ctx;
 static fz_document *doc;
 static int npages;
+
+/* JSON has no NaN or infinity; MuPDF gives NaN for a position a PDF leaves out (an outline entry or link that names
+ * only a page, as dl.acm.org's do). */
+static double fin(double v) { return isfinite(v) ? v : 0; }
 
 static void put_string(FILE *f, const char *s) {
 	fputc('"', f);
@@ -47,7 +52,7 @@ static void put_outline(fz_outline *o, int level, int *first) {
 		printf("%s[%d,", *first ? "" : ",", level);
 		*first = 0;
 		put_string(stdout, o->title);
-		printf(",%d,%.1f]", page, o->y);
+		printf(",%d,%.1f]", page, fin(o->y));
 		if (o->down) put_outline(o->down, level + 1, first);
 	}
 }
@@ -69,7 +74,7 @@ static void do_open(const char *path) {
 				fz_drop_page(ctx, page);
 			}
 			fz_catch(ctx) r = fz_make_rect(0, 0, 612, 792);
-			printf("%s[%.2f,%.2f]", i ? "," : "", r.x1 - r.x0, r.y1 - r.y0);
+			printf("%s[%.2f,%.2f]", i ? "," : "", fin(r.x1 - r.x0), fin(r.y1 - r.y0));
 		}
 		char title[1024] = "";
 		fz_lookup_metadata(ctx, doc, FZ_META_INFO_TITLE, title, sizeof title);
@@ -145,7 +150,7 @@ static void put_blocks(fz_stext_block *block, float x0, float y0) {
 			for (fz_stext_char *ch = line->first_char; ch; ch = ch->next) {
 				fz_rect r = fz_rect_from_quad(ch->quad);
 				printf("%s[%.1f,%.1f,%.1f,%.1f,%d]", ch == line->first_char ? "" : ",",
-					r.x0 - x0, r.y0 - y0, r.x1 - x0, r.y1 - y0, ch->c);
+					fin(r.x0 - x0), fin(r.y0 - y0), fin(r.x1 - x0), fin(r.y1 - y0), ch->c);
 			}
 			printf("]");
 		}
@@ -182,11 +187,11 @@ static void do_text(int pageno) {
 				fz_catch(ctx) target = -1;
 				if (target < 0) continue;
 			}
-			printf("%s[%.1f,%.1f,%.1f,%.1f,", first ? "" : ",", l->rect.x0 - b.x0, l->rect.y0 - b.y0,
-				l->rect.x1 - b.x0, l->rect.y1 - b.y0);
+			printf("%s[%.1f,%.1f,%.1f,%.1f,", first ? "" : ",", fin(l->rect.x0 - b.x0), fin(l->rect.y0 - b.y0),
+				fin(l->rect.x1 - b.x0), fin(l->rect.y1 - b.y0));
 			first = 0;
 			put_string(stdout, target >= 0 ? "" : l->uri);
-			printf(",%d,%.1f]", target, target >= 0 ? ty : 0);
+			printf(",%d,%.1f]", target, target >= 0 ? fin(ty) : 0);
 		}
 		printf("]}\n");
 		fflush(stdout);
