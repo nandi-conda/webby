@@ -127,7 +127,7 @@
   let pending = 0;
   new MutationObserver(() => {
     if (!pending) pending = setTimeout(() => { pending = 0; checkFields(); }, 300);
-  }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['type', 'style', 'class', 'hidden'] });
+  }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['type', 'style', 'class', 'hidden'] });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', checkFields, { once: true });
   else checkFields();
 

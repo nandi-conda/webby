@@ -546,7 +546,7 @@ proc install*() =
                              "how": how}
   tabStateHooks.add proc (t: Tab) = remember(t, "load")
   activeTabHooks.add proc (t: Tab) = remember(t, "tab")
-  pageScriptHooks.add script
+  earlyPageScriptHooks.add script
   pageMessageHooks.add onMessage
   windowHooks.add proc () =
     buildBar()

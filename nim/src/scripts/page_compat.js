@@ -75,8 +75,15 @@
   // null and its submit button does nothing (try.haxy.net's sign-up page renders its controls exactly so). Setting
   // the attribute again registers it with the page's document and finds the form, as a fixed engine would have.
   if (typeof HTMLFormElement !== 'undefined' && (() => {
+    // Built node by node in the template's own document, as its parser would: innerHTML throws on pages that require
+    // Trusted Types (YouTube), and that took every shim below down with it.
     const template = document.createElement('template');
-    template.innerHTML = '<input form="__webby_form_probe"><form id="__webby_form_probe"></form>';
+    const content = template.content, doc = content.ownerDocument;
+    const control = doc.createElement('input');
+    control.setAttribute('form', '__webby_form_probe');
+    const probeForm = doc.createElement('form');
+    probeForm.id = '__webby_form_probe';
+    content.append(control, probeForm);
     // The probe goes in the page for a moment, and its clones one at a time: inserted together, the control would
     // find the form already there.
     const parent = document.body || document.documentElement;

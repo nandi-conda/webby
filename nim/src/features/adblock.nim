@@ -42,7 +42,7 @@ proc youTubePageScript(t: Tab): string =
   if enabled() and isYouTube(t.url): youTubeScript else: ""
 
 proc install*() =
-  pageScriptHooks.add youTubePageScript
+  earlyPageScriptHooks.add youTubePageScript
   startupHooks.add proc () =
     if incognito and incognitoProfile.len > 0: seedIncognitoProfile()
     else: prepareEngine()

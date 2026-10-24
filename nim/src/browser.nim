@@ -60,6 +60,7 @@ type
     pageScale*: float        ## <1 draws the page smaller than the desktop's scale (features/pagefit); 0 means 1
     frameSerial, stateSerial: uint64
     lastCompat: MonoTime
+    scriptsIn: bool          ## this load's document has run the page scripts (they say so on DOMContentLoaded)
     answering: bool
     closed*: bool
 
@@ -110,6 +111,8 @@ var
   navigationHooks*: seq[proc (t: Tab)]            ## a page finished loading (url + title final)
   pageMessageHooks*: seq[proc (t: Tab, msg: string): bool]  ## true = handled
   pageScriptHooks*: seq[proc (t: Tab): string]    ## JS run with the compat shims on every page
+  earlyPageScriptHooks*: seq[proc (t: Tab): string]  ## the same, for scripts that must run before the page's own:
+                                                     ## also re-sent every 100 ms while a document is being parsed
   quitHooks*: seq[proc (): bool]                  ## false cancels quitting
   shutdownHooks*: seq[proc ()]                    ## quitting for real
   tabStripHooks*: seq[proc ()]                    ## tabs added, removed, moved or pinned
@@ -588,7 +591,22 @@ proc answerRequests(t: Tab) =
 # The pump: Ladybird's event loop runs on this (the GTK) thread. 4 ms while anything happens, backing off to 100 ms
 # when idle.
 
-proc runPageScripts(t: Tab) =
+const scriptsInScript = """
+(() => {
+  if (window.__webbyScriptsIn) return;
+  window.__webbyScriptsIn = true;
+  // Never prompt() while the document is being parsed (it can leave the parser paused for good): say so once it's done.
+  const prompt = window.prompt, text = PREFIX + '{"type":"webbyScriptsIn"}';
+  const send = () => setTimeout(() => { try { prompt.call(window, text); } catch (e) {} }, 0);
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', send, { once: true });
+  else send();
+})();
+"""
+
+proc runPageScripts(t: Tab, early = false) =
+  ## All page scripts, or with `early` only the compat shims and earlyPageScriptHooks: the ones re-sent every 100 ms
+  ## until the document being loaded has finished parsing (then it says so and gets the rest). Re-sending all of them
+  ## (~100 KB) ten times a second took ~16% of the page's main thread just to parse.
   t.lastCompat = getMonoTime()
   # Right after a load starts, the tab's URL is already the new page's while its document is still the about:blank
   # one being navigated away from. Our scripts there (several of them talk back through prompt()) can wedge
@@ -599,14 +617,18 @@ proc runPageScripts(t: Tab) =
   # answer), and a prompt() nested there takes the outer one's answer, so the outer waits forever with the page's
   # event loop paused (pdf.js viewer pages never starting, dl.acm.org and arXiv PDFs blank). Timers don't run there.
   let (open, close) = if t.url == "about:blank": ("", "") else: ("if (location.href !== 'about:blank') {\n", "\n}")
-  t.runJs(open & pageCompatScript & close)
   inc scriptRuns
-  scriptBytes += pageCompatScript.len
-  for h in pageScriptHooks:
-    let js = h(t)
+  proc send(js: string) =
     if js.len > 0:
       t.runJs(open & js & close)
       scriptBytes += js.len
+  send pageCompatScript
+  for h in earlyPageScriptHooks: send h(t)
+  if not early:
+    for h in pageScriptHooks: send h(t)
+  # Last: the document that runs it has run everything before it, and it reports when parsing is done.
+  if t.loading and t.messagePrefix.len > 0:
+    send scriptsInScript.replace("PREFIX", $(%t.messagePrefix))
 
 template mark*(what: string) =
   ## WEBBY_TRACE=1: when each step of startup happened, in ms since the process started.
@@ -650,6 +672,7 @@ proc pumpTab(t: Tab, isActive: bool): bool =
         (t.findCurrent, t.findTotal) = found
         for h in findHooks: h(t)
     let changed = (t.url, t.title, t.loading) != before
+    if t.url != before[0] or t.loading and not before[2]: t.scriptsIn = false
     if changed: runPageScripts(t)
     when defined(android):
       if isActive: syncTextField(t)
@@ -668,12 +691,18 @@ proc pumpTab(t: Tab, isActive: bool): bool =
       if before[2] and not t.loading or (not t.loading and t.url != before[0]):
         for h in navigationHooks: h(t)
     if isActive: refreshChrome()
-  if t.loading and getMonoTime() - t.lastCompat >= initDuration(milliseconds = 100):
-    runPageScripts(t)
+  if t.loading and not t.scriptsIn and getMonoTime() - t.lastCompat >= initDuration(milliseconds = 100):
+    runPageScripts(t, early = true)
   while true:
     let m = str(webby_view_next_message(t.view))
     if m.len == 0: break
     busy = true
+    if m == "{\"type\":\"webbyScriptsIn\"}":
+      # Parsed: the rest of the scripts go in now, and the 100 ms re-runs stop for this load.
+      if t.loading and not t.scriptsIn:
+        t.scriptsIn = true
+        runPageScripts(t)
+      continue
     for h in pageMessageHooks:
       if h(t, m): break
   let fs = webby_view_frame_serial(t.view)
