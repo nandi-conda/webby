@@ -173,8 +173,9 @@ proc layoutPinned() =
 proc styleTab(t: Tab) =
   kit.`visible=`(t.closeButton, not t.pinned)
   kit.setClass(t.button, "webby-pinned-tab", t.pinned)
-  # A 40 px tile with a 16 px icon in the middle (the CSS padding centres it), like Chrome's.
-  discard kit.sized(t.button, (if t.pinned: 40 else: 0))
+  # A tile with a 16 px icon in the middle: the CSS padding sizes and centres it, with no gaps between tiles so the
+  # whole row is something to hover and click.
+  discard kit.sized(t.button, 0)
   kit.`iconSize=`(t.icon, if t.pinned: 16 else: 14)
   updateTabButton(t)   # and updateBadge, through tabButtonHooks
   layoutPinned()
@@ -400,8 +401,9 @@ proc install*() =
   windowHooks.add proc () =
     loadCss("""
 .webby-vertical-tabs button.webby-tab { border-radius: 6px; margin: 1px 4px; }
-button.webby-pinned-tab, .webby-vertical-tabs button.webby-pinned-tab { padding: 4px 12px; border-radius: 8px;
-  margin: 3px 1px; border: 1px solid transparent; background-image: none; box-shadow: none; outline: none; }
+button.webby-pinned-tab { padding: 6px 13px; border-radius: 8px; margin: 0;
+  border: 1px solid transparent; background-image: none; box-shadow: none; outline: none; }
+.webby-vertical-tabs button.webby-pinned-tab { padding: 9px 12px; margin: 0; }
 button.webby-pinned-tab:hover { background-color: alpha(currentColor, 0.12); background-image: none;
   border-color: transparent; box-shadow: none; }
 button.webby-pinned-tab.webby-active-tab { background-color: alpha(@theme_selected_bg_color, 0.22);
@@ -414,7 +416,7 @@ button.webby-pinned-tab.webby-active-tab:hover { background-color: alpha(@theme_
 .webby-badge-4 { background-color: #8430ce; } .webby-badge-5 { background-color: #007b83; }
 .webby-badge-6 { background-color: #c2185b; } .webby-badge-7 { background-color: #5f6368; }
 .webby-vertical-tabs { border-right: 1px solid alpha(currentColor, 0.15); }
-.webby-pinned-grid { margin: 2px 3px; }
+.webby-pinned-grid { margin: 2px 4px; }
 .webby-strip-space, .webby-strip-space:hover { background: none; box-shadow: none; border: none; }
 """)
     # The strip's empty space: a right-click opens the strip's menu, a double click a new tab.
