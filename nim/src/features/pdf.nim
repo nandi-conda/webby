@@ -9,7 +9,7 @@
 ## Keys: arrows, Page Up/Down, Space, Home/End.
 ##
 ## A site that won't hand webby the file (Cloudflare's challenge on dl.acm.org needs the engine's cookies) gets it
-## through Ladybird's own download instead, which then also stays in the downloads folder.
+## through Ladybird's own download instead, kept out of the downloads list and folder.
 
 import std/[algorithm, base64, hashes, math, os, posix, sequtils, strutils, tables, times, unicode, uri]
 import ../browser
@@ -545,6 +545,8 @@ proc fetchWithEngine(d: Doc) =
   ## Ladybird downloads it (with the site's cookies); features/pdf watches the list for the file.
   d.engineTried = true
   if webby_downloads_start != nil: d.downloadId = webby_downloads_start(d.url.cstring, incognito.cint)
+  # Only a way to get the file: it isn't the user's download (no "Couldn't download" note while pdf.js still has a go).
+  if d.downloadId != 0: quietDownloads.add d.downloadId
   d.engineFailed = d.downloadId == 0
   invalidate(d)
 
@@ -598,7 +600,16 @@ proc checkDownload(d: Doc) =
     of "completed":
       d.downloadId = 0
       let path = e{"path"}.getStr
-      if d.state == dsFetching and fileExists(path) and isPdf(readFile(path)): opened(d, path)
+      if d.state == dsFetching and fileExists(path) and isPdf(readFile(path)):
+        # Out of the downloads folder: Save puts a copy there when the user wants one.
+        let cached = cacheDir / ($hash(d.url) & ".pdf")
+        try:
+          createDir(cacheDir)
+          moveFile(path, cached)
+          opened(d, cached)
+        except CatchableError: opened(d, path)
+      elif fileExists(path) and d.state != dsFetching:
+        try: removeFile(path) except CatchableError: discard   # another way got it first
       else:
         d.engineFailed = true
         sourceFailed(d)

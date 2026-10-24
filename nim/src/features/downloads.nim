@@ -65,6 +65,7 @@ type DownloadInfo* = object
   canResume*, fresh*: bool                      ## fresh: started in this session (not one Ladybird restored)
 
 var downloadsChangedHooks*: seq[proc (list: seq[DownloadInfo])]   ## the list changed (at most every 200 ms)
+var quietDownloads*: seq[uint64]   ## downloads a feature started for itself (features/pdf): no list entry, note or job
 
 proc hasApi(): bool = webby_downloads_serial != nil and webby_downloads_json != nil
 proc listed(): bool = hasApi() or defined(android)   ## whether there is a list to show
@@ -532,6 +533,7 @@ proc poll() =
     refreshQueued = false
     serial = webby_downloads_serial()
     downloads = parse($webby_downloads_json())
+    downloads.keepItIf(it.id notin quietDownloads)
     for d in downloads.mitems:
       if d.id in moved: d.path = moved[d.id]
     for id in toSeq(destinations.keys): settle(id)
