@@ -15,6 +15,7 @@ when defined(android):
   proc loadCss*(css: string) = discard   ## GTK CSS; Android styles nimkit's classes itself
   proc escapeMarkup*(s: string): string = kit.escapeRich(s)   ## text for a kit.richLabel
 else:
+  from std/posix import nil
   import gtk, icons
   from nimkit/backend/gtk as nkgtk import nil   # nimkit on GTK; also fills in its services (timers, HTTP, storage)
   export gtk, icons
@@ -168,6 +169,8 @@ var
   framesMarked = 0
   firstDrawSeen = false
   pumps, frames, draws: int
+  scriptRuns, scriptBytes: int   # page script injections (runPageScripts) and the JS they sent
+  wakePumps: int   # pumps started by webby_wake_fd rather than the timer
   nativeUs, drawUs, maxTickUs: int64
   wheelSent: MonoTime
   wheelPending = false
@@ -597,9 +600,13 @@ proc runPageScripts(t: Tab) =
   # event loop paused (pdf.js viewer pages never starting, dl.acm.org and arXiv PDFs blank). Timers don't run there.
   let (open, close) = if t.url == "about:blank": ("", "") else: ("if (location.href !== 'about:blank') {\n", "\n}")
   t.runJs(open & pageCompatScript & close)
+  inc scriptRuns
+  scriptBytes += pageCompatScript.len
   for h in pageScriptHooks:
     let js = h(t)
-    if js.len > 0: t.runJs(open & js & close)
+    if js.len > 0:
+      t.runJs(open & js & close)
+      scriptBytes += js.len
 
 template mark*(what: string) =
   ## WEBBY_TRACE=1: when each step of startup happened, in ms since the process started.
@@ -854,6 +861,25 @@ proc wake*() =
   if pumpDelay <= 4 and pumpTimer != nil and pumpTimer.id != 0: return
   schedule(4)
 
+when not defined(android):
+  proc g_unix_fd_add(fd: cint, condition: cuint, fn, data: pointer): cuint {.importc, cdecl.}
+
+  proc watchWakeFd() =
+    ## Pumps the moment Ladybird has work instead of at the next tick. A page that reads localStorage or sets a cookie
+    ## waits for the UI process to answer, and with only the timer each call took a tick (4-100 ms; YouTube makes
+    ## hundreds while it loads). Runtimes without webby_wake_fd keep the timer alone.
+    if webby_wake_fd == nil: return
+    let fd = webby_wake_fd()
+    if fd < 0: return
+    proc onWake(fd: cint, condition: cuint, data: pointer): cint {.cdecl.} =
+      var count: uint64
+      discard posix.read(fd, addr count, sizeof(count))
+      if not pumping:
+        inc wakePumps
+        pumpAll()
+      1
+    discard g_unix_fd_add(fd, 1, onWake, nil)   # G_IO_IN
+
 # CPU time of this process and its helpers, for WEBBY_TRACE: "webby-cpu" lines give each process's (and its busiest
 # threads') share of one core since the last tick, read from /proc.
 var cpuTicks: Table[string, int]   # "pid" or "pid/tid" -> utime + stime clock ticks
@@ -931,7 +957,9 @@ proc traceTick() =
     "ms nativeMs=", nativeUs div 1000, " drawMs=", drawUs div 1000,
     " maxTickMs=", formatFloat(maxTickUs.float / 1000, ffDecimal, 1), " wheels=", wheelFrames,
     " wheelMs=", (if wheelFrames == 0: "0" else: formatFloat(wheelUs.float / wheelFrames.float / 1000, ffDecimal, 1)),
-    " maxWheelMs=", formatFloat(maxWheelUs.float / 1000, ffDecimal, 1), " tabs=", tabs.len
+    " maxWheelMs=", formatFloat(maxWheelUs.float / 1000, ffDecimal, 1), " tabs=", tabs.len,
+    " scripts=", scriptRuns, " scriptKB=", scriptBytes div 1024, " wakePumps=", wakePumps
+  scriptRuns = 0; scriptBytes = 0; wakePumps = 0
   pumps = 0; frames = 0; draws = 0; nativeUs = 0; drawUs = 0; maxTickUs = 0
   wheelFrames = 0; wheelUs = 0; maxWheelUs = 0
 
@@ -1455,6 +1483,7 @@ proc run*() =
   else: loadWebby(prefix)
   if webby_init(prefix.cstring) != 0: quit "webby_init failed for " & prefix
   mark "webby_init"
+  when not defined(android): watchWakeFd()
   defaultShortcuts()
   buildWindow()
   for h in windowHooks: h()
@@ -1485,6 +1514,15 @@ proc run*() =
   mark "tabs opened"
   focusPage()
   if trace: discard every(5000, traceTick)
+  # WEBBY_TRACE_JS=file (with WEBBY_TRACE=1): runs the file's script in the active tab every second and prints the
+  # tab's state, so a harness can measure from inside a page (the script guards itself; its result can go in the title).
+  if trace and getEnv("WEBBY_TRACE_JS").len > 0:
+    let testJs = readFile(getEnv("WEBBY_TRACE_JS"))
+    discard every(1000, proc () =
+      let t = currentTab()
+      if t != nil:
+        stderr.writeLine "webby-js ", (getMonoTime() - startedAt).inMilliseconds, " loading=", t.loading, " ", t.url, " | ", t.title
+        t.runJs(testJs))
   wake()
   when not defined(android):   # on Android the Activity runs the event loop: run() returns at once
     gtk_main()

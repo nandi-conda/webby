@@ -31,6 +31,12 @@ WEBBY_API int webby_init(char const* prefix);
 /* Runs pending Ladybird events without blocking. Returns events processed. */
 WEBBY_API int webby_pump(void);
 
+/* A file descriptor that turns readable when webby_pump() has work: a message from a page's process (a localStorage
+ * read or a cookie write, which the page waits for), a posted event or a timer coming due. Watch it in the front
+ * end's main loop, read (and drop) its 8 bytes and call webby_pump(). Watched from a thread libwebby starts on the
+ * first call, and re-armed by each webby_pump(), so it fires at most once per pump. -1 if it can't be set up. */
+WEBBY_API int webby_wake_fd(void);
+
 WEBBY_API WebbyView* webby_view_create(int width, int height, double device_pixel_ratio);
 WEBBY_API void webby_view_destroy(WebbyView*);
 
