@@ -1,0 +1,27 @@
+diff --git a/Services/WebContent/PageClient.cpp b/Services/WebContent/PageClient.cpp
+index 29df9c58..98acd420 100644
+--- a/Services/WebContent/PageClient.cpp
++++ b/Services/WebContent/PageClient.cpp
+@@ -1070,11 +1070,20 @@ void PageClient::cancel_download(u64 download_id)
+ 
+     m_canceled_downloads.set(download_id);
+ 
++    if (!reader.has_value()) {
++        controller.value()->stop_fetch();
++        return;
++    }
++
++    // Stopping the fetch and canceling the reader settle promises, which needs a running execution context. This runs
++    // straight from an IPC message with no script on the stack, and without one the JS engine aborts the whole
++    // WebContent process, failing every other download the tab is streaming.
++    Web::HTML::TemporaryExecutionContext execution_context { reader.value()->closed_promise_realm(), Web::HTML::TemporaryExecutionContext::CallbacksEnabled::Yes };
++
+     if (controller.has_value())
+         controller.value()->stop_fetch();
+ 
+-    if (reader.has_value())
+-        Web::Fetch::Infrastructure::cancel_incremental_read(*reader.value());
++    Web::Fetch::Infrastructure::cancel_incremental_read(*reader.value());
+ }
+ 
+ void PageClient::page_did_change_accessibility_focus(Web::UniqueNodeID node_id)
