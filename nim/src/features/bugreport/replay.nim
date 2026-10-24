@@ -189,6 +189,44 @@ proc span*(): int =
     if not p.failed and p.frames > 0: first = min(first, p.startMs)
   int(nowMs() - max(first, nowMs() - keepMs))
 
+proc joinPieces(use: seq[Piece], done: proc (path: string, startMs, endMs: int64, width, height: int,
+               error: string)) =
+  ## Joins `use` into one WebM. If that fails and some pieces are another size than the last one, it tries again
+  ## with only the last run of same-size pieces, so a bad join still leaves the most recent part.
+  let (w, h) = outSize(use[^1].width, use[^1].height)
+  let output = getTempDir() / ("webby-replay-" & $getCurrentProcessId() & "-" & $nowMs() & ".webm")
+  var args = @["--join", output, $w, $h]
+  for p in use: args.add p.path
+  var joiner: Process
+  try: joiner = startProcess(tabrecPath(), args = args, options = {poStdErrToStdOut})
+  except CatchableError as e:
+    done("", 0, 0, 0, 0, "Couldn't join the replay: " & e.msg)
+    return
+  let job = Piece(process: joiner)
+  var joinWait = 0
+  var joinCheck: Timer
+  joinCheck = every(100, proc () =
+    joinWait += 100
+    readOutput(job)
+    if not job.done and joinWait < 120_000: return
+    cancel(joinCheck)
+    if job.done and not job.failed and fileExists(output):
+      done(output, use[0].startMs, use[^1].endMs, w, h, "")
+      return
+    if job.process != nil:
+      try: job.process.terminate(); job.process.close() except CatchableError: discard
+    try: removeFile(output) except CatchableError: discard
+    var tail: seq[Piece]
+    for i in countdown(use.high, 0):
+      if use[i].width != use[^1].width or use[i].height != use[^1].height: break
+      tail.insert(use[i], 0)
+    var lines: seq[string]
+    for line in job.output.splitLines:   # webby-tabrec's own "N frames" lines aren't the error
+      if line.strip.len > 0 and not line.startsWith("webby-tabrec:"): lines.add line.strip
+    stderr.writeLine "webby: joining the replay failed: " & lines.join(" ")
+    if tail.len < use.len: joinPieces(tail, done)
+    else: done("", 0, 0, 0, 0, "Joining the replay failed: " & lines.join(" ")))
+
 proc take*(done: proc (path: string, startMs, endMs: int64, width, height: int, error: string)) =
   ## Ends the current piece and joins everything kept (up to five minutes) into one WebM (a temporary file the caller removes).
   endPiece()
@@ -211,26 +249,5 @@ proc take*(done: proc (path: string, startMs, endMs: int64, width, height: int, 
     if use.len == 0:
       done("", 0, 0, 0, 0, "There's no replay yet: it starts once a page has been shown for a moment.")
       return
-    let (w, h) = outSize(use[^1].width, use[^1].height)
-    let output = getTempDir() / ("webby-replay-" & $getCurrentProcessId() & "-" & $nowMs() & ".webm")
-    var args = @["--join", output, $w, $h]
-    for p in use: args.add p.path
-    var joiner: Process
-    try: joiner = startProcess(tabrecPath(), args = args, options = {poStdErrToStdOut})
-    except CatchableError as e:
-      done("", 0, 0, 0, 0, "Couldn't join the replay: " & e.msg)
-      return
-    let job = Piece(process: joiner)
-    var joinWait = 0
-    var joinCheck: Timer
-    joinCheck = every(100, proc () =
-      joinWait += 100
-      readOutput(job)
-      if not job.done and joinWait < 120_000: return
-      cancel(joinCheck)
-      if job.done and not job.failed and fileExists(output):
-        done(output, use[0].startMs, use[^1].endMs, w, h, "")
-      else:
-        if job.process != nil:
-          try: job.process.terminate(); job.process.close() except CatchableError: discard
-        done("", 0, 0, 0, 0, "Joining the replay failed: " & job.output.strip)))
+    joinPieces(use, done))
+

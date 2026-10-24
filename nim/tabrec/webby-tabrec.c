@@ -40,9 +40,13 @@ static void wait_done(GstElement *p) {
   GstMessage *msg = gst_bus_timed_pop_filtered(bus, 120 * GST_SECOND, GST_MESSAGE_EOS | GST_MESSAGE_ERROR);
   if (!msg) fail("the encoder did not finish");
   if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
+    // GStreamer's message is generic ("Could not multiplex stream."); its debug text names the real cause.
     GError *e = NULL;
-    gst_message_parse_error(msg, &e, NULL);
-    fail(e ? e->message : "encoder error");
+    gchar *debug = NULL;
+    gst_message_parse_error(msg, &e, &debug);
+    gchar *text = g_strdup_printf("%s%s%s", e ? e->message : "encoder error", debug ? " | " : "", debug ? debug : "");
+    for (gchar *c = text; *c; c++) if (*c == '\n') *c = ' ';
+    fail(text);
   }
   gst_message_unref(msg);
   gst_object_unref(bus);
@@ -50,7 +54,9 @@ static void wait_done(GstElement *p) {
 
 static int join(int count, char **inputs, const char *out, int width, int height) {
   // Decoded and encoded again: pieces made at different window sizes come out at one size, and concat keeps the
-  // timestamps running on from piece to piece.
+  // timestamps running on from piece to piece. Every piece is converted to one fixed format (colorimetry and chroma
+  // siting too: GStreamer picks bt709 for taller frames and bt601 for shorter ones) before concat, so the encoder
+  // and muxer never see caps change mid-stream, which Matroska can't take ("Could not multiplex stream").
   GString *desc = g_string_new("");
   g_string_append_printf(desc,
     "concat name=c ! vp8enc deadline=1 cpu-used=8 end-usage=vbr target-bitrate=2000000 keyframe-max-dist=150 "
@@ -58,7 +64,8 @@ static int join(int count, char **inputs, const char *out, int width, int height
   for (int i = 0; i < count; i++) {
     char *quoted = g_strescape(inputs[i], NULL);
     g_string_append_printf(desc, "  filesrc location=\"%s\" ! matroskademux ! vp8dec ! videoscale ! "
-      "video/x-raw,width=%d,height=%d,pixel-aspect-ratio=1/1 ! videoconvert ! video/x-raw,format=I420 ! c.",
+      "video/x-raw,width=%d,height=%d,pixel-aspect-ratio=1/1 ! videoconvert ! "
+      "video/x-raw,format=I420,colorimetry=bt601,chroma-site=jpeg,interlace-mode=progressive ! c.",
       quoted, width, height);
     g_free(quoted);
   }
@@ -97,7 +104,8 @@ int main(int argc, char **argv) {
   char *desc = g_strdup_printf(
     "appsrc name=src format=time is-live=false do-timestamp=false block=true max-bytes=%d "
     "caps=video/x-raw,format=BGRA,width=%d,height=%d,framerate=0/1 ! "
-    "videoscale method=bilinear ! video/x-raw,width=%d,height=%d ! videoconvert ! video/x-raw,format=I420 ! "
+    "videoscale method=bilinear ! video/x-raw,width=%d,height=%d,pixel-aspect-ratio=1/1 ! videoconvert ! "
+    "video/x-raw,format=I420,colorimetry=bt601,chroma-site=jpeg ! "
     "vp8enc deadline=1 cpu-used=8 end-usage=vbr target-bitrate=2500000 keyframe-max-dist=150 threads=4 ! "
     "webmmux ! filesink name=sink",
     width * height * 4 * 4, width, height, out_w, out_h);
