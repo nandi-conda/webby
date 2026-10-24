@@ -112,6 +112,70 @@
     relink();
   }
 
+  // React menus and dialogs (Radix UI, which bsky.app's repost and post menus use, and the kits built on it) make the
+  // page behind them inert with body.style.pointerEvents = 'none' while they are open. pointer-events is inherited, so
+  // in Ladybird that restyles every element of the page, once when the menu opens and once when it closes: 1.1 s each
+  // on a Bluesky feed scrolled 400 posts down. The page gets the same behavior for the price of a few
+  // getComputedStyle calls per click: body keeps its style (reading it back still says 'none'), and a click outside
+  // the menu goes to <html> instead of the element under it, as hit testing finds it when body is pointer-events: none.
+  // That's what the menu listens for to close itself. Inside means an element below body with pointer-events of its
+  // own other than none, as the menu's content sets.
+  if (typeof CSSStyleDeclaration !== 'undefined') {
+    let owner = Object.getPrototypeOf(document.documentElement.style), accessor;
+    while (owner && !(accessor = Object.getOwnPropertyDescriptor(owner, 'pointerEvents'))) owner = Object.getPrototypeOf(owner);
+    if (accessor && accessor.get && accessor.set && accessor.configurable) {
+      let inert = false;
+      const isBodyStyle = (style) => document.body !== null && style === document.body.style;
+      Object.defineProperty(owner, 'pointerEvents', {
+        configurable: true,
+        enumerable: accessor.enumerable,
+        get() { return inert && isBodyStyle(this) ? 'none' : accessor.get.call(this); },
+        set(value) {
+          if (!isBodyStyle(this)) return accessor.set.call(this, value);
+          const wasInert = inert;
+          inert = String(value) === 'none';
+          // Leaving inert puts back what the page saved before it set 'none', which the real style still has.
+          if (!inert && !(wasInert && accessor.get.call(this) === String(value))) accessor.set.call(this, value);
+        },
+      });
+      const hitTestable = (event) => {
+        for (const node of event.composedPath()) {
+          if (node === document.body || node === document.documentElement) return false;
+          if (node.nodeType !== 1) continue;
+          const own = node.style && node.style.pointerEvents;
+          if (own) return own !== 'none';
+          const parent = node.parentElement;
+          if (!parent || parent === document.body) continue;
+          const value = getComputedStyle(node).pointerEvents;
+          if (value !== getComputedStyle(parent).pointerEvents) return value !== 'none';
+        }
+        return false;
+      };
+      for (const type of ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'dblclick', 'auxclick', 'contextmenu']) {
+        window.addEventListener(type, (event) => {
+          if (!inert || !event.isTrusted || hitTestable(event)) return;
+          event.stopImmediatePropagation();
+          event.preventDefault();
+          const copy = new event.constructor(event.type, event);
+          document.documentElement.dispatchEvent(copy);
+        }, true);
+      }
+    }
+  }
+
+  // The same menus lock the page's scrolling with react-remove-scroll, which blocks wheel and touch scrolling itself
+  // and also sets body[data-scroll-locked], a style that gives body overflow: hidden. Body's overflow is the
+  // viewport's, so Ladybird lays the whole page out again for it (1.2 s on that feed) and again when the menu closes.
+  // The wheel and touch blocking is what keeps the page still; without the attribute the menu opens without the
+  // relayout. The library reads the attribute back only to count nested locks, and an absent one counts as none.
+  if (typeof Element !== 'undefined') {
+    const setAttribute = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function (name, value) {
+      if (typeof name === 'string' && name.length === 18 && this === document.body && name.toLowerCase() === 'data-scroll-locked') return;
+      return setAttribute.apply(this, arguments);
+    };
+  }
+
   // Ladybird has no MediaRecorder. Pages that subclass it at the top of a module (`class extends MediaRecorder`, as
   // Jam's recorder.jam.dev does) die with a ReferenceError before they draw anything, even when they would check for
   // recording support and say it's missing. A stand-in that can be extended but records nothing lets them get there.

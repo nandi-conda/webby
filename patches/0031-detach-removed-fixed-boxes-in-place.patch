@@ -1,0 +1,44 @@
+diff --git a/Libraries/LibWeb/DOM/Node.cpp b/Libraries/LibWeb/DOM/Node.cpp
+index c281d93f9..51890d800 100644
+--- a/Libraries/LibWeb/DOM/Node.cpp
++++ b/Libraries/LibWeb/DOM/Node.cpp
+@@ -1530,8 +1530,10 @@ void Node::update_layout_tree_for_removal(Layout::BegunRead const& read, Node& p
+         document().set_needs_repaint(Badge<Node> {}, InvalidateDisplayList::No);
+         for (Element* node = parent_element; node && node->is_svg_element(); node = node->parent_element().ptr())
+             static_cast<SVG::SVGElement&>(*node).mark_resource_box_referencing_elements_for_content_change();
+-        // A contained absolutely positioned box leaves without a layout following: do what one would have done for it.
+-        if (element && element->computed_style() && element->computed_style()->position() == CSS::Positioning::Absolute) {
++        // A contained absolutely positioned box (position: absolute or fixed) leaves without a layout following: do what
++        // one would have done for it.
++        auto const position = element && element->computed_style() ? element->computed_style()->position() : CSS::Positioning::Static;
++        if (position == CSS::Positioning::Absolute || position == CSS::Positioning::Fixed) {
+             document().set_needs_accumulated_visual_contexts_update(true);
+             document().schedule_scroll_container_resnap();
+             document().set_needs_repaint(Badge<Node> {}, InvalidateDisplayList::PaintCommandsAndHitTestList);
+diff --git a/Libraries/LibWeb/Rust/src/layout/box_removal.rs b/Libraries/LibWeb/Rust/src/layout/box_removal.rs
+index 631ecef58..cdbad16ef 100644
+--- a/Libraries/LibWeb/Rust/src/layout/box_removal.rs
++++ b/Libraries/LibWeb/Rust/src/layout/box_removal.rs
+@@ -16,7 +16,6 @@ use super::node_facts::{self, has_flag};
+ use super::tree_builder::node_kind_is_node_with_style;
+ use super::tree_mutation::HostWorkDue;
+ use super::tree_update_marks::FfiLayoutTreeUpdateMark;
+-use crate::css::css_enums::positioning;
+ use crate::css::style::tree::StyleNodeID;
+ use crate::layout::FfiDisplay;
+ use crate::painting::paint_read::PaintRead;
+@@ -67,11 +66,13 @@ impl LayoutNodeArena {
+             .map_or_else(FfiDisplay::block, |style| style.display())
+     }
+ 
++    /// Whether the box is absolutely positioned, `position: absolute` or `position: fixed` alike: neither takes part in
++    /// its DOM parent's formatting structure.
+     fn is_absolutely_positioned_box(&self, row: NodeSlotId) -> bool {
+         node_kind_is_node_with_style(self.data(row).kind.get())
+             && self
+                 .node_style_if_live(row)
+-                .is_some_and(|style| style.box_values().position == positioning::ABSOLUTE)
++                .is_some_and(|style| style.is_absolutely_positioned())
+     }
+ 
+     /// Whether the box `child` of the node `child_node` can leave the box `parent` of its DOM parent `parent_node`
