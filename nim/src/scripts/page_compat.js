@@ -176,6 +176,18 @@
     };
   }
 
+  // And they put a focus guard (an invisible position: fixed span) at the very start of body. Ladybird adds a box
+  // ahead of the page's own content by building body's whole layout tree again (1-2.4 s on that feed), where one
+  // added at the end slots in. The guards only catch Tab at the edges of the page, so the first goes at the end too.
+  if (typeof Element !== 'undefined') {
+    const insertAdjacentElement = Element.prototype.insertAdjacentElement;
+    Element.prototype.insertAdjacentElement = function (where, element) {
+      if (this === document.body && element instanceof Element && element.hasAttribute('data-radix-focus-guard')
+          && String(where).toLowerCase() === 'afterbegin') where = 'beforeend';
+      return insertAdjacentElement.call(this, where, element);
+    };
+  }
+
   // Ladybird has no MediaRecorder. Pages that subclass it at the top of a module (`class extends MediaRecorder`, as
   // Jam's recorder.jam.dev does) die with a ReferenceError before they draw anything, even when they would check for
   // recording support and say it's missing. A stand-in that can be extended but records nothing lets them get there.
