@@ -1,7 +1,7 @@
 ## Bug reports, like Jam's browser extension: ⋮ > Report a bug (Ctrl+Shift+X) takes a screenshot of the page or
 ## records the tab, and adds what the page did (console messages and errors, network requests, clicks, typing and
 ## navigations, from scripts/bug_capture.js), the page's address and webby's version. The report is saved as a
-## folder (the media, report.json and a report.html to look through it) under Downloads/webby-bug-reports, and can
+## folder (the media, report.json and a report.html to look through it) under <download folder>/webby-bug-reports, and can
 ## go up to Jam as a Jam with all of it on its timeline (bugreport/jam.nim). The Jam token is a secret in the
 ## password vault, set in ⋮ > Jam settings.
 ##
@@ -321,7 +321,8 @@ proc showDetails(r: Report) =
   kit.add(box, notes)
   let jamNote = if token().len > 0: "Upload to Jam makes a Jam with the " & (if r.video: "video" else: "screenshot") &
     ", console, network and actions, and copies its link." else: "Upload to Jam asks for your Jam token first."
-  kit.add(box, kit.addClass(kit.addClass(kit.label("Save keeps it in Downloads/webby-bug-reports. " & jamNote), "dim"), "small"))
+  kit.add(box, kit.addClass(kit.addClass(kit.label("Save keeps it in " &
+    (downloadsDir() / "webby-bug-reports").replace(getHomeDir().strip(leading = false, chars = {'/'}), "~") & ". " & jamNote), "dim"), "small"))
   var d: kit.Dialog
   d = kit.dialog("Report a bug", box, @["Discard", "Save", "Upload to Jam"], onResult = proc (i: int) =
     if i notin [1, 2]: return

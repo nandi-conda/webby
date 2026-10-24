@@ -905,8 +905,10 @@ backend.closeDialog = proc (d: Dialog) =
 backend.chooseFiles = proc (r: FileRequest, onDone: proc (paths: seq[string])) =
   # The native chooser: the desktop portal's when there is one (sandboxes, other desktops), else GTK's.
   let d = gtk_file_chooser_native_new(r.title.cstring, toplevel(),
-    if r.save: GTK_FILE_CHOOSER_ACTION_SAVE else: GTK_FILE_CHOOSER_ACTION_OPEN,
-    (if r.save: "_Save" else: "_Open").cstring, "_Cancel")
+    if r.directory: GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER
+    elif r.save: GTK_FILE_CHOOSER_ACTION_SAVE else: GTK_FILE_CHOOSER_ACTION_OPEN,
+    (if r.directory: "_Select" elif r.save: "_Save" else: "_Open").cstring, "_Cancel")
+  if r.folder.len > 0: discard gtk_file_chooser_set_current_folder(d, r.folder.cstring)
   if r.patterns.len + r.mimeTypes.len > 0:
     let f = gtk_file_filter_new()
     gtk_file_filter_set_name(f, (if r.filterName.len > 0: r.filterName
@@ -923,7 +925,7 @@ backend.chooseFiles = proc (r: FileRequest, onDone: proc (paths: seq[string])) =
   if r.save:
     if r.name.len > 0: gtk_file_chooser_set_current_name(d, r.name.cstring)
     gtk_file_chooser_set_do_overwrite_confirmation(d, 1)
-  gtk_file_chooser_set_select_multiple(d, (r.multiple and not r.save).gboolean)
+  gtk_file_chooser_set_select_multiple(d, (r.multiple and not r.save and not r.directory).gboolean)
   var paths: seq[string]
   if gtk_native_dialog_run(d) == GTK_RESPONSE_ACCEPT:
     type GSList = object

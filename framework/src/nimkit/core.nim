@@ -137,7 +137,8 @@ type
   FileRequest* = object
     ## What `chooseFile`/`chooseFiles` ask the system's file chooser for.
     title*, name*, filterName*: string
-    save*, multiple*: bool
+    folder*: string                  ## where the chooser starts ("" for its own choice)
+    save*, multiple*, directory*: bool   ## `directory`: pick a folder instead of files
     patterns*, mimeTypes*: seq[string]
 
   MenuItem* = object
@@ -705,10 +706,19 @@ proc chooseFiles*(title: string, onDone: proc (paths: seq[string]), multiple = t
   else: onDone(@[])
 
 proc chooseFile*(title: string, onDone: proc (path: string), save = false, name = "",
-                 patterns: seq[string] = @[], filterName = "") =
+                 patterns: seq[string] = @[], filterName = "", folder = "") =
   ## Asks for a file to open (or, with `save`, a place to save one, suggesting `name`). `patterns` such as "*.html"
   ## limit the choice, under `filterName`. onDone gets the path, or "" if cancelled. Backends without files skip it.
-  let r = FileRequest(title: title, save: save, name: name, patterns: patterns, filterName: filterName)
+  let r = FileRequest(title: title, save: save, name: name, patterns: patterns, filterName: filterName,
+                      folder: folder)
+  let done = proc (paths: seq[string]) = onDone(if paths.len > 0: paths[0] else: "")
+  if backend.chooseFiles != nil: backend.chooseFiles(r, done)
+  else: done(@[])
+
+proc chooseFolder*(title: string, onDone: proc (path: string), folder = "") =
+  ## Asks for a folder, starting in `folder`. onDone gets its path, or "" if cancelled. Backends without files
+  ## skip it.
+  let r = FileRequest(title: title, directory: true, folder: folder)
   let done = proc (paths: seq[string]) = onDone(if paths.len > 0: paths[0] else: "")
   if backend.chooseFiles != nil: backend.chooseFiles(r, done)
   else: done(@[])

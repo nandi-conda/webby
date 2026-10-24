@@ -252,6 +252,7 @@ const
   GTK_TARGET_SAME_APP* = 1.cuint
   GTK_FILE_CHOOSER_ACTION_OPEN* = 0.cint
   GTK_FILE_CHOOSER_ACTION_SAVE* = 1.cint
+  GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER* = 2.cint
   GTK_RESPONSE_ACCEPT* = -3.cint
   GTK_RESPONSE_CANCEL* = -6.cint
 {.push cdecl, importc.}
@@ -287,6 +288,7 @@ proc gtk_file_chooser_native_new*(title: cstring, parent: GtkWidget, action: cin
 proc gtk_native_dialog_run*(d: GtkWidget): cint
 proc gtk_native_dialog_destroy*(d: GtkWidget)
 proc gtk_file_chooser_set_filter*(c: GtkWidget, f: pointer)
+proc gtk_file_chooser_set_current_folder*(c: GtkWidget, folder: cstring): gboolean
 proc gtk_file_chooser_set_select_multiple*(c: GtkWidget, on: gboolean)
 proc gtk_file_chooser_get_filenames*(c: GtkWidget): pointer
 proc gtk_file_filter_add_mime_type*(f: pointer, mime: cstring)

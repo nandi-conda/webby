@@ -5,8 +5,13 @@
 ## The list comes from webby_downloads_json (runtimes since 2026.10.15); on Android, whose engine build doesn't have
 ## it, from "download" host events of the app's folder watcher (android-kit Downloads.java: bytes so far, no total,
 ## no cancel). Older desktop runtimes still save the files, and Ctrl+J then opens the Downloads folder.
+## On the desktop the sidebar's top row also picks the folder downloads go to and whether to ask where to save each
+## file: <profile>/downloads.json ({"folder": path or "", "ask": bool}). Ladybird reads $XDG_DOWNLOAD_DIR for every
+## download, so changing it applies at once; bug reports and Save image follow it too. Asking can't hold the engine
+## back (it picks the path itself), so the file chooser opens as the download starts and the file is moved there
+## once it's done; cancelling the chooser cancels the download.
 
-import std/[json, os, sequtils, strutils, tables, uri]
+import std/[json, os, sequtils, strutils, tables, times, uri]
 import ../browser
 from nimkit/core as kit import nil
 import tabs/common
@@ -28,6 +33,7 @@ type
     url, path, status, error: string
     fileName: string               ## the name to show when `path` doesn't end in it (an Android content:// URI)
     received, total, rate, remaining: int64
+    created: int64                 ## unix ms; 0 when unknown (Android)
     canResume, private: bool
   Row = object
     name, detail, bar, pauseButton, actionButton: kit.Widget
@@ -42,10 +48,14 @@ var
   hostIds: Table[string, uint64] ## Android: file name -> its list entry's id
   hostSerial: uint64             ## Android: the last id given out
   panelOpen = false
-  panelList: kit.Widget
+  panelList, panelTop: kit.Widget
   rows: Table[uint64, Row]
   refreshQueued = false
-  primed = false                 ## the first list was read (downloads Ladybird restored aren't announced)
+  startedMs = int64(epochTime() * 1000)   ## downloads from before this (Ladybird restored them) aren't announced
+  systemDir: string              ## the Downloads folder webby uses when none is chosen
+  prefs: JsonNode                ## downloads.json, read once
+  destinations: Table[uint64, string]  ## asked downloads: id -> where the user wants it ("" while still asking)
+  moved: Table[uint64, string]         ## id -> where an asked download's file was moved
 
 proc hasApi(): bool = webby_downloads_serial != nil and webby_downloads_json != nil
 proc listed(): bool = hasApi() or defined(android)   ## whether there is a list to show
@@ -64,17 +74,48 @@ proc userDirsDownload(): string =
       return v.replace("$HOME", getHomeDir().strip(leading = false, chars = {'/'}))
   except CatchableError: discard
 
-proc downloadsDir*(): string =
+proc defaultDownloadsDir(): string =
   result = getEnv("XDG_DOWNLOAD_DIR")
   if result.len == 0: result = userDirsDownload()
   if result.len == 0: result = getHomeDir() / "Downloads"
 
-proc setUpDirectory() =
-  ## Before Ladybird starts: point it at the user's Downloads folder and make sure that exists (runtimes before
-  ## 2026.10.15 fail a download into a missing folder with only a log line).
-  let dir = downloadsDir()
+proc pref(): JsonNode =
+  if prefs == nil:
+    prefs = readJsonFile(profileFile("downloads.json"))
+    if prefs == nil or prefs.kind != JObject: prefs = newJObject()
+  prefs
+
+proc savePrefs() =
+  # Incognito windows follow the normal profile's choices but don't change them.
+  if not incognito:
+    try: writeJsonFile(profileFile("downloads.json"), pref()) except CatchableError: discard
+
+proc chosenDir(): string =
+  when defined(android): "" else: pref(){"folder"}.getStr
+
+proc askEachTime(): bool =
+  when defined(android): false else: pref(){"ask"}.getBool
+
+proc downloadsDir*(): string =
+  ## Where downloads (and bug reports, saved images) go: the folder picked in the Downloads sidebar, else the
+  ## user's Downloads folder.
+  result = chosenDir()
+  if result.len == 0: result = (if systemDir.len > 0: systemDir else: defaultDownloadsDir())
+
+proc applyDirectory() =
+  ## Points Ladybird at downloadsDir() and makes sure that exists (runtimes before 2026.10.15 fail a download into
+  ## a missing folder with only a log line). A chosen folder that can't be made (a drive that isn't mounted) falls
+  ## back to the Downloads folder until it can.
+  var dir = downloadsDir()
+  try: createDir(dir)
+  except CatchableError:
+    dir = systemDir
+    try: createDir(dir) except CatchableError: discard
   putEnv("XDG_DOWNLOAD_DIR", dir)
-  try: createDir(dir) except CatchableError: discard
+
+proc setUpDirectory() =
+  systemDir = defaultDownloadsDir()
+  applyDirectory()
 
 # ---------------------------------------------------------------------------------------------------------------
 # Opening files
@@ -123,7 +164,7 @@ proc parse(text: string): seq[Download] =
       result.add Download(id: uint64(d{"id"}.getBiggestInt), url: d{"url"}.getStr, path: d{"path"}.getStr,
         status: d{"status"}.getStr, error: d{"error"}.getStr, received: d{"received"}.getBiggestInt,
         total: d{"total"}.getBiggestInt(-1), rate: d{"rate"}.getBiggestInt(-1),
-        remaining: d{"remaining"}.getBiggestInt(-1), canResume: d{"canResume"}.getBool,
+        remaining: d{"remaining"}.getBiggestInt(-1), created: d{"created"}.getBiggestInt, canResume: d{"canResume"}.getBool,
         private: d{"private"}.getBool)
   except CatchableError: discard
 
@@ -192,7 +233,7 @@ proc updateRow(r: var Row, d: Download) =
     kit.`tooltip=`(r.pauseButton, if d.status == "paused": "Resume" else: "Pause")
     kit.`iconName=`(r.actionButton, if d.active: "close" else: "folder_open")
     kit.`tooltip=`(r.actionButton, if d.active: "Cancel" else: "Show in folder")
-    kit.`enabled=`(r.actionButton, d.active and webby_downloads_cancel != nil or d.status == "completed" and d.available)
+  kit.`enabled=`(r.actionButton, d.active and webby_downloads_cancel != nil or d.status == "completed" and d.available)
 
 proc pauseOrResume(id: uint64) =
   let i = find(id)
@@ -283,6 +324,65 @@ proc clearList() =
     refreshAll()
   wake()
 
+# ---------------------------------------------------------------------------------------------------------------
+# Choosing where downloads go
+
+proc tilde(path: string): string = path.replace(getHomeDir().strip(leading = false, chars = {'/'}), "~")
+
+proc fillPanelTop()
+
+proc setFolder(dir: string) =
+  ## Downloads go to `dir` from now on ("" for the Downloads folder).
+  pref()["folder"] = %(if dir == systemDir: "" else: dir)
+  savePrefs()
+  applyDirectory()
+  fillPanelTop()
+  toast("Downloads go to " & tilde(downloadsDir()))
+
+proc changeFolder() =
+  kit.chooseFolder("Download to", proc (dir: string) =
+    if dir.len > 0: setFolder(dir), downloadsDir())
+
+proc setAsk(on: bool) =
+  pref()["ask"] = %on
+  savePrefs()
+
+proc settle(id: uint64) =
+  ## Moves an asked download's finished file to where the user said, once both are known.
+  let dest = destinations.getOrDefault(id, "")
+  let i = find(id)
+  if dest.len == 0 or i < 0 or downloads[i].status != "completed": return
+  destinations.del id
+  let src = downloads[i].path
+  if src != dest:
+    try: moveFile(src, dest)
+    except CatchableError as e:
+      toast("Couldn't move " & src.extractFilename & " to " & tilde(dest) & ": " & e.msg)
+      return
+  moved[id] = dest
+  downloads[i].path = dest
+
+proc askWhere(id: uint64, name: string) =
+  ## The save chooser for a download that has just started (it keeps going meanwhile).
+  kit.chooseFile("Save " & name, proc (path: string) =
+    let i = find(id)
+    if i < 0 or downloads[i].status in ["canceled", "failed"]:
+      destinations.del id
+    elif path.len == 0:
+      destinations.del id
+      if downloads[i].active:
+        if webby_downloads_cancel != nil: webby_downloads_cancel(id)
+      else:
+        try: removeFile(downloads[i].path) except CatchableError: discard
+      toast("Canceled " & name)
+      refreshAll()
+      wake()
+    else:
+      destinations[id] = path
+      settle(id)
+      if id in moved: toast(path.extractFilename & " saved")
+      refreshAll(), save = true, name = name, folder = downloadsDir())
+
 proc toggleDownloads*() =
   if not listed():
     openPath(downloadsDir())
@@ -290,21 +390,41 @@ proc toggleDownloads*() =
   if panelOpen:
     closeSidePanel()
     return
-  let where = dim(downloadsDir().replace(getHomeDir().strip(leading = false, chars = {'/'}), "~"))
-  let top = kit.addClass(kit.row(kit.expand(where),
-    kit.iconButton("folder_open", "Open the Downloads folder", openDownloadsFolder),
-    kit.iconButton("delete_sweep_outlined", "Clear finished downloads from the list", clearList)), "webby-panel-top")
-  top.spacing = 4
+  panelTop = kit.column()
   panelList = kit.column()
   panelList.spacing = 0
-  let body = kit.column(top, kit.expand(kit.scroll(panelList)))
+  let body = kit.column(panelTop, kit.expand(kit.scroll(panelList)))
   body.spacing = 4
   panelOpen = true
   showSidePanel("Downloads", body, 360, proc () =
     panelOpen = false
+    panelTop = nil
     panelList = nil
     rows.clear)
+  fillPanelTop()
   fillPanel()
+
+proc fillPanelTop() =
+  ## The folder downloads go to, with buttons to open it, pick another and clear the list; on the desktop also
+  ## whether to ask where to save each file.
+  if panelTop == nil: return
+  kit.clear(panelTop)
+  let where = dim(tilde(downloadsDir()))
+  kit.`tooltip=`(where, downloadsDir())
+  var buttons = @[kit.expand(where),
+    kit.iconButton("folder_open", "Open the download folder", openDownloadsFolder)]
+  when not defined(android):
+    buttons.add kit.iconButton("edit_outlined", "Change the download folder", changeFolder)
+  buttons.add kit.iconButton("delete_sweep_outlined", "Clear finished downloads from the list", clearList)
+  let top = kit.addClass(kit.row(buttons), "webby-panel-top")
+  top.spacing = 4
+  kit.add(panelTop, top)
+  when not defined(android):
+    let ask = kit.addClass(kit.check("Ask where to save each file", askEachTime(), setAsk), "webby-panel-top")
+    kit.add(panelTop, ask)
+    if chosenDir().len > 0:
+      let reset = kit.addClass(kit.button("Use " & tilde(systemDir), proc () = setFolder("")), "webby-panel-top")
+      kit.add(panelTop, kit.row(reset))
 
 # ---------------------------------------------------------------------------------------------------------------
 # Following the engine's list
@@ -335,16 +455,20 @@ proc announce() =
     let before = known.getOrDefault(d.id, "")
     if before == d.status: continue
     known[d.id] = d.status
+    if d.created > 0 and d.created < startedMs: continue
+    if before.len == 0 and (d.active or d.status == "completed") and askEachTime() and hasApi():
+      destinations[d.id] = ""
+      let (id, name) = (d.id, d.name)
+      discard after(0, proc () = askWhere(id, name))   # not from inside the list's refresh
+      continue
     if panelOpen: continue
     if before.len == 0 and d.active: toast("Downloading " & d.name & " (Ctrl+J shows downloads)")
-    elif d.status == "completed": toast(d.name & " downloaded")
+    elif d.status == "completed":
+      if d.id notin destinations: toast(d.name & " downloaded")   # else when the chooser closes
     elif d.status == "failed": toast("Couldn't download " & d.name)
 
 proc refreshAll() =
-  if primed: announce()
-  else:
-    for d in downloads: known[d.id] = d.status
-    primed = true
+  announce()
   refreshButton()
   refreshPanel()
 
@@ -366,7 +490,6 @@ proc onHostEvent(name, data: string) =
     let received = e{"received"}.getBiggestInt
     if received > 0 or downloads[at].status != "in_progress": downloads[at].received = received
     if e{"path"}.getStr.len > 0: downloads[at].path = e{"path"}.getStr
-    primed = true
     refreshAll()
   except CatchableError: discard
 
@@ -380,6 +503,9 @@ proc poll() =
     refreshQueued = false
     serial = webby_downloads_serial()
     downloads = parse($webby_downloads_json())
+    for d in downloads.mitems:
+      if d.id in moved: d.path = moved[d.id]
+    for id in toSeq(destinations.keys): settle(id)
     refreshAll())
 
 proc install*() =
