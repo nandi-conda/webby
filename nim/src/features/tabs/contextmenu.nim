@@ -247,14 +247,14 @@ proc showPageMenu*(t: Tab, info: JsonNode, x, y: float) =
     if newTabs: item("Open link in new tab", proc () = openInBackgroundTab(link))
     if newTabs and not incognito: item("Open link in incognito window", proc () = openIncognitoWindow(link))
     item("Open link", proc () = t.loadUrl(link))
-    item("Copy link address", proc () = copyText(link))
+    item("Copy link address", proc () = copyUrl(link))
     if linkText.len > 0: item("Copy link text", proc () = copyText(linkText))
   if image.len > 0:
     group()
     if newTabs: item("Open image in new tab", proc () = openInBackgroundTab(image))
     else: item("Open image", proc () = t.loadUrl(image))
     item("Save image to Downloads", proc () = saveImage(image))
-    item("Copy image address", proc () = copyText(image))
+    item("Copy image address", proc () = copyUrl(image))
   if editable:
     group()
     let has = selection.len > 0 and not password
@@ -278,7 +278,7 @@ proc showPageMenu*(t: Tab, info: JsonNode, x, y: float) =
     item("Reload", proc () = (webby_view_reload(t.view); wake()))
     group()
     item("Select all", proc () = t.runJs(actionScript("selectAll")))
-    item("Copy page address", proc () = copyText(t.url))
+    item("Copy page address", proc () = copyUrl(t.url))
   group()
   item("Inspect", proc () = t.runJs(inspectScript(t, select = true)))
   kit.popupMenu(items, page, x, y)

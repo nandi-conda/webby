@@ -268,7 +268,7 @@ proc rowMenu(id: uint64) =
     items.add kit.menuItem("Show in folder", proc () = showInFolder(d.path))
     items.add kit.menuSeparator()
   items.add kit.menuItem("Copy download link", proc () =
-    copyText(d.url))
+    copyUrl(d.url))
   if not d.active and webby_downloads_start != nil:
     items.add kit.menuItem("Download again", proc () =
       discard webby_downloads_start(d.url.cstring, d.private.cint)

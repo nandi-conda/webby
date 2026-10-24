@@ -25,6 +25,11 @@ export base, ffi, json, tables
 export services.copyText, services.pasteText, services.after, services.every, services.cancel, services.Timer,
   services.hostCall, services.hostEventHooks
 
+proc copyUrl*(url: string) =
+  ## Puts an address on the clipboard and says so.
+  copyText(url)
+  kit.toast("URL copied")
+
 # Shims for what Ladybird lacks, run on every page (scripts/page_compat.js).
 const pageCompatScript* = staticRead("scripts/page_compat.js")
 

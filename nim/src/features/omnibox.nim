@@ -158,6 +158,15 @@ proc onKey(e: kit.KeyEvent): bool =
     hidePopup()
     if picked.url.len > 0: open(picked) else: go(text)
     true
+  of 0x43, 0x58:                              # Ctrl+C, Ctrl+X: the entry copies; say so when it's the whole address
+    if (e.mods and modCtrl) == 0: return false
+    let t = currentTab()
+    if t != nil and t.url.len > 0 and t.url != "about:blank":
+      let url = t.url
+      discard after(50, proc () =
+        pasteText(proc (copied: string) =
+          if copied == url: kit.toast("URL copied")))
+    false
   else: false
 
 proc onFocus(focused: bool) =

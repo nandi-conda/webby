@@ -183,7 +183,7 @@ proc fillSyncOn(box: kit.Widget, s: JsonNode) =
     var buttons = @[btn("Copy code", proc () = copyText(s.code))]
     if link != "webby-sync:pair?code=" & s.code:
       kit.add(box, kit.addClass(text(link, dim = true, small = true), "mono"))
-      buttons.add btn("Copy pairing link", proc () = copyText(link))
+      buttons.add btn("Copy pairing link", proc () = copyUrl(link))
     buttons.add btn("Hide", proc () = (codeShown = false; refresh()), flat = true)
     kit.add(box, buttonRow(buttons))
   kit.add(box, kit.separator())
