@@ -63,7 +63,7 @@ requirements:
     # The PDF viewer's renderer (nim/pdf/webby-pdf).
     - mupdf
   run:
-    - webby-ladybird >=2026.10.24.5
+    - webby-ladybird >=2026.10.24.8
     # The password vault's key goes in the desktop keyring through libsecret (loaded at runtime).
     - libsecret
     - gtk3
