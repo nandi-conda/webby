@@ -63,8 +63,17 @@ jobs:
           png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b'')
           open('/tmp/screenshot.png', 'wb').write(png)
           EOF
-          # Instant replay's join of 30 s pieces (here the same piece twice), which is what goes up as the video
-          /tmp/webby-tabrec --join /tmp/replay.webm 640 360 /tmp/recording.webm /tmp/recording.webm
+          # A noisy piece, so the joined video is several upload chunks (4 MiB each) like a long replay
+          python3 - <<'EOF' | /tmp/webby-tabrec 640 360 /tmp/noise.webm
+          import os, sys
+          out = sys.stdout.buffer
+          for i in range(400):
+              out.write(b'F %d\n' % (i * 100))
+              out.write(os.urandom(640 * 360 * 4))
+          out.write(b'E 40000\n')
+          EOF
+          # Instant replay's join of 30 s pieces, which is what goes up as the video
+          /tmp/webby-tabrec --join /tmp/replay.webm 640 360 /tmp/recording.webm /tmp/noise.webm
           ls -la /tmp/recording.webm /tmp/replay.webm /tmp/screenshot.png
       - name: Upload to Jam
         run: |
