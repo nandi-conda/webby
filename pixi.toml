@@ -10,7 +10,7 @@ platforms = [{ name = "linux-64-glibc235", platform = "linux-64", glibc = "2.35"
 
 [dependencies]
 # libwebby.so (LibWeb/LibJS) and the helper processes; activation sets WEBBY_LADYBIRD_PREFIX unless it's already set.
-webby-ladybird = ">=2026.10.24.4"
+webby-ladybird = ">=2026.10.24.5"
 # The password vault's key goes in the desktop keyring through libsecret (loaded at runtime).
 libsecret = "*"
 # The Nim front end (scripts/pixi_nim.sh): the compiler and its C toolchain, GTK 3, GIO's TLS module for its HTTPS
