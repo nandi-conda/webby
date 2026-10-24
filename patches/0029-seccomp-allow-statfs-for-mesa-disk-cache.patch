@@ -1,0 +1,53 @@
+diff --git a/Libraries/LibSandbox/Seccomp.cpp b/Libraries/LibSandbox/Seccomp.cpp
+index bb1e3323..79252a4e 100644
+--- a/Libraries/LibSandbox/Seccomp.cpp
++++ b/Libraries/LibSandbox/Seccomp.cpp
+@@ -192,6 +192,8 @@ static constexpr unsigned read_only_open_flags = [] {
+ #define IF_DEFINED_socket(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_socketpair(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_stat(if_defined, if_not_defined) if_defined
++#define IF_DEFINED_statfs(if_defined, if_not_defined) if_defined
++#define IF_DEFINED_statfs64(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_statx(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_symlink(if_defined, if_not_defined) if_defined
+ #define IF_DEFINED_sysinfo(if_defined, if_not_defined) if_defined
+@@ -453,6 +455,14 @@ static constexpr unsigned read_only_open_flags = [] {
+ #    undef IF_DEFINED_stat
+ #    define IF_DEFINED_stat(if_defined, if_not_defined) if_not_defined
+ #endif
++#ifndef __NR_statfs
++#    undef IF_DEFINED_statfs
++#    define IF_DEFINED_statfs(if_defined, if_not_defined) if_not_defined
++#endif
++#ifndef __NR_statfs64
++#    undef IF_DEFINED_statfs64
++#    define IF_DEFINED_statfs64(if_defined, if_not_defined) if_not_defined
++#endif
+ #ifndef __NR_statx
+ #    undef IF_DEFINED_statx
+ #    define IF_DEFINED_statx(if_defined, if_not_defined) if_not_defined
+@@ -679,6 +689,12 @@ static char const* syscall_name(long syscall_number)
+ #ifdef __NR_stat
+         CASE_SYSCALL_NAME(stat);
+ #endif
++#ifdef __NR_statfs
++        CASE_SYSCALL_NAME(statfs);
++#endif
++#ifdef __NR_statfs64
++        CASE_SYSCALL_NAME(statfs64);
++#endif
+ #ifdef __NR_statx
+         CASE_SYSCALL_NAME(statx);
+ #endif
+@@ -1201,6 +1217,11 @@ void SeccompPolicy::allow_filesystem_metadata_queries()
+     SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, readlink);
+     SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, readlinkat);
+     SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, stat);
++    // webby: Mesa's shader disk cache sizes itself with statvfs() on its cache directory when a GL context is
++    // created, which glibc implements with statfs. Without it the Compositor is killed on the first WebGL
++    // context (Bing Images), and WebContent crashes waiting for the reply.
++    SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, statfs);
++    SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, statfs64);
+     SECCOMP_APPEND_ALLOW_SYSCALL_IF_DEFINED(*this, statx);
+ }
+ 
