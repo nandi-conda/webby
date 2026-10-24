@@ -11,7 +11,7 @@
 ## A site that won't hand webby the file (Cloudflare's challenge on dl.acm.org needs the engine's cookies) gets it
 ## through Ladybird's own download instead, which then also stays in the downloads folder.
 
-import std/[algorithm, hashes, math, os, posix, strutils, tables, unicode, uri]
+import std/[algorithm, base64, hashes, math, os, posix, strutils, tables, unicode, uri]
 import ../browser
 import nimkit/services
 from nimkit/core as kit import nil
@@ -38,6 +38,38 @@ const
   selectionColor = 0x3390FF'u32
   matchColor = 0xFFD000'u32
   currentMatchColor = 0xFF8C00'u32
+
+# Hands webby pdf.js's copy of the PDF once it has the whole document, in base64 pieces through the page message
+# channel: where the engine's navigation got the file and nothing else can (Cloudflare on dl.acm.org turns away
+# webby's own request and Ladybird's download alike). The viewer page isn't the PDF's origin, so it can't fetch it.
+const bytesScript = """
+(async () => {
+  const P = PREFIX, ID = DOCID;
+  const send = m => { try { window.prompt(P + JSON.stringify(Object.assign({ type: 'webbyPdfData', id: ID }, m))); } catch (e) {} };
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  // Not yet the viewer (the old document right after the navigation started), or still parsing: a prompt() then
+  // can wedge Ladybird's parser.
+  for (let i = 0; i < 50 && !(window.PDFViewerApplication || document.getElementById('viewerContainer')); i++) await sleep(200);
+  for (let i = 0; i < 50 && document.readyState === 'loading'; i++) await sleep(200);
+  if (document.readyState === 'loading') return send({ error: 'still loading' });
+  let bytes = null;
+  for (let i = 0; i < 600 && !bytes; i++) {
+    const app = window.PDFViewerApplication;
+    if (app && app.pdfDocument) {
+      try { bytes = await app.pdfDocument.getData(); } catch (e) { return send({ error: String(e) }); }
+    } else await sleep(200);
+  }
+  if (!bytes) return send({ error: 'pdf.js never got the document' });
+  const n = 3 * 65536;
+  for (let i = 0; i < bytes.length; i += n) {
+    const c = bytes.subarray(i, i + n);
+    let s = '';
+    for (let j = 0; j < c.length; j += 8192) s += String.fromCharCode.apply(null, c.subarray(j, j + 8192));
+    send({ data: btoa(s) });
+  }
+  send({ done: true });
+})();
+"""
 
 # Detects the viewer page even after pdf.js changed its title (a PDF it did get).
 const detectScript = """
@@ -84,6 +116,9 @@ type
     url, path, title, status: string
     state: DocState
     downloadId: uint64            ## fetching through Ladybird's download (the site wanted its cookies)
+    id: int                       ## tells this document's page messages from an earlier one's
+    pageData: string              ## the PDF so far from inside the page (bytesScript)
+    pageFailed, gioFailed, engineTried, engineFailed: bool
     pid: cint
     inFd, outFd: cint
     watch: cuint
@@ -107,9 +142,13 @@ type
     current: int                  ## index in matches, -1 none
     findShown: bool
     lastPage: int                 ## the page number the bar shows
+    barHover: int                 ## the scrollbar under the pointer: 0 none, 1 vertical, 2 horizontal
+    barDrag: int                  ## the scrollbar whose thumb is being dragged (same numbers)
+    barGrab: float                ## where in the thumb it was grabbed, in pixels from its start
 
 var
   docs: Table[int, Doc]           ## by the tab's address
+  nextId = 1
   cacheDir: string
   bar, pageEntry, pageCount, zoomLabel, statusLabel, fitButton: kit.Widget
   barShown = false
@@ -462,15 +501,39 @@ proc opened(d: Doc, path: string) =
   startHelper(d)
   invalidate(d)
 
+proc closeDoc(t: Tab)
+
+proc giveUp(d: Doc) =
+  ## No way to get the file: Ladybird's own viewer shows instead, and this address isn't tried again in this tab.
+  if d.state != dsFetching or docOf(d.tab) != d: return
+  stderr.writeLine "webby: couldn't get the PDF at ", d.url, ", leaving it to Ladybird's viewer"
+  d.tab.props["pdfGaveUp"] = d.url
+  closeDoc(d.tab)
+
+proc gotBytes(d: Doc, data: string) =
+  if d.state != dsFetching or docOf(d.tab) != d: return
+  let path = cacheDir / ($hash(d.url) & ".pdf")
+  try:
+    createDir(cacheDir)
+    writeFile(path, data)
+  except CatchableError:
+    fail(d, "Couldn't save the PDF: " & getCurrentExceptionMsg())
+    return
+  opened(d, path)
+
 proc fetchWithEngine(d: Doc) =
   ## Ladybird downloads it (with the site's cookies); features/pdf watches the list for the file.
-  if webby_downloads_start == nil:
-    fail(d, "Couldn't download the PDF")
-    return
-  d.downloadId = webby_downloads_start(d.url.cstring, incognito.cint)
-  if d.downloadId == 0: fail(d, "Couldn't download the PDF")
-  else: d.status = "Downloading…"
+  d.engineTried = true
+  if webby_downloads_start != nil: d.downloadId = webby_downloads_start(d.url.cstring, incognito.cint)
+  d.engineFailed = d.downloadId == 0
   invalidate(d)
+
+proc sourceFailed(d: Doc) =
+  ## webby's own request came back without it: Ladybird's download (with the site's cookies) is tried while pdf.js
+  ## may still be getting it. With all three out, Ladybird's viewer is left to show what it can.
+  if d.state != dsFetching or docOf(d.tab) != d: return
+  if d.gioFailed and not d.engineTried: fetchWithEngine(d)
+  if d.gioFailed and d.engineFailed and d.pageFailed: giveUp(d)
 
 proc fetch(d: Doc, url: string, redirects = 0) =
   request("GET", url, proc (r: Response) =
@@ -478,18 +541,33 @@ proc fetch(d: Doc, url: string, redirects = 0) =
     if r.status in [301, 302, 303, 307, 308] and redirects < 5 and r.header("location").len > 0:
       fetch(d, $combine(parseUri(url), parseUri(r.header("location"))), redirects + 1)
       return
-    if r.status == 200 and isPdf(r.body):
-      let path = cacheDir / ($hash(d.url) & ".pdf")
-      try:
-        createDir(cacheDir)
-        writeFile(path, r.body)
-      except CatchableError:
-        fail(d, "Couldn't save the PDF: " & getCurrentExceptionMsg())
-        return
-      opened(d, path)
+    if r.status == 200 and isPdf(r.body): gotBytes(d, r.body)
     else:
-      fetchWithEngine(d),
+      d.gioFailed = true
+      sourceFailed(d),
     headers = @[("Accept", "application/pdf,*/*")])
+
+proc onPageData(t: Tab, msg: string): bool =
+  if not msg.startsWith("{\"type\":\"webbyPdfData\""): return false
+  result = true
+  let d = docOf(t)
+  let j = try: parseJson(msg) except CatchableError: return
+  if d == nil or j{"id"}.getInt != d.id or d.state != dsFetching or d.pageFailed: return
+  if j.hasKey("error"):
+    stderr.writeLine "webby: PDF from the page: ", j{"error"}.getStr
+    d.pageFailed = true
+    sourceFailed(d)
+  elif j.hasKey("data"):
+    try: d.pageData.add decode(j{"data"}.getStr)
+    except CatchableError:
+      d.pageFailed = true
+      sourceFailed(d)
+  elif j{"done"}.getBool:
+    let data = move d.pageData
+    if isPdf(data): gotBytes(d, data)
+    else:
+      d.pageFailed = true
+      sourceFailed(d)
 
 proc checkDownload(d: Doc) =
   if d.downloadId == 0 or webby_downloads_json == nil: return
@@ -500,11 +578,15 @@ proc checkDownload(d: Doc) =
     of "completed":
       d.downloadId = 0
       let path = e{"path"}.getStr
-      if fileExists(path) and isPdf(readFile(path)): opened(d, path)
-      else: fail(d, "The site didn't send a PDF")
+      if d.state == dsFetching and fileExists(path) and isPdf(readFile(path)): opened(d, path)
+      else:
+        d.engineFailed = true
+        sourceFailed(d)
     of "failed", "canceled":
       d.downloadId = 0
-      fail(d, "Couldn't download the PDF" & (if e{"error"}.getStr.len > 0: ": " & e{"error"}.getStr else: ""))
+      stderr.writeLine "webby: downloading the PDF failed: ", e{"error"}.getStr
+      d.engineFailed = true
+      sourceFailed(d)
     else:
       let got = e{"received"}.getBiggestInt
       let total = e{"total"}.getBiggestInt
@@ -533,14 +615,19 @@ proc show(t: Tab) =
     return
   let old = docOf(t)
   if old != nil and old.url == t.url: return
+  if t.props.getOrDefault("pdfGaveUp") == t.url: return
   closeDoc(t)
   let d = Doc(tab: t, url: t.url, state: dsFetching, status: "Loading PDF…", zoom: 1.0, fitWidth: true,
-    pid: 0, inFd: -1, outFd: -1, current: -1, dirty: true)
+    pid: 0, inFd: -1, outFd: -1, current: -1, dirty: true, id: nextId)
+  inc nextId
   docs[key(t)] = d
   if t.url.startsWith("file:"):
     let path = decodeUrl(t.url.parseUri.path)
     if fileExists(path): opened(d, path) else: fail(d, "No such file")
-  else: fetch(d, t.url)
+  else:
+    # Both at once: webby's own request is quickest where the site doesn't care (arXiv), the page's has its cookies.
+    fetch(d, t.url)
+    t.runJs(bytesScript.replace("PREFIX", $(%t.messagePrefix)).replace("DOCID", $d.id))
   invalidate(d)
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -584,7 +671,14 @@ proc tintChars(d: Doc, i, first, last: int, left, top, s: float, rgb: uint32, a:
     inc k
     d.tint(left + x0 * s, top + y0 * s, left + x1 * s, top + y1 * s, rgb, a)
 
+proc drawScrollbars(d: Doc)
+proc composePages(d: Doc)
+
 proc compose(d: Doc) =
+  d.composePages
+  d.drawScrollbars
+
+proc composePages(d: Doc) =
   let (vw, vh, _) = pageSize()
   if vw <= 0 or vh <= 0: return
   d.frameW = vw
@@ -634,6 +728,84 @@ proc compose(d: Doc) =
         let a = if i == lo.page: lo.index else: 0
         let b = if i == hi.page: hi.index else: p.chars.len
         if b > a: d.tintChars(i, a, min(b, p.chars.len), left, top, s, selectionColor, 90)
+
+# Scrollbars, drawn as Ladybird draws a page's (a thin pill that widens over a track while the pointer is on it), in
+# light colours for the dark grey around the pages.
+
+proc scrollTo(d: Doc, y: float, x = -1.0)
+
+proc barThickness(d: Doc, which: int): float =
+  (if d.barHover == which or d.barDrag == which: 12.0 else: 8.0) * ratio()
+
+proc scrollbarShown(d: Doc, which: int): bool =
+  let (vw, vh, _) = pageSize()
+  if d.state != dsReady: return false
+  if which == 1: d.totalHeight > vh.float + 0.5 else: d.totalWidth > vw.float + 0.5
+
+proc barTrack(d: Doc, which: int): tuple[x0, y0, x1, y1: float] =
+  ## The scrollbar's whole strip along the canvas's right (1) or bottom (2) edge.
+  let (vw, vh, _) = pageSize()
+  let t = d.barThickness(which)
+  let other = 12.0 * ratio()
+  if which == 1: (vw.float - t, 0.0, vw.float, vh.float - (if d.scrollbarShown(2): other else: 0.0))
+  else: (0.0, vh.float - t, vw.float - (if d.scrollbarShown(1): other else: 0.0), vh.float)
+
+proc barThumb(d: Doc, which: int): tuple[start, length: float] =
+  ## The thumb along its track: where it starts and how long it is, in pixels.
+  let (vw, vh, _) = pageSize()
+  let tr = d.barTrack(which)
+  let room = if which == 1: tr.y1 - tr.y0 else: tr.x1 - tr.x0
+  let (view, total, pos) = if which == 1: (vh.float, d.totalHeight, d.scrollY) else: (vw.float, d.totalWidth, d.scrollX)
+  let len = clamp(room * view / max(total, 1.0), min(24.0 * ratio(), room), room)
+  let span = max(total - view, 1.0)
+  (clamp(pos / span, 0.0, 1.0) * (room - len), len)
+
+proc pill(d: Doc, x0, y0, x1, y1: float, rgb: uint32, a: uint32) =
+  ## A rectangle with fully rounded ends, edges smoothed.
+  let r = min(x1 - x0, y1 - y0) / 2
+  for y in max(0, int(floor(y0))) ..< min(d.frameH, int(ceil(y1))):
+    for x in max(0, int(floor(x0))) ..< min(d.frameW, int(ceil(x1))):
+      let px = x.float + 0.5
+      let py = y.float + 0.5
+      let cx = clamp(px, x0 + r, x1 - r)
+      let cy = clamp(py, y0 + r, y1 - r)
+      let cover = clamp(r + 0.5 - hypot(px - cx, py - cy), 0.0, 1.0)
+      if cover > 0: blend(d.frame[y * d.frameW + x], rgb, uint32(a.float * cover))
+
+proc drawScrollbars(d: Doc) =
+  for which in [1, 2]:
+    if not d.scrollbarShown(which): continue
+    let tr = d.barTrack(which)
+    let wide = d.barHover == which or d.barDrag == which
+    if wide: d.tint(tr.x0, tr.y0, tr.x1, tr.y1, 0xFFFFFF'u32, 26)
+    let th = d.barThumb(which)
+    let inset = 2.0 * ratio()
+    # Ladybird's grey thumb, with a light rim so it shows on the dark surround and on a white page alike.
+    let alpha = if d.barDrag == which: 230'u32 elif wide: 210'u32 else: 190'u32
+    var (x0, y0, x1, y1) = if which == 1: (tr.x0 + inset, tr.y0 + th.start + inset, tr.x1 - inset / 2,
+                                           tr.y0 + th.start + th.length - inset)
+                           else: (tr.x0 + th.start + inset, tr.y0 + inset, tr.x0 + th.start + th.length - inset,
+                                  tr.y1 - inset / 2)
+    let rim = ratio()
+    d.pill(x0 - rim, y0 - rim, x1 + rim, y1 + rim, 0xFFFFFF'u32, 150)
+    d.pill(x0, y0, x1, y1, 0x6A6A6A'u32, alpha)
+
+proc barAt(d: Doc, x, y: float): int =
+  ## The scrollbar under a canvas point (its widened strip), or 0.
+  let (vw, vh, _) = pageSize()
+  let grab = 12.0 * ratio()
+  if d.scrollbarShown(1) and x >= vw.float - grab and x <= vw.float: return 1
+  if d.scrollbarShown(2) and y >= vh.float - grab and y <= vh.float: return 2
+
+proc scrollFromBar(d: Doc, which: int, along: float) =
+  ## Puts the thumb's start at `along` (pixels along the track).
+  let (vw, vh, _) = pageSize()
+  let tr = d.barTrack(which)
+  let th = d.barThumb(which)
+  let room = (if which == 1: tr.y1 - tr.y0 else: tr.x1 - tr.x0) - th.length
+  let f = if room > 0: clamp(along / room, 0.0, 1.0) else: 0.0
+  if which == 1: d.scrollTo(f * (d.totalHeight - vh.float))
+  else: d.scrollTo(d.scrollY, f * (d.totalWidth - vw.float))
 
 proc frameFor(t: Tab): tuple[data: pointer, width, height, stride: int] =
   let d = docOf(t)
@@ -892,6 +1064,17 @@ proc onPointer(t: Tab, e: kit.PointerEvent): bool =
     if e.button != 1 and e.button != 2: return true
     d.downAt = (e.x, e.y)
     if e.button == 2: return true
+    let bar = d.barAt(e.x, e.y)
+    if bar != 0:
+      # On the thumb: drag it from where it was grabbed. Elsewhere on the track: the thumb jumps there.
+      let th = d.barThumb(bar)
+      let tr = d.barTrack(bar)
+      let along = if bar == 1: e.y - tr.y0 else: e.x - tr.x0
+      d.barDrag = bar
+      d.barGrab = if along >= th.start and along <= th.start + th.length: along - th.start else: th.length / 2
+      d.scrollFromBar(bar, along - d.barGrab)
+      invalidate(d)
+      return true
     let c = d.caretFrom(e.x, e.y)
     if e.clicks >= 2 and c.page >= 0 and d.pages[c.page].textState == 2:
       d.selectWord(c, e.clicks >= 3)
@@ -905,6 +1088,21 @@ proc onPointer(t: Tab, e: kit.PointerEvent): bool =
       d.dragging = true
     invalidate(d)
   of kit.pkMove:
+    if d.barDrag != 0:
+      if (e.buttons and 1) == 0:
+        d.barDrag = 0
+        invalidate(d)
+      else:
+        let tr = d.barTrack(d.barDrag)
+        d.scrollFromBar(d.barDrag, (if d.barDrag == 1: e.y - tr.y0 else: e.x - tr.x0) - d.barGrab)
+      return true
+    let bar = if d.dragging: 0 else: d.barAt(e.x, e.y)
+    if bar != d.barHover:
+      d.barHover = bar
+      invalidate(d)
+    if bar != 0:
+      kit.`cursor=`(browser.page, "default")
+      return true
     if d.dragging and (e.buttons and 1) != 0:
       d.selB = d.caretFrom(e.x, e.y)
       # Dragging past the top or bottom edge scrolls.
@@ -919,6 +1117,11 @@ proc onPointer(t: Tab, e: kit.PointerEvent): bool =
       t.hovered = l.uri
       refreshChrome()
   of kit.pkUp:
+    if d.barDrag != 0:
+      d.barDrag = 0
+      d.barHover = d.barAt(e.x, e.y)
+      invalidate(d)
+      return true
     let wasDrag = d.dragging
     d.dragging = false
     let still = abs(e.x - d.downAt.x) < 4 and abs(e.y - d.downAt.y) < 4
@@ -933,10 +1136,15 @@ proc onPointer(t: Tab, e: kit.PointerEvent): bool =
         return true
     if wasDrag and d.hasSelection: discard
   of kit.pkLeave:
+    if d.barHover != 0 and d.barDrag == 0:
+      d.barHover = 0
+      invalidate(d)
     if t.hovered.len > 0:
       t.hovered = ""
       refreshChrome()
-  of kit.pkCancel: d.dragging = false
+  of kit.pkCancel:
+    d.dragging = false
+    d.barDrag = 0
   true
 
 proc onWheel(t: Tab, e: kit.WheelEvent): bool =
@@ -1092,6 +1300,7 @@ proc install*() =
   pageScriptHooks.add proc (t: Tab): string =
     if docOf(t) != nil and docOf(t).url == t.url: ""
     else: detectScript.replace("PREFIX", $(%t.messagePrefix))
+  pageMessageHooks.add onPageData
   pageMessageHooks.add proc (t: Tab, msg: string): bool =
     if msg != "{\"type\":\"webbyPdf\"}": return false
     show(t)
@@ -1099,6 +1308,7 @@ proc install*() =
   tabStateHooks.add proc (t: Tab) =
     let d = docOf(t)
     if d != nil and d.url != t.url: closeDoc(t)
+    if t.props.getOrDefault("pdfGaveUp").len > 0 and t.props["pdfGaveUp"] != t.url: t.props.del "pdfGaveUp"
     if t.title == viewerTitle: show(t)
   activeTabHooks.add proc (t: Tab) =
     let d = docOf(t)
