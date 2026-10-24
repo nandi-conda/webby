@@ -34,7 +34,7 @@ index c22ee79d7d..c14f4ab103 100644
  {
      auto& thread_data = ThreadData::the();
 diff --git a/Libraries/LibCore/EventLoopImplementationUnix.h b/Libraries/LibCore/EventLoopImplementationUnix.h
-index 9c787dc75b..6af39ae1db 100644
+index 9c787dc75b..89cf51dd60 100644
 --- a/Libraries/LibCore/EventLoopImplementationUnix.h
 +++ b/Libraries/LibCore/EventLoopImplementationUnix.h
 @@ -8,6 +8,7 @@
@@ -53,7 +53,7 @@ index 9c787dc75b..6af39ae1db 100644
 +    // wake pipe and read notifiers) and returns how long until its next timer in ms (0 with events already queued, -1
 +    // with no timers). An embedder that drives the loop with pump(PollForEvents) from its own main loop polls these
 +    // on another thread to know when to pump.
-+    static int current_thread_wait_set(Vector<int>& read_fds);
++    CORE_API static int current_thread_wait_set(Vector<int>& read_fds);
 +
  private:
      void dispatch_signal(int signal_number);
