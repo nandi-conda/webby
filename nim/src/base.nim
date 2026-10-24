@@ -38,6 +38,10 @@ var
 proc appFilename*(): string =
   ## This executable's path. After an update replaced the file under a running webby, Linux names it
   ## "<path> (deleted)"; the path itself then holds the new build, which is the one to start.
+  ## In an AppImage it's the AppImage file: the program inside lives in a mount that goes away when this process
+  ## exits, so other webby processes (incognito, web app windows) and launchers start the AppImage itself.
+  let appImage = getEnv("APPIMAGE")
+  if appImage.len > 0 and fileExists(appImage): return appImage
   result = getAppFilename()
   const deleted = " (deleted)"
   if result.len > deleted.len and result[^deleted.len .. ^1] == deleted and

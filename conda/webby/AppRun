@@ -1,0 +1,43 @@
+#!/bin/sh
+# The AppImage's entry point (scripts/build_appimage.sh puts it at the AppDir's root). usr/ is the conda env of
+# `pixi global install webby`; conda baked the env's install path into its libraries' defaults, so this points
+# each of them at its files inside the mount instead, then starts the same bin/webby launcher.
+here="$(dirname "$(readlink -f "$0")")"
+usr="$here/usr"
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/webby"
+mkdir -p "$cache"
+
+export WEBBY_LADYBIRD_PREFIX="$usr/lib/webby-ladybird"
+export FONTCONFIG_FILE="$WEBBY_LADYBIRD_PREFIX/share/Lagom/fonts/webby-appimage-fonts.conf"
+export FONTCONFIG_PATH="$usr/etc/fonts"   # where that file's <include>conf.d</include> is
+# Settings an earlier AppImage webby passed down (incognito and web app windows start the AppImage again) name
+# that one's mount, so the system's own values are kept aside and each start sets its own.
+export WEBBY_APPIMAGE_XDG_DATA_DIRS="${WEBBY_APPIMAGE_XDG_DATA_DIRS-${XDG_DATA_DIRS:-/usr/local/share:/usr/share}}"
+export XDG_DATA_DIRS="$usr/share:$WEBBY_APPIMAGE_XDG_DATA_DIRS"
+export GSETTINGS_SCHEMA_DIR="$usr/share/glib-2.0/schemas"
+# glib-networking (TLS for the front end's own HTTPS) and its CA certificates.
+export GIO_MODULE_DIR="$usr/lib/gio/modules"
+case "${SSL_CERT_FILE:-}" in ""|*/usr/ssl/cacert.pem) export SSL_CERT_FILE="$usr/ssl/cacert.pem" ;; esac
+export GTK_PATH="$usr/lib/gtk-3.0"
+export GTK_EXE_PREFIX="$usr" GTK_DATA_PREFIX="$usr"
+export XLOCALEDIR="$usr/share/X11/locale"
+export XKB_CONFIG_ROOT="$usr/share/X11/xkb"
+# Mesa (from the env, as with conda) for WebGL.
+export __EGL_VENDOR_LIBRARY_DIRS="$usr/share/glvnd/egl_vendor.d"
+export LIBGL_DRIVERS_PATH="$usr/lib/dri"
+# The recorders' GStreamer and PipeWire; a registry of webby's own, not the system GStreamer's.
+export GST_PLUGIN_SYSTEM_PATH_1_0="$usr/lib/gstreamer-1.0"
+export GST_PLUGIN_SCANNER_1_0="$usr/libexec/gstreamer-1.0/gst-plugin-scanner"
+export GST_REGISTRY_1_0="$cache/appimage-gstreamer-registry.bin"
+export SPA_PLUGIN_DIR="$usr/lib/spa-0.2"
+export PIPEWIRE_MODULE_DIR="$usr/lib/pipewire-0.3"
+# gdk-pixbuf's loaders (favicons: .ico, SVG, GIF) with this mount's paths, rewritten each start since the mount
+# path changes. webby.sh leaves the GDK_PIXBUF_MODULE_FILE set here alone.
+loaders="$usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"
+if [ -d "$loaders" ]; then
+  pixbuf_cache="$cache/appimage-gdk-pixbuf-loaders.cache"
+  GDK_PIXBUF_MODULEDIR="$loaders" "$usr/bin/gdk-pixbuf-query-loaders" 2>/dev/null |
+    sed "s|^\"lib/|\"$usr/lib/|" > "$pixbuf_cache.$$" && mv "$pixbuf_cache.$$" "$pixbuf_cache" || rm -f "$pixbuf_cache.$$"
+  [ -s "$pixbuf_cache" ] && export GDK_PIXBUF_MODULE_FILE="$pixbuf_cache"
+fi
+exec "$usr/bin/webby" "$@"

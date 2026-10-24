@@ -58,6 +58,11 @@ webby https://example.com
 `webby` is a release build of the Nim front end (recipe `conda/webby`) that depends on `webby-ladybird`; its launcher points
 `WEBBY_LADYBIRD_PREFIX` at that package unless you've set it yourself.
 
+Or as an AppImage (the same packages, needs glibc 2.35+): download `webby-x86_64.AppImage` from the
+[appimage release](https://github.com/nandi-conda/webby/releases/tag/appimage), `chmod +x` it and run it. It updates
+itself with zsync (⋮ > Help > Check for updates; AppImageUpdate and Gear Lever read its update information too).
+`scripts/build_appimage.sh VERSION` builds one locally.
+
 `webby --incognito [url]` (or Ctrl+Shift+N, or "New incognito window" in the ⋮ menu) opens an incognito
 window: its own Ladybird with a temporary profile, no SQL database and no HTTP disk cache, so cookies, site storage,
 cache and permission decisions are gone when it closes. It doesn't save passwords or bookmarks, sync, or share its

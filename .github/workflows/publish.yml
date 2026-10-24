@@ -9,6 +9,7 @@
 #   prebuilt-release.yml), so it's republished when conda/webby-ladybird/ changes (bump the recipe's version/sha256
 #   or build number after releasing a new prebuilt).
 #   Rebuilding Ladybird itself (LADYBIRD_COMMIT, native/, scripts/build_ladybird.sh) still happens on a Fly build machine.
+# - After that, the same version is packed as webby-x86_64.AppImage onto the rolling `appimage` GitHub release.
 name: publish
 
 on:
@@ -147,6 +148,61 @@ jobs:
           echo "helpers up after ~$((i / 2)) s"
           pgrep -a WebContent
           pgrep -a RequestServer
+
+  # The AppImage of the webby just published, made from the same conda packages (scripts/build_appimage.sh), on the
+  # rolling `appimage` release: its zsync update information and webby's own updater (nim/src/features/update.nim)
+  # read webby-x86_64.AppImage.zsync there, and the release title is the version webby compares with its own.
+  appimage:
+    needs: [webby, mirror]
+    if: ${{ !cancelled() && needs.mirror.result == 'success' }}
+    runs-on: depot-ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: publish-appimage
+      cancel-in-progress: false
+    env:
+      VERSION: ${{ needs.webby.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pixi
+        run: |
+          curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=$PIXI_VERSION bash
+          echo "$HOME/.pixi/bin" >> "$GITHUB_PATH"
+      - name: Build the AppImage
+        run: |
+          for i in 1 2 3 4 5; do
+            scripts/build_appimage.sh "$VERSION" dist && break
+            [ "$i" = 5 ] && exit 1; sleep 30; pixi clean cache --repodata -y || true
+          done
+      # On a clean Ubuntu 22.04 (the oldest glibc it supports), unpacked since containers have no FUSE.
+      - name: Launch under Xvfb on Ubuntu 22.04
+        run: |
+          docker run --rm -v "$PWD/dist:/dist:ro" ubuntu:22.04 bash -c '
+            set -e
+            apt-get update -qq && apt-get install -y -qq xvfb xauth procps > /dev/null
+            cd /tmp && /dist/webby-x86_64.AppImage --appimage-extract > /dev/null
+            xvfb-run -a squashfs-root/AppRun https://example.com > webby.log 2>&1 &
+            up() { pgrep WebContent > /dev/null && pgrep RequestServer > /dev/null; }
+            for i in $(seq 120); do up && break; sleep 0.5; done
+            up && sleep 3 && up || { cat webby.log; exit 1; }
+            echo "helpers up after ~$((i / 2)) s"
+            pgrep -a WebContent'
+      - name: Publish to the appimage release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="webby $VERSION ($GITHUB_SHA), the same build as the conda package \`webby==$VERSION\`.
+
+          Download webby-x86_64.AppImage, \`chmod +x\` it and run it (glibc 2.35 or newer, e.g. Ubuntu 22.04+).
+          It updates itself from this release with zsync: ⋮ > Help > Check for updates, or AppImageUpdate / Gear Lever."
+          if ! gh release view appimage > /dev/null 2>&1; then
+            gh release create appimage --target "$GITHUB_SHA" --title "$VERSION" --notes "$notes" --latest=false
+          fi
+          # The files first and the title (the version updaters compare with) last.
+          gh release upload appimage dist/webby-x86_64.AppImage dist/webby-x86_64.AppImage.zsync --clobber
+          git push -f origin "$GITHUB_SHA:refs/tags/appimage"
+          gh release edit appimage --title "$VERSION" --notes "$notes"
 
   # `pixi run webby` (the Nim front end) from a fresh checkout: installs the workspace, builds and starts it.
   pixi-webby:

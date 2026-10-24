@@ -7,7 +7,7 @@
 import src/browser
 import src/features/[about, adblock, atpassport, bookmarks, downloads, find, history, home, omnibox, pagefit, passwords, tabs, site, pwa, summarize, sync]
 when defined(android): import src/features/android
-else: import src/features/[bugreport, pdf, plasma]
+else: import src/features/[bugreport, pdf, plasma, update]
 
 bookmarks.install()
 downloads.install()
@@ -29,5 +29,6 @@ else:
   bugreport.install()
   pdf.install()
   plasma.install()
+  update.install()
 about.install()   # last: the ⋮ menu's bottom item
 run()
