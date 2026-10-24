@@ -40,7 +40,7 @@ proc openIncognitoWindow*(url = "") =
     # IncognitoHost: the same front end in a process of its own, as its own task in Recents.
     if hostCall("openIncognito", url) != "ok": toast("Could not open an incognito window")
   else:
-    var args = @[getAppFilename(), "--incognito"]
+    var args = @[appFilename(), "--incognito"]
     if url.len > 0: args.add url
     var env: seq[string]
     for k, v in envPairs():

@@ -74,7 +74,7 @@ proc forUrl*(url: string): (bool, InstalledApp) =
 
 proc launchCommand*(): seq[string] =
   ## The conda bin/webby wrapper when there is one, else this executable with the Ladybird prefix it runs with.
-  let exe = getAppFilename()
+  let exe = appFilename()
   let wrapper = exe.parentDir.parentDir.parentDir / "bin" / "webby"
   if exe.parentDir.endsWith("/lib/webby") and fileExists(wrapper): return @[wrapper]
   let prefix = getEnv("WEBBY_LADYBIRD_PREFIX")

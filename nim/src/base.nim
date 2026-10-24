@@ -35,6 +35,15 @@ var
 
   deviceDescription*: string   ## e.g. "Pixel 6a" on Android (sync names the device after it); "" on the desktop
 
+proc appFilename*(): string =
+  ## This executable's path. After an update replaced the file under a running webby, Linux names it
+  ## "<path> (deleted)"; the path itself then holds the new build, which is the one to start.
+  result = getAppFilename()
+  const deleted = " (deleted)"
+  if result.len > deleted.len and result[^deleted.len .. ^1] == deleted and
+      not fileExists(result) and fileExists(result[0 ..< ^deleted.len]):
+    result.setLen(result.len - deleted.len)
+
 # ---------------------------------------------------------------------------------------------------------------
 # Files: where each profile keeps its data (XDG data dir).
 
