@@ -30,12 +30,22 @@ var
   userAgent* = ""                       ## the User-Agent of `request` where the backend sets it (default: appName)
   hostEventHooks*: seq[proc (name, data: string)]  ## events from the app's own platform code (see hostCall)
 
+proc log*(text: string)
+
+proc shielded*(where: string, action: proc ()) =
+  ## Runs `action`, logging instead of passing on anything it raises, Defects included (panics are off). An error
+  ## escaping a timer or signal reaches GLib's C code, which can't unwind it: Nim's error flag stays set and every
+  ## later Nim call on the UI thread returns early, so the window stops responding without exiting.
+  try: action()
+  except Exception as e:
+    log(where & ": " & $e.name & ": " & e.msg & (let t = e.getStackTrace(); if t.len > 0: "\n" & t else: ""))
+
 proc after*(ms: int, action: proc ()): Timer =
   ## Runs `action` once, `ms` from now, on the UI thread.
   let t = Timer()
   t.id = serviceImpl.startTimer(ms, proc () =
     t.id = 0
-    action())
+    shielded("timer", action))
   t
 
 proc every*(ms: int, action: proc ()): Timer =
@@ -43,7 +53,7 @@ proc every*(ms: int, action: proc ()): Timer =
   let t = Timer()
   proc tick() =
     t.id = serviceImpl.startTimer(ms, tick)
-    action()
+    shielded("timer", action)
   t.id = serviceImpl.startTimer(ms, tick)
   t
 
@@ -66,7 +76,7 @@ proc header*(r: Response, name: string): string =
 proc request*(meth, url: string, onDone: proc (r: Response), headers: seq[(string, string)] = @[], body = "") =
   ## An HTTP(S) request; `onDone` runs on the UI thread with the whole response. On the web this is fetch(), so
   ## the server must allow the page's origin (CORS).
-  serviceImpl.request(meth, url, headers, body, onDone)
+  serviceImpl.request(meth, url, headers, body, proc (r: Response) = shielded("request " & url, proc () = onDone(r)))
 
 proc copyText*(text: string) =
   ## Puts `text` on the system clipboard.

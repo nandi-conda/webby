@@ -815,10 +815,15 @@ proc pumpAll() =
   if cs != clipboardSerial:
     clipboardSerial = cs
     copyText($webby_clipboard_text())
-  for h in pumpHooks: h()
+  for h in pumpHooks: shielded("pump hook", h)
   var snapshot = tabs   # a copy: pumpTab may add or close tabs
   for t in snapshot:
-    if not t.closed and pumpTab(t, t == currentTab()): busy = true
+    # Whatever a page sends (messages, manifests, titles) must not stop the other tabs or the rest of the tick.
+    if not t.closed:
+      try:
+        if pumpTab(t, t == currentTab()): busy = true
+      except Exception as e:
+        log("webby: tab " & t.url & ": " & $e.name & ": " & e.msg & "\n" & e.getStackTrace())
   if trace:
     nativeUs += us(t1 - t0)
     maxTickUs = max(maxTickUs, us(getMonoTime() - t0))

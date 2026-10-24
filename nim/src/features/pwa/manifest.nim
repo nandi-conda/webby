@@ -27,6 +27,8 @@ proc canon*(u: Uri): Uri =
   result.scheme = u.scheme.toLowerAscii
   result.hostname = u.hostname.toLowerAscii
   if result.port == defaultPort(result.scheme): result.port = ""
+  # An empty path is "/": roomy.space's manifest has start_url "https://roomy.space".
+  if result.hostname.len > 0 and result.path.len == 0: result.path = "/"
 
 proc sameOrigin*(a, b: Uri): bool =
   let a = canon(a)
@@ -87,7 +89,7 @@ proc parseManifest*(text, manifestUrl, documentUrl: string): Manifest =
 
   # scope must contain start_url, else it's start_url's directory.
   # (std/uri's combine(start, ".") leaves "/." on the path, which then matches no page.)
-  let dir = start.path[0 .. max(start.path.rfind('/'), 0)]
+  let dir = if start.path.len == 0: "" else: start.path[0 .. max(start.path.rfind('/'), 0)]
   let defaultScope = Uri(scheme: start.scheme, hostname: start.hostname, port: start.port,
     path: if dir.startsWith("/"): dir else: "/")
   var (hasScope, scope) = resolve(str("scope"))
