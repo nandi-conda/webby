@@ -1,0 +1,12 @@
+name: page-scripts
+on:
+  push:
+    paths: ['nim/src/scripts/**', 'scripts/check-page-scripts.sh', '.github/workflows/page-scripts.yml']
+  pull_request:
+    paths: ['nim/src/scripts/**']
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/check-page-scripts.sh
