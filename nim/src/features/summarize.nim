@@ -339,13 +339,14 @@ proc ask(job: Job, key, text: string, provider: Provider) =
       send())
   else: send()
 
-proc runJump(t: Tab, words: string, retries = 0) =
+proc runJump(t: Tab, words: string, retries = 0, click = false) =
   ## Runs the jump script, trying again every half second (up to retries times) while a page that just loaded
-  ## hasn't put the words on screen yet. A page that already jumped to these words isn't scrolled again.
+  ## hasn't put the words on screen yet. A page that already jumped to these words isn't scrolled again by the
+  ## reruns after a load, but a click always scrolls and highlights again.
   for h in pageJumpHooks:
-    if h(t, words): return
+    if h(t, words, click): return
   let marker = $(%("webby-jump:" & words))
-  t.runJs("(function retry(n) { if (window.__webbyJump === " & marker & ") return; if (" &
+  t.runJs((if click: "delete window.__webbyJump; " else: "") & "(function retry(n) { if (window.__webbyJump === " & marker & ") return; if (" &
     jumpToTextScript(words).strip(chars = {';', '\n', ' '}) & ") window.__webbyJump = " & marker &
     "; else if (n > 0) setTimeout(() => retry(n - 1), 500); })(" & $retries & ");")
   wake()
@@ -355,7 +356,7 @@ proc jumpTo(job: Job, words: string) =
   ## page's, the page itself decides (location.href is what the summary recorded, the tab's URL can be spelled
   ## differently) and reports a miss as a "summaryjumpmiss" page message (jumpElsewhere).
   if summaryKey(job.tab.url) == summaryKey(job.url):
-    job.tab.runJump(words)
+    job.tab.runJump(words, click = true)
     return
   job.tab.runJs("(() => { const norm = (u) => { try { u = new URL(u); u.hash = ''; return decodeURI(u.href)" &
     ".replace(/\\/+$/, ''); } catch (e) { return u; } }; if (norm(location.href) === norm(" & $(%job.url) &
@@ -376,7 +377,7 @@ proc jumpElsewhere(job: Job, words: string) =
       activateTab(t)
       if panelJob == nil and lookupSummary(summaryKey(t.url))[0]: summarizePage()   # keep the summary beside it
       if asleep: pendingJump = (t, words)
-      else: t.runJump(words, retries = 10)
+      else: t.runJump(words, retries = 10, click = true)
       return
   pendingJump = (job.tab, words)
   job.tab.loadUrl(job.url)

@@ -1252,10 +1252,10 @@ proc onPageText(t: Tab, wholePage: bool, done: proc (ok: bool, text: string, sel
         break)
   true
 
-proc onJump(t: Tab, words: string): bool =
+proc onJump(t: Tab, words: string, click: bool): bool =
   let d = docOf(t)
   if d == nil or d.state == dsFailed: return false
-  if d.lastJump.words == words and epochTime() - d.lastJump.at < 4: return true
+  if not click and d.lastJump.words == words and epochTime() - d.lastJump.at < 4: return true
   d.lastJump = (words, epochTime())
   d.jumpWords = words
   d.askAllText

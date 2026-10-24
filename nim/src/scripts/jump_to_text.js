@@ -16,10 +16,12 @@
     for (let p = el; p; p = p.parentElement) if (p.tagName === 'DETAILS' && !p.open) p.open = true;
     while (el.parentElement && (!visible(el) || /^(SPAN|A|B|I|EM|STRONG|CODE|MARK|SMALL|SUP|SUB|ABBR|CITE|Q|S|U)$/.test(el.tagName))) el = el.parentElement;
     try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { el.scrollIntoView(); }
-    const style = el.style, background = style.backgroundColor, outline = style.outline;
+    // A spot clicked again while it's still lit keeps its own colours to go back to and lights up for longer.
+    const style = el.style, flash = el.__webbyFlash || (el.__webbyFlash = { background: style.backgroundColor, outline: style.outline });
+    clearTimeout(flash.timer);
     style.backgroundColor = 'rgba(255, 213, 79, 0.45)';
     style.outline = '2px solid rgba(255, 179, 0, 0.9)';
-    setTimeout(() => { style.backgroundColor = background; style.outline = outline; }, 1800);
+    flash.timer = setTimeout(() => { style.backgroundColor = flash.background; style.outline = flash.outline; delete el.__webbyFlash; }, 1800);
     return true;
   };
   const headings = [...document.querySelectorAll('h1, h2, h3, h4, h5, h6, [role="heading"]')];

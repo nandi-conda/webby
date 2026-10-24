@@ -121,7 +121,7 @@ var
   pageTextHooks*: seq[proc (t: Tab, wholePage: bool, done: proc (ok: bool, text: string, selection: bool)): bool]
                                                   ## the page's text, for Summarize, read by a feature instead
                                                   ## (features/pdf); true = handled, `done` is called later
-  pageJumpHooks*: seq[proc (t: Tab, words: string): bool]  ## a summary's source link ([§](#words)) shown by a
+  pageJumpHooks*: seq[proc (t: Tab, words: string, click: bool): bool]  ## a summary's source link ([§](#words)) shown by a
                                                   ## feature instead of the jump script; true = handled
   urlFocusHooks*: seq[proc (focused: bool)]       ## the URL bar got or lost the keyboard focus
   pageContextMenuHook*: proc (t: Tab, info: JsonNode, x, y: float) ## replaces the built-in page menu if set; x, y:
