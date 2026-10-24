@@ -1,9 +1,9 @@
 ## Bug reports, like Jam's browser extension: ⋮ > Report a bug (Ctrl+Shift+X) takes a screenshot of the page or
 ## records the tab, and adds what the page did (console messages and errors, network requests, clicks, typing and
 ## navigations, from scripts/bug_capture.js), the page's address and webby's version. The report is saved as a
-## folder (the media, report.json and a report.html to look through it) under <download folder>/webby-bug-reports, and can
-## go up to Jam as a Jam with all of it on its timeline (bugreport/jam.nim). The Jam token is a secret in the
-## password vault, set in ⋮ > Jam settings.
+## folder (the media, report.json and a report.html to look through it) under <download folder>/webby-bug-reports, or
+## as a zip of that folder (bugreport/zip.nim) to send to whoever looks into the bug: unzipped, its report.html
+## shows everything with no server or account.
 ##
 ## A recording is of the page's own frames, which webby already has: they go to the webby-tabrec helper
 ## (nim/tabrec/, next to the app), which encodes WebM. No screen picker, no portal.
@@ -12,14 +12,13 @@ import std/[json, monotimes, os, osproc, streams, strutils, tables, times, uri]
 import std/posix except Timer
 import ../browser
 import about, downloads
-import bugreport/[enginelog, events, jam, replay, system]
+import bugreport/[enginelog, events, replay, system, zip]
 import adblock/store as adblockStore
 from nimkit/core as kit import nil
 
 const
   captureScript = staticRead("../scripts/bug_capture.js")
   reportPage = staticRead("bugreport/report.html")
-  tokenSecret = "jam-token"
   frameMs = 66                    ## up to 15 frames a second, when the page changes
   pollMs = 2000                   ## how often a recording collects what the page did
   maxRecordingMs = 10 * 60_000
@@ -41,7 +40,7 @@ type
     viewport: tuple[width, height: int, dpr: float]
     userAgent, language: string
     captured: Captured
-    title, notes, jamUrl, folder: string
+    title, notes, folder: string
     sampler: Sampler
     replayed: bool                  ## a video from instant replay, not a recording
 
@@ -64,7 +63,6 @@ var
   nextDump = 1
   recording: Recording
   bar, barLabel, barStop, barCancel: kit.Widget
-  memoryToken: string            ## without a vault, the token lives until Webby quits
   recentNavigations: seq[JsonNode]   ## loads and tab switches of the last minutes, for instant replay reports
   recentSystem: seq[JsonNode]        ## memory/CPU every 10 s over the last minutes, likewise
   recentSampler = newSampler()
@@ -72,53 +70,17 @@ var
 proc nowMs(): int64 = (epochTime() * 1000).int64
 
 # ---------------------------------------------------------------------------------------------------------------
-# The Jam token
+# Settings
 
-proc token(): string =
-  if getSecret != nil: getSecret(tokenSecret) else: memoryToken
-
-proc showJamSettings(onSaved: proc () = nil) =
-  if incognito and setSecret != nil:
-    kit.alert("Set the Jam token in a normal window.")
-    return
-  let has = token().len > 0
+proc showSettings() =
   let box = kit.column()
   box.spacing = 6
   discard kit.sized(box, 440)
-  let entry = kit.entry("jam_pat_…")
-  kit.`password=`(entry, true)
-  let show = kit.check("Show token", false, proc (on: bool) = kit.`password=`(entry, not on))
-  let sync = kit.check("Sync this token to my other devices", secretSyncs == nil or secretSyncs(tokenSecret))
-  let where = if setSecret != nil: "It is kept encrypted in the password vault." else:
-    "The password vault isn't available, so the token is kept in memory until Webby quits."
-  let help = kit.richLabel("Bug reports go to Jam with a personal access token. Make one at <a href=\"" & tokenSite &
-    "\">" & kit.escapeRich(tokenSite) & "</a> with the <tt>mcp:read</tt> and <tt>mcp:write</tt> scopes; it starts " &
-    "with <tt>jam_pat_</tt>. " & kit.escapeRich(where))
-  help.onLink = proc (url: string): bool = (discard openTab(url); true)
-  kit.add(box, kit.label(if has: "New Jam token (one is saved)" else: "Jam token"))
-  kit.add(box, entry)
-  kit.add(box, show)
-  if setSecret != nil: kit.add(box, sync)
-  if not incognito:
+  if incognito: kit.add(box, kit.label("Instant replay is off in incognito windows."))
+  else:
     kit.add(box, kit.check("Keep the last 5 minutes of the tab for bug reports (instant replay)", replay.enabled(),
       proc (on: bool) = replay.setEnabled(on)))
-  kit.add(box, kit.addClass(kit.addClass(help, "dim"), "small"))
-  var d: kit.Dialog
-  d = kit.dialog("Jam settings", box, @["Remove token", "Cancel", "Save"], destructive = 0, onResult = proc (r: int) =
-    if r notin [0, 2]: return
-    let text = kit.text(entry).strip
-    let value = if r == 0: "" elif text.len > 0: text else: token()
-    if r == 2 and value.len == 0:
-      kit.showDialog(d)
-      kit.focus(entry)
-      return
-    if r == 2 and text.len > 0 and not text.startsWith("jam_"):
-      kit.toast("That doesn't look like a Jam token (jam_pat_…), saved anyway")
-    if setSecret != nil: setSecret(tokenSecret, value, kit.checked(sync))
-    else: memoryToken = value
-    if r == 2 and onSaved != nil: onSaved())
-  entry.onSubmit = proc (t: string) = kit.dialogResult(d, 2)
-  kit.focus(entry)
+  discard kit.dialog("Bug report settings", box, @["Close"])
 
 # ---------------------------------------------------------------------------------------------------------------
 # What the page did
@@ -227,11 +189,11 @@ proc reportJson(r: Report): JsonNode =
     "viewport": {"width": r.viewport.width, "height": r.viewport.height, "dpr": r.viewport.dpr},
     "browser": "Webby " & b.version & " (" & b.commit & ")", "engine": b.runtime,
     "userAgent": r.userAgent, "language": r.language, "os": osName() & " (Linux " & kernel() & ")",
-    "jam": r.jamUrl, "console": console, "network": network, "actions": actions,
+    "console": console, "network": network, "actions": actions,
     "engineLog": r.captured.engine, "system": r.captured.system, "state": r.captured.state}
 
 proc save(r: Report): string =
-  ## Writes the report's folder (once; later calls rewrite report.json/html, e.g. with the Jam link) and returns it.
+  ## Writes the report's folder (once; later calls rewrite report.json/html) and returns it.
   if r.folder.len == 0:
     let stamp = now().format("yyyy-MM-dd-HHmmss")
     var name = stamp & "-" & host(r.url).replace('.', '-')
@@ -265,87 +227,62 @@ proc summary(r: Report): string =
     (if engineErrors > 0: " (" & n(engineErrors, "error") & ")" else: "")
   parts.join(" · ")
 
-proc description(r: Report): string =
-  ## The Jam's description: the notes, then what Jam's own fields don't show (webby's build).
-  let b = buildInfo()
-  result = r.notes.strip
-  if result.len > 0: result.add "\n\n"
-  result.add "Reported from Webby " & b.version & " (" & b.commit & "), engine " & b.runtime & "."
-
 proc showBar(text: string, recordingControls: bool)
 proc hideBar()
 
-proc blankPng(): string =
-  ## A poster for a video whose tab had no frame to show when it was taken (Jam wants one).
-  var pixels = newString(16 * 16 * 4)
-  for i in countup(0, pixels.high, 4): pixels[i .. i + 3] = "\xf0\xf0\xf0\xff"
-  encodePng(addr pixels[0], 16, 16, 16 * 4)
+proc writeZip(r: Report): string =
+  ## Saves the report's folder and zips it next to it (rewriting both, so title and notes go in); returns the
+  ## zip's path, which also goes on the clipboard, or "" after telling why it failed.
+  try:
+    let folder = save(r)
+    result = folder & ".zip"
+    zipFolder(folder, result)
+    copyText(result)
+  except CatchableError as e:
+    kit.alert("Couldn't save the report", e.msg)
+    result = ""
 
-proc uploadReport(r: Report) =
-  if token().len == 0:
-    showJamSettings(proc () = uploadReport(r))
-    return
-  try: discard save(r)
-  except CatchableError as e: kit.toast("Couldn't save the report: " & e.msg)
-  if r.media.len == 0:
-    kit.alert("Nothing to upload", "The report's " & (if r.video: "video" else: "screenshot") & " is empty.")
-    return
-  if r.video and r.poster.len == 0: r.poster = blankPng()
-  let b = buildInfo()
-  var u = Upload(token: token(), video: r.video, media: r.media,
-    mediaType: (if r.video: "video/webm" else: "image/png"), poster: r.poster, title: r.title,
-    description: r.description, url: r.url, width: r.width, height: r.height, durationMs: r.durationMs,
-    viewport: (r.viewport.width, r.viewport.height), browser: "Webby", browserVersion: b.version,
-    os: osName(), osVersion: kernel())
-  if u.width == 0: (u.width, u.height) = (r.viewport.width, r.viewport.height)
-  u.events = r.captured.jamEvents(r.startedAt, r.url, (r.viewport.width, r.viewport.height), r.video)
-  showBar("Uploading the bug report to Jam…", false)
-  jam.upload(u, proc (text: string) = showBar(text, false), proc (ok: bool, url, error: string) =
-    hideBar()
-    if not ok:
-      let where = if r.folder.len > 0: " It is saved in " & r.folder & "." else: ""
-      discard kit.dialog("Upload to Jam failed", kit.label(error & where), @["Jam settings", "Close", "Try again"],
-        onResult = proc (i: int) =
-          if i == 0: showJamSettings(proc () = uploadReport(r))
-          elif i == 2: uploadReport(r))
-      return
-    r.jamUrl = url
-    try: discard save(r) except CatchableError: discard
-    copyText(url)
-    let link = kit.richLabel("<a href=\"" & url & "\">" & kit.escapeRich(url) & "</a>", selectable = true)
-    link.onLink = proc (u: string): bool = (discard openTab(u); true)
-    kit.toast("Jam link copied")
-    discard kit.dialog("Jam made", kit.column(kit.label("The link is on the clipboard."), link),
-      @["Close", "Open"], proc (i: int) = (if i == 1: discard openTab(url))))
+proc discardReport(r: Report) =
+  if r.folder.len == 0: return
+  try:
+    removeFile(r.folder & ".zip")
+    removeDir(r.folder)
+  except CatchableError as e: kit.toast("Couldn't delete the report: " & e.msg)
 
 proc showDetails(r: Report) =
+  ## The report is zipped as soon as it's taken, with the zip's path on the clipboard; the dialog adds a title and
+  ## notes (rewriting the zip) or throws it away.
+  r.title = "Bug on " & (if host(r.url).len > 0: host(r.url) else: r.pageTitle)
+  let zipPath = writeZip(r)
+  if zipPath.len == 0: return
+  kit.toast("Bug report zipped, its path is on the clipboard")
   let box = kit.column()
   box.spacing = 6
   discard kit.sized(box, 460)
-  let title = kit.entry("Title", "Bug on " & (if host(r.url).len > 0: host(r.url) else: r.pageTitle))
+  let title = kit.entry("Title", r.title)
   let notes = kit.entry("What went wrong? (optional)")
   kit.add(box, kit.addClass(kit.label(r.summary), "dim"))
   kit.add(box, kit.label("Title"))
   kit.add(box, title)
   kit.add(box, kit.label("Notes"))
   kit.add(box, notes)
-  let jamNote = if token().len > 0: "Upload to Jam makes a Jam with the " & (if r.video: "video" else: "screenshot") &
-    ", console, network and actions, and copies its link." else: "Upload to Jam asks for your Jam token first."
-  kit.add(box, kit.addClass(kit.addClass(kit.label("Save keeps it in " &
-    (downloadsDir() / "webby-bug-reports").replace(getHomeDir().strip(leading = false, chars = {'/'}), "~") & ". " & jamNote), "dim"), "small"))
+  kit.add(box, kit.addClass(kit.addClass(kit.label("Saved as " &
+    zipPath.replace(getHomeDir().strip(leading = false, chars = {'/'}), "~") & " (" &
+    formatSize(getFileSize(zipPath), includeSpace = true) & "); the path is on the clipboard. Send the zip to " &
+    "whoever looks into the bug: unzipped, its report.html shows the " & (if r.video: "recording" else: "screenshot") &
+    " with the console, network, actions and engine log."), "dim"), "small"))
   var d: kit.Dialog
-  d = kit.dialog("Report a bug", box, @["Discard", "Save", "Upload to Jam"], onResult = proc (i: int) =
-    if i notin [1, 2]: return
-    r.title = kit.text(title).strip
-    if r.title.len == 0: r.title = "Bug on " & host(r.url)
+  d = kit.dialog("Report a bug", box, @["Delete", "Show in folder", "Save"], destructive = 0, onResult = proc (i: int) =
+    if i == 0:
+      discardReport(r)
+      return
+    if i notin [1, 2]: return   # closed: the zip stays as first written
+    let newTitle = kit.text(title).strip
+    if newTitle.len > 0: r.title = newTitle
     r.notes = kit.text(notes).strip
-    if i == 2: uploadReport(r)
-    else:
-      try:
-        let folder = save(r)
-        kit.toast("Saved to " & folder)
-        discard openTab("file://" & (folder / "report.html"))
-      except CatchableError as e: kit.alert("Couldn't save the report", e.msg))
+    if writeZip(r).len == 0: return
+    if i == 1: showInFolder(zipPath)
+    elif i == 2: kit.toast("Bug report saved, its path is on the clipboard"))
   notes.onSubmit = proc (t: string) = kit.dialogResult(d, 2)
   kit.focus(notes)
 
@@ -672,7 +609,7 @@ proc install*() =
     buildBar()
     addMenuSeparator()
     addMenuItem("Report a bug…", reportBug, shortcutText(modCtrl or modShift, 0x78))
-    addMenuItem("Jam settings…", proc () = showJamSettings())
+    addMenuItem("Bug report settings…", proc () = showSettings())
   addShortcut(modCtrl or modShift, 0x78, reportBug)   # Ctrl+Shift+X
   tabStateHooks.add proc (t: Tab) =
     let rec = recording

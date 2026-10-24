@@ -137,14 +137,14 @@ when defined(android):
   proc openPath(path: string) =
     if hostCall("openFile", path) != "ok": toast("No app opens " & path.extractFilename)
 
-  proc showInFolder(path: string) = openPath(path)
+  proc showInFolder*(path: string) = openPath(path)
 
 else:
   proc openPath(path: string) =
     if g_app_info_launch_default_for_uri(fileUri(path).cstring, nil, nil) == 0:
       toast("No app opens " & path.extractFilename)
 
-  proc showInFolder(path: string) =
+  proc showInFolder*(path: string) =
     ## Selects the file in the file manager (org.freedesktop.FileManager1), else opens its folder.
     let bus = g_bus_get_sync(2, nil, nil)   # G_BUS_TYPE_SESSION
     if bus != nil:

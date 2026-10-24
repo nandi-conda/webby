@@ -80,7 +80,7 @@ if (report.video) {
 }
 $('notes').textContent = report.notes || '';
 const info = [
-  ['Page', report.page.url], ['Jam', report.jam || ''], ['Browser', report.browser],
+  ['Page', report.page.url], ['Browser', report.browser],
   ['Engine', report.engine], ['User agent', report.userAgent], ['OS', report.os],
   ['Viewport', report.viewport.width + ' × ' + report.viewport.height + (report.viewport.dpr ? ' @' + report.viewport.dpr + 'x' : '')],
   ['Language', report.language || ''],
