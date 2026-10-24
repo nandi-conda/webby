@@ -544,7 +544,7 @@ proc install*() =
   addShortcut(modCtrl, 0x6a, toggleDownloads)   # Ctrl+J
   windowHooks.add proc () =
     if appUrl.len > 0: return
-    addMenuItem("Downloads", toggleDownloads, "Ctrl+J")
+    addMenuItem("Downloads", toggleDownloads, "Ctrl+J", mgDownloads)
     loadCss("button.webby-download-row { padding: 6px 4px 6px 10px; }\n" &
       ".webby-download-row button { padding: 2px; min-height: 0; }\n" &
       ".webby-download-percent { margin: 0 6px 0 -2px; }\n" &

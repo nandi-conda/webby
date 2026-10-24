@@ -56,5 +56,4 @@ proc showAbout() =
 proc install*() =
   # From a window hook, and installed last, so it comes after the other features' items (they add theirs there too).
   windowHooks.add proc () =
-    addMenuSeparator()
-    addMenuItem("About Webby", showAbout)
+    addMenuItem("About Webby", showAbout, group = mgHelp)

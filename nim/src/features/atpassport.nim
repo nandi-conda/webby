@@ -355,7 +355,7 @@ proc install*() =
     kit.addClass(bar, "webby-atp-bar")
     kit.`visible=`(bar, false)
     kit.add(barSlot, bar)
-    addMenuItem("AT Protocol handles", togglePanel)
+    addMenuItem("AT Protocol handles", togglePanel, group = mgPasswords)
   tabClosedHooks.add proc (t: Tab) = agents.del t.messagePrefix
   activeTabHooks.add proc (t: Tab) = showBar()
   tabStateHooks.add onTabState

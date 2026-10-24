@@ -326,9 +326,8 @@ proc install*() =
     loadCss(""".webby-sync-panel { padding: 12px; }
 .webby-device { margin-top: 8px; }
 .webby-device-tab { margin-left: 24px; }""")
-    addMenuSeparator()
-    addMenuItem("Sync", proc () = toggle(panelSync))
-    addMenuItem("Tabs from other devices", proc () = toggle(panelDevices))
+    addMenuItem("Sync", proc () = toggle(panelSync), group = mgSettings)
+    addMenuItem("Tabs from other devices", proc () = toggle(panelDevices), group = mgHistory)
     statusListeners.add refresh
     deviceListeners.add proc () = (if shown == panelDevices: refresh())
     if theVault != nil: engine.start()

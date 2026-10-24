@@ -431,10 +431,10 @@ proc buildChrome() =
     kit.add(starSlotRow, starButton)
   discard addToolbarButton("bookmarks_outlined", "Bookmarks (Ctrl+Shift+O)", toggleManager, "bookmarks", "Bookmarks")
   buildBar()
-  if not incognito: addMenuItem("Bookmark this page", bookmarkPage, "Ctrl+D")
-  addMenuCheck("Show bookmarks bar", showBar, proc () = setShowBar(not showBar()), "Ctrl+Shift+B")
-  addMenuSeparator()
-  when not defined(android): addMenuItem("Bookmark manager", showManager, "Ctrl+Shift+O")   # the Bookmarks item there
+  if not incognito: addMenuItem("Bookmark this page", bookmarkPage, "Ctrl+D", mgBookmarks)
+  addMenuCheck("Show bookmarks bar", showBar, proc () = setShowBar(not showBar()), "Ctrl+Shift+B", mgBookmarks)
+  addMenuSeparator(mgBookmarks)
+  when not defined(android): addMenuItem("Bookmark manager", showManager, "Ctrl+Shift+O", mgBookmarks)   # the Bookmarks item there
   updateStar()
 
 proc install*() =

@@ -44,6 +44,17 @@ const modShift* = 4
 const modSuper* = 8
 
 type
+  MenuGroup* = enum
+    ## Where an item goes in the ⋮ menu, in menu order (see moreMenuItems).
+    mgWindows, mgHistory, mgBookmarks, mgDownloads, mgPasswords, mgPage, mgMore, mgSettings, mgHelp
+
+const
+  menuGroupLabel: array[MenuGroup, string] =
+    ["", "History", "Bookmarks", "", "Passwords and autofill", "", "", "Settings", "Help"]  ## "": items inline
+  menuGroupSectionStart: array[MenuGroup, bool] =   ## a separator before it
+    [true, true, false, false, false, true, true, true, false]
+
+type
   Tab* = ref object
     view*: View              ## nil while the tab sleeps (no page, no WebContent process); see ensureView
     button*: kit.Widget      ## the tab's item in the tab strip
@@ -120,7 +131,8 @@ var
   pumpHooks*: seq[proc ()]                        ## every pump tick, after Ladybird's events ran (keep them cheap)
   suggestionProviders*: seq[proc (text: string): seq[Suggestion]]
   tabMenuHooks*: seq[proc (t: Tab, items: var seq[kit.MenuItem])]  ## right-click on a tab: append menu items
-  moreMenuHooks*: seq[proc (items: var seq[kit.MenuItem])]  ## the ⋮ menu, built each time it opens; see addMenuItem
+  moreMenuHooks*: seq[tuple[group: MenuGroup, build: proc (items: var seq[kit.MenuItem])]]  ## the ⋮ menu, built
+                                                  ## each time it opens; see addMenuItem
   pagePointerHooks*: seq[proc (t: Tab, e: kit.PointerEvent): bool]  ## before the page gets it; true = handled
   pageWheelHooks*: seq[proc (t: Tab, e: kit.WheelEvent): bool]      ## before the page gets it; true = handled
   pageKeyHooks*: seq[proc (t: Tab, e: kit.KeyEvent): bool]          ## before the page gets it; true = handled
@@ -447,8 +459,9 @@ proc addToolbarButton*(icon, tooltip: string, action: proc () {.closure.}, openI
     var label = kit.tooltip(b)
     let paren = label.find(" (")
     if paren > 0 and label.endsWith(")"): label.setLen(paren)
-    moreMenuHooks.add proc (items: var seq[kit.MenuItem]) =
+    proc build(items: var seq[kit.MenuItem]) =
       if kit.visible(b): items.add kit.menuItem(label, action)
+    moreMenuHooks.add (mgMore, build)
 
 proc shortcutText*(mods: int, keyval: uint32): string =
   ## "Ctrl+Shift+T" for a shortcut's mods and GDK keyval, to show in menus.
@@ -469,33 +482,57 @@ proc shortcutText*(mods: int, keyval: uint32): string =
       of 0xff53: "Right"
       else: "")
 
-proc addMenuItem*(label: string, action: proc () {.closure.}, shortcut = "") =
-  ## An item in the ⋮ (More) menu.
-  moreMenuHooks.add proc (items: var seq[kit.MenuItem]) = items.add kit.menuItem(label, action, shortcut = shortcut)
+proc addMenuHook*(group: MenuGroup, build: proc (items: var seq[kit.MenuItem])) =
+  ## Items for one section or submenu of the ⋮ menu, made each time the menu opens.
+  moreMenuHooks.add (group, build)
 
-proc addMenuCheck*(label: string, checked: proc (): bool, action: proc () {.closure.}, shortcut = "") =
+proc addMenuItem*(label: string, action: proc () {.closure.}, shortcut = "", group = mgMore) =
+  ## An item in the ⋮ (More) menu, in `group`'s section or submenu.
+  addMenuHook(group, proc (items: var seq[kit.MenuItem]) = items.add kit.menuItem(label, action, shortcut = shortcut))
+
+proc addMenuCheck*(label: string, checked: proc (): bool, action: proc () {.closure.}, shortcut = "",
+                   group = mgMore) =
   ## A check item in the ⋮ menu; `checked` is asked each time the menu opens.
-  moreMenuHooks.add proc (items: var seq[kit.MenuItem]) =
+  addMenuHook(group, proc (items: var seq[kit.MenuItem]) =
     var it = kit.checkItem(label, checked(), action)
     it.shortcut = shortcut
-    items.add it
+    items.add it)
 
-proc addMenuSeparator*() =
-  moreMenuHooks.add proc (items: var seq[kit.MenuItem]) =
-    if items.len > 0 and not items[^1].separator: items.add kit.menuSeparator()
+proc addMenuSeparator*(group = mgMore) =
+  addMenuHook(group, proc (items: var seq[kit.MenuItem]) =
+    if items.len > 0 and not items[^1].separator: items.add kit.menuSeparator())
 
-proc moreMenuItems(): seq[kit.MenuItem] =
-  var all: seq[kit.MenuItem]
-  for h in moreMenuHooks: h(all)
-  var seen: seq[string]
-  for it in all:   # no separator first, last or twice in a row
+proc tidied(items: seq[kit.MenuItem]): seq[kit.MenuItem] =
+  ## No separator first, last or twice in a row.
+  for it in items:
     if it.separator and (result.len == 0 or result[^1].separator): continue
-    if not it.separator and it.submenu.len == 0:
-      # On Android the toolbar buttons are ⋮ items too, beside the features' own items of the same name: once each.
-      if it.label in seen: continue
-      seen.add it.label
     result.add it
   while result.len > 0 and result[^1].separator: result.setLen(result.len - 1)
+
+proc moreMenuItems(): seq[kit.MenuItem] =
+  ## Chrome's order: windows, then where you've been and what you've kept, then this page, then settings, then help.
+  ## Each group is a section of the menu or, when it has a submenu label, one item opening its submenu.
+  var groups: array[MenuGroup, seq[kit.MenuItem]]
+  for h in moreMenuHooks: h.build(groups[h.group])
+  # On Android the toolbar buttons are ⋮ items too (mgMore): one whose feature has its own item elsewhere is left out.
+  var seen: seq[string]
+  for g in MenuGroup:
+    if g != mgMore:
+      for it in groups[g]: seen.add it.label
+  var loose: seq[kit.MenuItem]
+  for it in groups[mgMore]:
+    if not it.separator and it.submenu.len == 0:
+      if it.label in seen: continue
+      seen.add it.label
+    loose.add it
+  groups[mgMore] = loose
+  for g in MenuGroup:
+    let items = tidied(groups[g])
+    if items.len == 0: continue
+    if menuGroupSectionStart[g] and result.len > 0: result.add kit.menuSeparator()
+    if menuGroupLabel[g].len > 0 and items.len > 1: result.add kit.submenu(menuGroupLabel[g], items)
+    else: result.add items
+  result = tidied(result)
 
 proc addShortcut*(mods: int, keyval: uint32, action: proc () {.closure.}) =
   ## A window-wide key (mods are modCtrl etc., keyval a GDK keyval in lower case for letters).

@@ -912,9 +912,9 @@ proc install*() =
       if not url.startsWith(anchorPrefix): discard openTab(url)
       elif panelJob != nil: panelJob.jumpTo(url[anchorPrefix.len .. ^1])
     discard addToolbarButton("summarize_outlined", "Summarize this page", toggleSummary, "summarize", "Summary")
-    addMenuSeparator()
-    addMenuItem("Summarize this page", summarizePage)
-    if not incognito or setSecret == nil: addMenuItem("Summarize settings…", proc () = showSummarizeSettings())
+    addMenuItem("Summarize this page", summarizePage, group = mgPage)
+    if not incognito or setSecret == nil:
+      addMenuItem("Summarize settings…", proc () = showSummarizeSettings(), group = mgSettings)
   activeTabHooks.add proc (t: Tab) =
     let job = jobs.getOrDefault(t.messagePrefix)
     let wanted = job != nil and job.open

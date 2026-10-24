@@ -550,9 +550,8 @@ proc install*() =
   pageMessageHooks.add onMessage
   windowHooks.add proc () =
     buildBar()
-    addMenuSeparator()
-    addMenuItem("Report a bug…", reportBug, shortcutText(modCtrl or modShift, 0x78))
-    addMenuItem("Bug report settings…", proc () = showSettings())
+    addMenuItem("Report a bug…", reportBug, shortcutText(modCtrl or modShift, 0x78), mgHelp)
+    addMenuItem("Bug report settings…", proc () = showSettings(), group = mgSettings)
   addShortcut(modCtrl or modShift, 0x78, reportBug)   # Ctrl+Shift+X
   tabStateHooks.add proc (t: Tab) =
     let rec = recording

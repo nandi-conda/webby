@@ -210,7 +210,7 @@ proc historySuggestions(text: string): seq[Suggestion] =
     result.add Suggestion(title: s.title, url: s.url, kind: "history")
 
 proc menuWithAccel(label: string, key: uint32, mods: int, action: proc ()) =
-  addMenuItem(label, action, shortcutText(mods, key))
+  addMenuItem(label, action, shortcutText(mods, key), mgHistory)
 
 proc install*() =
   tabStateHooks.add recordVisit
@@ -230,5 +230,4 @@ button.webby-history-row { padding: 0 4px 0 10px; min-height: 0; }
 .webby-check-detail { margin-left: 26px; }
 """)
     menuWithAccel("History", 0x68, modCtrl, showHistory)
-    addMenuSeparator()
     menuWithAccel("Clear browsing data…", 0xffff, modCtrl or modShift, clearBrowsingData)

@@ -429,9 +429,10 @@ button.webby-pinned-tab.webby-active-tab:hover { background-color: alpha(@theme_
       let d = draggedTab(data)
       if d != nil: dropTab(d, tabs.len))
     if readVerticalTabs(): setVertical(true, save = false)
-    moreMenuHooks.add addRecentlyClosed   # rebuilt each time the menu opens
-    addMenuSeparator()
-    addMenuItem("New incognito window", proc () = openIncognitoWindow(), "Ctrl+Shift+N")
+    addMenuHook(mgHistory, proc (items: var seq[kit.MenuItem]) =   # rebuilt each time the menu opens
+      addRecentlyClosed(items)
+      items.add kit.menuSeparator())   # set apart from the History items after it
+    addMenuItem("New incognito window", proc () = openIncognitoWindow(), "Ctrl+Shift+N", mgWindows)
   addShortcut(modCtrl or modShift, 0x74, reopenClosedTab)                     # Ctrl+Shift+T
   addShortcut(modCtrl or modShift, 0x6e, proc () = openIncognitoWindow())     # Ctrl+Shift+N
   discard every(60_000, discardIdleTabs)

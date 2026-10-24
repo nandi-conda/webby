@@ -131,7 +131,7 @@ proc install*() =
   windowHooks.add proc () =
     buildBar()
     loadCss(".webby-find-bar { border-top: 1px solid alpha(currentColor, 0.15); padding: 2px 0; }")
-    addMenuItem("Find in page…", openBar)
+    addMenuItem("Find in page…", openBar, "Ctrl+F", mgPage)
   addShortcut(modCtrl, 0x66, openBar)                            # Ctrl+F
   addShortcut(0, 0xffc0, proc () = nextOrOpen(true))             # F3
   addShortcut(modShift, 0xffc0, proc () = nextOrOpen(false))     # Shift+F3

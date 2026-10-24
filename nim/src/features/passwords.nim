@@ -297,7 +297,7 @@ proc install*() =
     # The vault belongs to the normal windows; incognito ones only fill from it.
     if not incognito:
       discard addToolbarButton("key_outlined", "Passwords and passkeys", toggleVaultPanel, "key", "Passwords and passkeys")
-      addMenuItem("Passwords and passkeys", showVaultPanel)
+      addMenuItem("Passwords and passkeys", showVaultPanel, group = mgPasswords)
   tabCreatedHooks.add proc (t: Tab) = agents.add Agent(tab: t)
   tabClosedHooks.add proc (t: Tab) =
     for i, a in agents:

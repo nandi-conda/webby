@@ -47,5 +47,4 @@ proc install*() =
     if incognito and incognitoProfile.len > 0: seedIncognitoProfile()
     else: prepareEngine()
   windowHooks.add proc () =
-    addMenuSeparator()
-    addMenuCheck("Block ads and trackers", enabled, proc () = toggle(not enabled()))
+    addMenuCheck("Block ads and trackers", enabled, proc () = toggle(not enabled()), group = mgSettings)
