@@ -1,0 +1,649 @@
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+index 65f6c165..e6807f77 100644
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -993,6 +993,8 @@ set(SOURCES
+     WebAssembly/Memory.cpp
+     WebAssembly/Module.cpp
+     WebAssembly/Table.cpp
++    WebAssembly/Tag.cpp
++    WebAssembly/Exception.cpp
+     WebAssembly/WebAssembly.cpp
+     WebAssembly/WebAssemblyModule.cpp
+     WebAuthn/AuthenticatorAssertionResponse.cpp
+diff --git a/Libraries/LibWeb/Forward.h b/Libraries/LibWeb/Forward.h
+index 952abf34..9596f5d6 100644
+--- a/Libraries/LibWeb/Forward.h
++++ b/Libraries/LibWeb/Forward.h
+@@ -1231,11 +1231,13 @@ class ViewTransition;
+ 
+ namespace Web::WebAssembly {
+ 
++class Exception;
+ class Global;
+ class Instance;
+ class Memory;
+ class Module;
+ class Table;
++class Tag;
+ 
+ namespace Detail {
+ 
+diff --git a/Libraries/LibWeb/WebAssembly/BindingsGlue.h b/Libraries/LibWeb/WebAssembly/BindingsGlue.h
+index 93bc7130..ba40df2f 100644
+--- a/Libraries/LibWeb/WebAssembly/BindingsGlue.h
++++ b/Libraries/LibWeb/WebAssembly/BindingsGlue.h
+@@ -11,6 +11,7 @@
+ #include <AK/Vector.h>
+ #include <LibGC/Forward.h>
+ #include <LibGC/Ptr.h>
++#include <LibGC/RootVector.h>
+ #include <LibJS/Forward.h>
+ #include <LibJS/Runtime/Completion.h>
+ #include <LibJS/Runtime/Value.h>
+@@ -23,11 +24,13 @@
+ 
+ namespace Web::WebAssembly {
+ 
++class Exception;
+ class Global;
+ class Instance;
+ class Memory;
+ class Module;
+ class Table;
++class Tag;
+ 
+ }
+ 
+@@ -49,6 +52,11 @@ WEB_API WebIDL::ExceptionOr<JS::Value> get(JS::Realm&, WebAssembly::Table&, JS::
+ WEB_API WebIDL::ExceptionOr<void> set(JS::Realm&, WebAssembly::Table&, JS::Value index_value, Optional<JS::Value>);
+ WEB_API WebIDL::ExceptionOr<JS::Value> length(JS::Realm&, WebAssembly::Table&);
+ 
++WEB_API WebIDL::ExceptionOr<GC::Ref<WebAssembly::Tag>> construct_tag(JS::Realm&, TagType const&);
++
++WEB_API WebIDL::ExceptionOr<GC::Ref<WebAssembly::Exception>> construct_exception(JS::Realm&, GC::Ref<WebAssembly::Tag>, GC::RootVector<JS::Value> const& payload, ExceptionOptions const&);
++WEB_API WebIDL::ExceptionOr<JS::Value> get_arg(JS::Realm&, WebAssembly::Exception&, GC::Ref<WebAssembly::Tag>, u32 index);
++
+ WEB_API WebIDL::ExceptionOr<GC::Ref<WebIDL::Promise>> compile(JS::Realm&, WebIDL::BufferSource bytes);
+ WEB_API WebIDL::ExceptionOr<GC::Ref<WebIDL::Promise>> compile_streaming(JS::Realm&, GC::Ref<WebIDL::Promise> source);
+ WEB_API WebIDL::ExceptionOr<GC::Ref<WebIDL::Promise>> instantiate(JS::Realm&, WebIDL::BufferSource bytes, GC::Ptr<JS::Object> import_object);
+@@ -59,6 +67,8 @@ WEB_API WebAssembly::Instance* instance_from_value(JS::Value);
+ WEB_API WebAssembly::Memory* memory_from_value(JS::Value);
+ WEB_API WebAssembly::Module* module_from_value(JS::Value);
+ WEB_API WebAssembly::Table* table_from_value(JS::Value);
++WEB_API WebAssembly::Tag* tag_from_value(JS::Value);
++WEB_API WebAssembly::Exception* exception_from_value(JS::Value);
+ WEB_API void resolve_webassembly_module_promise(JS::Realm&, WebIDL::Promise&, GC::Ref<WebAssembly::Module>);
+ WEB_API void resolve_webassembly_instance_promise(JS::Realm&, WebIDL::Promise&, GC::Ref<WebAssembly::Instance>);
+ WEB_API GC::Ref<JS::Object> create_webassembly_instantiated_source(JS::Realm&, GC::Ref<WebAssembly::Module>, GC::Ref<WebAssembly::Instance>);
+diff --git a/Libraries/LibWeb/WebAssembly/Exception.cpp b/Libraries/LibWeb/WebAssembly/Exception.cpp
+new file mode 100644
+index 00000000..bf2284ae
+--- /dev/null
++++ b/Libraries/LibWeb/WebAssembly/Exception.cpp
+@@ -0,0 +1,183 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <LibGC/Heap.h>
++#include <LibJS/Runtime/Error.h>
++#include <LibJS/Runtime/VM.h>
++#include <LibWeb/Bindings/Exception.h>
++#include <LibWeb/WebAssembly/BindingsGlue.h>
++#include <LibWeb/WebAssembly/Exception.h>
++#include <LibWeb/WebAssembly/Tag.h>
++
++namespace Web::WebAssembly {
++
++GC_DEFINE_ALLOCATOR(Exception);
++
++// https://webassembly.github.io/spec/js-api/#initialize-an-exception-object
++GC::Ref<Exception> Exception::create(NonnullRefPtr<Detail::WebAssemblyCache> cache, Wasm::ExceptionAddress address, Optional<Utf16String> stack)
++{
++    // 1. Let map be the surrounding agent's associated exception object cache.
++    // 2. Assert: map[exnAddr] doesn't exist.
++    VERIFY(!cache->get_exception_instance(address).has_value());
++
++    // 3. Set exn.[[Address]] to exnAddr.
++    // 4. Set map[exnAddr] to exn.
++    // NB: The tag and payload of an exception never change, so they are read from the store when needed.
++    auto object = GC::Heap::the().allocate<Exception>(cache, address, move(stack));
++    cache->add_exception_instance(address, object);
++    return object;
++}
++
++// https://webassembly.github.io/spec/js-api/#create-an-exception-object
++GC::Ref<Exception> Exception::from_address(NonnullRefPtr<Detail::WebAssemblyCache> cache, Wasm::ExceptionAddress address)
++{
++    // 1. Let map be the surrounding agent's associated exception object cache.
++    // 2. If map[exnAddr] exists, return map[exnAddr].
++    if (auto object = cache->get_exception_instance(address); object.has_value())
++        return GC::Ref { **object };
++
++    // 3. Let exn be a new Exception.
++    // 4. Initialize exn from exnAddr.
++    // 5. Set exn.[[Stack]] to undefined.
++    return create(move(cache), address, {});
++}
++
++Exception::Exception(NonnullRefPtr<Detail::WebAssemblyCache> cache, Wasm::ExceptionAddress address, Optional<Utf16String> stack)
++    : m_cache(move(cache))
++    , m_address(address)
++    , m_stack(move(stack))
++{
++}
++
++void Exception::visit_edges(Visitor& visitor)
++{
++    Base::visit_edges(visitor);
++
++    // NOTE: m_cache is already visited by the realm's HostDefined, which owns it.
++    visitor.ignore(m_cache);
++}
++
++Wasm::TagAddress Exception::tag_address() const
++{
++    auto* instance = cache().abstract_machine().store().get(m_address);
++    VERIFY(instance);
++    return instance->tag();
++}
++
++// https://webassembly.github.io/spec/js-api/#dom-exception-is
++bool Exception::is(GC::Ref<Tag> tag) const
++{
++    // 1. If this.[[Type]] is not equal to exceptionTag.[[Address]], return false.
++    // 2. Return true.
++    return &tag->cache() == &cache() && tag_address() == tag->address();
++}
++
++// https://webassembly.github.io/spec/js-api/#dom-exception-stack
++Variant<Utf16String, Empty> Exception::stack() const
++{
++    // 1. Return this.[[Stack]].
++    if (m_stack.has_value())
++        return *m_stack;
++    return Empty {};
++}
++
++}
++
++namespace Web::Bindings {
++
++static bool is_unsupported_exception_value_type(Wasm::ValueType const& type)
++{
++    return type.kind() == Wasm::ValueType::V128 || type.kind() == Wasm::ValueType::ExceptionReference;
++}
++
++// https://webassembly.github.io/spec/js-api/#dom-exception-exception
++WebIDL::ExceptionOr<GC::Ref<WebAssembly::Exception>> construct_exception(JS::Realm& realm, GC::Ref<WebAssembly::Tag> exception_tag, GC::RootVector<JS::Value> const& payload, ExceptionOptions const& options)
++{
++    auto cache = WebAssembly::Detail::get_cache(realm);
++    auto& store = cache->abstract_machine().store();
++
++    // NB: Tags of another realm's store cannot be thrown in this one.
++    if (&exception_tag->cache() != cache.ptr())
++        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "The tag belongs to another realm"_utf16 };
++
++    // 3. Let store be the surrounding agent's associated store.
++    // 4. Let [types] → [] be tag_type(store, exceptionTag.[[Address]]).
++    auto* tag_instance = store.get(exception_tag->address());
++    VERIFY(tag_instance);
++    auto types = tag_instance->type().parameters();
++
++    // 5. If types's size is not payload's size, throw a TypeError.
++    if (types.size() != payload.size())
++        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, Utf16String::formatted("The tag takes {} values, not {}", types.size(), payload.size()) };
++
++    // 6. Let wasmPayload be « ».
++    Vector<Wasm::Value> wasm_payload;
++    wasm_payload.ensure_capacity(payload.size());
++
++    // 7. For each value and resultType of payload and types, paired linearly,
++    for (size_t index = 0; index < payload.size(); ++index) {
++        // 1. If resultType is v128 or exnref, throw a TypeError.
++        if (is_unsupported_exception_value_type(types[index]))
++            return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Cannot pass this value type to an exception"_utf16 };
++        // 2. Append ? ToWebAssemblyValue(value, resultType) to wasmPayload.
++        wasm_payload.unchecked_append(TRY(WebAssembly::Detail::to_webassembly_value(realm, payload[index], types[index])));
++    }
++
++    // 8. Let (store, exceptionAddr) be exn_alloc(store, exceptionTag.[[Address]], wasmPayload).
++    // 9. Set the surrounding agent's associated store to store.
++    auto address = store.allocate(exception_tag->address(), move(wasm_payload));
++    VERIFY(address.has_value());
++
++    // 10. Initialize this from exceptionAddr.
++    // 11. If options["traceStack"] is true, set this.[[Stack]] to either a DOMString representation of the current call
++    //     stack or undefined.
++    // 12. Otherwise, set this.[[Stack]] to undefined.
++    Optional<Utf16String> stack;
++    if (options.trace_stack) {
++        auto error = JS::Error::create(realm);
++        stack = error->stack_string();
++    }
++    return WebAssembly::Exception::create(move(cache), *address, move(stack));
++}
++
++// https://webassembly.github.io/spec/js-api/#dom-exception-getarg
++WebIDL::ExceptionOr<JS::Value> get_arg(JS::Realm& realm, WebAssembly::Exception& exception, GC::Ref<WebAssembly::Tag> exception_tag, u32 index)
++{
++    // 1. If this.[[Type]] is not equal to exceptionTag.[[Address]], throw a TypeError.
++    if (!exception.is(exception_tag))
++        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "The exception does not have this tag"_utf16 };
++
++    auto& store = exception.cache().abstract_machine().store();
++    auto* exception_instance = store.get(exception.address());
++    VERIFY(exception_instance);
++
++    // 2. Let payload be this.[[Payload]].
++    auto& payload = exception_instance->params();
++
++    // 3. If index ≥ payload's size, throw a RangeError.
++    if (index >= payload.size())
++        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::RangeError, Utf16String::formatted("The exception has {} values", payload.size()) };
++
++    // 4. Let [types] → [] be tag_type(store, exceptionTag.[[Address]]).
++    auto* tag_instance = store.get(exception_tag->address());
++    VERIFY(tag_instance);
++    auto const& type = tag_instance->type().parameters()[index];
++
++    // 5. If types[index] matches v128 or exnref, throw a TypeError.
++    if (is_unsupported_exception_value_type(type))
++        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Cannot read this value type from an exception"_utf16 };
++
++    // 6. Return ToJSValue(payload[index]).
++    auto value = payload[index];
++    return WebAssembly::Detail::to_js_value(realm, value, type);
++}
++
++WebAssembly::Exception* exception_from_value(JS::Value value)
++{
++    return value.is_object() ? Bindings::impl_from<WebAssembly::Exception>(&value.as_object()) : nullptr;
++}
++
++}
+diff --git a/Libraries/LibWeb/WebAssembly/Exception.h b/Libraries/LibWeb/WebAssembly/Exception.h
+new file mode 100644
+index 00000000..7501102e
+--- /dev/null
++++ b/Libraries/LibWeb/WebAssembly/Exception.h
+@@ -0,0 +1,47 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/Optional.h>
++#include <AK/Utf16String.h>
++#include <AK/Variant.h>
++#include <LibWasm/AbstractMachine/AbstractMachine.h>
++#include <LibWeb/Bindings/Wrappable.h>
++#include <LibWeb/WebAssembly/WebAssembly.h>
++
++namespace Web::WebAssembly {
++
++class Tag;
++
++// https://webassembly.github.io/spec/js-api/#exceptions
++class Exception : public Bindings::GCAllocatedWrappable {
++    WEB_WRAPPABLE(Exception, Bindings::GCAllocatedWrappable);
++    GC_DECLARE_ALLOCATOR(Exception);
++
++public:
++    static GC::Ref<Exception> create(NonnullRefPtr<Detail::WebAssemblyCache>, Wasm::ExceptionAddress, Optional<Utf16String> stack);
++    // The Exception object of an exception, which is the same object for as long as the cache lives.
++    static GC::Ref<Exception> from_address(NonnullRefPtr<Detail::WebAssemblyCache>, Wasm::ExceptionAddress);
++
++    Wasm::ExceptionAddress address() const { return m_address; }
++    Wasm::TagAddress tag_address() const;
++    Detail::WebAssemblyCache& cache() const { return *m_cache; }
++
++    bool is(GC::Ref<Tag>) const;
++    Variant<Utf16String, Empty> stack() const;
++
++private:
++    Exception(NonnullRefPtr<Detail::WebAssemblyCache>, Wasm::ExceptionAddress, Optional<Utf16String> stack);
++
++    virtual void visit_edges(Visitor&) override;
++
++    NonnullRefPtr<Detail::WebAssemblyCache> m_cache;
++    Wasm::ExceptionAddress m_address;
++    Optional<Utf16String> m_stack;
++};
++
++}
+diff --git a/Libraries/LibWeb/WebAssembly/Exception.idl b/Libraries/LibWeb/WebAssembly/Exception.idl
+new file mode 100644
+index 00000000..bae01fbb
+--- /dev/null
++++ b/Libraries/LibWeb/WebAssembly/Exception.idl
+@@ -0,0 +1,13 @@
++// https://webassembly.github.io/spec/js-api/#dictdef-exceptionoptions
++dictionary ExceptionOptions {
++    boolean traceStack = false;
++};
++
++// https://webassembly.github.io/spec/js-api/#exception
++[LegacyNamespace=WebAssembly, Exposed=*]
++interface Exception {
++    [ImplementedInBindings] constructor(Tag exceptionTag, sequence<any> payload, optional ExceptionOptions options = {});
++    [ImplementedInBindings, NeedsCallerRealm] any getArg(Tag exceptionTag, [EnforceRange] unsigned long index);
++    boolean is(Tag exceptionTag);
++    readonly attribute (DOMString or undefined) stack;
++};
+diff --git a/Libraries/LibWeb/WebAssembly/Instance.cpp b/Libraries/LibWeb/WebAssembly/Instance.cpp
+index 66c4dda1..cabdeafe 100644
+--- a/Libraries/LibWeb/WebAssembly/Instance.cpp
++++ b/Libraries/LibWeb/WebAssembly/Instance.cpp
+@@ -23,6 +23,7 @@
+ #include <LibWeb/WebAssembly/Memory.h>
+ #include <LibWeb/WebAssembly/Module.h>
+ #include <LibWeb/WebAssembly/Table.h>
++#include <LibWeb/WebAssembly/Tag.h>
+ #include <LibWeb/WebAssembly/WebAssembly.h>
+ 
+ namespace Web::WebAssembly {
+@@ -145,7 +146,9 @@ static GC::Ref<JS::Object> create_exports_object(JS::Realm& realm, WebAssembly::
+             [&](Wasm::TableAddress const& address) {
+                 exports->define_direct_property(name, table(realm, instance.table_instance(address)), JS::default_attributes);
+             },
+-            [&](Wasm::TagAddress const&) { dbgln("Not yet implemented: tags"); });
++            [&](Wasm::TagAddress const& address) {
++                exports->define_direct_property(name, wrap(host_defined_wrapper_world(realm), realm, WebAssembly::Tag::from_address(instance.cache(), address)), JS::default_attributes);
++            });
+     }
+ 
+     MUST(exports->set_integrity_level(JS::Object::IntegrityLevel::Frozen));
+diff --git a/Libraries/LibWeb/WebAssembly/Tag.cpp b/Libraries/LibWeb/WebAssembly/Tag.cpp
+new file mode 100644
+index 00000000..d341bf4c
+--- /dev/null
++++ b/Libraries/LibWeb/WebAssembly/Tag.cpp
+@@ -0,0 +1,105 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <LibGC/Heap.h>
++#include <LibWeb/Bindings/Tag.h>
++#include <LibWeb/WebAssembly/BindingsGlue.h>
++#include <LibWeb/WebAssembly/Tag.h>
++
++namespace Web::WebAssembly {
++
++GC_DEFINE_ALLOCATOR(Tag);
++
++// https://webassembly.github.io/spec/js-api/#dom-tag-tag
++GC::Ref<Tag> Tag::create(NonnullRefPtr<Detail::WebAssemblyCache> cache, Vector<Wasm::ValueType> parameters)
++{
++    // 4. Let store be the surrounding agent's associated store.
++    // 5. Let (store, tagAddress) be tag_alloc(store, « wasmParameters » → « »).
++    // 6. Set the surrounding agent's associated store to store.
++    Wasm::FunctionType type { move(parameters), {} };
++    auto address = cache->abstract_machine().store().allocate(type, nullptr, Wasm::TagType::Flags::None);
++    VERIFY(address.has_value());
++
++    // 7. Initialize this from tagAddress.
++    return from_address(move(cache), *address);
++}
++
++// https://webassembly.github.io/spec/js-api/#create-a-tag-object
++GC::Ref<Tag> Tag::from_address(NonnullRefPtr<Detail::WebAssemblyCache> cache, Wasm::TagAddress address)
++{
++    // 1. Let map be the surrounding agent's associated tag object cache.
++    // 2. If map[tagAddress] exists, return map[tagAddress].
++    if (auto object = cache->get_tag_instance(address); object.has_value())
++        return GC::Ref { **object };
++
++    // 3. Let tag be a new Tag.
++    // 4. Initialize tag from tagAddress.
++    auto object = GC::Heap::the().allocate<Tag>(cache, address);
++    cache->add_tag_instance(address, object);
++    return object;
++}
++
++Tag::Tag(NonnullRefPtr<Detail::WebAssemblyCache> cache, Wasm::TagAddress address)
++    : m_cache(move(cache))
++    , m_address(address)
++{
++}
++
++void Tag::visit_edges(Visitor& visitor)
++{
++    Base::visit_edges(visitor);
++
++    // NOTE: m_cache is already visited by the realm's HostDefined, which owns it.
++    visitor.ignore(m_cache);
++}
++
++}
++
++namespace Web::Bindings {
++
++// https://webassembly.github.io/spec/js-api/#tovaluetype
++static Wasm::ValueType tag_parameter_value_type(ValueType type)
++{
++    switch (type) {
++    case ValueType::I32:
++        return Wasm::ValueType { Wasm::ValueType::I32 };
++    case ValueType::I64:
++        return Wasm::ValueType { Wasm::ValueType::I64 };
++    case ValueType::F32:
++        return Wasm::ValueType { Wasm::ValueType::F32 };
++    case ValueType::F64:
++        return Wasm::ValueType { Wasm::ValueType::F64 };
++    case ValueType::V128:
++        return Wasm::ValueType { Wasm::ValueType::V128 };
++    case ValueType::Anyfunc:
++        return Wasm::ValueType { Wasm::ValueType::FunctionReference };
++    case ValueType::Externref:
++        return Wasm::ValueType { Wasm::ValueType::ExternReference };
++    }
++
++    VERIFY_NOT_REACHED();
++}
++
++// https://webassembly.github.io/spec/js-api/#dom-tag-tag
++WebIDL::ExceptionOr<GC::Ref<WebAssembly::Tag>> construct_tag(JS::Realm& realm, TagType const& type)
++{
++    // 1. Let parameters be type["parameters"].
++    // 2. Let wasmParameters be «».
++    // 3. For each type of parameters, append ToValueType(type) to wasmParameters.
++    Vector<Wasm::ValueType> parameters;
++    parameters.ensure_capacity(type.parameters.size());
++    for (auto parameter : type.parameters)
++        parameters.unchecked_append(tag_parameter_value_type(parameter));
++
++    return WebAssembly::Tag::create(WebAssembly::Detail::get_cache(realm), move(parameters));
++}
++
++WebAssembly::Tag* tag_from_value(JS::Value value)
++{
++    return value.is_object() ? Bindings::impl_from<WebAssembly::Tag>(&value.as_object()) : nullptr;
++}
++
++}
+diff --git a/Libraries/LibWeb/WebAssembly/Tag.h b/Libraries/LibWeb/WebAssembly/Tag.h
+new file mode 100644
+index 00000000..5e57f4ca
+--- /dev/null
++++ b/Libraries/LibWeb/WebAssembly/Tag.h
+@@ -0,0 +1,37 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <LibWasm/AbstractMachine/AbstractMachine.h>
++#include <LibWeb/Bindings/Wrappable.h>
++#include <LibWeb/WebAssembly/WebAssembly.h>
++
++namespace Web::WebAssembly {
++
++// https://webassembly.github.io/spec/js-api/#tag
++class Tag : public Bindings::GCAllocatedWrappable {
++    WEB_WRAPPABLE(Tag, Bindings::GCAllocatedWrappable);
++    GC_DECLARE_ALLOCATOR(Tag);
++
++public:
++    static GC::Ref<Tag> create(NonnullRefPtr<Detail::WebAssemblyCache>, Vector<Wasm::ValueType> parameters);
++    // The Tag object of a tag, which is the same object for as long as the cache lives.
++    static GC::Ref<Tag> from_address(NonnullRefPtr<Detail::WebAssemblyCache>, Wasm::TagAddress);
++
++    Wasm::TagAddress address() const { return m_address; }
++    Detail::WebAssemblyCache& cache() const { return *m_cache; }
++
++private:
++    Tag(NonnullRefPtr<Detail::WebAssemblyCache>, Wasm::TagAddress);
++
++    virtual void visit_edges(Visitor&) override;
++
++    NonnullRefPtr<Detail::WebAssemblyCache> m_cache;
++    Wasm::TagAddress m_address;
++};
++
++}
+diff --git a/Libraries/LibWeb/WebAssembly/Tag.idl b/Libraries/LibWeb/WebAssembly/Tag.idl
+new file mode 100644
+index 00000000..a052a1f7
+--- /dev/null
++++ b/Libraries/LibWeb/WebAssembly/Tag.idl
+@@ -0,0 +1,10 @@
++// https://webassembly.github.io/spec/js-api/#dictdef-tagtype
++dictionary TagType {
++    required sequence<ValueType> parameters;
++};
++
++// https://webassembly.github.io/spec/js-api/#tag
++[LegacyNamespace=WebAssembly, Exposed=*]
++interface Tag {
++    [ImplementedInBindings] constructor(TagType type);
++};
+diff --git a/Libraries/LibWeb/WebAssembly/WebAssembly.cpp b/Libraries/LibWeb/WebAssembly/WebAssembly.cpp
+index fa972167..dcc030a8 100644
+--- a/Libraries/LibWeb/WebAssembly/WebAssembly.cpp
++++ b/Libraries/LibWeb/WebAssembly/WebAssembly.cpp
+@@ -46,11 +46,13 @@
+ #include <LibWeb/Loader/ResourceLoader.h>
+ #include <LibWeb/Platform/EventLoopPlugin.h>
+ #include <LibWeb/WebAssembly/BindingsGlue.h>
++#include <LibWeb/WebAssembly/Exception.h>
+ #include <LibWeb/WebAssembly/Global.h>
+ #include <LibWeb/WebAssembly/Instance.h>
+ #include <LibWeb/WebAssembly/Memory.h>
+ #include <LibWeb/WebAssembly/Module.h>
+ #include <LibWeb/WebAssembly/Table.h>
++#include <LibWeb/WebAssembly/Tag.h>
+ #include <LibWeb/WebAssembly/WebAssembly.h>
+ #include <LibWeb/WebIDL/AbstractOperations.h>
+ #include <LibWeb/WebIDL/Buffers.h>
+@@ -102,6 +104,8 @@ void WebAssemblyCache::visit_edges(JS::Cell::Visitor& visitor)
+     visitor.visit(m_global_instances);
+     visitor.visit(m_memory_instances);
+     visitor.visit(m_table_instances);
++    visitor.visit(m_tag_instances);
++    visitor.visit(m_exception_instances);
+     m_abstract_machine.visit_external_resources({ .visit_trap = [&visitor](Wasm::ExternallyManagedTrap const& trap) {
+         auto& completion = trap.unsafe_external_object_as<JS::Completion>();
+         visitor.visit(completion.value());
+@@ -264,7 +268,16 @@ Wasm::HostFunction create_host_function(JS::Realm& realm, JS::FunctionObject& fu
+                 ++index;
+             }
+ 
+-            auto result = TRY_OR_RETURN_TRAP(JS::call(vm, function, JS::js_undefined(), argument_values.span()));
++            auto call_result = JS::call(vm, function, JS::js_undefined(), argument_values.span());
++            // https://webassembly.github.io/spec/js-api/#create-a-host-function
++            // If the call threw a WebAssembly.Exception of this store, throw its exception into WebAssembly, where
++            // try_table / catch handlers can catch it.
++            if (call_result.is_error()) {
++                auto thrown = call_result.error_value();
++                if (auto* exception = Bindings::exception_from_value(thrown); exception && &exception->cache() == get_cache(realm).ptr())
++                    return Wasm::Trap { Wasm::UncaughtException { exception->address() } };
++            }
++            auto result = TRY_OR_RETURN_TRAP(move(call_result));
+             if (type.results().is_empty())
+                 return Wasm::Result { Vector<Wasm::Value, Wasm::ResultsStaticSize> {} };
+ 
+@@ -437,6 +450,18 @@ JS::ThrowCompletionOr<NonnullRefPtr<Wasm::ModuleInstance>> instantiate_module(JS
+                     resolved_imports.set(import_name, Wasm::ExternValue { address });
+                     return {};
+                 },
++                // 3.8. If externtype is of the form tag attribute functype,
++                [&](Wasm::TagType const&) -> JS::ThrowCompletionOr<void> {
++                    // 3.8.1. If v does not implement Tag, throw a LinkError exception.
++                    auto* tag = Bindings::tag_from_value(import_);
++                    if (!tag || &tag->cache() != cache.ptr())
++                        return vm.throw_completion<LinkError>("Expected an instance of WebAssembly.Tag for a tag import"sv);
++                    // 3.8.2. Let tagaddr be v.[[Address]].
++                    // 3.8.3. Let externtag be the external value tag tagaddr.
++                    // 3.8.4. Append externtag to imports.
++                    resolved_imports.set(import_name, Wasm::ExternValue { tag->address() });
++                    return {};
++                },
+                 [&](auto const&) -> JS::ThrowCompletionOr<void> {
+                     // (noop)
+                     return {};
+@@ -814,6 +839,9 @@ GC::Ptr<JS::NativeFunction> create_native_function(JS::Realm& realm, Wasm::Funct
+             if (result.is_trap()) {
+                 if (auto ptr = result.trap().data.get_pointer<Wasm::ExternallyManagedTrap>())
+                     return ptr->unsafe_external_object_as<JS::Completion>();
++                // An exception thrown in WebAssembly and not caught there is thrown to JS as its Exception object.
++                if (auto uncaught = result.trap().data.get_pointer<Wasm::UncaughtException>())
++                    return JS::throw_completion(Bindings::wrap(Bindings::host_defined_wrapper_world(*realm), *realm, Exception::from_address(cache, uncaught->address)));
+                 auto trap = result.trap().format();
+                 // https://webassembly.github.io/spec/js-api/#stack-overflow
+                 // 6.1. Whenever a stack overflow occurs in WebAssembly code, the same class of exception is thrown as for a stack overflow in JavaScript.
+diff --git a/Libraries/LibWeb/WebAssembly/WebAssembly.h b/Libraries/LibWeb/WebAssembly/WebAssembly.h
+index 7112fe31..cee2b5c9 100644
+--- a/Libraries/LibWeb/WebAssembly/WebAssembly.h
++++ b/Libraries/LibWeb/WebAssembly/WebAssembly.h
+@@ -70,12 +70,16 @@ public:
+     void add_memory_instance(Wasm::MemoryAddress address, GC::Ptr<WebAssembly::Memory> memory) { m_memory_instances.set(address, memory); }
+     void remove_memory_instance(Wasm::MemoryAddress address) { m_memory_instances.remove(address); }
+     void add_table_instance(Wasm::TableAddress address, GC::Ptr<WebAssembly::Table> table) { m_table_instances.set(address, table); }
++    void add_tag_instance(Wasm::TagAddress address, GC::Ptr<WebAssembly::Tag> tag) { m_tag_instances.set(address, tag); }
++    void add_exception_instance(Wasm::ExceptionAddress address, GC::Ptr<WebAssembly::Exception> exception) { m_exception_instances.set(address, exception); }
+ 
+     Optional<GC::Ptr<JS::NativeFunction>> get_function_instance(Wasm::FunctionAddress address) { return m_function_instances.get(address); }
+     Optional<JS::Value> get_extern_value(Wasm::ExternAddress address) { return m_extern_values.get(address); }
+     Optional<GC::Ptr<WebAssembly::Global>> get_global_instance(Wasm::GlobalAddress address) { return m_global_instances.get(address); }
+     Optional<GC::Ptr<WebAssembly::Memory>> get_memory_instance(Wasm::MemoryAddress address) { return m_memory_instances.get(address); }
+     Optional<GC::Ptr<WebAssembly::Table>> get_table_instance(Wasm::TableAddress address) { return m_table_instances.get(address); }
++    Optional<GC::Ptr<WebAssembly::Tag>> get_tag_instance(Wasm::TagAddress address) { return m_tag_instances.get(address); }
++    Optional<GC::Ptr<WebAssembly::Exception>> get_exception_instance(Wasm::ExceptionAddress address) { return m_exception_instances.get(address); }
+ 
+     HashMap<Wasm::FunctionAddress, GC::Ptr<JS::NativeFunction>> const& function_instances() const { return m_function_instances; }
+     HashMap<Wasm::ExternAddress, JS::Value> const& extern_values() const { return m_extern_values; }
+@@ -93,6 +97,8 @@ private:
+     HashMap<Wasm::GlobalAddress, GC::Ptr<WebAssembly::Global>> m_global_instances;
+     HashMap<Wasm::MemoryAddress, GC::Ptr<WebAssembly::Memory>> m_memory_instances;
+     HashMap<Wasm::TableAddress, GC::Ptr<WebAssembly::Table>> m_table_instances;
++    HashMap<Wasm::TagAddress, GC::Ptr<WebAssembly::Tag>> m_tag_instances;
++    HashMap<Wasm::ExceptionAddress, GC::Ptr<WebAssembly::Exception>> m_exception_instances;
+     Vector<NonnullRefPtr<CompiledWebAssemblyModule>> m_compiled_modules;
+     HashTable<GC::Ptr<JS::Object>> m_imported_objects;
+     Wasm::AbstractMachine m_abstract_machine;
+diff --git a/Libraries/LibWeb/idl_files.cmake b/Libraries/LibWeb/idl_files.cmake
+index 03a81680..6f9de531 100644
+--- a/Libraries/LibWeb/idl_files.cmake
++++ b/Libraries/LibWeb/idl_files.cmake
+@@ -596,6 +596,8 @@ libweb_js_bindings(WebAssembly/Instance)
+ libweb_js_bindings(WebAssembly/Memory)
+ libweb_js_bindings(WebAssembly/Module)
+ libweb_js_bindings(WebAssembly/Table)
++libweb_js_bindings(WebAssembly/Tag)
++libweb_js_bindings(WebAssembly/Exception)
+ libweb_js_bindings(WebAssembly/WebAssembly)
+ libweb_js_bindings(WebAuthn/AuthenticatorAssertionResponse)
+ libweb_js_bindings(WebAuthn/AuthenticatorAttestationResponse)

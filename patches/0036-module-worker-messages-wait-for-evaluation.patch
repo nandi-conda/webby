@@ -1,0 +1,48 @@
+diff --git a/Services/WebWorker/WorkerHost.cpp b/Services/WebWorker/WorkerHost.cpp
+index c23d0bc8..d71af955 100644
+--- a/Services/WebWorker/WorkerHost.cpp
++++ b/Services/WebWorker/WorkerHost.cpp
+@@ -29,6 +29,7 @@
+ #include <LibWeb/HTML/WorkerGlobalScope.h>
+ #include <LibWeb/HighResolutionTime/TimeOrigin.h>
+ #include <LibWeb/Loader/ResourceLoader.h>
++#include <LibWeb/WebIDL/Promise.h>
+ #include <WebWorker/PageHost.h>
+ #include <WebWorker/WorkerHost.h>
+ 
+@@ -271,10 +272,11 @@ void WorkerHost::run(GC::Ref<Web::Page> page, Web::HTML::TransferDataEncoder mes
+ 
+         // 10. If script is a classic script, then run the classic script script.
+         //     Otherwise, it is a module script; run the module script script.
++        GC::Ptr<Web::WebIDL::Promise> evaluation_promise;
+         if (auto* classic_script = as_if<Web::HTML::ClassicScript>(*script))
+             (void)classic_script->run();
+         else
+-            (void)as<Web::HTML::ModuleScript>(*script).run();
++            evaluation_promise = as<Web::HTML::ModuleScript>(*script).run();
+ 
+         as<WebWorker::PageHost>(page->client()).did_finish_loading_worker_script(Web::HTML::is_secure_context(*inside_settings));
+ 
+@@ -282,7 +284,21 @@ void WorkerHost::run(GC::Ref<Web::Page> page, Web::HTML::TransferDataEncoder mes
+ 
+         // 12. If is shared is false, enable the port message queue of the worker's implicit port.
+         if (!is_shared) {
+-            inside_port->enable();
++            // AD-HOC: A module script that awaits at top level (say, to instantiate WebAssembly) sets its onmessage
++            //         handler only once that's done. Messages its page posts in the meantime would be dispatched to no
++            //         handler and lost, so they wait in the queue until the module has been evaluated. Other engines
++            //         lose them too, but get there quicker: reams.ink's metadata worker takes ~1.5 s to compile its
++            //         wasm here and ~0.1 s in Chromium, so every message the page sent it was lost.
++            if (evaluation_promise) {
++                Web::HTML::TemporaryExecutionContext execution_context { realm, Web::HTML::TemporaryExecutionContext::CallbacksEnabled::Yes };
++                auto enable_port = GC::create_function(GC::Heap::the(), [inside_port](JS::Value) -> Web::WebIDL::ExceptionOr<JS::Value> {
++                    inside_port->enable();
++                    return JS::js_undefined();
++                });
++                Web::WebIDL::react_to_promise(*evaluation_promise, enable_port, enable_port);
++            } else {
++                inside_port->enable();
++            }
+         }
+ 
+         // 13. If is shared is true, then queue a global task on the DOM manipulation task source given worker
