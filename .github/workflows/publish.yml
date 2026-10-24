@@ -151,7 +151,9 @@ jobs:
 
   # The AppImage of the webby just published, made from the same conda packages (scripts/build_appimage.sh), on the
   # rolling `appimage` release: its zsync update information and webby's own updater (nim/src/features/update.nim)
-  # read webby-x86_64.AppImage.zsync there, and the release title is the version webby compares with its own.
+  # read webby-x86_64.AppImage.zsync there, and the release title ("webby AppImage <version>") has the version
+  # webby compares with its own. It's marked Latest (the prebuilt runtime releases are created with --latest=false)
+  # so the releases page and the repo's sidebar show it first.
   appimage:
     needs: [webby, mirror]
     if: ${{ !cancelled() && needs.mirror.result == 'success' }}
@@ -203,12 +205,12 @@ jobs:
           Download webby-x86_64.AppImage, \`chmod +x\` it and run it (glibc 2.35 or newer, e.g. Ubuntu 22.04+).
           It updates itself from this release with zsync: ⋮ > Help > Check for updates, or AppImageUpdate / Gear Lever."
           if ! gh release view appimage > /dev/null 2>&1; then
-            gh release create appimage --target "$GITHUB_SHA" --title "$VERSION" --notes "$notes" --latest=false
+            gh release create appimage --target "$GITHUB_SHA" --title "webby AppImage $VERSION" --notes "$notes"
           fi
           # The files first and the title (the version updaters compare with) last.
           gh release upload appimage dist/webby-x86_64.AppImage dist/webby-x86_64.AppImage.zsync --clobber
           git push -f origin "$GITHUB_SHA:refs/tags/appimage"
-          gh release edit appimage --title "$VERSION" --notes "$notes"
+          gh release edit appimage --title "webby AppImage $VERSION" --notes "$notes" --latest
       # What webby's updater (nim/src/features/update.nim) does, from the previous AppImage: the .zsync and the
       # file's signed address through the release's asset URLs, then zsync2. The result must be the new file.
       - name: Update the previous AppImage with zsync

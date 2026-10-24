@@ -138,7 +138,9 @@ proc check(manual = false) =
     var latest, fileAsset, zsyncAsset = ""
     try:
       let release = parseJson(r.body)
-      latest = release{"name"}.getStr.strip
+      # The title is "webby AppImage <version>".
+      for word in release{"name"}.getStr.splitWhitespace:
+        if word.len > 0 and word[0] in Digits: latest = word
       for a in release{"assets"}.getElems:
         if a{"name"}.getStr == fileName: fileAsset = a{"url"}.getStr
         elif a{"name"}.getStr == fileName & ".zsync": zsyncAsset = a{"url"}.getStr

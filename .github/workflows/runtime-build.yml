@@ -79,7 +79,7 @@ jobs:
         run: |
           export PATH="/usr/lib/llvm-21/bin:$PATH"
           scripts/pack_prebuilt.sh /build/ladybird/Build/release out
-          gh release create "webby-prebuilt-$VERSION" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+          gh release create "webby-prebuilt-$VERSION" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
             --title "webby-prebuilt $VERSION" \
             --notes "Prebuilt Ladybird runtime (libwebby.so, helper processes, share/Lagom) for linux-x64, built by runtime-build from $GITHUB_SHA." \
             out/webby-prebuilt-linux-x64.tar.zst out/webby-prebuilt-linux-x64.tar.zst.sha256

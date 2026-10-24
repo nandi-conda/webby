@@ -37,7 +37,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
         run: |
-          gh release create "webby-prebuilt-$VERSION" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+          gh release create "webby-prebuilt-$VERSION" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
             --title "webby-prebuilt $VERSION" \
             --notes "Prebuilt Ladybird runtime (libwebby.so, helper processes, share/Lagom) for linux-x64; packaged as webby-ladybird $VERSION." \
             webby-prebuilt-linux-x64.tar.zst webby-prebuilt-linux-x64.tar.zst.sha256
