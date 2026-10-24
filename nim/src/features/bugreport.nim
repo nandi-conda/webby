@@ -1,9 +1,8 @@
 ## Bug reports, like Jam's browser extension: ⋮ > Report a bug (Ctrl+Shift+X) takes a screenshot of the page or
 ## records the tab, and adds what the page did (console messages and errors, network requests, clicks, typing and
 ## navigations, from scripts/bug_capture.js), the page's address and webby's version. The report is saved as a
-## folder (the media, report.json and a report.html to look through it) under <download folder>/webby-bug-reports, or
-## as a zip of that folder (bugreport/zip.nim) to send to whoever looks into the bug: unzipped, its report.html
-## shows everything with no server or account.
+## folder (the media, report.json and a report.html to look through it) under <download folder>/webby-bug-reports,
+## whose path goes on the clipboard: its report.html shows everything with no server or account.
 ##
 ## A recording is of the page's own frames, which webby already has: they go to the webby-tabrec helper
 ## (nim/tabrec/, next to the app), which encodes WebM. No screen picker, no portal.
@@ -12,7 +11,7 @@ import std/[json, monotimes, os, osproc, streams, strutils, tables, times, uri]
 import std/posix except Timer
 import ../browser
 import about, downloads
-import bugreport/[enginelog, events, replay, system, zip]
+import bugreport/[enginelog, events, replay, system]
 import adblock/store as adblockStore
 from nimkit/core as kit import nil
 
@@ -230,13 +229,11 @@ proc summary(r: Report): string =
 proc showBar(text: string, recordingControls: bool)
 proc hideBar()
 
-proc writeZip(r: Report): string =
-  ## Saves the report's folder and zips it next to it (rewriting both, so title and notes go in); returns the
-  ## zip's path, which also goes on the clipboard, or "" after telling why it failed.
+proc writeReport(r: Report): string =
+  ## Saves the report's folder (rewriting report.json/html, so title and notes go in) and returns its path, which
+  ## also goes on the clipboard, or "" after telling why it failed.
   try:
-    let folder = save(r)
-    result = folder & ".zip"
-    zipFolder(folder, result)
+    result = save(r)
     copyText(result)
   except CatchableError as e:
     kit.alert("Couldn't save the report", e.msg)
@@ -244,18 +241,16 @@ proc writeZip(r: Report): string =
 
 proc discardReport(r: Report) =
   if r.folder.len == 0: return
-  try:
-    removeFile(r.folder & ".zip")
-    removeDir(r.folder)
+  try: removeDir(r.folder)
   except CatchableError as e: kit.toast("Couldn't delete the report: " & e.msg)
 
 proc showDetails(r: Report) =
-  ## The report is zipped as soon as it's taken, with the zip's path on the clipboard; the dialog adds a title and
-  ## notes (rewriting the zip) or throws it away.
+  ## The report is saved as soon as it's taken, with its folder's path on the clipboard; the dialog adds a title
+  ## and notes or throws it away.
   r.title = "Bug on " & (if host(r.url).len > 0: host(r.url) else: r.pageTitle)
-  let zipPath = writeZip(r)
-  if zipPath.len == 0: return
-  kit.toast("Bug report zipped, its path is on the clipboard")
+  let folder = writeReport(r)
+  if folder.len == 0: return
+  kit.toast("Bug report saved, its folder's path is on the clipboard")
   let box = kit.column()
   box.spacing = 6
   discard kit.sized(box, 460)
@@ -266,23 +261,22 @@ proc showDetails(r: Report) =
   kit.add(box, title)
   kit.add(box, kit.label("Notes"))
   kit.add(box, notes)
-  kit.add(box, kit.addClass(kit.addClass(kit.label("Saved as " &
-    zipPath.replace(getHomeDir().strip(leading = false, chars = {'/'}), "~") & " (" &
-    formatSize(getFileSize(zipPath), includeSpace = true) & "); the path is on the clipboard. Send the zip to " &
-    "whoever looks into the bug: unzipped, its report.html shows the " & (if r.video: "recording" else: "screenshot") &
+  kit.add(box, kit.addClass(kit.addClass(kit.label("Saved in " &
+    folder.replace(getHomeDir().strip(leading = false, chars = {'/'}), "~") & "; the path is on the clipboard. " &
+    "Its report.html shows the " & (if r.video: "recording" else: "screenshot") &
     " with the console, network, actions and engine log."), "dim"), "small"))
   var d: kit.Dialog
   d = kit.dialog("Report a bug", box, @["Delete", "Show in folder", "Save"], destructive = 0, onResult = proc (i: int) =
     if i == 0:
       discardReport(r)
       return
-    if i notin [1, 2]: return   # closed: the zip stays as first written
+    if i notin [1, 2]: return   # closed: the report stays as first written
     let newTitle = kit.text(title).strip
     if newTitle.len > 0: r.title = newTitle
     r.notes = kit.text(notes).strip
-    if writeZip(r).len == 0: return
-    if i == 1: showInFolder(zipPath)
-    elif i == 2: kit.toast("Bug report saved, its path is on the clipboard"))
+    if writeReport(r).len == 0: return
+    if i == 1: showInFolder(folder / "report.html")
+    elif i == 2: kit.toast("Bug report saved, its folder's path is on the clipboard"))
   notes.onSubmit = proc (t: string) = kit.dialogResult(d, 2)
   kit.focus(notes)
 
