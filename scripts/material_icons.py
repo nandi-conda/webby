@@ -24,7 +24,7 @@ help_outline history info_outline insert_drive_file_outlined install_desktop key
 layers_outlined
 location_on_outlined lock_open lock_outline mic_none more_vert move_to_inbox_outlined notifications_outlined pause play_arrow
 open_in_browser open_in_new person_outline public refresh search send smartphone star star_border summarize
-summarize_outlined tab tune visibility visibility_off visibility_off_outlined
+remove summarize_outlined tab toc tune visibility visibility_off visibility_off_outlined
 """.split()
 
 

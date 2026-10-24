@@ -111,6 +111,13 @@ var
   tabMenuHooks*: seq[proc (t: Tab, items: var seq[kit.MenuItem])]  ## right-click on a tab: append menu items
   moreMenuHooks*: seq[proc (items: var seq[kit.MenuItem])]  ## the ⋮ menu, built each time it opens; see addMenuItem
   pagePointerHooks*: seq[proc (t: Tab, e: kit.PointerEvent): bool]  ## before the page gets it; true = handled
+  pageWheelHooks*: seq[proc (t: Tab, e: kit.WheelEvent): bool]      ## before the page gets it; true = handled
+  pageKeyHooks*: seq[proc (t: Tab, e: kit.KeyEvent): bool]          ## before the page gets it; true = handled
+  pageFrameHooks*: seq[proc (t: Tab): tuple[data: pointer, width, height, stride: int]]  ## the first one with data
+                                                                    ## shows instead of the tab's frame (features/pdf)
+  pageResizeHooks*: seq[proc ()]                  ## the page canvas changed size (pageSize)
+  pageFindHooks*: seq[proc (t: Tab, op, query: string, matchCase: bool): bool]  ## find in page ("find", "next",
+                                                  ## "previous", "end") done by a feature instead; true = handled
   urlFocusHooks*: seq[proc (focused: bool)]       ## the URL bar got or lost the keyboard focus
   pageContextMenuHook*: proc (t: Tab, info: JsonNode, x, y: float) ## replaces the built-in page menu if set; x, y:
                                                                    ## where, in the page canvas's pixels
@@ -915,7 +922,11 @@ proc pageFrame(c: kit.Canvas): tuple[data: pointer, width, height, stride: int] 
   ## cairo's ARGB32 on little-endian, so nimkit draws it in place.
   if trace: inc draws
   let t = currentTab()
-  if t == nil or t.view == nil: return
+  if t == nil: return
+  for h in pageFrameHooks:
+    let f = h(t)
+    if f.data != nil: return f
+  if t.view == nil: return
   let fw = webby_view_frame_width(t.view)
   let fh = webby_view_frame_height(t.view)
   let px = webby_view_frame_pixels(t.view)
@@ -933,6 +944,11 @@ proc pageResized(c: kit.Canvas) =
   if t != nil:
     resizeView(t)
     wake()
+  for h in pageResizeHooks: h()
+
+proc pageSize*(): tuple[width, height: int, ratio: float] =
+  ## The page canvas in pixels, and its pixels per CSS pixel.
+  (viewPxW, viewPxH, viewRatio)
 
 when not defined(android):
   proc modifiers*(state: uint32): int =
@@ -983,6 +999,8 @@ proc pagePointer(c: kit.Canvas, e: kit.PointerEvent) =
 proc pageWheel(c: kit.Canvas, e: kit.WheelEvent): bool =
   let t = currentTab()
   if t == nil or t.view == nil: return false
+  for h in pageWheelHooks:
+    if h(t, e): return true
   let x = cint(e.x)
   let y = cint(e.y)
   let (dx, dy) = (e.dx, e.dy)
@@ -1028,6 +1046,8 @@ proc sendKey(t: Tab, e: kit.KeyEvent, cp: uint32) =
 proc pageKey(c: kit.Canvas, e: kit.KeyEvent): bool =
   let t = currentTab()
   if t == nil or t.view == nil: return false
+  for h in pageKeyHooks:
+    if h(t, e): return true
   var cp = e.text
   if (e.mods and (modCtrl or modAlt)) != 0: cp = 0
   if e.code == 0x0D: cp = (if e.down: 0x0A'u32 else: 0)

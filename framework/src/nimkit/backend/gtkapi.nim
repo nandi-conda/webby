@@ -189,6 +189,7 @@ proc gtk_button_set_always_show_image*(b: GtkWidget, on: gboolean)
 proc gtk_bin_get_child*(b: GtkWidget): GtkWidget
 proc gtk_separator_new*(orientation: cint): GtkWidget
 proc gtk_entry_set_visibility*(e: GtkWidget, visible: gboolean)
+proc gtk_entry_set_width_chars*(e: GtkWidget, n: cint)
 proc gtk_editable_select_region*(e: GtkWidget, start, stop: cint)
 proc gtk_label_set_use_markup*(l: GtkWidget, on: gboolean)
 proc gtk_label_set_markup*(l: GtkWidget, text: cstring)

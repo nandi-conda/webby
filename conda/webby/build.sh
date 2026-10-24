@@ -17,6 +17,8 @@ nim c -d:release --hints:off --warnings:off --cc:clang --nimcache:"$SRC_DIR/.nim
 "$SRC_DIR/nim/screencast/build.sh" "$PREFIX/lib/webby/webby-screencast"
 # The tab recorder bug reports use (⋮ > Report a bug); also started from the app's directory.
 "$SRC_DIR/nim/tabrec/build.sh" "$PREFIX/lib/webby/webby-tabrec"
+# The PDF renderer (MuPDF) behind the PDF viewer; also started from the app's directory.
+"$SRC_DIR/nim/pdf/build.sh" "$PREFIX/lib/webby/webby-pdf"
 install -m 755 "$RECIPE_DIR/webby.sh" "$PREFIX/bin/webby"
 # The launcher's FONTCONFIG_FILE; it goes in webby-ladybird's share/Lagom/fonts so the sandboxed helpers can read it.
 mkdir -p "$PREFIX/lib/webby-ladybird/share/Lagom/fonts"

@@ -562,6 +562,7 @@ proc sync(w: Widget) =
     if $gtk_entry_get_text(w.native) != w.text: gtk_entry_set_text(w.native, w.text.cstring)
     gtk_entry_set_placeholder_text(w.native, w.placeholder.cstring)
     gtk_entry_set_visibility(w.native, (not w.password).gboolean)
+    if w.maxChars > 0: gtk_entry_set_width_chars(w.native, w.maxChars.cint)
   of wkCanvas: syncCursor(w)
   of wkSlider:
     gtk_range_set_range(w.native, w.rangeMin, w.rangeMax)

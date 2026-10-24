@@ -38,6 +38,12 @@ if [ ! -x "$TABREC" ] || [ "$ROOT/nim/tabrec/webby-tabrec.c" -nt "$TABREC" ]; th
   echo "Building nim/webby-tabrec..." >&2
   "$ROOT/nim/tabrec/build.sh" "$TABREC"
 fi
+# The PDF renderer the PDF viewer uses (nim/pdf, MuPDF; started by features/pdf.nim from next to the app).
+PDF="$ROOT/nim/webby-pdf"
+if [ ! -x "$PDF" ] || [ "$ROOT/nim/pdf/webby-pdf.c" -nt "$PDF" ]; then
+  echo "Building nim/webby-pdf..." >&2
+  "$ROOT/nim/pdf/build.sh" "$PDF"
+fi
 if [ -n "${WEBBY_BUILD_ONLY:-}" ]; then exit 0; fi
 # GTK reads favicons through gdk-pixbuf's loaders (.ico, SVG, GIF; PNG and JPEG are built in). conda-forge's loaders.cache
 # names them relative to the program's own prefix, which webby (in nim/ or lib/webby/) isn't in, and pixi doesn't

@@ -60,6 +60,8 @@ requirements:
     - gst-plugins-base
     - pipewire
     - xorg-libx11
+    # The PDF viewer's renderer (nim/pdf/webby-pdf).
+    - mupdf
   run:
     - webby-ladybird >=2026.10.24.1
     # The password vault's key goes in the desktop keyring through libsecret (loaded at runtime).
@@ -80,6 +82,8 @@ requirements:
     - gst-plugins-base
     - gst-plugins-good
     - pipewire
+    # libmupdf for webby-pdf, the PDF viewer's renderer.
+    - mupdf
 
 tests:
   - package_contents:
@@ -88,6 +92,7 @@ tests:
         - lib/webby/webby
         - lib/webby/webby-screencast
         - lib/webby/webby-tabrec
+        - lib/webby/webby-pdf
         - lib/webby-ladybird/share/Lagom/fonts/webby-fonts.conf
         - Menu/webby.json
         - Menu/webby.png
@@ -97,4 +102,5 @@ tests:
 about:
   homepage: https://github.com/nandi-conda/webby
   summary: A web browser in Nim on Ladybird's LibWeb and LibJS
-  license: BSD-2-Clause
+  # webby-pdf links MuPDF, so that program (only) is under the AGPL; the rest of webby is BSD-2-Clause.
+  license: BSD-2-Clause AND AGPL-3.0-only

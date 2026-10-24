@@ -6,3 +6,4 @@ nim/*.log
 __pycache__/
 nim/webby-screencast
 nim/webby-tabrec
+nim/webby-pdf

@@ -332,7 +332,7 @@ proc horizontal*(w: Widget): bool = w.horizontalValue
 proc maxChars*(w: Widget): int = w.maxCharsValue
 proc `maxChars=`*(w: Widget, n: int) =
   ## Labels: 0 (the default) wraps long text over several lines; n > 0 keeps it to one line at most n characters
-  ## wide, ending in "…" when cut.
+  ## wide, ending in "…" when cut. Entries: n > 0 makes them about n characters wide (on GTK).
   if n == w.maxCharsValue: return
   w.maxCharsValue = n
   w.changed

@@ -30,9 +30,17 @@ proc ensureScript(t: Tab) =
     t.runJs(findScript.replace("__WEBBY_FIND_PREFIX__", js(t.messagePrefix)))
     scriptDefinedFor = t.url
 
+proc byFeature(t: Tab, op: string): bool =
+  ## A feature showing the tab itself (features/pdf) finds in it.
+  for h in pageFindHooks:
+    if h(t, op, query(), caseSensitive()): return true
+
 proc search(t: Tab) =
   if t == nil: return
   let q = query()
+  if byFeature(t, "find"):
+    if q.len == 0: showCount(0, 0)
+    return
   if hasNativeFind():
     webby_view_find(t.view, q.cstring, caseSensitive().cint)
   else:
@@ -44,6 +52,7 @@ proc search(t: Tab) =
 proc step(forward: bool) =
   let t = shownFor
   if t == nil: return
+  if byFeature(t, if forward: "next" else: "previous"): return
   if hasNativeFind():
     if forward: webby_view_find_next(t.view) else: webby_view_find_previous(t.view)
   else:
@@ -53,6 +62,7 @@ proc step(forward: bool) =
 
 proc endFind(t: Tab) =
   if t == nil or t.closed: return
+  if byFeature(t, "end"): return
   if hasNativeFind(): webby_view_find_end(t.view)
   else: t.runJs("window.__webbyFind && window.__webbyFind.end();")
   wake()

@@ -37,6 +37,8 @@ gstreamer = "*"
 gst-plugins-base = "*"
 gst-plugins-good = "*"
 pipewire = "*"
+# The PDF viewer: nim/pdf/webby-pdf renders PDFs with MuPDF (AGPL-3.0, so that program is too).
+mupdf = ">=1.28.5,<2"
 
 [tasks]
 webby = { cmd = "scripts/pixi_nim.sh", description = "Build (when changed) and run webby's Nim front end; extra args are URLs or --incognito" }
