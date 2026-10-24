@@ -1146,6 +1146,8 @@ const css = """
 button.webby-tab { padding: 4px 6px 4px 10px; border-radius: 6px 6px 0 0; min-height: 0; }
 button.webby-active-tab { background-color: alpha(@theme_selected_bg_color, 0.18); }
 .webby-tab-close { padding: 0; min-height: 16px; min-width: 16px; }
+button.webby-tab .webby-tab-close { opacity: 0; }
+button.webby-tab:hover .webby-tab-close, button.webby-tab.webby-active-tab .webby-tab-close { opacity: 1; }
 .webby-side-panel { border-left: 1px solid alpha(currentColor, 0.15); }
 .webby-side-panel-header label.title { margin-left: 8px; }
 .webby-small { font-size: smaller; }
