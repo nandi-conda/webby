@@ -143,6 +143,15 @@ proc readPageText(t: Tab, done: proc (ok: bool, page: PageText), wholePage = fal
   if t == nil or t.closed or t.messagePrefix.len == 0:
     done(false, PageText())
     return
+  for h in pageTextHooks:
+    if h(t, wholePage, proc (ok: bool, text: string, selection: bool) =
+        var text = text
+        if text.len > maxSummaryInputChars:
+          var n = maxSummaryInputChars
+          while n > 0 and (text[n].ord and 0xC0) == 0x80: dec n   # not in the middle of a character
+          text.setLen n
+        done(ok, PageText(title: t.title, url: t.url, text: text, selection: selection))):
+      return
   var id = ""
   for _ in 0 ..< 8: id.add toHex(rand(255), 2).toLowerAscii
   pendingReads[id] = done
@@ -333,6 +342,8 @@ proc ask(job: Job, key, text: string, provider: Provider) =
 proc runJump(t: Tab, words: string, retries = 0) =
   ## Runs the jump script, trying again every half second (up to retries times) while a page that just loaded
   ## hasn't put the words on screen yet. A page that already jumped to these words isn't scrolled again.
+  for h in pageJumpHooks:
+    if h(t, words): return
   let marker = $(%("webby-jump:" & words))
   t.runJs("(function retry(n) { if (window.__webbyJump === " & marker & ") return; if (" &
     jumpToTextScript(words).strip(chars = {';', '\n', ' '}) & ") window.__webbyJump = " & marker &

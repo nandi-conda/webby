@@ -11,7 +11,7 @@
 ## A site that won't hand webby the file (Cloudflare's challenge on dl.acm.org needs the engine's cookies) gets it
 ## through Ladybird's own download instead, which then also stays in the downloads folder.
 
-import std/[algorithm, base64, hashes, math, os, posix, strutils, tables, unicode, uri]
+import std/[algorithm, base64, hashes, math, os, posix, sequtils, strutils, tables, times, unicode, uri]
 import ../browser
 import nimkit/services
 from nimkit/core as kit import nil
@@ -147,6 +147,13 @@ type
     barHover: int                 ## the scrollbar under the pointer: 0 none, 1 vertical, 2 horizontal
     barDrag: int                  ## the scrollbar whose thumb is being dragged (same numbers)
     barGrab: float                ## where in the thumb it was grabbed, in pixels from its start
+    textReaders: seq[TextReader]  ## Summarize waiting for the document's text
+    jumpWords: string             ## a summary source link to show once every page's text is here
+    flash: seq[Match]             ## the words a source link pointed at, highlighted for a moment
+    flashGen: int
+    lastJump: tuple[words: string, at: float]  ## Summarize asks again after a page loads; once is enough
+
+  TextReader = tuple[id: int, wholePage: bool, done: proc (ok: bool, text: string, selection: bool)]
 
 var
   docs: Table[int, Doc]           ## by the tab's address
@@ -156,6 +163,9 @@ var
   barShown = false
 
 proc key(t: Tab): int = cast[int](t)
+
+proc textArrived(d: Doc)
+proc dropTextWaiters(d: Doc)
 
 proc docOf(t: Tab): Doc = docs.getOrDefault(key(t))
 
@@ -282,6 +292,7 @@ proc fail(d: Doc, why: string) =
   d.state = dsFailed
   d.status = why
   stopHelper(d)
+  dropTextWaiters(d)
   invalidate(d)
 
 proc buildFindText(d: Doc, i: int) =
@@ -366,6 +377,7 @@ proc onText(d: Doc, j: JsonNode) =
         if m == cur: d.current = k
     reportFind(d)
     if not hadCurrent and d.current >= 0: scrollToMatch(d)
+  textArrived(d)
   invalidate(d)
 
 proc onOpen(d: Doc, j: JsonNode) =
@@ -389,7 +401,7 @@ proc onOpen(d: Doc, j: JsonNode) =
     name = d.url.parseUri.path.extractFilename.decodeUrl
     if name.len == 0: name = d.url
   d.tab.runJs("document.title = " & $(%name) & ";")
-  if d.findShown and d.query.len > 0:
+  if d.findShown and d.query.len > 0 or d.textReaders.len > 0 or d.jumpWords.len > 0:
     for i in 0 ..< d.pages.len: send(d, "text\t" & $i)
     for i in 0 ..< d.pages.len: d.pages[i].textState = 1
   pumpRequests(d)
@@ -609,6 +621,7 @@ proc closeDoc(t: Tab) =
   if d == nil: return
   docs.del key(t)
   stopHelper(d)
+  dropTextWaiters(d)
   if d.path.startsWith(cacheDir):
     try: removeFile(d.path) except CatchableError: discard
   if t.findTotal > 0 or t.findCurrent > 0:
@@ -733,6 +746,8 @@ proc composePages(d: Doc) =
         for k, m in d.matches:
           if m.page == i:
             d.tintChars(i, m.first, m.last, left, top, s, if k == d.current: currentMatchColor else: matchColor, 110)
+      for m in d.flash:
+        if m.page == i: d.tintChars(i, m.first, min(m.last, p.chars.len), left, top, s, matchColor, 120)
       if d.hasSelection and i >= lo.page and i <= hi.page:
         let a = if i == lo.page: lo.index else: 0
         let b = if i == hi.page: hi.index else: p.chars.len
@@ -1058,6 +1073,195 @@ proc contextMenu(d: Doc) =
   items.add kit.menuItem("Fit width", proc () = d.setZoom(d.fitZoom, true), shortcut = "Ctrl+0")
   kit.popupMenu(items)
 
+# ---------------------------------------------------------------------------------------------------------------
+# Summarize: the document's text (pageTextHooks) and its source links (pageJumpHooks)
+
+const enoughText = 40_000   ## Summarize sends no more than this (summarize/prompts maxSummaryInputChars)
+
+var nextReader = 1
+
+proc askAllText(d: Doc) =
+  if d.state != dsReady: return
+  for i in 0 ..< d.pages.len:
+    if d.pages[i].textState == 0:
+      d.pages[i].textState = 1
+      send(d, "text\t" & $i)
+
+proc allText(d: Doc): string =
+  ## The text of the pages here from the first on, a line per line and a blank line between pages, joining words
+  ## hyphenated at a line's end; stops once there's more than Summarize sends.
+  for i in 0 ..< d.pages.len:
+    let p = addr d.pages[i]
+    if p.textState != 2: break
+    for k, ch in p.chars:
+      if ch.lineEnd and ch.c == Rune('-') and k > 0 and p.chars[k - 1].c.isAlpha: continue
+      if not (ch.lineEnd and ch.c.isWhiteSpace): result.add ch.c
+      if ch.lineEnd: result.add '\n'
+    result.add '\n'
+    if result.len > enoughText: break
+  result = result.strip
+
+proc textDone(d: Doc): bool =
+  ## Every page's text is here, or enough of it from the first page on for a summary.
+  if d.state != dsReady: return false
+  var n = 0
+  for i in 0 ..< d.pages.len:
+    if d.pages[i].textState != 2: return false
+    n += d.pages[i].chars.len
+    if n > enoughText * 2: return true
+  true
+
+proc isWordRune(c: Rune): bool = c.isAlpha or c.int in 0x30 .. 0x39
+
+proc foldWords(s: string): seq[string] =
+  ## A quote's words, as the jump compares them: lower case, split at anything but letters and digits.
+  var cur = ""
+  for c in s.runes:
+    if c.isWordRune: cur.add c.toLower
+    elif cur.len > 0:
+      result.add cur
+      cur = ""
+  if cur.len > 0: result.add cur
+
+proc docWords(d: Doc): seq[tuple[w: string, page, first, last: int]] =
+  ## Every word in the document with where it is (chars first ..< last of its page). A word hyphenated at a
+  ## line's end is one word.
+  for i in 0 ..< d.pages.len:
+    let p = addr d.pages[i]
+    var cur = ""
+    var first = 0
+    var last = 0
+    for k, ch in p.chars:
+      if ch.c.isWordRune:
+        if cur.len == 0: first = k
+        cur.add ch.c.toLower
+        last = k + 1
+        if not ch.lineEnd: continue
+      elif ch.lineEnd and ch.c == Rune('-') and cur.len > 0: continue
+      if cur.len > 0:
+        result.add (cur, i, first, last)
+        cur = ""
+    if cur.len > 0: result.add (cur, i, first, last)
+
+proc showWords(d: Doc, words: seq[tuple[w: string, page, first, last: int]], a, b: int) =
+  ## Scrolls words a .. b to a third of the way down and highlights them for a moment.
+  d.flash.setLen 0
+  let pa = words[a].page
+  let pb = words[b].page
+  for i in pa .. pb:
+    d.flash.add (i, (if i == pa: words[a].first else: 0), (if i == pb: words[b].last else: d.pages[i].chars.len))
+  let p = addr d.pages[pa]
+  let c = p.chars[words[a].first]
+  let s = d.scale
+  let (vw, vh, _) = pageSize()
+  let x = d.pageLeft(pa) + d.scrollX + c.x0 * s
+  let sx = if d.totalWidth > vw.float and (x < d.scrollX or x > d.scrollX + vw.float * 0.9): x - vw.float / 3
+           else: -1.0
+  d.scrollTo(d.tops[pa] + c.y0 * s - vh.float / 3, sx)
+  inc d.flashGen
+  let gen = d.flashGen
+  discard after(1800, proc () =
+    if d.flashGen == gen and d.flash.len > 0:
+      d.flash.setLen 0
+      invalidate(d))
+
+proc jumpNow(d: Doc, quote: string) =
+  ## As scripts/jump_to_text.js does on web pages: the quote's words in order, else the longest run of them, else
+  ## the contents entry sharing the most words with it.
+  let want = foldWords(quote)
+  if want.len == 0: return
+  let words = d.docWords
+  proc find(run: openArray[string]): int =
+    for at in 0 .. words.len - run.len:
+      var ok = true
+      for k, w in run:
+        if words[at + k].w != w:
+          ok = false
+          break
+      if ok: return at
+    -1
+  for size in countdown(want.len, 2):
+    for start in 0 .. want.len - size:
+      let run = want[start ..< start + size]
+      if size < 3 and size < want.len and run.anyIt(it.len < 4): continue
+      let at = find(run)
+      if at >= 0:
+        d.showWords(words, at, at + size - 1)
+        return
+  var wanted: seq[string]
+  for w in want:
+    if w.len >= 3 and w notin wanted: wanted.add w
+  var best = -1
+  var bestScore = 0
+  for k, o in d.outline:
+    var score = 0
+    var seen: seq[string]
+    for w in foldWords(o.title):
+      if w in wanted and w notin seen:
+        seen.add w
+        inc score
+    if score > bestScore:
+      best = k
+      bestScore = score
+  if best >= 0: d.goToPage(d.outline[best].page, d.outline[best].y)
+  elif want.len == 1:
+    let at = find(want)
+    if at >= 0: d.showWords(words, at, at)
+
+proc textArrived(d: Doc) =
+  if not d.textDone: return
+  if d.textReaders.len > 0:
+    let text = d.allText
+    let readers = d.textReaders
+    d.textReaders.setLen 0
+    for r in readers: r.done(true, text, false)
+  if d.jumpWords.len > 0 and (block:
+      var all = true
+      for p in d.pages:
+        if p.textState != 2: all = false
+      all):
+    let words = d.jumpWords
+    d.jumpWords = ""
+    d.jumpNow(words)
+
+proc dropTextWaiters(d: Doc) =
+  let readers = d.textReaders
+  d.textReaders.setLen 0
+  d.jumpWords = ""
+  for r in readers: r.done(false, "", false)
+
+proc onPageText(t: Tab, wholePage: bool, done: proc (ok: bool, text: string, selection: bool)): bool =
+  let d = docOf(t)
+  if d == nil or d.state == dsFailed: return false
+  if not wholePage and d.state == dsReady and d.hasSelection:
+    let selected = d.selectedText
+    if selected.strip.len >= 200:
+      done(true, selected, true)
+      return true
+  let id = nextReader
+  inc nextReader
+  d.textReaders.add (id, wholePage, done)
+  d.askAllText
+  d.textArrived
+  # Fetching a big PDF can take a while; Summarize says it couldn't read the page after half a minute.
+  discard after(30_000, proc () =
+    for k, r in d.textReaders:
+      if r.id == id:
+        d.textReaders.delete k
+        r.done(false, "", false)
+        break)
+  true
+
+proc onJump(t: Tab, words: string): bool =
+  let d = docOf(t)
+  if d == nil or d.state == dsFailed: return false
+  if d.lastJump.words == words and epochTime() - d.lastJump.at < 4: return true
+  d.lastJump = (words, epochTime())
+  d.jumpWords = words
+  d.askAllText
+  d.textArrived
+  true
+
 proc onPointer(t: Tab, e: kit.PointerEvent): bool =
   let d = docOf(t)
   if d == nil: return false
@@ -1296,6 +1500,8 @@ proc install*() =
   pageWheelHooks.add onWheel
   pageKeyHooks.add onKey
   pageFindHooks.add onFind
+  pageTextHooks.add onPageText
+  pageJumpHooks.add onJump
   pageResizeHooks.add proc () =
     let t = currentTab()
     let d = if t == nil: nil else: docOf(t)
