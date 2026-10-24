@@ -57,6 +57,15 @@ var
   destinations: Table[uint64, string]  ## asked downloads: id -> where the user wants it ("" while still asking)
   moved: Table[uint64, string]         ## id -> where an asked download's file was moved
 
+type DownloadInfo* = object
+  ## A download as other features see it (features/plasma/jobs.nim shows them in the desktop's job tracker).
+  id*: uint64
+  url*, path*, name*, status*, error*: string   ## status: in_progress, paused, completed, canceled, failed
+  received*, total*, rate*: int64               ## total and rate -1 when unknown
+  canResume*, fresh*: bool                      ## fresh: started in this session (not one Ladybird restored)
+
+var downloadsChangedHooks*: seq[proc (list: seq[DownloadInfo])]   ## the list changed (at most every 200 ms)
+
 proc hasApi(): bool = webby_downloads_serial != nil and webby_downloads_json != nil
 proc listed(): bool = hasApi() or defined(android)   ## whether there is a list to show
 
@@ -467,7 +476,27 @@ proc announce() =
       if d.id notin destinations: toast(d.name & " downloaded")   # else when the chooser closes
     elif d.status == "failed": toast("Couldn't download " & d.name)
 
+proc pauseDownload*(id: uint64) =
+  if webby_downloads_pause != nil:
+    webby_downloads_pause(id)
+    wake()
+proc resumeDownload*(id: uint64) =
+  if webby_downloads_resume != nil:
+    webby_downloads_resume(id)
+    wake()
+proc cancelDownload*(id: uint64) =
+  if webby_downloads_cancel != nil:
+    webby_downloads_cancel(id)
+    wake()
+
 proc refreshAll() =
+  if downloadsChangedHooks.len > 0:
+    var list: seq[DownloadInfo]
+    for d in downloads:
+      list.add DownloadInfo(id: d.id, url: d.url, path: d.path, name: d.name, status: d.status, error: d.error,
+        received: d.received, total: d.total, rate: d.rate, canResume: d.canResume,
+        fresh: d.created == 0 or d.created >= startedMs)
+    for h in downloadsChangedHooks: h(list)
   announce()
   refreshButton()
   refreshPanel()
