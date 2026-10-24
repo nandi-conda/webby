@@ -14,9 +14,11 @@ from nimkit/core as kit import nil
 import nimkit/services
 
 const
-  releaseApi = "https://api.github.com/repos/nandi-conda/webby/releases/tags/appimage"
+  # -d: overrides, to test against a local server.
+  releaseApi {.strdefine: "webbyUpdateApi".} = "https://api.github.com/repos/nandi-conda/webby/releases/tags/appimage"
+  zsyncUrl {.strdefine: "webbyUpdateZsync".} =
+    "https://github.com/nandi-conda/webby/releases/download/appimage/webby-x86_64.AppImage.zsync"
   releasePage = "https://github.com/nandi-conda/webby/releases/tag/appimage"
-  zsyncUrl = "https://github.com/nandi-conda/webby/releases/download/appimage/webby-x86_64.AppImage.zsync"
   checkEveryMs = 6 * 60 * 60 * 1000
 
 type State = enum idle, checking, downloading, ready
@@ -72,8 +74,9 @@ proc download(version: string) =
   state = downloading
   newVersion = version
   if manualCheck: kit.toast("Downloading Webby " & version & "…")
-  let ok = spawn(@[zsync2, "-q", "-i", appImage, "-o", part, zsyncUrl], proc (ok: bool) =
+  proc finished(ok: bool) =
     if not ok or not fileExists(part):
+      log("webby: zsync2 could not download " & version)
       state = idle
       try: removeFile(part) except CatchableError: discard
       if manualCheck: kit.toast("Could not download Webby " & version)
@@ -87,10 +90,20 @@ proc download(version: string) =
       kit.toast("Could not update Webby: " & e.msg)
       return
     state = ready
-    kit.toast("Webby " & version & " is ready. It starts next time, or now with ⋮ > Help > Restart to update."))
-  if not ok:
-    state = idle
-    if manualCheck: kit.toast("Could not start the download")
+    log("webby: updated " & appImage & " to " & version)
+    kit.toast("Webby " & version & " is ready. It starts next time, or now with ⋮ > Help > Restart to update.")
+  # zsync2 finds the AppImage's address by following GitHub's redirect with a HEAD request, and GitHub signs that
+  # address for HEAD only, so its GETs then fail (401). The redirect a GET gets works, so it's passed with -u.
+  let fileUrl = zsyncUrl[0 ..< ^".zsync".len]
+  request("GET", fileUrl, proc (r: Response) =
+    var args = @[zsync2, "-q", "-i", appImage, "-o", part]
+    let location = r.header("location")
+    if r.status in 300 .. 399 and location.len > 0: args.add ["-u", location]
+    args.add zsyncUrl
+    if not spawn(args, finished):
+      state = idle
+      if manualCheck: kit.toast("Could not start the download"),
+    headers = @[("Range", "bytes=0-0")])
 
 proc check(manual = false) =
   if state in {checking, downloading}: return
@@ -103,11 +116,13 @@ proc check(manual = false) =
   request("GET", releaseApi, proc (r: Response) =
     state = idle
     if r.status != 200:
+      log("webby: update check failed: " & $r.status & " " & r.error)
       if manualCheck: kit.toast("Could not check for updates (" & (if r.error.len > 0: r.error else: $r.status) & ")")
       return
     var latest = ""
     try: latest = parseJson(r.body){"name"}.getStr.strip
     except CatchableError: discard
+    log("webby: update check: latest " & latest & ", this is " & current)
     if latest.len == 0 or not newer(latest, current):
       if manualCheck: kit.toast("Webby is up to date (" & current & ")")
       return
