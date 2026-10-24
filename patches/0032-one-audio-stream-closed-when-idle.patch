@@ -1,0 +1,275 @@
+diff --git a/Services/AudioServer/PlaybackStreamMixer.cpp b/Services/AudioServer/PlaybackStreamMixer.cpp
+index e02cb01e..6c5a63ae 100644
+--- a/Services/AudioServer/PlaybackStreamMixer.cpp
++++ b/Services/AudioServer/PlaybackStreamMixer.cpp
+@@ -13,30 +13,54 @@
+ 
+ namespace Audio {
+ 
++// How long the device stream stays open with nothing playing. Longer than any drain, and long enough that pausing and
++// resuming a video does not reopen it.
++static constexpr auto DEVICE_IDLE_CLOSE_DELAY = AK::Duration::from_seconds(10);
++
+ NonnullRefPtr<PlaybackStreamMixer> PlaybackStreamMixer::create(Core::EventLoop& control_loop, u32 target_latency_ms, DeviceStreamFactory factory)
+ {
+     auto state = make_ref_counted<MixState>(control_loop);
+-    auto mixer = adopt_ref(*new PlaybackStreamMixer(state, target_latency_ms));
++    auto mixer = adopt_ref(*new PlaybackStreamMixer(state, target_latency_ms, move(factory)));
+     state->m_mixer = mixer.ptr();
++    return mixer;
++}
+ 
+-    auto promise = factory(OutputState::Suspended, target_latency_ms, [state](Span<float> buffer, MonotonicTime buffer_starts_playing_at) {
++PlaybackStreamMixer::PlaybackStreamMixer(NonnullRefPtr<MixState> state, u32 device_target_latency_ms, DeviceStreamFactory factory)
++    : m_state(move(state))
++    , m_device_target_latency_ms(device_target_latency_ms)
++    , m_device_stream_factory(move(factory))
++{
++}
++
++void PlaybackStreamMixer::open_device_stream()
++{
++    if (m_device_stream || m_device_stream_is_opening)
++        return;
++    m_device_stream_is_opening = true;
++    auto promise = m_device_stream_factory(OutputState::Suspended, m_device_target_latency_ms, [state = m_state](Span<float> buffer, MonotonicTime buffer_starts_playing_at) {
+         return state->mix_into(buffer, buffer_starts_playing_at);
+     });
+-    promise->when_resolved([state](NonnullRefPtr<PlaybackStream>& stream) {
++    promise->when_resolved([state = m_state](NonnullRefPtr<PlaybackStream>& stream) {
+         if (state->m_mixer)
+             state->m_mixer->set_device_stream(stream);
+     });
+-    promise->when_rejected([state](Error& error) {
++    promise->when_rejected([state = m_state](Error& error) {
+         if (state->m_mixer)
+             state->m_mixer->set_device_error(move(error));
+     });
+-    return mixer;
+ }
+ 
+-PlaybackStreamMixer::PlaybackStreamMixer(NonnullRefPtr<MixState> state, u32 device_target_latency_ms)
+-    : m_state(move(state))
+-    , m_device_target_latency_ms(device_target_latency_ms)
++void PlaybackStreamMixer::close_device_stream_when_idle()
+ {
++    if (!m_idle_close_timer) {
++        m_idle_close_timer = Core::Timer::create_single_shot(DEVICE_IDLE_CLOSE_DELAY, [this] {
++            if (m_active_client_count != 0 || m_device_is_playing || !m_device_stream)
++                return;
++            // Dropping the stream closes it on the sound server; its data callback holds the mix state, not us.
++            m_device_stream = nullptr;
++        });
++    }
++    m_idle_close_timer->restart();
+ }
+ 
+ PlaybackStreamMixer::~PlaybackStreamMixer()
+@@ -46,13 +70,36 @@ PlaybackStreamMixer::~PlaybackStreamMixer()
+ 
+ void PlaybackStreamMixer::set_device_stream(NonnullRefPtr<PlaybackStream> stream)
+ {
+-    m_device_sample_specification = stream->sample_specification();
++    m_device_stream_is_opening = false;
++    auto specification = stream->sample_specification();
++    // The clients' rings are in the format the device first had; a reopened device must still take it.
++    if (m_device_sample_specification.has_value() && m_device_sample_specification.value() != specification) {
++        warnln("The audio output reopened with a different format ({} Hz, {} channels, was {} Hz, {} channels); not playing",
++            specification.sample_rate(), specification.channel_count(), m_device_sample_specification->sample_rate(), m_device_sample_specification->channel_count());
++        return;
++    }
++    m_device_sample_specification = specification;
+     m_device_stream = move(stream);
+     run_device_ready_callbacks();
++
++    if (m_active_client_count > 0) {
++        m_device_is_playing = true;
++        m_device_stream->resume()->when_rejected([](Error&& error) {
++            warnln("Unexpected error while resuming the mixer's device stream: {}", error);
++        });
++    } else {
++        close_device_stream_when_idle();
++    }
+ }
+ 
+ void PlaybackStreamMixer::set_device_error(Error error)
+ {
++    m_device_stream_is_opening = false;
++    // A device that opened before keeps its format; the clients learned it then.
++    if (m_device_sample_specification.has_value()) {
++        warnln("Failed to reopen the audio output: {}", error);
++        return;
++    }
+     m_device_error = move(error);
+     run_device_ready_callbacks();
+ }
+@@ -60,6 +107,8 @@ void PlaybackStreamMixer::set_device_error(Error error)
+ void PlaybackStreamMixer::when_device_ready(DeviceReadyCallback callback)
+ {
+     m_device_ready_callbacks.append(move(callback));
++    if (!m_device_sample_specification.has_value() && !m_device_error.has_value())
++        open_device_stream();
+     run_device_ready_callbacks();
+ }
+ 
+@@ -187,8 +236,14 @@ void PlaybackStreamMixer::client_became_active()
+     m_active_client_count++;
+     if (m_active_client_count != 1 || m_device_is_playing)
+         return;
++    if (m_idle_close_timer)
++        m_idle_close_timer->stop();
++    // The device closed while nothing played; it resumes once it has opened again.
++    if (!m_device_stream) {
++        open_device_stream();
++        return;
++    }
+     m_device_is_playing = true;
+-    VERIFY(m_device_stream);
+     // A ThreadedPromise resolved on the device thread spins until it has a rejection handler.
+     m_device_stream->resume()->when_rejected([](Error&& error) {
+         warnln("Unexpected error while resuming the mixer's device stream: {}", error);
+@@ -205,6 +260,7 @@ void PlaybackStreamMixer::client_became_inactive()
+     m_device_stream->drain_buffer_and_suspend()->when_rejected([](Error&& error) {
+         warnln("Unexpected error while suspending the mixer's device stream: {}", error);
+     });
++    close_device_stream_when_idle();
+ }
+ 
+ void PlaybackStreamMixer::finish_drain_once_played(MixerClientId id, i64 played_at_ns)
+diff --git a/Services/AudioServer/PlaybackStreamMixer.h b/Services/AudioServer/PlaybackStreamMixer.h
+index cb4d3e5f..2dc1b140 100644
+--- a/Services/AudioServer/PlaybackStreamMixer.h
++++ b/Services/AudioServer/PlaybackStreamMixer.h
+@@ -21,13 +21,14 @@ namespace Audio {
+ 
+ using MixerClientId = u64;
+ 
+-// Mixes the shared rings of one tab's client streams into one output device stream, which plays only while some
+-// client is playing or draining.
++// Mixes the shared rings of client streams into one output device stream, which plays only while some client is
++// playing or draining. The device stream opens when the first client stream is created and closes once nothing has
++// played for a while, so an idle browser holds no stream on the sound server; it opens again when a client plays.
+ class PlaybackStreamMixer : public AtomicRefCounted<PlaybackStreamMixer> {
+ public:
+     using DeviceStreamFactory = Function<NonnullRefPtr<PlaybackStream::CreatePromise>(OutputState, u32 target_latency_ms, PlaybackStream::AudioDataRequestCallback)>;
+ 
+-    // Control thread. The device stream opens suspended through the factory.
++    // Control thread. The device stream opens suspended through the factory, when a client first needs its format.
+     static NonnullRefPtr<PlaybackStreamMixer> create(Core::EventLoop& control_loop, u32 target_latency_ms, DeviceStreamFactory);
+     ~PlaybackStreamMixer();
+ 
+@@ -85,8 +86,10 @@ private:
+         HashMap<MixerClientId, Client> m_clients;
+     };
+ 
+-    PlaybackStreamMixer(NonnullRefPtr<MixState>, u32 device_target_latency_ms);
++    PlaybackStreamMixer(NonnullRefPtr<MixState>, u32 device_target_latency_ms, DeviceStreamFactory);
+ 
++    void open_device_stream();
++    void close_device_stream_when_idle();
+     void set_device_stream(NonnullRefPtr<PlaybackStream>);
+     void set_device_error(Error);
+     void run_device_ready_callbacks();
+@@ -98,7 +101,10 @@ private:
+ 
+     NonnullRefPtr<MixState> m_state;
+     u32 const m_device_target_latency_ms { 0 };
++    DeviceStreamFactory m_device_stream_factory;
+     RefPtr<PlaybackStream> m_device_stream;
++    bool m_device_stream_is_opening { false };
++    RefPtr<Core::Timer> m_idle_close_timer;
+     Optional<SampleSpecification> m_device_sample_specification;
+     Optional<Error> m_device_error;
+     Vector<DeviceReadyCallback> m_device_ready_callbacks;
+diff --git a/Services/AudioServer/PulseAudioWrappers.cpp b/Services/AudioServer/PulseAudioWrappers.cpp
+index 60919baf..673f2a01 100644
+--- a/Services/AudioServer/PulseAudioWrappers.cpp
++++ b/Services/AudioServer/PulseAudioWrappers.cpp
+@@ -49,7 +49,7 @@ ErrorOr<NonnullRefPtr<PulseAudioContext>> PulseAudioContext::the()
+         if (api == nullptr)
+             return Error::from_string_literal("Failed to get PulseAudio API");
+ 
+-        auto* context = pa_context_new(api, "Ladybird");
++        auto* context = pa_context_new(api, "Webby");
+         if (context == nullptr)
+             return Error::from_string_literal("Failed to get PulseAudio connection context");
+ 
+@@ -415,7 +415,7 @@ ErrorOr<NonnullRefPtr<PulseAudioStream>> PulseAudioContext::create_stream(Output
+ 
+     // Create the stream object and set a callback to signal ourselves to wake when the stream changes states,
+     // allowing us to wait synchronously for it to become Ready or Failed.
+-    auto* stream = pa_stream_new_with_proplist(m_context, "Audio Stream", &sample_specification, &pa_channel_map, nullptr);
++    auto* stream = pa_stream_new_with_proplist(m_context, "Playback", &sample_specification, &pa_channel_map, nullptr);
+     if (stream == nullptr) {
+         warnln("Instantiating PulseAudio stream failed with error: {}", pulse_audio_error_to_string(get_last_error()));
+         return Error::from_string_literal("Failed to create PulseAudio stream");
+diff --git a/Services/AudioServer/Tabs.cpp b/Services/AudioServer/Tabs.cpp
+index 97b05ff0..9cbfe1b4 100644
+--- a/Services/AudioServer/Tabs.cpp
++++ b/Services/AudioServer/Tabs.cpp
+@@ -71,12 +71,17 @@ static NonnullRefPtr<Audio::PlaybackStream::CreatePromise> create_device_stream(
+ 
+ Tabs::Tab& Tabs::tab_for(u64 tab_id)
+ {
+-    return m_tabs.ensure(tab_id, [audio_output = m_audio_output] {
+-        auto mixer = Audio::PlaybackStreamMixer::create(Core::EventLoop::current(), DEVICE_TARGET_LATENCY_MS, [audio_output](Audio::OutputState state, u32 target_latency_ms, Audio::PlaybackStream::AudioDataRequestCallback callback) {
++    return m_tabs.ensure(tab_id, [] { return Tab {}; });
++}
++
++Audio::PlaybackStreamMixer& Tabs::mixer()
++{
++    if (!m_mixer) {
++        m_mixer = Audio::PlaybackStreamMixer::create(Core::EventLoop::current(), DEVICE_TARGET_LATENCY_MS, [audio_output = m_audio_output](Audio::OutputState state, u32 target_latency_ms, Audio::PlaybackStream::AudioDataRequestCallback callback) {
+             return create_device_stream(audio_output, state, target_latency_ms, move(callback));
+         });
+-        return Tab { .mixer = move(mixer), .connections = {} };
+-    });
++    }
++    return *m_mixer;
+ }
+ 
+ Audio::CaptureDevices& Tabs::capture_devices()
+@@ -101,7 +106,7 @@ ErrorOr<IPC::TransportHandle> Tabs::connect_client(u64 tab_id)
+     auto device_enumeration = Audio::ServerConnection::DeviceEnumeration::Platform;
+     if (m_audio_output == Audio::AudioOutput::Null)
+         device_enumeration = Audio::ServerConnection::DeviceEnumeration::None;
+-    auto connection = Audio::ServerConnection::construct(move(paired_transports.local), client_id, tab.mixer, device_enumeration, capture_devices(), [tab_id](ByteString const& device_id, Function<void(bool)> on_decided) {
++    auto connection = Audio::ServerConnection::construct(move(paired_transports.local), client_id, mixer(), device_enumeration, capture_devices(), [tab_id](ByteString const& device_id, Function<void(bool)> on_decided) {
+         Tabs::the().request_capture_permission(tab_id, device_id, move(on_decided));
+     });
+     connection->set_capture_permitted(m_tabs_with_capture_permission.contains(tab_id));
+diff --git a/Services/AudioServer/Tabs.h b/Services/AudioServer/Tabs.h
+index 6b6b4537..f4aabd85 100644
+--- a/Services/AudioServer/Tabs.h
++++ b/Services/AudioServer/Tabs.h
+@@ -23,8 +23,9 @@ namespace AudioServer {
+ 
+ class ControlConnection;
+ 
+-// The tabs with connected client processes: each has a mixer, and the Browser's word on whether its pages hold the
+-// microphone permission.
++// The tabs with connected client processes, and the Browser's word on whether their pages hold the microphone
++// permission. Every tab plays through one mixer, so the sound server sees one stream for the whole browser (as it
++// does for other browsers) rather than one per tab, each left open while silent.
+ class Tabs {
+ public:
+     static Tabs& the();
+@@ -43,16 +44,17 @@ public:
+ 
+ private:
+     struct Tab {
+-        NonnullRefPtr<Audio::PlaybackStreamMixer> mixer;
+         HashMap<int, NonnullRefPtr<Audio::ServerConnection>> connections;
+     };
+ 
+     Tab& tab_for(u64 tab_id);
++    Audio::PlaybackStreamMixer& mixer();
+     Audio::CaptureDevices& capture_devices();
+     void connection_died(u64 tab_id, int client_id);
+     void request_capture_permission(u64 tab_id, ByteString const& device_id, Function<void(bool)> on_decided);
+ 
+     HashMap<u64, Tab> m_tabs;
++    RefPtr<Audio::PlaybackStreamMixer> m_mixer;
+     HashTable<u64> m_tabs_with_capture_permission;
+     RefPtr<Audio::CaptureDevices> m_capture_devices;
+     int m_next_client_id { 1 };
