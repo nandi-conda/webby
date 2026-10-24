@@ -1053,6 +1053,54 @@ proc pageWheel(c: kit.Canvas, e: kit.WheelEvent): bool =
 
 var pastingKeys: seq[(Tab, kit.KeyEvent, uint32)]   ## from a Ctrl+V on, until the clipboard's text is in
 
+when defined(android):
+  proc pasteImage(onDone: proc (png: string)) = onDone("")
+else:
+  # The system clipboard's image as PNG, the one image type pages get from a paste: its image/png target when it
+  # has one, otherwise whatever image it holds (image/jpeg, image/bmp, ...) through GdkPixbuf.
+  proc onClipboardPixbuf(cb, pixbuf, data: pointer) {.cdecl.} =
+    let done = cast[ref proc (png: string)](data)
+    GC_unref(done)
+    var png = ""
+    var buf: pointer
+    var size: csize_t
+    if pixbuf != nil and gdk_pixbuf_save_to_buffer(pixbuf, addr buf, addr size, "png", nil, nil) != 0:
+      png = newString(size.int)
+      if size > 0: copyMem(addr png[0], buf, size.int)
+      g_free(buf)
+    done[](png)
+
+  proc onClipboardPng(cb, sd, data: pointer) {.cdecl.} =
+    let n = if sd == nil: -1 else: gtk_selection_data_get_length(sd).int
+    if n <= 0:
+      gtk_clipboard_request_image(cb, cast[pointer](onClipboardPixbuf), data)
+      return
+    let done = cast[ref proc (png: string)](data)
+    GC_unref(done)
+    var png = newString(n)
+    copyMem(addr png[0], gtk_selection_data_get_data(sd), n)
+    done[](png)
+
+  proc pasteImage(onDone: proc (png: string)) =
+    let done = new(proc (png: string))
+    done[] = onDone
+    GC_ref(done)
+    gtk_clipboard_request_contents(systemClipboard(), gdk_atom_intern("image/png", 0), cast[pointer](onClipboardPng),
+      cast[pointer](done))
+
+proc pasteClipboard(onDone: proc ()) =
+  ## Hands the page's clipboard what the system one holds: its text, or with no text its image (a screenshot, an image
+  ## copied elsewhere), which a paste gives the page as clipboardData.files. With neither, the page's own copy stays.
+  pasteText(proc (text: string) =
+    if text.len > 0:
+      webby_clipboard_set_text(text.cstring)
+      onDone()
+    elif webby_clipboard_set_image != nil:
+      pasteImage(proc (png: string) =
+        if png.len > 0: webby_clipboard_set_image("image/png", unsafeAddr png[0], png.len.csize_t)
+        onDone())
+    else: onDone())
+
 proc sendKey(t: Tab, e: kit.KeyEvent, cp: uint32) =
   if t.closed or t.view == nil: return
   webby_view_key_event(t.view, e.down.cint, e.code.cint, e.mods.cint, cp, 0)
@@ -1073,14 +1121,22 @@ proc pageKey(c: kit.Canvas, e: kit.KeyEvent): bool =
     return true
   if e.down and (e.mods and modCtrl) != 0 and e.code == 0x56:   # Ctrl+V: hand the page the system clipboard first
     pastingKeys.add (t, e, cp)
-    pasteText(proc (text: string) =
-      if text.len > 0: webby_clipboard_set_text(text.cstring)
+    pasteClipboard(proc () =
       let keys = pastingKeys
       pastingKeys = @[]
       for (t, e, cp) in keys: sendKey(t, e, cp))
     return true
   sendKey(t, e, cp)
   true
+
+proc pasteImageIntoPage*(t: Tab) =
+  ## The context menu's Paste when the system clipboard has no text: an image goes in through the engine's own paste
+  ## (Ctrl+V), like the keyboard's.
+  if webby_clipboard_set_image == nil: return
+  pasteImage(proc (png: string) =
+    if png.len == 0 or t.closed or t.view == nil: return
+    webby_clipboard_set_image("image/png", unsafeAddr png[0], png.len.csize_t)
+    for down in [true, false]: sendKey(t, kit.KeyEvent(down: down, code: 0x56, mods: modCtrl), 0))
 
 proc pageFocus(c: kit.Canvas, focused: bool) =
   let t = currentTab()

@@ -262,7 +262,8 @@ proc showPageMenu*(t: Tab, info: JsonNode, x, y: float) =
     item("Copy", proc () = copyText(selection), has)
     item("Paste", proc () =
       pasteText(proc (text: string) =
-        if text.len > 0 and not t.closed: t.runJs(actionScript("paste", text))))
+        if text.len > 0 and not t.closed: t.runJs(actionScript("paste", text))
+        elif text.len == 0: pasteImageIntoPage(t)))
     item("Select all", proc () = t.runJs(actionScript("selectAll")))
   elif selection.strip.len > 0:
     group()

@@ -67,6 +67,7 @@ var
   webby_clipboard_serial*: proc (): uint64 {.cdecl, gcsafe.}
   webby_clipboard_text*: proc (): cstring {.cdecl, gcsafe.}
   webby_clipboard_set_text*: proc (text: cstring) {.cdecl, gcsafe.}
+  webby_clipboard_set_image*: proc (mime: cstring, data: pointer, size: csize_t) {.cdecl, gcsafe.}  ## nil before runtime 2026.10.24.3
   webby_view_ime_state*: proc (v: View): cstring {.cdecl, gcsafe.}
   webby_view_ime_commit*: proc (v: View, text: cstring, replacementStart, replacementLength: cint) {.cdecl, gcsafe.}
   webby_view_ime_set_marked*: proc (v: View, text: cstring) {.cdecl, gcsafe.}
@@ -186,6 +187,7 @@ proc loadWebbyLib*(path: string) =
   optional webby_downloads_pause
   optional webby_downloads_resume
   optional webby_downloads_clear
+  optional webby_clipboard_set_image
 
 proc hasNativeFind*(): bool =
   ## Whether the runtime finds in page itself (webby_view_find); else features/find runs a page script.
