@@ -125,13 +125,59 @@ proc updateBadge(t: Tab) =
   kit.`visible=`(b, true)
   kit.`visible=`(t.icon, false)
 
+# With vertical tabs the pinned tiles sit side by side atop the column, a few to a row, like Arc's and Edge's.
+
+const pinnedPerRow = 5   ## 40 px tiles in the 220 px column
+var pinnedGrid: kit.Widget   ## the rows of pinned tiles, the vertical strip's first child
+
+proc unplace(w: kit.Widget) =
+  if w.parent != nil: kit.remove(w.parent, w, keep = true)
+
+proc place(w, parent: kit.Widget, index: int) =
+  ## Puts `w` at `index` among `parent`'s children, moving it there from wherever it is.
+  if w.parent != parent: unplace(w)
+  kit.insert(parent, w, index)
+
+proc flattenPinned() =
+  ## Back to one row (or column) of tabs: the tiles leave their rows for the strip.
+  if pinnedGrid == nil: return
+  for t in tabs:
+    if t.button.parent != nil and t.button.parent.parent == pinnedGrid: unplace(t.button)
+  if pinnedGrid.parent != nil: kit.remove(pinnedGrid.parent, pinnedGrid)
+  pinnedGrid = nil
+  for i, t in tabs: place(t.button, tabStrip, i)
+
+proc layoutPinned() =
+  ## Keeps the tiles in their rows in tab order, moving only what's out of place.
+  if tabStrip == nil: return
+  if not vertical:
+    flattenPinned()
+    return
+  if pinnedGrid == nil or pinnedGrid.parent != tabStrip:
+    if pinnedGrid != nil: flattenPinned()
+    pinnedGrid = kit.column()
+    pinnedGrid.spacing = 0
+    kit.addClass(pinnedGrid, "webby-pinned-grid")
+  place(pinnedGrid, tabStrip, 0)
+  let n = pinnedCount()
+  let rows = (n + pinnedPerRow - 1) div pinnedPerRow
+  while pinnedGrid.children.len < rows:
+    let r = kit.row()
+    r.spacing = 0
+    kit.add(pinnedGrid, r)
+  for i in 0 ..< n: place(tabs[i].button, pinnedGrid.children[i div pinnedPerRow], i mod pinnedPerRow)
+  for i in n ..< tabs.len: place(tabs[i].button, tabStrip, i - n + 1)
+  while pinnedGrid.children.len > rows: kit.remove(pinnedGrid, pinnedGrid.children[^1])   # empty by now
+  kit.`visible=`(pinnedGrid, n > 0)
+
 proc styleTab(t: Tab) =
   kit.`visible=`(t.closeButton, not t.pinned)
   kit.setClass(t.button, "webby-pinned-tab", t.pinned)
   # A 40 px tile with a 16 px icon in the middle (the CSS padding centres it), like Chrome's.
-  discard kit.sized(t.button, (if t.pinned and not vertical: 40 else: 0))
+  discard kit.sized(t.button, (if t.pinned: 40 else: 0))
   kit.`iconSize=`(t.icon, if t.pinned: 16 else: 14)
   updateTabButton(t)   # and updateBadge, through tabButtonHooks
+  layoutPinned()
 
 # ---------------------------------------------------------------------------------------------------------------
 # The open tabs, kept in open_tabs.json as they change (a second after, so a burst of changes is one write) and
@@ -209,7 +255,7 @@ proc makeDraggable(t: Tab) =
     let d = draggedTab(data)
     let j = tabs.find(t)
     if d == nil or d == t or j < 0: return
-    dropTab(d, j + int((if vertical: y else: x) >= 0.5)))
+    dropTab(d, j + int((if vertical and not t.pinned: y else: x) >= 0.5)))   # tiles are side by side
 
 # ---------------------------------------------------------------------------------------------------------------
 # Vertical tabs: the strip becomes a column left of the page.
@@ -219,6 +265,7 @@ proc setVertical*(on: bool, save = true) =
   if save: writeVerticalTabs(on)
   if appUrl.len > 0: return
   let old = tabStripRoot
+  flattenPinned()
   buildTabStrip(on)   # moves the tabs over to a new strip
   if old != nil and old.parent != nil: kit.remove(old.parent, old)
   if on:
@@ -346,6 +393,7 @@ proc install*() =
   tabButtonHooks.add updateBadge
   tabStripHooks.add proc () =
     fixOrder()
+    layoutPinned()
     saveOpenTabsSoon()
   shutdownHooks.add saveOpenTabsNow
   tabMenuHooks.add fillTabMenu
@@ -364,7 +412,7 @@ button.webby-pinned-tab.webby-active-tab { background-color: alpha(@theme_select
 .webby-badge-6 { background-color: #c2185b; } .webby-badge-7 { background-color: #5f6368; }
 .webby-vertical-tabs { border-right: 1px solid alpha(currentColor, 0.15); }
 .webby-vertical-tabs button.webby-tab { border-radius: 6px; margin: 1px 4px; }
-.webby-vertical-tabs button.webby-pinned-tab { padding-left: 10px; }
+.webby-pinned-grid { margin: 2px 3px; }
 .webby-strip-space, .webby-strip-space:hover { background: none; box-shadow: none; border: none; }
 """)
     # The strip's empty space: a right-click opens the strip's menu, a double click a new tab.

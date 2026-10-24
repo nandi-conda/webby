@@ -368,7 +368,8 @@ proc moveTab*(t: Tab, index: int) =
   let cur = currentTab()
   tabs.delete(i)
   tabs.insert(t, index)
-  kit.insert(tabStrip, t.button, index)
+  # A pinned tile in a vertical strip sits in a row of tiles; the strip's hooks put it in its place.
+  if t.button.parent == tabStrip: kit.insert(tabStrip, t.button, index)
   activeIndex = tabs.find(cur)
   notifyTabStrip()
 
@@ -380,7 +381,7 @@ proc closeTab*(t: Tab) =
   for h in tabClosedHooks: h(t)
   tabs.delete(i)
   t.closed = true
-  kit.remove(tabStrip, t.button)
+  if t.button.parent != nil: kit.remove(t.button.parent, t.button)
   if t.view != nil: webby_view_destroy(t.view)
   GC_unref(t)
   if tabs.len == 0:
