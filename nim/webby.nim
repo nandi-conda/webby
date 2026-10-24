@@ -5,7 +5,7 @@
 ## The core is src/browser.nim; every feature is a module in src/features with an install() that adds hooks.
 
 import src/browser
-import src/features/[about, adblock, atpassport, bookmarks, downloads, find, history, home, omnibox, passwords, tabs, site, pwa, summarize, sync]
+import src/features/[about, adblock, atpassport, bookmarks, downloads, find, history, home, omnibox, pagefit, passwords, tabs, site, pwa, summarize, sync]
 when defined(android): import src/features/android
 else: import src/features/[bugreport, pdf, plasma]
 
@@ -22,6 +22,7 @@ site.install()
 adblock.install()
 pwa.install()
 summarize.install()
+pagefit.install()
 sync.install()
 when defined(android): android.install()
 else:

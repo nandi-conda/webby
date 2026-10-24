@@ -56,6 +56,7 @@ type
     findCurrent*, findTotal*: int  ## native find in page: the 1-based active match (0 = none) and the match count
     messagePrefix*: string   ## page scripts send messages with prompt(messagePrefix + text)
     props*: Table[string, string]  ## per-tab scratch space for features
+    pageScale*: float        ## <1 draws the page smaller than the desktop's scale (features/pagefit); 0 means 1
     frameSerial, stateSerial: uint64
     lastCompat: MonoTime
     answering: bool
@@ -274,8 +275,11 @@ proc updateTabButton*(t: Tab) =
 proc notifyTabStrip*() =
   for h in tabStripHooks: h()
 
-proc resizeView(t: Tab) =
-  if viewPxW > 0 and t.view != nil: webby_view_resize(t.view, viewPxW.cint, viewPxH.cint, viewRatio.cdouble)
+proc resizeView*(t: Tab) =
+  ## Gives the tab's page the canvas's size, at its pixels per CSS pixel times the tab's pageScale.
+  let scale = if t.pageScale > 0: t.pageScale else: 1.0
+  if viewPxW > 0 and t.view != nil:
+    webby_view_resize(t.view, viewPxW.cint, viewPxH.cint, cdouble(viewRatio * scale))
 
 proc ensureView*(t: Tab)
 
