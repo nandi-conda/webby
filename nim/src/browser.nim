@@ -576,6 +576,10 @@ proc runPageScripts(t: Tab) =
   # one being navigated away from. Our scripts there (several of them talk back through prompt()) can wedge
   # Ladybird's navigation: under CPU load the new page's DOMContentLoaded and first paint then wait out a 15 s timeout.
   # So a tab that isn't headed for about:blank skips that document; the 100 ms re-runs while loading reach the new one.
+  # The scripts send each message from a timer (a task of its own), never straight from the code run here: this code
+  # can run inside one of their earlier prompt() calls (the engine handles our run_javascript while it waits for the
+  # answer), and a prompt() nested there takes the outer one's answer, so the outer waits forever with the page's
+  # event loop paused (pdf.js viewer pages never starting, dl.acm.org and arXiv PDFs blank). Timers don't run there.
   let (open, close) = if t.url == "about:blank": ("", "") else: ("if (location.href !== 'about:blank') {\n", "\n}")
   t.runJs(open & pageCompatScript & close)
   for h in pageScriptHooks:

@@ -6,7 +6,10 @@
   if (window.__webbyBug) return;
   const PREFIX = ${jsonEncode(prefix)};
   const prompt = window.prompt;
-  const send = (message) => { try { prompt.call(window, PREFIX + JSON.stringify(message)); } catch (e) {} };
+  const send = (message) => {
+    const text = PREFIX + JSON.stringify(message);
+    setTimeout(() => { try { prompt.call(window, text); } catch (e) {} }, 0);
+  };
   const KEEP = 1000;          // entries of each kind
   const TEXT = 2000;          // characters of one console argument
   const BODY = 4096;          // characters of a request or response body

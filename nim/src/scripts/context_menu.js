@@ -15,7 +15,10 @@
     } catch (e) {}
   }
   const prompt = host.prompt;
-  const send = (message) => { try { prompt.call(host, PREFIX + JSON.stringify(message)); } catch (e) {} };
+  const send = (message) => {
+    const text = PREFIX + JSON.stringify(message);
+    setTimeout(() => { try { prompt.call(host, text); } catch (e) {} }, 0);
+  };
 
   const TEXT_INPUTS = ['', 'text', 'search', 'url', 'tel', 'email', 'password', 'number'];
   function editableOf(node) {

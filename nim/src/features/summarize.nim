@@ -348,9 +348,9 @@ proc jumpTo(job: Job, words: string) =
     return
   job.tab.runJs("(() => { const norm = (u) => { try { u = new URL(u); u.hash = ''; return decodeURI(u.href)" &
     ".replace(/\\/+$/, ''); } catch (e) { return u; } }; if (norm(location.href) === norm(" & $(%job.url) &
-    ")) { delete window.__webbyJump; " & jumpToTextScript(words) & " return; } if (document.readyState !== 'loading') try { window.prompt(" &
+    ")) { delete window.__webbyJump; " & jumpToTextScript(words) & " return; } if (document.readyState !== 'loading') { const p = window.prompt, m = " &
     $(%job.tab.messagePrefix) & " + JSON.stringify({ type: 'summaryjumpmiss', words: " & $(%words) &
-    " })); } catch (e) {} })();")
+    " }); setTimeout(() => { try { p.call(window, m); } catch (e) {} }, 0); } })();")
   wake()
 
 proc summarizePage*()

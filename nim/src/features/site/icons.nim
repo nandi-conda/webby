@@ -38,7 +38,8 @@ const iconScript = """
     const href = best ? best.href : location.origin + '/favicon.ico';
     if (href === last) return;
     last = href;
-    try { prompt.call(window, PREFIX + JSON.stringify({ type: 'siteIcon', href })); } catch (e) {}
+    const text = PREFIX + JSON.stringify({ type: 'siteIcon', href });
+    setTimeout(() => { try { prompt.call(window, text); } catch (e) {} }, 0);
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', report, { once: true });
   else report();

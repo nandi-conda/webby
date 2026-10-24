@@ -80,7 +80,7 @@
     if (key === lastSent && !report.force) return;
     report.force = false;
     lastSent = key;
-    try { prompt.call(window, PREFIX + text); } catch (e) {}
+    setTimeout(() => { try { prompt.call(window, PREFIX + text); } catch (e) {} }, 0);
   };
   const schedule = (force) => {
     if (force) report.force = true;

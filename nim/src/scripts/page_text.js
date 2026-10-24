@@ -49,5 +49,6 @@
   }
   const message = { type: 'pagetext', id: ID, selection, title: document.title || '', url: location.href,
     lang: document.documentElement.lang || '', text: text.slice(0, LIMIT) };
-  try { window.prompt(PREFIX + JSON.stringify(message)); } catch (e) {}
+  const prompt = window.prompt, text = PREFIX + JSON.stringify(message);
+  setTimeout(() => { try { prompt.call(window, text); } catch (e) {} }, 0);
 })();

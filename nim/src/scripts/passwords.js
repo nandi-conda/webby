@@ -17,7 +17,10 @@
     } catch (e) {}
   }
   const prompt = host.prompt;
-  const send = (message) => { try { prompt.call(host, PREFIX + JSON.stringify(message)); } catch (e) {} };
+  const send = (message) => {
+    const text = PREFIX + JSON.stringify(message);
+    setTimeout(() => { try { prompt.call(host, text); } catch (e) {} }, 0);
+  };
 
   const visible = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
   const usable = (el) => !el.disabled && !el.readOnly && visible(el);

@@ -18,7 +18,8 @@
         host = frame.contentWindow;
       } catch (e) {}
     }
-    try { host.prompt.call(host, PREFIX + JSON.stringify(message)); } catch (e) {}
+    const text = PREFIX + JSON.stringify(message);
+    setTimeout(() => { try { host.prompt.call(host, text); } catch (e) {} }, 0);
   };
 
   let holder = null;

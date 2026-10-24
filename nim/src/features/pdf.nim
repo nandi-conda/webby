@@ -45,7 +45,8 @@ const
 const bytesScript = """
 (async () => {
   const P = PREFIX, ID = DOCID;
-  const send = m => { try { window.prompt(P + JSON.stringify(Object.assign({ type: 'webbyPdfData', id: ID }, m))); } catch (e) {} };
+  const prompt = window.prompt;
+  const send = m => { const t = P + JSON.stringify(Object.assign({ type: 'webbyPdfData', id: ID }, m)); setTimeout(() => { try { prompt.call(window, t); } catch (e) {} }, 0); };
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   // Not yet the viewer (the old document right after the navigation started), or still parsing: a prompt() then
   // can wedge Ladybird's parser.
@@ -77,7 +78,8 @@ const detectScript = """
   if (window.__webbyPdf || document.readyState === 'loading') return;
   if (!(window.PDFViewerApplication || document.getElementById('viewerContainer'))) return;
   window.__webbyPdf = true;
-  try { window.prompt(PREFIX + JSON.stringify({ type: 'webbyPdf' })); } catch (e) {}
+  const prompt = window.prompt, text = PREFIX + JSON.stringify({ type: 'webbyPdf' });
+  setTimeout(() => { try { prompt.call(window, text); } catch (e) {} }, 0);
 })();
 """
 

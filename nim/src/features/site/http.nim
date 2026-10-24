@@ -12,7 +12,8 @@ var
 
 const fetchScript = """
 (async () => {
-  const send = (m) => { try { window.prompt.call(window, $1 + JSON.stringify(m)); } catch (e) {} };
+  const prompt = window.prompt;
+  const send = (m) => { const text = $1 + JSON.stringify(m); setTimeout(() => { try { prompt.call(window, text); } catch (e) {} }, 0); };
   try {
     const r = await fetch($2, { headers: $3, credentials: 'same-origin' });
     if (!r.ok) throw 0;

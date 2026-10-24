@@ -7,7 +7,10 @@
   if (window.Notification && typeof window.Notification.permission === 'string') return;
   const PREFIX = ${jsonEncode(prefix)};
   const prompt = window.prompt;
-  const send = (message) => { try { prompt.call(window, PREFIX + JSON.stringify(message)); } catch (e) {} };
+  const send = (message) => {
+    const text = PREFIX + JSON.stringify(message);
+    setTimeout(() => { try { prompt.call(window, text); } catch (e) {} }, 0);
+  };
   const self = {
     permission: ${jsonEncode(permission)},
     nextId: 1,
