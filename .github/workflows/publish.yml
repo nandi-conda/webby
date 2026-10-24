@@ -209,18 +209,21 @@ jobs:
           gh release upload appimage dist/webby-x86_64.AppImage dist/webby-x86_64.AppImage.zsync --clobber
           git push -f origin "$GITHUB_SHA:refs/tags/appimage"
           gh release edit appimage --title "$VERSION" --notes "$notes"
-      # What webby's updater (nim/src/features/update.nim) does, from the previous AppImage: zsync2 with the
-      # AppImage's address from a GET's redirect. The result must be the file just published.
+      # What webby's updater (nim/src/features/update.nim) does, from the previous AppImage: the .zsync and the
+      # file's signed address through the release's asset URLs, then zsync2. The result must be the new file.
       - name: Update the previous AppImage with zsync
         run: |
           [ -s old/webby-x86_64.AppImage ] || { echo "no previous AppImage"; exit 0; }
           (cd dist && ./webby-x86_64.AppImage --appimage-extract 'usr/lib/webby/zsync2/*' > /dev/null)
-          base=https://github.com/nandi-conda/webby/releases/download/appimage/webby-x86_64.AppImage
-          location="$(curl -s -o /dev/null -D - -r 0-0 "$base" | sed -n 's/^[Ll]ocation: *//p' | tr -d '\r')"
-          dist/squashfs-root/usr/lib/webby/zsync2/bin/zsync2 -i old/webby-x86_64.AppImage -o old/new.AppImage \
-            -u "$location" "$base.zsync"
+          api=https://api.github.com/repos/nandi-conda/webby/releases/tags/appimage
+          asset() { curl -fsSL "$api" | jq -r --arg n "$1" '.assets[] | select(.name == $n) | .url'; }
+          curl -fsSL -H 'Accept: application/octet-stream' -o old/new.zsync "$(asset webby-x86_64.AppImage.zsync)"
+          location="$(curl -s -o /dev/null -D - -r 0-0 -H 'Accept: application/octet-stream' \
+            "$(asset webby-x86_64.AppImage)" | sed -n 's/^[Ll]ocation: *//p' | tr -d '\r')"
+          dist/squashfs-root/usr/lib/webby/zsync2/bin/zsync2 -q -i old/webby-x86_64.AppImage -o old/new.AppImage \
+            -u "$location" old/new.zsync
           cmp old/new.AppImage dist/webby-x86_64.AppImage
-          echo "updated $(stat -c %s old/webby-x86_64.AppImage)-byte AppImage to the new one"
+          echo "updated the previous AppImage to the new one with zsync"
 
   # `pixi run webby` (the Nim front end) from a fresh checkout: installs the workspace, builds and starts it.
   pixi-webby:

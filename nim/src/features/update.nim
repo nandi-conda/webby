@@ -2,7 +2,8 @@
 ## it looks at the rolling `appimage` GitHub release (scripts/build_appimage.sh, .github/workflows/publish.yml)
 ## half a minute after it starts and every 6 hours. A newer version is downloaded with zsync2 (bundled in the
 ## AppImage), which fetches only the blocks that changed and uses the current file for the rest, then it replaces
-## the AppImage file. This webby keeps running from its own mount; the new one starts next time, or now through
+## the AppImage file. The files are fetched by their release asset ids (the API's asset URLs): right after a
+## publish, github.com's /releases/download/ address can still redirect to the file it replaced. This webby keeps running from its own mount; the new one starts next time, or now through
 ## ⋮ > Help > Restart to update. ⋮ > Help > Check for updates asks at once.
 ##
 ## Conda installs update with `pixi global update webby` instead, so this does nothing there.
@@ -14,10 +15,9 @@ from nimkit/core as kit import nil
 import nimkit/services
 
 const
-  # -d: overrides, to test against a local server.
+  # -d:webbyUpdateApi=... tests against a local server (a JSON file with "name" and "assets": [{"name", "url"}]).
   releaseApi {.strdefine: "webbyUpdateApi".} = "https://api.github.com/repos/nandi-conda/webby/releases/tags/appimage"
-  zsyncUrl {.strdefine: "webbyUpdateZsync".} =
-    "https://github.com/nandi-conda/webby/releases/download/appimage/webby-x86_64.AppImage.zsync"
+  fileName = "webby-x86_64.AppImage"
   releasePage = "https://github.com/nandi-conda/webby/releases/tag/appimage"
   checkEveryMs = 6 * 60 * 60 * 1000
 
@@ -56,13 +56,24 @@ proc spawn(args: seq[string], onExit: proc (ok: bool)): bool =
       let hook = exitHook
       shielded("update", proc () = hook(status == 0)), nil)
 
-proc download(version: string) =
+proc fetch(url: string, headers: seq[(string, string)], onDone: proc (r: Response), follow = 3) =
+  ## A GET that follows redirects (up to `follow`); asset downloads redirect to a signed address.
+  request("GET", url, proc (r: Response) =
+    let location = r.header("location")
+    if r.status in 300 .. 399 and location.len > 0 and follow > 0:
+      # The signed address must not get the API's headers.
+      fetch(location, @[], onDone, follow - 1)
+    else: onDone(r),
+    headers = headers)
+
+proc download(version, fileAsset, zsyncAsset: string) =
   let appImage = getEnv("APPIMAGE")
   let zsync2 = getAppDir() / "zsync2" / "bin" / "zsync2"
   if not fileExists(zsync2): return
   let dir = appImage.parentDir
   # The new file is built next to the AppImage, then renamed over it (the running one keeps its open copy).
   let part = dir / "." & appImage.extractFilename & ".update"
+  let zsyncFile = part & ".zsync"
   try:
     writeFile(part, "")
     removeFile(part)
@@ -74,13 +85,15 @@ proc download(version: string) =
   state = downloading
   newVersion = version
   if manualCheck: kit.toast("Downloading Webby " & version & "…")
+  proc failed(why: string) =
+    log("webby: could not download " & version & ": " & why)
+    state = idle
+    for f in [part, zsyncFile]:
+      try: removeFile(f) except CatchableError: discard
+    if manualCheck: kit.toast("Could not download Webby " & version)
   proc finished(ok: bool) =
-    if not ok or not fileExists(part):
-      log("webby: zsync2 could not download " & version)
-      state = idle
-      try: removeFile(part) except CatchableError: discard
-      if manualCheck: kit.toast("Could not download Webby " & version)
-      return
+    try: removeFile(zsyncFile) except CatchableError: discard
+    if not ok or not fileExists(part): (failed("zsync2 failed"); return)
     try:
       setFilePermissions(part, {fpUserRead, fpUserWrite, fpUserExec, fpGroupRead, fpGroupExec, fpOthersRead,
                                 fpOthersExec})
@@ -92,18 +105,21 @@ proc download(version: string) =
     state = ready
     log("webby: updated " & appImage & " to " & version)
     kit.toast("Webby " & version & " is ready. It starts next time, or now with ⋮ > Help > Restart to update.")
-  # zsync2 finds the AppImage's address by following GitHub's redirect with a HEAD request, and GitHub signs that
-  # address for HEAD only, so its GETs then fail (401). The redirect a GET gets works, so it's passed with -u.
-  let fileUrl = zsyncUrl[0 ..< ^".zsync".len]
-  request("GET", fileUrl, proc (r: Response) =
-    var args = @[zsync2, "-q", "-i", appImage, "-o", part]
-    let location = r.header("location")
-    if r.status in 300 .. 399 and location.len > 0: args.add ["-u", location]
-    args.add zsyncUrl
-    if not spawn(args, finished):
-      state = idle
-      if manualCheck: kit.toast("Could not start the download"),
-    headers = @[("Range", "bytes=0-0")])
+  let octets = @[("Accept", "application/octet-stream")]
+  # The .zsync (block checksums of the new file), then the file's own signed address, for zsync2's block GETs.
+  # (zsync2 can't send the Accept header the API wants, and finding the address itself it asks with HEAD, which
+  # GitHub answers with an address signed for HEAD only.)
+  fetch(zsyncAsset, octets, proc (r: Response) =
+    if r.status != 200: (failed("zsync file: " & $r.status & " " & r.error); return)
+    try: writeFile(zsyncFile, r.body)
+    except CatchableError as e: (failed(e.msg); return)
+    request("GET", fileAsset, proc (r: Response) =
+      let location = r.header("location")
+      let fileUrl = if r.status in 300 .. 399 and location.len > 0: location else: fileAsset
+      if r.status >= 400 or r.status == 0: (failed("file: " & $r.status & " " & r.error); return)
+      if not spawn(@[zsync2, "-q", "-i", appImage, "-o", part, "-u", fileUrl, zsyncFile], finished):
+        failed("could not start zsync2"),
+      headers = octets & @[("Range", "bytes=0-0")]))
 
 proc check(manual = false) =
   if state in {checking, downloading}: return
@@ -119,14 +135,19 @@ proc check(manual = false) =
       log("webby: update check failed: " & $r.status & " " & r.error)
       if manualCheck: kit.toast("Could not check for updates (" & (if r.error.len > 0: r.error else: $r.status) & ")")
       return
-    var latest = ""
-    try: latest = parseJson(r.body){"name"}.getStr.strip
+    var latest, fileAsset, zsyncAsset = ""
+    try:
+      let release = parseJson(r.body)
+      latest = release{"name"}.getStr.strip
+      for a in release{"assets"}.getElems:
+        if a{"name"}.getStr == fileName: fileAsset = a{"url"}.getStr
+        elif a{"name"}.getStr == fileName & ".zsync": zsyncAsset = a{"url"}.getStr
     except CatchableError: discard
     log("webby: update check: latest " & latest & ", this is " & current)
-    if latest.len == 0 or not newer(latest, current):
+    if latest.len == 0 or fileAsset.len == 0 or zsyncAsset.len == 0 or not newer(latest, current):
       if manualCheck: kit.toast("Webby is up to date (" & current & ")")
       return
-    download(latest),
+    download(latest, fileAsset, zsyncAsset),
     headers = @[("Accept", "application/vnd.github+json")])
 
 proc restart() =
