@@ -1,5 +1,5 @@
 diff --git a/Services/WebContent/PageClient.cpp b/Services/WebContent/PageClient.cpp
-index 29df9c58..98acd420 100644
+index 29df9c58..c246e5b4 100644
 --- a/Services/WebContent/PageClient.cpp
 +++ b/Services/WebContent/PageClient.cpp
 @@ -1070,11 +1070,20 @@ void PageClient::cancel_download(u64 download_id)
@@ -14,7 +14,7 @@ index 29df9c58..98acd420 100644
 +    // Stopping the fetch and canceling the reader settle promises, which needs a running execution context. This runs
 +    // straight from an IPC message with no script on the stack, and without one the JS engine aborts the whole
 +    // WebContent process, failing every other download the tab is streaming.
-+    Web::HTML::TemporaryExecutionContext execution_context { reader.value()->closed_promise_realm(), Web::HTML::TemporaryExecutionContext::CallbacksEnabled::Yes };
++    Web::HTML::TemporaryExecutionContext execution_context { Web::WebIDL::promise_realm(*reader.value()->closed_promise_capability()), Web::HTML::TemporaryExecutionContext::CallbacksEnabled::Yes };
 +
      if (controller.has_value())
          controller.value()->stop_fetch();
