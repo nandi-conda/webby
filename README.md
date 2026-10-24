@@ -136,7 +136,7 @@ them. Patches 0005 to 0009 make Ladybird's Android build work.
 ## Status
 
 Tabs (pinned, vertical, saved sessions, restored at start), the address bar with suggestions, history, bookmarks,
-passwords and passkeys, end-to-end encrypted sync, find in page, site permissions, notifications, location,
+passwords and passkeys, end-to-end encrypted sync, find in page, site permissions, notifications, web push (desktop), location,
 downloads, web apps, incognito windows, an ad blocker and page summaries. Frames are copied through the CPU
 (Ladybird's CPU painting mode).
 

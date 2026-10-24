@@ -8,7 +8,7 @@ Features: bookmarks (bar, manager, HTML import/export), history and omnibox sugg
 autofill and passkeys, @passport AT Protocol handles (`src/features/atpassport.nim`: handle fill bar, FedCM
 handle assist, synced from atpassport.net), end-to-end encrypted sync, tabs from other devices, saved
 sessions, pinned and vertical tabs, tab and page context menus, incognito windows, site permissions and settings,
-file inputs, notifications, geolocation (GeoClue), dark mode, favicons, installable web apps (`--app=`), offline
+file inputs, notifications, web push (`src/features/site/push.nim`: Mozilla's push service, the site's worker script run in a hidden view), geolocation (GeoClue), dark mode, favicons, installable web apps (`--app=`), offline
 mode, Summarize, and a PDF viewer (`src/features/pdf.nim`: MuPDF in a separate `webby-pdf` program, `pdf/`, in place of
 Ladybird's pdf.js viewer; that program alone is AGPL-3.0 because MuPDF is). On Android, `nim/android-kit` runs this same front end on nimkit's Android host
 (`nim/android-kit/build.sh`, installed as "Webby", dev.webby.nim); platform services come from its Java host

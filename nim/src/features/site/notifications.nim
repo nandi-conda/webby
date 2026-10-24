@@ -19,6 +19,7 @@ type Shown = object
   tab: Tab
   pageId: int
   origin: string
+  onClick, onClosed: proc ()   ## a service worker's notification (features/site/push.nim; no tab)
 
 var
   shown: Table[uint32, Shown]     ## system id to the page's notification
@@ -45,6 +46,9 @@ proc clicked(id: uint32) =
   if id notin shown: return
   let s = shown[id]
   shown.del id
+  if s.onClick != nil:
+    s.onClick()
+    return
   if s.tab.closed: return
   activateTab(s.tab)
   when not defined(android): gtk_window_present(window)
@@ -55,7 +59,8 @@ proc closedBySystem(id: uint32) =
   if id notin shown: return
   let s = shown[id]
   shown.del id
-  callPage(s.tab, "closed(" & $s.pageId & ")")
+  if s.onClosed != nil: s.onClosed()
+  elif s.tab != nil: callPage(s.tab, "closed(" & $s.pageId & ")")
 
 when defined(android):
   var nextSystemId = 1'u32
@@ -100,7 +105,7 @@ else:
   proc systemClose(id: uint32) =
     call(busSession, service, servicePath, service, "CloseNotification", g_variant_new("(u)", id))
 
-proc show(t: Tab, origin: string, pageId: int, tag, title, body: string) =
+proc show(origin, tag, title, body: string, entry: Shown, done: proc (id: uint32) = nil) =
   var site = origin[origin.find("://") + 3 .. ^1]
   if site.startsWith("www."): site = site[4 .. ^1]
   let key = if tag.len > 0: origin & " " & tag else: ""
@@ -108,7 +113,19 @@ proc show(t: Tab, origin: string, pageId: int, tag, title, body: string) =
   let text = if body.len == 0: site else: body & "\n" & site
   systemShow(tagged.getOrDefault(key, 0'u32), title, text, proc (id: uint32) =
     if key.len > 0: tagged[key] = id
-    shown[id] = Shown(tab: t, pageId: pageId, origin: origin))
+    shown[id] = entry
+    if done != nil: done(id))
+
+proc notify*(origin, tag, title, body: string, onClick, onClosed: proc (), done: proc (id: uint32) = nil) =
+  ## Shows a notification for `origin` that belongs to no page (a service worker's): `onClick` runs when it's
+  ## clicked, `onClosed` when it's dismissed. `done` gets its id for closeNotification. A later one with the same
+  ## tag replaces it.
+  show(origin, tag, title, body, Shown(origin: origin, onClick: onClick, onClosed: onClosed), done)
+
+proc closeNotification*(id: uint32) =
+  if id in shown:
+    shown.del id
+    systemClose(id)
 
 proc closePage(t: Tab, pageId: int) =
   for id, s in shown:
@@ -131,7 +148,7 @@ proc onMessage(t: Tab, text: string): bool =
       callPage(t, "resolve(" & $id & ", " & $(%answer) & ")"))
   of "notify":
     if pageState(t, origin) == "granted":
-      show(t, origin, id, m{"tag"}.getStr, m{"title"}.getStr, m{"body"}.getStr)
+      show(origin, m{"tag"}.getStr, m{"title"}.getStr, m{"body"}.getStr, Shown(tab: t, pageId: id, origin: origin))
   of "notificationClose": closePage(t, id)
   else: return false
   true
