@@ -12,6 +12,7 @@ import summarize/[cache, deepseek, markdown, prompts]
 type
   Question = ref object
     question, answer, error: string
+    quote: string              ## the panel text it asks about (see Job.quote), or ""
     running: bool
 
   Job = ref object
@@ -32,9 +33,13 @@ type
     selected: string
     reading: bool              ## the page's text is still being read for `asking`
     afterRead: seq[proc ()]    ## questions waiting for it
+    quote: string              ## text selected in the panel itself that the next question is about
 
   Panel = object
     root, busyLabel, copyButton, redoButton, content, scroller, entry, sendButton: kit.Widget
+    quoteBar, quoteLabel: kit.Widget   ## above the question box: the panel text the next question is about
+    overlay, askPill: kit.Widget       ## the scroller, and "Ask AI about this" over text selected in it
+    pillText: string                   ## what the pill asks about
 
 var
   jobs: Table[string, Job]     ## by the tab's messagePrefix
@@ -207,12 +212,39 @@ proc jobOf(t: Tab): Job =
 
 proc answering(job: Job): bool = job.questions.len > 0 and job.questions[^1].running
 
+const quoteIntro = "About this part of the side panel (your summary, your answers or the passage):"
+
+proc message(qa: Question): string =
+  ## What `qa` asks the model: the question, after the panel text it is about (as a markdown quote).
+  if qa.quote.len == 0: return qa.question
+  result = quoteIntro & "\n"
+  for line in qa.quote.splitLines: result.add "> " & line & "\n"
+  result.add "\n" & qa.question
+
+proc unquoted(message: string): Question =
+  ## A saved question back as its question and quote (see message).
+  result = Question(question: message)
+  if not message.startsWith(quoteIntro & "\n"): return
+  var quote: seq[string]
+  var lines = message[quoteIntro.len + 1 .. ^1].split('\n')
+  var i = 0
+  while i < lines.len and lines[i].startsWith(">"):
+    quote.add lines[i][min(2, lines[i].len) .. ^1]
+    inc i
+  if i < lines.len and lines[i].len == 0 and quote.len > 0:
+    result.quote = quote.join("\n")
+    result.question = lines[i + 1 .. ^1].join("\n")
+
 proc showSaved(job: Job, key: string, saved: CachedSummary) =
   inc job.generation
   job.asking = false
   job.key = key
   job.questions.setLen 0
-  for qa in saved.questions: job.questions.add Question(question: qa.question, answer: qa.answer)
+  job.quote = ""
+  for qa in saved.questions:
+    let q = unquoted(qa.question)
+    q.answer = qa.answer
+    job.questions.add q
   job.open = true
   job.running = false
   job.error = ""
@@ -229,7 +261,7 @@ proc save(job: Job) =
   if job.madeAt == 0: job.madeAt = nowMs()
   var s = CachedSummary(title: job.title, url: job.url, text: job.text, at: job.madeAt, selection: job.selection)
   for qa in job.questions:
-    if not qa.running and qa.error.len == 0 and qa.answer.strip.len > 0: s.questions.add (qa.question, qa.answer)
+    if not qa.running and qa.error.len == 0 and qa.answer.strip.len > 0: s.questions.add (qa.message, qa.answer)
   storeSummary(job.key, s)
 
 proc stopChat(job: Job) =
@@ -252,6 +284,7 @@ proc start(job: Job, key: string, provider: Provider, fresh = false) =
   job.url = t.url
   job.savedAt = 0
   job.questions.setLen 0
+  job.quote = ""
   job.key = ""
   job.hasPage = false
   job.madeAt = 0
@@ -302,17 +335,18 @@ proc ask(job: Job, key, text: string, provider: Provider) =
   var earlier: seq[Question]
   for qa in job.questions:
     if qa.error.len == 0 and qa.answer.strip.len > 0: earlier.add qa
-  let entry = Question(question: question, running: true)
+  let entry = Question(question: question, quote: job.quote, running: true)
+  job.quote = ""
   job.questions.add entry
   changed(job)
   proc send() =
     if generation != job.generation: return
     var context: seq[tuple[question, answer: string]]
-    for qa in earlier: context.add (qa.question, qa.answer)
+    for qa in earlier: context.add (qa.message, qa.answer)
     let request =
       if job.asking: selectionQuestionRequest(job.selected, job.hasPage, job.page, job.title, job.url, context,
-        question, provider)
-      else: questionRequest(job.hasPage, job.page, job.title, job.url, job.text, context, question, provider)
+        entry.message, provider)
+      else: questionRequest(job.hasPage, job.page, job.title, job.url, job.text, context, entry.message, provider)
     job.chat = streamChat(provider, key, request,
       proc (piece: string) =
         if generation != job.generation: return
@@ -400,6 +434,7 @@ const panelCss = markdownCss & """
 .webby-summary-bar { margin: 2px 4px 2px 0; }
 .webby-summary-content { padding: 14px; }
 .webby-summary-ask { padding: 8px; }
+.webby-summary-quoting { padding: 8px 8px 0 8px; }
 """
 
 # Text sizes (body, then headings 1.35/1.2/1.08x and code 0.92x), in pt so they follow the
@@ -498,6 +533,10 @@ proc copyable(job: Job): string =
   for i in countdown(job.questions.high, 0):
     if job.questions[i].answer.strip.len > 0: return job.questions[i].answer.strip
 
+const panelQuestions = [("Explain", "Explain this in plain words."),
+  ("Tell me more", "Tell me more about this, from what the page says."),
+  ("Define terms", "Define the terms, names and references in this.")]
+
 const quickQuestions = [("Explain", "Explain this passage in plain words."),
   ("Summarize", "Summarize this passage in a few bullets."),
   ("Define terms", "Define the terms, names and references in this passage.")]
@@ -507,6 +546,123 @@ proc askQuick(question: string)
 proc quickButton(label, question: string): kit.Widget =
   # A proc of its own so each button's closure keeps its own question (a loop's closures would share one).
   kit.addClass(kit.button(label, proc () = askQuick(question)), "flat")
+
+# ---------------------------------------------------------------------------------------------------------------
+# Asking about the panel's own text: selecting some of a label in the panel (the summary, an answer, the quoted
+# passage) shows the same "Ask AI about this" pill as on pages, and the labels' right-click menu gets the item. It
+# quotes the text above the question box; the next question is about it, with the page and summary as context.
+
+const maxQuote = 4000   ## longer selections are cut
+
+proc shortQuote(text: string, limit = 280): string =
+  ## `text` on one line, cut to about `limit` bytes for showing.
+  result = text.splitWhitespace.join(" ")
+  if result.len > limit:
+    var n = limit
+    while n > 0 and (result[n].ord and 0xC0) == 0x80: dec n
+    result = result[0 ..< n].strip & "…"
+
+proc hidePill() =
+  if panel.askPill != nil: kit.`visible=`(panel.askPill, false)
+  panel.pillText = ""
+
+proc quotePanelText(text: string) =
+  ## The pill or menu item: the next question is about `text`.
+  let job = panelJob
+  var text = text.strip
+  if job == nil or text.len == 0: return
+  if text.len > maxQuote:
+    var n = maxQuote
+    while n > 0 and (text[n].ord and 0xC0) == 0x80: dec n
+    text.setLen n
+  job.quote = text
+  render()
+  if panel.entry != nil:
+    later(30, proc () =
+      if panelJob == job and panel.entry != nil: kit.focus(panel.entry))
+
+when defined(android):
+  proc watchSelections(w: kit.Widget) = discard   # Android's labels have their own selection menu
+
+else:
+  proc gtk_label_get_selection_bounds(l: Widget, start, stop: ptr cint): gboolean {.importc, cdecl.}
+  proc g_utf8_offset_to_pointer(s: cstring, offset: clong): cstring {.importc, cdecl.}
+  proc gtk_widget_get_preferred_width(w: Widget, minimum, natural: ptr cint) {.importc, cdecl.}
+
+  proc labelSelection(l: Widget): string =
+    ## The text selected in GtkLabel `l`, widened to whole words, or "".
+    var a, b: cint
+    if gtk_label_get_selection_bounds(l, addr a, addr b) == 0 or a == b: return
+    let text = gtk_label_get_text(l)
+    if text == nil: return
+    let all = $text
+    var i = cast[int](g_utf8_offset_to_pointer(text, min(a, b).clong)) -% cast[int](text)
+    var j = cast[int](g_utf8_offset_to_pointer(text, max(a, b).clong)) -% cast[int](text)
+    if i < 0 or j > all.len or j <= i: return
+    proc wordy(c: char): bool = c in Letters or c in Digits or c.ord >= 0x80
+    while i > 0 and all[i - 1].wordy and all[i].wordy: dec i
+    while j < all.len and all[j - 1].wordy and all[j].wordy: inc j
+    all[i ..< j]
+
+  proc placePill(text: string) =
+    ## The pill under the pointer (where a drag selecting text ends), above it when there's no room below.
+    if panel.askPill == nil or panel.overlay == nil: return
+    let o = nkgtk.gtkWidget(panel.overlay)
+    var x, y: cint
+    gtk_widget_get_pointer(o, addr x, addr y)
+    let pill = nkgtk.gtkWidget(panel.askPill)
+    var minW, w: cint
+    gtk_widget_get_preferred_width(pill, addr minW, addr w)
+    if w <= 0: w = 160
+    let h = 34.0
+    let ow = gtk_widget_get_allocated_width(o).float
+    let oh = gtk_widget_get_allocated_height(o).float
+    var py = y.float + 14
+    if py + h > oh - 4: py = y.float - h - 14
+    kit.placeAt(panel.askPill, clamp(x.float - w.float / 2, 4.0, max(4.0, ow - w.float - 4)),
+      clamp(py, 4.0, max(4.0, oh - h - 4)))
+    panel.pillText = text
+    kit.`visible=`(panel.askPill, true)
+
+  proc onLabelPress(l: Widget, e: GEvent, d: pointer): gboolean {.cdecl.} =
+    hidePill()
+    0
+
+  proc onLabelRelease(l: Widget, e: GEvent, d: pointer): gboolean {.cdecl.} =
+    # After GtkLabel's own handler has finished the selection. The panel may have been redrawn by then.
+    discard g_object_ref(l)
+    later(10, proc () =
+      defer: g_object_unref(l)
+      if panel.askPill == nil or panelJob == nil or panelJob.running or apiKey().len == 0: return
+      if gtk_widget_is_ancestor(l, nkgtk.gtkWidget(panel.content)) == 0: return
+      let text = labelSelection(l).strip
+      if text.len == 0: hidePill() else: placePill(text))
+    0
+
+  var menuText: string   ## what the labels' right-click menu item asks about
+
+  proc onMenuAsk(item: Widget, d: pointer) {.cdecl.} = quotePanelText(menuText)
+
+  proc onLabelPopup(l: Widget, menu: Widget, d: pointer) {.cdecl.} =
+    hidePill()
+    menuText = labelSelection(l).strip
+    if menuText.len == 0 or panelJob == nil or panelJob.running or apiKey().len == 0: return
+    let sep = gtk_separator_menu_item_new()
+    gtk_menu_shell_append(menu, sep)
+    let item = gtk_menu_item_new_with_label("Ask AI about this")
+    connect(item, "activate", onMenuAsk)
+    gtk_menu_shell_append(menu, item)
+    gtk_widget_show(sep)
+    gtk_widget_show(item)
+
+  proc watchSelections(w: kit.Widget) =
+    ## Watches the selectable labels in `w` for selections to ask about.
+    if w.kind == kit.wkLabel and kit.selectable(w) and w.realized:
+      let l = nkgtk.gtkWidget(w)
+      connect(l, "button-press-event", onLabelPress)
+      connect(l, "button-release-event", onLabelRelease)
+      connect(l, "populate-popup", onLabelPopup)
+    for c in w.children: watchSelections(c)
 
 proc render() =
   let job = panelJob
@@ -522,6 +678,11 @@ proc render() =
   let canAsk = key.len > 0 and (job.text.strip.len > 0 or job.asking) and not job.running and job.error.len == 0
   kit.`enabled=`(panel.entry, canAsk)
   kit.`enabled=`(panel.sendButton, canAsk and not job.answering)
+  kit.`visible=`(panel.quoteBar, job.quote.len > 0)
+  kit.`text=`(panel.quoteLabel, shortQuote(job.quote))
+  kit.`placeholder=`(panel.entry, if job.quote.len > 0: "Ask about the quoted text"
+    elif job.asking: "Ask about the selection" else: "Ask about this page")
+  hidePill()
 
   kit.clear(panel.content)
   if job.title.len > 0: add kit.addClass(kit.label(job.title), "bold")
@@ -548,10 +709,20 @@ proc render() =
     add(note(waitingText(job.hasPage, job.chat != nil and job.chat.queued, job.provider)), 12)
   else: add(markdownView(job.text.strip), 12)
   for qa in job.questions:
-    add(kit.addClass(kit.addClass(kit.label(qa.question), "bold"), "webby-summary-question"), 16)
+    let question = kit.addClass(kit.label(qa.question), "bold")
+    kit.`selectable=`(question, true)
+    let box = kit.addClass(kit.column(), "webby-summary-question")
+    box.spacing = 6
+    if qa.quote.len > 0:
+      let quote = kit.addClass(kit.addClass(kit.label(shortQuote(qa.quote)), "webby-summary-quote"), "dim")
+      kit.`selectable=`(quote, true)
+      kit.add(box, quote)
+    kit.add(box, question)
+    add(box, 16)
     if qa.answer.strip.len > 0: add(markdownView(qa.answer.strip), 8)
     elif qa.running: add(note("Thinking…"), 8)
     if qa.error.len > 0: add(kit.addClass(kit.label(qa.error), "error"), 8)
+  watchSelections(panel.content)
 
 proc askQuick(question: string) =
   let job = panelJob
@@ -595,14 +766,33 @@ proc showPanel(job: Job) =
   panel.content = kit.addClass(kit.column(), "webby-summary-content")
   panel.content.spacing = 0
   panel.scroller = kit.scroll(panel.content)
+  panel.askPill = kit.addClass(kit.addClass(kit.button("✦ Ask AI about this", proc () =
+    let text = panel.pillText
+    hidePill()
+    quotePanelText(text)), "webby-ask-pill"), "flat")
+  kit.placeAt(panel.askPill, 0, 0)
+  kit.`visible=`(panel.askPill, false)
+  panel.overlay = kit.overlay(panel.scroller, panel.askPill)
+  panel.quoteLabel = kit.addClass(kit.label(""), "dim")
+  let clearQuote = kit.iconButton("close", "Don't ask about this", proc () =
+    if panelJob != nil:
+      panelJob.quote = ""
+      render())
+  var quick = kit.row()
+  quick.spacing = 4
+  for (label, question) in panelQuestions: kit.add(quick, quickButton(label, question))
+  panel.quoteBar = kit.addClass(kit.column(
+    kit.row(kit.expand(kit.addClass(kit.column(panel.quoteLabel), "webby-summary-quote")), clearQuote), quick),
+    "webby-summary-quoting")
+  panel.quoteBar.spacing = 4
   panel.entry = kit.entry(if job.asking: "Ask about the selection" else: "Ask about this page")
   panel.entry.onSubmit = proc (t: string) = askFromEntry()
   panel.sendButton = kit.iconButton("send", "Ask", askFromEntry)
   let askRow = kit.addClass(kit.row(kit.expand(panel.entry), panel.sendButton), "webby-summary-ask")
   askRow.spacing = 4
   # markdownCss font sizes
-  panel.root = kit.addClass(kit.column(bar, kit.separator(), kit.expand(panel.scroller), kit.separator(), askRow),
-    "webby-md")
+  panel.root = kit.addClass(kit.column(bar, kit.separator(), kit.expand(panel.overlay), kit.separator(),
+    panel.quoteBar, askRow), "webby-md")
   panel.root.spacing = 0
   showSidePanel(if job.asking: "Ask AI" else: "Summary", panel.root, 380, proc () =
     let shown = panelJob
@@ -666,6 +856,7 @@ proc askAboutSelection*(t: Tab, text: string) =
   job.url = t.url
   job.savedAt = 0
   job.questions.setLen 0
+  job.quote = ""
   job.key = ""
   job.selection = true
   job.provider = provider()
