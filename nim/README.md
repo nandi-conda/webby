@@ -5,7 +5,8 @@ A Nim program that drives `libwebby.so` (Ladybird, see `native/webby_ffi.h`), wi
 premultiplied BGRA frame is cairo's ARGB32 layout, so no copy and no swizzle), and Android views on phones.
 
 Features: bookmarks (bar, manager, HTML import/export), history and omnibox suggestions, the password vault with
-autofill and passkeys, end-to-end encrypted sync, tabs from other devices, saved
+autofill and passkeys, @passport AT Protocol handles (`src/features/atpassport.nim`: handle fill bar, FedCM
+handle assist, synced from atpassport.net), end-to-end encrypted sync, tabs from other devices, saved
 sessions, pinned and vertical tabs, tab and page context menus, incognito windows, site permissions and settings,
 file inputs, notifications, geolocation (GeoClue), dark mode, favicons, installable web apps (`--app=`), offline
 mode, Summarize, and a PDF viewer (`src/features/pdf.nim`: MuPDF in a separate `webby-pdf` program, `pdf/`, in place of
