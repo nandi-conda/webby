@@ -72,6 +72,7 @@ var
   window*: Widget              ## the GtkWindow holding rootColumn (the desktop shell; nil on Android)
   rootColumn*: kit.Widget      ## everything in the window: tab strip, toolbar, bars, then the page and side panel
   statusBubble*: kit.Widget    ## the hovered link's address, floating over the page's bottom left corner
+  pageOverlay*: kit.Widget     ## the page and what floats over it (kit.placeAt widgets: the PDF viewer's Ask AI button)
   urlField*: kit.Widget        ## the URL bar (features/omnibox.nim adds its suggestions and keys)
   urlFocused*: bool            ## the URL bar has the keyboard focus
   tabStrip*: kit.Widget        ## the tabs' row (a column with vertical tabs), inside a scroll view in tabStripRoot
@@ -1280,7 +1281,8 @@ proc buildWindow() =
   kit.`visible=`(statusBubble, false)
   findSlot = kit.column()
   findSlot.spacing = 0
-  let pageColumn = kit.column(kit.expand(kit.overlay(page, statusBubble)), findSlot)
+  pageOverlay = kit.overlay(page, statusBubble)
+  let pageColumn = kit.column(kit.expand(pageOverlay), findSlot)
   pageColumn.spacing = 0
   pageRow = kit.row(kit.expand(pageColumn))
   pageRow.spacing = 0

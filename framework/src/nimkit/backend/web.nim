@@ -312,6 +312,11 @@ proc sync(w: Widget) =
   e.style.minHeight = cstring(if w.minHeight > 0: $w.minHeight & "px" else: "")
   e.classList.toggle("nk-expand".cstring, w.expanded)
   e.classList.toggle("nk-hidden".cstring, not w.visible)
+  if w.placed:
+    e.style.left = cstring($w.placeX & "px")
+    e.style.top = cstring($w.placeY & "px")
+    e.style.bottom = "auto".cstring
+    e.style.pointerEvents = "auto".cstring
   if w.tooltip.len > 0: e.title = w.tooltip.cstring else: e.removeAttribute("title")
   let shown = if e.dataset.nk.isUndefined: "" else: $e.dataset.nk.to(cstring)
   for c in shown.split(' '):

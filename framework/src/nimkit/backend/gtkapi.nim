@@ -172,6 +172,8 @@ proc gtk_widget_get_screen*(w: GtkWidget): pointer
 proc gtk_widget_translate_coordinates*(src, dest: GtkWidget, x, y: cint, dx, dy: ptr cint): gboolean
 proc gtk_widget_set_halign*(w: GtkWidget, align: cint)
 proc gtk_widget_set_valign*(w: GtkWidget, align: cint)
+proc gtk_widget_set_margin_start*(w: GtkWidget, margin: cint)
+proc gtk_widget_set_margin_top*(w: GtkWidget, margin: cint)
 proc gtk_widget_queue_resize*(w: GtkWidget)
 proc gtk_style_context_add_class*(c: pointer, name: cstring)
 proc gtk_style_context_remove_class*(c: pointer, name: cstring)

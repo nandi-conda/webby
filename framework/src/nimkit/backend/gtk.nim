@@ -595,6 +595,11 @@ proc sync(w: Widget) =
   w.syncClasses()
   w.applyExpand()
   w.syncDrag()
+  if w.placed:
+    gtk_widget_set_halign(w.native, GTK_ALIGN_START)
+    gtk_widget_set_valign(w.native, GTK_ALIGN_START)
+    gtk_widget_set_margin_start(w.native, max(0, int(w.placeX + 0.5)).cint)
+    gtk_widget_set_margin_top(w.native, max(0, int(w.placeY + 0.5)).cint)
 
 proc attach(parent, child: Widget)
 
@@ -705,10 +710,11 @@ proc attach(parent, child: Widget) =
   of wkOverlay:
     if parent.children.find(child) == 0: gtk_container_add(parent.native, child.native)
     else:
-      gtk_widget_set_halign(child.native, GTK_ALIGN_START)
-      gtk_widget_set_valign(child.native, GTK_ALIGN_END)
+      if not child.placed:
+        gtk_widget_set_halign(child.native, GTK_ALIGN_START)
+        gtk_widget_set_valign(child.native, GTK_ALIGN_END)
       gtk_overlay_add_overlay(parent.native, child.native)
-      gtk_overlay_set_overlay_pass_through(parent.native, child.native, 1)
+      gtk_overlay_set_overlay_pass_through(parent.native, child.native, (not child.placed).gboolean)
   of wkSplit:
     if parent.children.find(child) == 0: gtk_paned_pack1(parent.native, child.native, 1, 0)
     else: gtk_paned_pack2(parent.native, child.native, 0, 0)

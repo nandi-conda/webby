@@ -6,6 +6,8 @@
 ## The bar under the toolbar has the page number (type one to go there), zoom (Ctrl+plus/minus/0, Ctrl+wheel),
 ## Fit width, Contents (the outline, in the side panel), Save to the downloads folder and Open in another app.
 ## Ctrl+F finds text (features/find.nim asks pageFindHooks), dragging selects it and Ctrl+C copies, links work.
+## Selected text gets the same "Ask AI about this" button as web pages (scripts/ask_selection.js), floating over the
+## page under the selection's end, and the same right-click item.
 ## Keys: arrows, Page Up/Down, Space, Home/End.
 ##
 ## A site that won't hand webby the file (Cloudflare's challenge on dl.acm.org needs the engine's cookies) gets it
@@ -38,6 +40,8 @@ const
   selectionColor = 0x3390FF'u32
   matchColor = 0xFFD000'u32
   currentMatchColor = 0xFF8C00'u32
+  askMax = 8000                      ## characters of the selection Ask AI gets (as scripts/ask_selection.js)
+  askSize = (w: 160.0, h: 32.0)      ## about the Ask AI button's size, in logical pixels, for placing it
 
 # Hands webby pdf.js's copy of the PDF once it has the whole document, in base64 pieces through the page message
 # channel: where the engine's navigation got the file and nothing else can (Cloudflare on dl.acm.org turns away
@@ -151,6 +155,7 @@ type
     jumpWords: string             ## a summary source link to show once every page's text is here
     flash: seq[Match]             ## the words a source link pointed at, highlighted until the next one
     lastJump: tuple[words: string, at: float]  ## Summarize asks again after a page loads; once is enough
+    askShown: bool                ## the Ask AI button is wanted for the selection (it ended with a release or Ctrl+A)
 
   TextReader = tuple[id: int, wholePage: bool, done: proc (ok: bool, text: string, selection: bool)]
 
@@ -159,6 +164,7 @@ var
   nextId = 1
   cacheDir: string
   bar, pageEntry, pageCount, zoomLabel, statusLabel, fitButton: kit.Widget
+  askButton: kit.Widget             ## "Ask AI about this", floating over the page by the selection
   barShown = false
 
 proc key(t: Tab): int = cast[int](t)
@@ -233,9 +239,57 @@ proc fitZoom(d: Doc): float =
 # ---------------------------------------------------------------------------------------------------------------
 # The bar
 
+proc selRange(d: Doc): (Caret, Caret)
+proc hasSelection(d: Doc): bool
+proc selectedText(d: Doc): string
+
+proc placeAsk(d: Doc) =
+  ## Shows the Ask AI button under the selection's end (above its start when there's no room below), or hides it.
+  if askButton == nil: return
+  var shown = d != nil and d.askShown and d.state == dsReady and d.hasSelection and askSelectionHandler != nil
+  if shown:
+    let (vw, vh, _) = pageSize()
+    let k = max(1, browser.page.scale).float
+    let s = d.scale
+    let (lo, hi) = d.selRange
+    proc box(c: Caret, last: bool): tuple[ok: bool, x0, y0, x1, y1: float] =
+      if c.page < 0 or c.page > d.pages.high: return
+      let p = addr d.pages[c.page]
+      if p.textState != 2 or p.chars.len == 0: return
+      let i = clamp(if last: c.index - 1 else: c.index, 0, p.chars.high)
+      let left = d.pageLeft(c.page)
+      let top = d.tops[c.page] - d.scrollY
+      (true, left + p.chars[i].x0 * s, top + p.chars[i].y0 * s, left + p.chars[i].x1 * s, top + p.chars[i].y1 * s)
+    let a = box(lo, false)
+    let b = box(hi, true)
+    if not b.ok or b.y1 < 0 or (a.ok and a.y0 > vh.float) or (not a.ok and b.y0 > vh.float): shown = false
+    else:
+      # In logical pixels from here on, as the overlay places widgets.
+      let (w, h) = askSize
+      let viewW = vw.float / k
+      let viewH = vh.float / k
+      var y = b.y1 / k + 8
+      if y + h > viewH - 4: y = (if a.ok: a.y0 else: b.y0) / k - h - 8
+      let x = clamp(b.x1 / k - w / 2, 4.0, max(4.0, viewW - w - 4))
+      kit.placeAt(askButton, x, clamp(y, 4.0, max(4.0, viewH - h - 4)))
+  kit.`visible=`(askButton, shown)
+
+proc askAboutSelection(d: Doc) =
+  ## The Ask AI button or menu item: Summarize's panel, asking about the selected text.
+  d.askShown = false
+  placeAsk(d)
+  if not d.hasSelection or askSelectionHandler == nil: return
+  var text = d.selectedText.strip
+  if text.len > askMax:
+    var n = askMax
+    while n > 0 and (text[n].ord and 0xC0) == 0x80: dec n   # not in the middle of a character
+    text.setLen n
+  if text.len > 0: askSelectionHandler(d.tab, text)
+
 proc refreshBar() =
   let t = currentTab()
   let d = if t == nil: nil else: docOf(t)
+  placeAsk(d)
   let show = d != nil
   if show != barShown:
     barShown = show
@@ -1071,7 +1125,9 @@ proc showContents(d: Doc) =
 
 proc contextMenu(d: Doc) =
   var items: seq[kit.MenuItem]
-  if d.hasSelection: items.add kit.menuItem("Copy", proc () = copySelection(d), shortcut = "Ctrl+C")
+  if d.hasSelection:
+    items.add kit.menuItem("Copy", proc () = copySelection(d), shortcut = "Ctrl+C")
+    if askSelectionHandler != nil: items.add kit.menuItem("Ask AI about this", proc () = askAboutSelection(d))
   items.add kit.menuItem("Select all", proc () = selectAll(d), shortcut = "Ctrl+A")
   items.add kit.menuSeparator()
   items.add kit.menuItem("Save PDF", proc () = save(d), shortcut = "Ctrl+S")
@@ -1273,6 +1329,9 @@ proc onPointer(t: Tab, e: kit.PointerEvent): bool =
   case e.kind
   of kit.pkDown:
     kit.focus(browser.page)
+    if d.askShown:
+      d.askShown = false
+      placeAsk(d)
     if e.button == 3:
       contextMenu(d)
       return true
@@ -1351,7 +1410,11 @@ proc onPointer(t: Tab, e: kit.PointerEvent): bool =
       if l.page >= 0:
         d.goToPage(l.page, l.y)
         return true
-    if wasDrag and d.hasSelection: discard
+    # Like on web pages: a selection made with the left button (drag, double or triple click, shift-click) gets
+    # the Ask AI button; a right-click's menu has its own item.
+    if e.button == 1 and d.hasSelection:
+      d.askShown = true
+      placeAsk(d)
   of kit.pkLeave:
     if d.barHover != 0 and d.barDrag == 0:
       d.barHover = 0
@@ -1396,7 +1459,9 @@ proc onKey(t: Tab, e: kit.KeyEvent): bool =
     else:
       case e.code
       of 0x43: copySelection(d)                  # Ctrl+C
-      of 0x41: selectAll(d)                      # Ctrl+A
+      of 0x41:                                   # Ctrl+A
+        d.askShown = true
+        selectAll(d)
       of 0x53: save(d)                           # Ctrl+S
       of 0x24: d.scrollTo(0)                     # Ctrl+Home
       of 0x23: d.scrollTo(d.totalHeight)         # Ctrl+End
@@ -1417,7 +1482,10 @@ proc onKey(t: Tab, e: kit.KeyEvent): bool =
     if d.totalWidth > pageSize().width.float: d.scrollTo(d.scrollY, d.scrollX + line)
     else: d.goToPage(d.currentPage + 1)
   of 0x1B:                                                               # Esc
-    if d.hasSelection:
+    if d.askShown:
+      d.askShown = false
+      invalidate(d)
+    elif d.hasSelection:
       d.selB = d.selA
       invalidate(d)
     else: return false
@@ -1492,15 +1560,28 @@ proc buildBar() =
   kit.addClass(bar, "webby-pdf-bar")
   kit.`visible=`(bar, false)
   kit.add(barSlot, bar)
+  askButton = kit.addClass(kit.button("✦ Ask AI about this", proc () =
+    let t = currentTab()
+    let d = if t == nil: nil else: docOf(t)
+    if d != nil: askAboutSelection(d)), "webby-ask-pill")
+  kit.addClass(askButton, "flat")
+  kit.placeAt(askButton, 0, 0)
+  kit.`visible=`(askButton, false)
+  kit.add(pageOverlay, askButton)
 
 proc install*() =
   cacheDir = getTempDir() / ("webby-pdf-" & $getCurrentProcessId())
   windowHooks.add proc () =
     buildBar()
     loadCss(".webby-pdf-bar { border-bottom: 1px solid alpha(currentColor, 0.15); padding: 2px 6px; }\n" &
-      ".webby-pdf-on { font-weight: bold; }")
+      ".webby-pdf-on { font-weight: bold; }\n" &
+      ".webby-ask-pill, .webby-ask-pill:hover { background: #202124; color: #ffffff; border-radius: 16px; " &
+      "padding: 6px 12px; font-weight: 500; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3); border: none; }\n" &
+      ".webby-ask-pill:hover { opacity: 0.88; }")
   pageFrameHooks.add frameFor
-  pagePointerHooks.add onPointer
+  # First: the page's own right-click menu (tabs/contextmenu.nim) would otherwise wait for the page to report the
+  # click and, when it doesn't, open its fallback menu over this one.
+  pagePointerHooks.insert(onPointer, 0)
   pageWheelHooks.add onWheel
   pageKeyHooks.add onKey
   pageFindHooks.add onFind

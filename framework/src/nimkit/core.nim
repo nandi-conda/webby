@@ -71,6 +71,8 @@ type
     dragValue: string                ## items: what dragging it carries (see `dragData=`); empty: not draggable
     dropHandler: proc (data: string, x, y: float)  ## see `onDrop=`
     cursorValue: string              ## canvases: the mouse pointer's shape over it (CSS cursor names)
+    placedValue: bool                ## an overlay's floating widget put at placeX/placeY (see `placeAt`)
+    placeXValue, placeYValue: float
     realized*: bool                  ## the backend has made the native widget
     native*: pointer                 ## the backend's own handle, if it has one (GTK)
     # Events
@@ -390,6 +392,19 @@ proc `onDrop=`*(w: Widget, handler: proc (data: string, x, y: float)) =
   w.changed
 
 proc cursor*(w: Widget): string = w.cursorValue
+
+proc placed*(w: Widget): bool = w.placedValue
+proc placeX*(w: Widget): float = w.placeXValue
+proc placeY*(w: Widget): float = w.placeYValue
+proc placeAt*(w: Widget, x, y: float) =
+  ## An overlay's floating widget with its top left corner at (x, y) logical pixels from the overlay's top left,
+  ## taking the pointer's clicks (a button over a page) instead of letting them through. Call it before adding
+  ## `w` to the overlay; later calls move it.
+  if w.placedValue and x == w.placeXValue and y == w.placeYValue: return
+  w.placedValue = true
+  w.placeXValue = x
+  w.placeYValue = y
+  w.changed
 proc `cursor=`*(w: Widget, name: string) =
   ## A canvas's mouse pointer: a CSS cursor name such as "default", "pointer", "text", "wait", "grab" or
   ## "col-resize" ("" is "default"). Touch screens have none.
