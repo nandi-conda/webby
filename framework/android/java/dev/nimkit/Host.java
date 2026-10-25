@@ -841,6 +841,9 @@ public class Host extends Activity {
             m.getMenu().setGroupDividerEnabled(true);
             fill(m.getMenu(), q.getJSONArray("items"), new int[] {0});
             m.setOnMenuItemClickListener(item -> {
+                // Opening a submenu reaches here too: reporting it would make Nim drop the menu's actions,
+                // so the item then picked inside the submenu would do nothing.
+                if (item.hasSubMenu()) return false;
                 Native.event(item.getItemId(), Native.MENU_ACTION, "", 0, 0, 0);
                 return true;
             });
