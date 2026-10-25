@@ -29,6 +29,7 @@ public class WebbyHost extends Host {
     private static final String TAG = "webby";
     private static boolean prepared;
     private static String launchUrl = "";
+    private static final int SCAN_QR = 0x5152;   // well above Host's own request codes, which count up from 1
 
     @Override
     protected void onCreate(Bundle state) {
@@ -49,6 +50,16 @@ public class WebbyHost extends Host {
     private static String viewedUrl(Intent intent) {
         if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction()) || intent.getData() == null) return "";
         return intent.getData().toString();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode != SCAN_QR) {
+            super.onActivityResult(requestCode, resultCode, data);
+            return;
+        }
+        String text = resultCode == RESULT_OK && data != null ? data.getStringExtra("text") : null;
+        hostEvent("qrScanned", text == null ? "" : text);
     }
 
     @Override
@@ -153,6 +164,10 @@ public class WebbyHost extends Host {
                 case "notify": return Site.notify(this, new JSONObject(arg));
                 case "notificationClose":
                     Site.cancel(this, Integer.parseInt(arg));
+                    return "ok";
+                case "scanQr":
+                    // the text comes back as hostEvent "qrScanned" ("" when cancelled)
+                    startActivityForResult(new Intent(this, QrScan.class), SCAN_QR);
                     return "ok";
                 case "toast":
                     Toast.makeText(this, arg, Toast.LENGTH_SHORT).show();

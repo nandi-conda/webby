@@ -57,10 +57,12 @@ done
     --min-sdk-version 30 --target-sdk-version 34 \
     --version-code "$VERSION_CODE" --version-name "$VERSION_NAME" --rename-manifest-package dev.webby.nim -A "$OUT/apk/assets" --java "$OUT/gen" "$OUT/res.zip"
 
-# nimkit's Host and webby's subclass.
-javac -source 11 -target 11 -Xlint:-options -encoding UTF-8 -cp "$ANDROID_JAR" -d "$OUT/classes" \
+# nimkit's Host and webby's subclass, with ZXing's decoder for Sync's QR scanner (QrScan.java; libs/README.md).
+ZXING="$HERE/libs/zxing-core-3.5.3.jar"
+echo "8d8064c1636fdaef7189dd9055c7d59950a8940a12f2293956446ec3c109fd82  $ZXING" | sha256sum -c --quiet -
+javac -source 11 -target 11 -Xlint:-options -encoding UTF-8 -cp "$ANDROID_JAR:$ZXING" -d "$OUT/classes" \
     $(find "$ROOT/framework/android/java" "$HERE/java" "$OUT/gen" -name '*.java')
-"$BUILD_TOOLS/d8" --release --min-api 30 --lib "$ANDROID_JAR" --output "$OUT/dex" $(find "$OUT/classes" -name '*.class')
+"$BUILD_TOOLS/d8" --release --min-api 30 --lib "$ANDROID_JAR" --output "$OUT/dex" $(find "$OUT/classes" -name '*.class') "$ZXING"
 
 # Into the APK, aligned and signed.
 python3 - "$OUT/base.apk" "$OUT/dex/classes.dex" "$OUT/apk/lib/arm64-v8a" <<'PY'

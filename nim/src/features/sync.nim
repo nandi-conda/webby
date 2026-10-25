@@ -10,7 +10,7 @@ import ../browser
 import passwords/manager
 from passwords/panel import panelActionHooks
 from nimkit/core as kit import nil
-import sync/[keys, blobs, engine, devicetabs]
+import sync/[keys, blobs, engine, devicetabs, qr]
 
 type PanelKind = enum panelNone, panelSync, panelDevices
 
@@ -52,6 +52,30 @@ proc ago(seconds: int64, yesterday = false): string =
   elif yesterday and d div 86400 == 1: "yesterday"
   else: $(d div 86400) & " days ago"
 
+proc qrView(link: string): kit.Widget =
+  ## The pairing link as a QR code, black on white whatever the theme (scanners need the contrast).
+  var q: QrCode
+  try: q = qrEncode(link)
+  except ValueError: return text("(too long for a QR code)", dim = true)
+  result = kit.canvas(220, 220, onDraw = proc (c: kit.Canvas) =
+    kit.fill(c, 0)
+    let n = q.len + 8   # four modules of quiet zone on each side
+    let m = max(min(c.width, c.height) div n, 1)
+    let x0 = (c.width - n * m) div 2
+    let y0 = (c.height - n * m) div 2
+    kit.fillRect(c, x0, y0, n * m, n * m, kit.rgb(255, 255, 255))
+    for y, row in q:
+      for x, dark in row:
+        if dark: kit.fillRect(c, x0 + (x + 4) * m, y0 + (y + 4) * m, m, m, kit.rgb(0, 0, 0)))
+
+var scanDone: proc (text: string)   ## waiting for the Android host's QR scanner (WebbyHost "scanQr")
+
+proc scanQr(done: proc (text: string)) =
+  scanDone = done
+  if hostCall("scanQr") != "ok":
+    scanDone = nil
+    kit.alert("Can't scan a QR code", "This device has no camera webby can use.")
+
 proc validServer(text: string): bool =
   try:
     let u = parseUri(text)
@@ -73,6 +97,11 @@ proc setupDialog(join: bool, onDone: proc (s: JsonNode)) =
   if join:
     codeEntry = field("Sync code from your other device (or the pairing link)")
     kit.`placeholder=`(codeEntry, "webby1-…")
+    when defined(android):
+      kit.add(box, buttonRow(btn("Scan QR code", proc () =
+        scanQr(proc (t: string) =
+          kit.`text=`(codeEntry, t)
+          if codeEntry.onChange != nil: codeEntry.onChange(t)))))
   kit.add(box, text("Store the encrypted copy on"))
   let storage = kit.dropdown(@["Webby sync", "My sync server", "WebDAV"], 0)
   kit.add(box, buttonRow(storage))
@@ -170,16 +199,22 @@ proc fillSyncOn(box: kit.Widget, s: JsonNode) =
   let row = buttonRow(kit.expand(text(status)), now)
   kit.add(box, row)
   kit.add(box, buttonRow(btn("Tabs from other devices", showDevicesPanel)))
+  kit.add(box, buttonRow(btn((when defined(android): "Scan a pairing QR code" else: "Use a pairing link"),
+    proc () = turnOn(true))))
+  kit.add(box, text("To switch this device to another sync server or code: " &
+    (when defined(android): "scan the QR code" else: "paste the pairing link") &
+    " shown in Sync on a device that already uses it.", dim = true, small = true))
   kit.add(box, kit.separator())
   kit.add(box, heading("Add another device"))
-  kit.add(box, text("In webby on the other device, open Sync › I have a sync code, then paste this code " &
-    "(or the pairing link). Keep it private: it unlocks your passwords." &
+  kit.add(box, text("In webby on the other device, open Sync › I have a sync code, then scan this QR code or " &
+    "paste the code (or the pairing link). Keep them private: they unlock your passwords." &
     (if s.isWebdav: " The other device also needs the WebDAV login." else: ""), dim = true))
   if not codeShown:
     kit.add(box, buttonRow(btn("Show sync code", proc () = (codeShown = true; refresh()))))
   else:
-    kit.add(box, kit.addClass(text(s.code), "mono"))
     let link = s.pairingLink
+    kit.add(box, qrView(link))
+    kit.add(box, kit.addClass(text(s.code), "mono"))
     var buttons = @[btn("Copy code", proc () = copyText(s.code))]
     if link != "webby-sync:pair?code=" & s.code:
       kit.add(box, kit.addClass(text(link, dim = true, small = true), "mono"))
@@ -322,6 +357,12 @@ proc publishTabs() =
 
 proc install*() =
   if incognito or appUrl.len > 0: return
+  when defined(android):
+    hostEventHooks.add proc (name, data: string) =
+      if name != "qrScanned": return
+      let done = scanDone
+      scanDone = nil
+      if done != nil and data.len > 0: done(data)
   windowHooks.add proc () =
     loadCss(""".webby-sync-panel { padding: 12px; }
 .webby-device { margin-top: 8px; }

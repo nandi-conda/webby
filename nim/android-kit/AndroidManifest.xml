@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <!-- Sync's QR code scanner (QrScan.java), asked for when it opens. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera.any" android:required="false"/>
     <application
         android:label="Webby"
         android:icon="@mipmap/ic_launcher"
@@ -38,6 +41,11 @@
                 <data android:scheme="https"/>
             </intent-filter>
         </activity>
+        <activity
+            android:name="dev.webby.kit.QrScan"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@style/Webby"/>
         <!-- The replaced app's activity: home screen shortcuts it pinned for web apps open through this name. -->
         <activity-alias
             android:name="dev.webby.nim.MainActivity"
