@@ -253,6 +253,108 @@
     });
   }
 
+  // Browsers give a page and its workers one IndexedDB; Ladybird keeps IndexedDB in each process's memory, and every
+  // worker is a process of its own, so what a worker stores the page never sees (reams.ink syncs notes in a worker
+  // and the page then reads them from IndexedDB: "not available locally yet"). On the sites listed here, workers that
+  // keep data in IndexedDB run in a hidden same-origin iframe of the page instead, with the worker API around it.
+  // They run on the page's thread, so only those workers move, not every worker the site starts.
+  const inPageWorkers = {
+    'reams.ink': /\/assets\/(account-sync|search|import)-worker-[^/]*\.js$/,
+  };
+  const inPagePattern = inPageWorkers[location.hostname];
+  if (inPagePattern && typeof Worker === 'function') {
+    const NativeWorker = Worker;
+    const later = fn => setTimeout(fn, 0);
+
+    class InPageWorker extends EventTarget {
+      constructor(url, options = {}) {
+        super();
+        this.onmessage = null;
+        this.onmessageerror = null;
+        this.onerror = null;
+        this.__queue = [];
+        this.__scope = null;
+        const scriptUrl = new URL(String(url), document.baseURI).href;
+        const frame = document.createElement('iframe');
+        frame.hidden = true;
+        frame.setAttribute('aria-hidden', 'true');
+        frame.tabIndex = -1;
+        this.__frame = frame;
+        (document.body || document.documentElement).appendChild(frame);
+        const scope = frame.contentWindow;
+        const worker = this;
+
+        // The worker's side: postMessage/close on its global, messages to it as its own 'message' events.
+        scope.postMessage = function (data, transfer) {
+          // Cloned into the page's realm, so the page's instanceof checks hold.
+          const copy = structuredClone(data, { transfer: Array.isArray(transfer) ? transfer : transfer?.transfer ?? [] });
+          later(() => worker.__deliver(copy));
+        };
+        scope.close = () => worker.terminate();
+        scope.name = options.name ?? '';
+        scope.WorkerGlobalScope = scope.DedicatedWorkerGlobalScope = { [Symbol.hasInstance]: value => value === scope };
+        scope.addEventListener('error', event => later(() => worker.__fail(event.message, event.filename, event.lineno, event.colno, event.error)));
+
+        const script = scope.document.createElement('script');
+        if (options.type === 'module') script.type = 'module';
+        script.src = scriptUrl;
+        script.onload = () => {
+          // A module's top-level await runs past onload; messages wait for it the way 0036 makes real ones wait.
+          worker.__scope = scope;
+          for (const message of worker.__queue.splice(0)) worker.__send(message);
+        };
+        script.onerror = () => later(() => worker.__fail('Failed to load worker script ' + scriptUrl, scriptUrl, 0, 0));
+        scope.document.head.appendChild(script);
+      }
+
+      postMessage(data, transfer) {
+        const list = Array.isArray(transfer) ? transfer : transfer?.transfer ?? [];
+        const copy = structuredClone(data, { transfer: list });
+        if (this.__scope) this.__send(copy);
+        else if (this.__frame) this.__queue.push(copy);
+      }
+
+      __send(data) {
+        later(() => {
+          if (!this.__scope) return;
+          const scope = this.__scope;
+          scope.dispatchEvent(new scope.MessageEvent('message', { data: scope.structuredClone(data) }));
+        });
+      }
+
+      __deliver(data) {
+        if (!this.__frame) return;
+        const event = new MessageEvent('message', { data });
+        if (typeof this.onmessage === 'function') this.onmessage.call(this, event);
+        this.dispatchEvent(event);
+      }
+
+      __fail(message, filename, lineno, colno, error) {
+        if (!this.__frame) return;
+        const event = new ErrorEvent('error', { message, filename, lineno, colno, error, cancelable: true });
+        if (typeof this.onerror === 'function') this.onerror.call(this, event);
+        this.dispatchEvent(event);
+      }
+
+      terminate() {
+        this.__frame?.remove();
+        this.__frame = null;
+        this.__scope = null;
+        this.__queue = [];
+      }
+    }
+
+    window.Worker = function Worker(url, options) {
+      if (!new.target) throw new TypeError("Constructor Worker requires 'new'");
+      let href = '';
+      try { href = new URL(String(url), document.baseURI).href; } catch {}
+      if (href.startsWith(location.origin + '/') && inPagePattern.test(new URL(href).pathname))
+        return new InPageWorker(url, options);
+      return new NativeWorker(url, options);
+    };
+    window.Worker.prototype = NativeWorker.prototype;
+  }
+
   if (!('canvasKitForceMultiSurfaceRasterizer' in Object.prototype)) {
     Object.defineProperty(Object.prototype, 'canvasKitForceMultiSurfaceRasterizer', {
       get() { return true; },
