@@ -95,9 +95,12 @@ public class QrScan extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        thread = new HandlerThread("qr-scan");
-        thread.start();
-        handler = new Handler(thread.getLooper());
+        if (thread == null) {
+            // kept until onDestroy: the camera reports its close on this thread after onPause
+            thread = new HandlerThread("qr-scan");
+            thread.start();
+            handler = new Handler(thread.getLooper());
+        }
         if (preview.isAvailable()) open();
         else preview.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override public void onSurfaceTextureAvailable(SurfaceTexture t, int w, int h) { open(); }
@@ -110,10 +113,13 @@ public class QrScan extends Activity {
     @Override
     protected void onPause() {
         close();
-        thread.quitSafely();
-        thread = null;
-        handler = null;
         super.onPause();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (thread != null) thread.quitSafely();
+        super.onDestroy();
     }
 
     private void open() {
