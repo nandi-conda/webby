@@ -6,10 +6,16 @@
 ## publish, github.com's /releases/download/ address can still redirect to the file it replaced. This webby keeps running from its own mount; the new one starts next time, or now through
 ## ⋮ > Help > Restart to update. ⋮ > Help > Check for updates asks at once.
 ##
-## Conda installs update with `pixi global update webby` instead, so this does nothing there.
+## Conda installs update with `pixi global update webby` (or `pixi install` in a checkout) instead. That replaces the
+## engine's files under a webby that is still running: pages then open in helpers from the new version while
+## the long-lived ones keep the old, and the sandboxed WasmCompiler may only run the cranelift-compiler file that
+## was there when it started (Landlock holds that file, not its path), so every WebAssembly JIT compile fails with
+## "Permission denied" and wasm runs interpreted (reams.ink's notes timed out). webby notices the engine's files
+## changing and asks to restart; ⋮ > Help > Restart to finish updating does the same.
 
-import std/[json, os, strutils]
+import std/[json, os, strutils, times]
 import ../browser
+from ../ffi import ladybirdPrefix
 from about import buildInfo
 from nimkit/core as kit import nil
 import nimkit/services
@@ -160,7 +166,54 @@ proc restart() =
     discard spawn(@["/bin/sh", "-c", "sleep 1; exec \"$0\"", appImage], proc (ok: bool) = discard)
   browser.quit()
 
+type FileId = tuple[dev: int64, ino: int64, mtime: int64]
+
+proc fileId(path: string): FileId =
+  try:
+    let info = getFileInfo(path)
+    (int64(info.id.device), int64(info.id.file), info.lastWriteTime.toUnix)
+  except OSError: (0'i64, 0'i64, 0'i64)
+
+var
+  engineFiles: seq[(string, FileId)]  ## the engine files as they were at start
+  engineChanged = false
+
+proc restartSelf() =
+  ## Quits (the quit hooks save the tabs, which the new one opens), then starts this program again with the same
+  ## options (--incognito, --app=...; not the URLs, whose tabs come back anyway) and environment (the conda
+  ## launcher's settings are already in it).
+  var args = @["/bin/sh", "-c", "sleep 1; exec \"$0\" \"$@\"", getAppFilename()]
+  for a in commandLineParams():
+    if a.startsWith("--"): args.add a
+  shutdownHooks.add proc () = discard spawn(args, proc (ok: bool) = discard)
+  browser.quit()
+
+proc checkEngine() =
+  if engineChanged: return
+  for (path, id) in engineFiles:
+    if fileId(path) != id:
+      engineChanged = true
+      kit.confirm("Webby was updated",
+        "Its engine changed on disk while it was running. Pages can misbehave until it restarts (WebAssembly, " &
+        "for one, can't be compiled). Your tabs come back.", ok = "Restart",
+        onResult = proc (ok: bool) = (if ok: restartSelf()))
+      return
+
+proc watchEngine() =
+  let prefix = ladybirdPrefix()
+  for rel in ["lib/libwebby.so", "libexec/WebContent", "libexec/WasmCompiler", "libexec/cranelift-compiler"]:
+    let path = prefix / rel
+    if fileExists(path): engineFiles.add((path, fileId(path)))
+  if engineFiles.len == 0: return
+  windowHooks.add proc () =
+    addMenuHook(mgHelp, proc (items: var seq[kit.MenuItem]) =
+      if engineChanged: items.add kit.menuItem("Restart to finish updating", restartSelf))
+  startupHooks.add proc () =
+    discard every(60_000, checkEngine)
+
 proc install*() =
+  # An AppImage's engine sits in its own mount, which an update leaves alone.
+  if getEnv("APPIMAGE").len == 0: watchEngine()
   if getEnv("APPIMAGE").len == 0 or appUrl.len > 0 or incognito: return
   windowHooks.add proc () =
     addMenuHook(mgHelp, proc (items: var seq[kit.MenuItem]) =
