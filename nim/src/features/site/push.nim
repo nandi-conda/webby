@@ -21,6 +21,9 @@ const
   idleWorker = initDuration(seconds = 30)    ## a worker with nothing to do is closed after this
   eventTimeout = initDuration(seconds = 30)  ## an event whose waitUntil hasn't settled by then counts as done
   startTimeout = initDuration(seconds = 20)  ## the worker script must have run by then
+  catchUpQuiet = initDuration(seconds = 3)   ## the backlog is in once no message has come for this long
+  catchUpLimit = initDuration(seconds = 40)  ## and shown by then however busy the workers still are
+  catchUpKeep = 3                            ## notifications shown per site from the backlog; the rest are counted
 
 type
   Registration = object
@@ -41,6 +44,12 @@ type
     fallbacks: Table[int, proc ()]        ## what to do instead for queued events if it never runs
     busy: Table[int, MonoTime]            ## events in flight
 
+  Held = object                           ## a notification from the backlog, not shown yet
+    nid: int
+    reg: Registration
+    title: string
+    options: JsonNode
+
 var
   uaidSaved: string
   registrations: seq[Registration]
@@ -53,6 +62,9 @@ var
   shownNotifications: Table[int, uint32]  ## our notification id -> the system's
   broken: Table[string, MonoTime]         ## worker scripts that didn't run here, and when
   enabled = false
+  catchingUp = false                      ## just connected: what comes now is what queued up while we were away
+  catchUpStart, lastBacklogMessage: MonoTime
+  held: seq[Held]                         ## the backlog's notifications, oldest first
   debug = getEnv("WEBBY_PUSH_DEBUG") == "1"   ## log what pages and workers send
 
 proc flock(fd: cint, op: cint): cint {.importc, header: "<sys/file.h>".}
@@ -229,10 +241,7 @@ proc dispatch(reg: Registration, kind: string, payload: JsonNode, fallback: proc
     w.queue.add (id, js)
     if fallback != nil: w.fallbacks[id] = fallback
 
-proc showWorkerNotification(reg: Registration, title: string, options: JsonNode): int =
-  ## Shows a notification of `reg`'s; clicks and dismissals go to its worker. The id the worker knows it by.
-  let nid = nextNotification
-  inc nextNotification
+proc displayWorkerNotification(reg: Registration, nid: int, title: string, options: JsonNode) =
   let payload = %*{"nid": nid, "title": title, "options": options}
   notify(reg.origin, options{"tag"}.getStr, title, options{"body"}.getStr,
     onClick = proc () =
@@ -245,7 +254,67 @@ proc showWorkerNotification(reg: Registration, title: string, options: JsonNode)
       shownNotifications.del nid
       dispatch(reg, "notificationclose", payload),
     done = proc (id: uint32) = shownNotifications[nid] = id)
-  nid
+
+proc showWorkerNotification(reg: Registration, title: string, options: JsonNode): int =
+  ## Shows a notification of `reg`'s; clicks and dismissals go to its worker. The id the worker knows it by.
+  ## While the backlog is coming in it's held, and flushCatchUp shows what's left of it.
+  result = nextNotification
+  inc nextNotification
+  if catchingUp: held.add Held(nid: result, reg: reg, title: title, options: options)
+  else: displayWorkerNotification(reg, result, title, options)
+
+proc flushCatchUp() =
+  ## Shows the backlog: a site's notifications with the same tag count once (the newest), and only the newest
+  ## catchUpKeep of each site appear, after one that says how many more there were.
+  catchingUp = false
+  let backlog = held
+  held = @[]
+  var origins: seq[string]
+  for h in backlog:
+    if h.reg.origin notin origins: origins.add h.reg.origin
+  for origin in origins:
+    var kept: seq[Held]                   # newest first
+    var tags: seq[string]
+    for i in countdown(backlog.high, 0):
+      let h = backlog[i]
+      if h.reg.origin != origin: continue
+      let tag = h.options{"tag"}.getStr
+      if tag.len > 0:
+        if tag in tags: continue
+        tags.add tag
+      kept.add h
+    let more = kept.len - catchUpKeep
+    if more > 0:
+      let reg = kept[0].reg
+      logPush "backlog: " & $kept.len & " notifications from " & origin & ", showing " & $catchUpKeep
+      notify(origin, "\x01webby-backlog", siteName(origin),
+        $more & " more notification" & (if more == 1: "" else: "s") & " you missed",
+        onClick = proc () =
+          let tabsHere = clientsOf(reg)
+          if tabsHere.len > 0: activateTab(tabsHere[0]) else: discard openTab(reg.scope)
+          present(),
+        onClosed = proc () = discard)
+      kept.setLen catchUpKeep
+    for i in countdown(kept.high, 0):
+      let h = kept[i]
+      displayWorkerNotification(h.reg, h.nid, h.title, h.options)
+
+proc checkCatchUp() =
+  let now = getMonoTime()
+  var working = false
+  for w in workers:
+    if w.queue.len > 0 or w.busy.len > 0 or (not w.ready and not w.failed): working = true
+  if (now - lastBacklogMessage > catchUpQuiet and not working) or now - catchUpStart > catchUpLimit: flushCatchUp()
+  else: discard after(500, checkCatchUp)
+
+proc startCatchUp() =
+  ## Hold the notifications of what the service delivers now that we're connected, and show them together
+  ## once it has stopped coming and the workers are done with it.
+  if catchingUp: return
+  catchingUp = true
+  catchUpStart = getMonoTime()
+  lastBacklogMessage = catchUpStart
+  discard after(500, checkCatchUp)
 
 proc fallbackNotification(reg: Registration, clear: string) =
   ## What a push shows when the site's worker can't run: the payload's title and body if it has them.
@@ -312,6 +381,8 @@ proc onWorkerMessage(w: Worker, m: JsonNode) =
       w.reply(id, true, %showWorkerNotification(reg, m{"title"}.getStr, m{"options"}))
   of "closeNotification":
     let nid = m{"nid"}.getInt
+    for i in countdown(held.high, 0):
+      if held[i].nid == nid: held.delete i
     if nid in shownNotifications:
       closeNotification(shownNotifications[nid])
       shownNotifications.del nid
@@ -445,6 +516,7 @@ proc subscribe(reg: Registration, key: string, done: proc (ok: bool, value: Json
 
 proc helloFromService(id: string) =
   loadStore()
+  startCatchUp()
   if uaidSaved.len > 0 and id != uaidSaved and subscriptions.len > 0:
     # The service forgot us: every endpoint is dead. Workers hear it as pushsubscriptionchange and can subscribe again.
     logPush "the push service gave us a new id: " & $subscriptions.len & " subscriptions are gone"
@@ -486,6 +558,7 @@ proc messageFromService(channel, data: string, headers: JsonNode): int =
       logPush sub.origin & ": " & e.msg
       return 101
   logPush "message for " & sub.scope & " (" & $clear.len & " bytes)"
+  if catchingUp: lastBacklogMessage = getMonoTime()
   let reg = registrations[r]
   dispatch(reg, "push", %*{"data": (if data.len > 0: %b64url(clear) else: newJNull())},
     proc () = fallbackNotification(reg, clear))
