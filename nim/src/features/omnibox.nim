@@ -193,7 +193,8 @@ proc tabSuggestions(text: string): seq[Suggestion] =
 
 proc buildPopup() =
   if appUrl.len > 0: return
-  loadCss(".webby-omnibox-url { color: @theme_selected_bg_color; }")
+  # The selection colour is a dark blue in dark themes; mixing it with the text colour keeps it blue but readable on either.
+  loadCss(".webby-omnibox-url { color: mix(@theme_selected_bg_color, @theme_fg_color, 0.45); }")
   list = kit.column()
   list.spacing = 0
   popover = kit.popover(urlField, list)
