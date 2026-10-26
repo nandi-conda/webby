@@ -178,7 +178,7 @@ index b36de9e9..6fd21067 100644
  
      HTML::StorageSerializationRecord const& referenced_value(IndexRecord const& index_record) const;
 diff --git a/Libraries/LibWeb/IndexedDB/Internal/MutationLog.cpp b/Libraries/LibWeb/IndexedDB/Internal/MutationLog.cpp
-index 70e3bdd2..25be2520 100644
+index 70e3bdd2..98982fcb 100644
 --- a/Libraries/LibWeb/IndexedDB/Internal/MutationLog.cpp
 +++ b/Libraries/LibWeb/IndexedDB/Internal/MutationLog.cpp
 @@ -12,6 +12,7 @@
@@ -189,7 +189,7 @@ index 70e3bdd2..25be2520 100644
  
  namespace Web::IndexedDB {
  
-@@ -188,6 +189,78 @@ void MutationLog::append_changes(Utf16String const& database_name, Utf16String c
+@@ -188,6 +189,79 @@ void MutationLog::append_changes(Utf16String const& database_name, Utf16String c
          changes.deleted.append({ database_name, object_store_name, serialize_key_for_inspection(key) });
  }
  
@@ -203,7 +203,8 @@ index 70e3bdd2..25be2520 100644
 +
 +    auto note_index_record = [&](Index const& index, IndexRecord const& record) {
 +        auto encoded = encode_key(*record.key);
-+        encoded.append(encode_key(*record.value).bytes());
++        auto encoded_value = encode_key(*record.value);
++        encoded.append(encoded_value.bytes());
 +        index_records.ensure(index.name()).set(move(encoded), record);
 +    };
 +
@@ -1272,7 +1273,7 @@ index 00000000..7b6f1e3d
 +}
 diff --git a/Libraries/LibWebCommon/IndexedDB/PersistedDatabase.h b/Libraries/LibWebCommon/IndexedDB/PersistedDatabase.h
 new file mode 100644
-index 00000000..5f1187c6
+index 00000000..4e00f3b9
 --- /dev/null
 +++ b/Libraries/LibWebCommon/IndexedDB/PersistedDatabase.h
 @@ -0,0 +1,138 @@
@@ -1313,7 +1314,7 @@ index 00000000..5f1187c6
 +
 +struct PersistedIndex {
 +    Utf16String name;
-+    PersistedKeyPath key_path;
++    PersistedKeyPath key_path { Utf16String {} };
 +    bool unique { false };
 +    bool multi_entry { false };
 +    Vector<PersistedIndexRecord> records;
