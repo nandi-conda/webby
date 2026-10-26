@@ -1,10 +1,12 @@
 ## Web notifications, which Ladybird doesn't have: the page script (scripts/notifications.js)
 ## provides window.Notification, asks through the site permission prompt and hands notifications to
 ## org.freedesktop.Notifications on the session bus, or on Android to the app's Java host (WebbyHost notify,
-## NotificationManager), whose taps and dismissals come back as host events.
+## NotificationManager), whose taps and dismissals come back as host events. Each has a "Turn off for this site"
+## action that blocks its site, and nothing is shown while notifications are muted (features/site/notifprefs.nim).
 
 import std/[strutils, tables]
 import ../../browser
+from nimkit/core as kit import nil
 import permissions
 when not defined(android): import gio
 
@@ -55,6 +57,14 @@ proc clicked(id: uint32) =
   callPage(s.tab, "click(" & $s.pageId & ")")
   callPage(s.tab, "closed(" & $s.pageId & ")")
 
+proc turnOffFrom(id: uint32) =
+  ## The notification's "Turn off for this site": blocks its site, which closes the site's other notifications too.
+  if id notin shown: return
+  let origin = shown[id].origin
+  for t in tabs: forgetOnce(t, origin)
+  set(origin, "notifications", blocked)
+  kit.toast("Notifications from " & siteName(origin) & " are off")
+
 proc closedBySystem(id: uint32) =
   if id notin shown: return
   let s = shown[id]
@@ -67,7 +77,8 @@ when defined(android):
 
   proc systemShow(replace: uint32, title, text: string, done: proc (id: uint32)) =
     let id = if replace != 0: replace else: (inc nextSystemId; nextSystemId - 1)
-    if hostCall("notify", $(%*{"id": id, "title": title, "text": text})) == "ok": done(id)
+    if hostCall("notify", $(%*{"id": id, "title": title, "text": text, "turnOff": "Turn off for this site"})) == "ok":
+      done(id)
     else: stderr.writeLine "webby: could not show a notification"
 
   proc systemClose(id: uint32) = discard hostCall("notificationClose", $id)
@@ -76,6 +87,7 @@ when defined(android):
     case name
     of "notificationClick": (try: clicked(uint32(parseInt(data))) except ValueError: discard)
     of "notificationClosed": (try: closedBySystem(uint32(parseInt(data))) except ValueError: discard)
+    of "notificationTurnOff": (try: turnOffFrom(uint32(parseInt(data))) except ValueError: discard)
     else: discard
 
 else:
@@ -83,7 +95,8 @@ else:
     if listening: return
     listening = true
     discard subscribe(busSession, service, service, "ActionInvoked", servicePath,
-      proc (p: string, v: GVariant) = clicked(uint32At(v, 0)))
+      proc (p: string, v: GVariant) =
+        if stringAt(v, 1) == "webby-turn-off": turnOffFrom(uint32At(v, 0)) else: clicked(uint32At(v, 0)))
     discard subscribe(busSession, service, service, "NotificationClosed", servicePath,
       proc (p: string, v: GVariant) = closedBySystem(uint32At(v, 0)))
 
@@ -92,6 +105,8 @@ else:
     let actions = g_variant_builder_new(variantType("as"))
     g_variant_builder_add(actions, "s", "default")
     g_variant_builder_add(actions, "s", "Open")
+    g_variant_builder_add(actions, "s", "webby-turn-off")
+    g_variant_builder_add(actions, "s", "Turn off for this site")
     let hints = g_variant_builder_new(variantType("a{sv}"))
     g_variant_builder_add(hints, "{sv}", "desktop-entry", g_variant_new_string("webby"))
     let params = g_variant_new("(susssasa{sv}i)", "Webby", replace, "webby", title.cstring, text.cstring, actions,
@@ -106,6 +121,7 @@ else:
     call(busSession, service, servicePath, service, "CloseNotification", g_variant_new("(u)", id))
 
 proc show(origin, tag, title, body: string, entry: Shown, done: proc (id: uint32) = nil) =
+  if notificationsMuted() or get(origin, "notifications") == blocked: return
   var site = origin[origin.find("://") + 3 .. ^1]
   if site.startsWith("www."): site = site[4 .. ^1]
   let key = if tag.len > 0: origin & " " & tag else: ""
@@ -178,3 +194,10 @@ proc install*() =
       if s.tab == t: gone.add id
     for id in gone: shown.del id
   storeListeners.add refreshPages
+  settingListeners.add proc (origin, permission: string, setting: Setting) =
+    # A site that's blocked takes its notifications with it.
+    if permission != "notifications" or setting != blocked: return
+    var gone: seq[uint32]
+    for id, s in shown:
+      if s.origin == origin: gone.add id
+    for id in gone: closeNotification(id)

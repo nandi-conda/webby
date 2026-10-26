@@ -25,12 +25,14 @@ import org.json.JSONObject;
  * Pages' location and notifications for nim/src/features/site (geolocation.nim, notifications.nim): Android's
  * LocationManager and NotificationManager, asking for the app's own permission the first time a page needs it.
  * Fixes come back as host events location {lat, lon, accuracy, altitude, heading, speed} or locationError
- * {denied, message}; a tapped notification as notificationClick and a dismissed one as notificationClosed (its id).
+ * {denied, message}; a tapped notification as notificationClick, a dismissed one as notificationClosed and its
+ * "Turn off for this site" action as notificationTurnOff (its id).
  */
 final class Site {
     private static final String TAG = "webby";
     private static final String CHANNEL = "pages";
     private static final String DISMISSED = "dev.webby.kit.NOTIFICATION_DISMISSED";
+    private static final String TURN_OFF = "dev.webby.kit.NOTIFICATION_TURN_OFF";
     static final String EXTRA_NOTIFICATION = "dev.webby.kit.notification";
     private static final int PERMISSION_REQUEST = 77;
     private static LocationListener listener;
@@ -155,7 +157,7 @@ final class Site {
 
     // --- Notifications
 
-    /** {id, title, text}: shown once Android lets the app post notifications. */
+    /** {id, title, text, turnOff}: shown once Android lets the app post notifications. */
     static String notify(Activity a, JSONObject n) {
         String perm = android.os.Build.VERSION.SDK_INT >= 33 ? Manifest.permission.POST_NOTIFICATIONS : null;
         withPermission(a, perm, granted -> {
@@ -187,6 +189,13 @@ final class Site {
             .setDeleteIntent(dismiss)
             .setAutoCancel(true);
         if (nl >= 0) b.setSubText(text.substring(nl + 1));
+        // "Turn off for this site": blocks the site (notificationTurnOff).
+        String turnOff = n.optString("turnOff");
+        if (!turnOff.isEmpty()) {
+            Intent off = new Intent(TURN_OFF).setPackage(a.getPackageName()).putExtra(EXTRA_NOTIFICATION, id);
+            PendingIntent offIntent = PendingIntent.getBroadcast(a, id, off, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+            b.addAction(new Notification.Action.Builder(null, turnOff, offIntent).build());
+        }
         try {
             nm.notify(id, b.build());
         } catch (SecurityException e) {
@@ -204,10 +213,12 @@ final class Site {
         BroadcastReceiver r = new BroadcastReceiver() {
             @Override
             public void onReceive(Context c, Intent i) {
-                Host.hostEvent("notificationClosed", String.valueOf(i.getIntExtra(EXTRA_NOTIFICATION, 0)));
+                String id = String.valueOf(i.getIntExtra(EXTRA_NOTIFICATION, 0));
+                Host.hostEvent(TURN_OFF.equals(i.getAction()) ? "notificationTurnOff" : "notificationClosed", id);
             }
         };
         IntentFilter f = new IntentFilter(DISMISSED);
+        f.addAction(TURN_OFF);
         if (android.os.Build.VERSION.SDK_INT >= 33) a.getApplicationContext().registerReceiver(r, f, Context.RECEIVER_NOT_EXPORTED);
         else a.getApplicationContext().registerReceiver(r, f);
     }

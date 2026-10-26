@@ -65,6 +65,7 @@ var
   catchingUp = false                      ## just connected: what comes now is what queued up while we were away
   catchUpStart, lastBacklogMessage: MonoTime
   held: seq[Held]                         ## the backlog's notifications, oldest first
+  pushListeners*: seq[proc ()]            ## a site's registrations or subscriptions changed
   debug = getEnv("WEBBY_PUSH_DEBUG") == "1"   ## log what pages and workers send
 
 proc flock(fd: cint, op: cint): cint {.importc, header: "<sys/file.h>".}
@@ -101,6 +102,7 @@ proc saveStore() =
   try: writeJsonFile(storeFile(), %*{"version": 1, "uaid": uaidSaved, "registrations": regs, "subscriptions": subs},
     pretty = true)
   except CatchableError as e: logPush "could not save " & storeFile() & ": " & e.msg
+  for h in pushListeners: h()
 
 proc findReg(scope: string): int =
   for i, r in registrations:
@@ -346,6 +348,46 @@ proc unsubscribe(scope: string): bool =
   refreshPages()
   true
 
+proc unsubscribeSite(origin: string) =
+  ## Drops every push subscription `origin` has (the push service forgets their endpoints, so the site's server
+  ## hears they're gone the next time it sends).
+  loadStore()
+  var scopes: seq[string]
+  for s in subscriptions:
+    if s.origin == origin: scopes.add s.scope
+  for scope in scopes:
+    logPush "unsubscribing " & scope
+    discard unsubscribe(scope)
+
+proc pushSites*(): seq[tuple[origin: string, subscribed: bool]] =
+  ## The sites with a service worker or push subscription here, and whether they're subscribed.
+  if not enabled: return
+  loadStore()
+  for r in registrations:
+    var known = false
+    for s in result.mitems:
+      if s.origin == r.origin: known = true
+    if not known: result.add (r.origin, false)
+  for sub in subscriptions:
+    var known = false
+    for s in result.mitems:
+      if s.origin == sub.origin:
+        s.subscribed = true
+        known = true
+    if not known: result.add (sub.origin, true)
+
+proc forgetPushSite*(origin: string) =
+  ## Unsubscribes `origin` and forgets its service workers, as if it had never registered one.
+  unsubscribeSite(origin)
+  loadStore()
+  for w in workers[0 .. ^1]:
+    if w.reg.origin == origin: closeWorker(w)
+  var i = 0
+  while i < registrations.len:
+    if registrations[i].origin == origin: registrations.delete i else: inc i
+  saveStore()
+  refreshPages()
+
 proc onWorkerMessage(w: Worker, m: JsonNode) =
   if debug: logPush "worker -> " & ($m)[0 ..< min(($m).len, 300)]
   let id = m{"id"}.getInt
@@ -545,6 +587,10 @@ proc messageFromService(channel, data: string, headers: JsonNode): int =
     autopush.unregister(channel)
     return 102
   let sub = subscriptions[i]
+  if get(sub.origin, "notifications") == blocked:
+    logPush sub.origin & " is blocked: dropping its subscription"
+    discard unsubscribe(sub.scope)
+    return 100
   let r = findReg(sub.scope)
   if r < 0: return 102
   var clear = ""
@@ -637,6 +683,8 @@ proc install*() =
     pageMessageHooks.add onPageMessage
     pumpHooks.add proc () = (if workers.len > 0: pumpWorkers())
     storeListeners.add refreshPages
+    settingListeners.add proc (origin, permission: string, setting: Setting) =
+      if enabled and permission == "notifications" and setting == blocked: unsubscribeSite(origin)
     windowHooks.add proc () =
       if incognito: return
       enabled = true

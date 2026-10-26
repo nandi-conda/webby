@@ -47,12 +47,15 @@ proc secureOrigin*(url: string): string =
   if o.startsWith("https://") or o.startsWith("http://localhost") or o.startsWith("http://127.0.0.1"): o else: ""
 
 # ---------------------------------------------------------------------------------------------------------------
-# The remembered answers: {"version": 1, "sites": {origin: {permission: "allow" | "block"}}}
+# The remembered answers: {"version": 1, "sites": {origin: {permission: "allow" | "block"}},
+# "notificationsMuted": true}
 
 var
   sites: seq[(string, seq[(string, Setting)])]
+  muted = false                   ## no site's notifications are shown, whatever its answer
   loaded = false
   storeListeners*: seq[proc ()]   ## a remembered answer changed
+  settingListeners*: seq[proc (origin, permission: string, setting: Setting)]  ## one site's answer changed
 
 proc isKind(n: JsonNode, kind: JsonNodeKind): bool = n != nil and n.kind == kind
 
@@ -64,7 +67,9 @@ proc load() =
   if loaded: return
   loaded = true
   let j = readJsonFile(storeFile())
-  if j == nil or not isKind(j{"sites"}, JObject): return
+  if j == nil or j.kind != JObject: return
+  muted = j{"notificationsMuted"}.getBool
+  if not isKind(j{"sites"}, JObject): return
   for origin, perms in j["sites"]:
     if perms.kind != JObject: continue
     var list: seq[(string, Setting)]
@@ -82,7 +87,9 @@ proc save() =
     var o = newJObject()
     for (name, s) in list: o[name] = %($s)
     root[origin] = o
-  try: writeJsonFile(storeFile(), %*{"version": 1, "sites": root}, pretty = true)
+  var j = %*{"version": 1, "sites": root}
+  if muted: j["notificationsMuted"] = %true
+  try: writeJsonFile(storeFile(), j, pretty = true)
   except CatchableError as e: stderr.writeLine "webby: could not save ", storeFile(), ": ", e.msg
 
 proc changed() =
@@ -112,15 +119,35 @@ proc set*(origin, permission: string, setting: Setting) =
   else: list.add (permission, setting)
   if list.len == 0: sites.delete(i) else: sites[i][1] = list
   changed()
+  for h in settingListeners: h(origin, permission, setting)
 
 proc reset*(origin: string) =
   ## Forgets every answer `origin` got.
   load()
-  for i, (o, _) in sites:
+  for i, (o, list) in sites:
     if o == origin:
       sites.delete(i)
       changed()
+      for (name, _) in list:
+        for h in settingListeners: h(origin, name, ask)
       return
+
+proc sitesWith*(permission: string): seq[(string, Setting)] =
+  ## The sites with a remembered answer for `permission`, and the answer.
+  load()
+  for (o, list) in sites:
+    for (name, s) in list:
+      if name == permission: result.add (o, s)
+
+proc notificationsMuted*(): bool =
+  load()
+  muted
+
+proc setNotificationsMuted*(on: bool) =
+  load()
+  if muted == on: return
+  muted = on
+  changed()
 
 proc hasSettings*(origin: string): bool =
   load()
