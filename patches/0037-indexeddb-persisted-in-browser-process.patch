@@ -54,7 +54,7 @@ index 39bc6ef0..1a94d222 100644
      WebIDL::ExceptionOr<void> commit();
      WebIDL::ExceptionOr<GC::Ref<IDBObjectStore>> object_store(Utf16String const& name);
 diff --git a/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp b/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp
-index 7fb59624..5df6df3c 100644
+index 7fb59624..8bdff2e8 100644
 --- a/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp
 +++ b/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp
 @@ -45,6 +45,7 @@
@@ -65,17 +65,33 @@ index 7fb59624..5df6df3c 100644
  #include <LibWeb/StorageAPI/StorageKey.h>
  #include <LibWeb/WebIDL/AbstractOperations.h>
  #include <LibWeb/WebIDL/Buffers.h>
-@@ -109,6 +110,9 @@ void open_a_database_connection(JS::Realm& realm, StorageAPI::StorageKey storage
+@@ -109,6 +110,17 @@ void open_a_database_connection(JS::Realm& realm, StorageAPI::StorageKey storage
              queue.on_request_processed();
          };
  
-+        // AD-HOC: Bring in the databases the browser process keeps for storageKey.
++        // AD-HOC: Bring in the databases the browser process keeps for storageKey, and wait for any other process
++        //         upgrading this database to be done.
 +        load_persisted_databases(realm, storage_key);
++        wait_for_upgrade_lock(realm, storage_key, name, maybe_version, GC::create_function(GC::Heap::the(), [&realm, &queue, storage_key, name, maybe_version, request, on_complete](bool holds_upgrade_lock) mutable -> void {
++        if (holds_upgrade_lock) {
++            on_complete = GC::create_function(GC::Heap::the(), [&realm, name, inner = on_complete](WebIDL::ExceptionOr<GC::Ref<IDBDatabase>> result) {
++                release_upgrade_lock(realm, name);
++                inner->function()(move(result));
++            });
++        }
 +
          // 4. Let db be the database named name in storageKey, or null otherwise.
          GC::Ptr<Database> db;
          auto maybe_db = Database::for_key_and_name(storage_key, name);
-@@ -521,6 +525,9 @@ void delete_a_database(JS::Realm& realm, StorageAPI::StorageKey storage_key, Utf
+@@ -249,6 +261,7 @@ void open_a_database_connection(JS::Realm& realm, StorageAPI::StorageKey storage
+         // 11. Return connection.
+         dbgln_if(IDB_DEBUG, "open_a_database_connection: step 11: no upgrade required, completing with new connection");
+         call_completion(queue, on_complete, connection);
++        }));
+     }));
+ }
+ 
+@@ -521,6 +534,9 @@ void delete_a_database(JS::Realm& realm, StorageAPI::StorageKey storage_key, Utf
              queue.on_request_processed();
          };
  
@@ -85,7 +101,7 @@ index 7fb59624..5df6df3c 100644
          // 4. Let db be the database named name in storageKey, if one exists. Otherwise, return 0 (zero).
          auto maybe_db = Database::for_key_and_name(storage_key, name);
          if (!maybe_db.has_value()) {
-@@ -581,7 +588,7 @@ void delete_a_database(JS::Realm& realm, StorageAPI::StorageKey storage_key, Utf
+@@ -581,7 +597,7 @@ void delete_a_database(JS::Realm& realm, StorageAPI::StorageKey storage_key, Utf
                  }
              }
  
@@ -94,7 +110,7 @@ index 7fb59624..5df6df3c 100644
                  // 10. Let version be db’s version.
                  auto version = db->version();
  
-@@ -591,6 +598,7 @@ void delete_a_database(JS::Realm& realm, StorageAPI::StorageKey storage_key, Utf
+@@ -591,6 +607,7 @@ void delete_a_database(JS::Realm& realm, StorageAPI::StorageKey storage_key, Utf
                      call_completion(queue, on_complete, WebIDL::OperationError::create("Unable to delete database"_utf16));
                      return;
                  }
@@ -102,7 +118,7 @@ index 7fb59624..5df6df3c 100644
  
                  // 12. Return version.
                  call_completion(queue, on_complete, version);
-@@ -919,7 +927,10 @@ void commit_a_transaction(JS::Realm&, GC::Ref<IDBTransaction> transaction)
+@@ -919,7 +936,10 @@ void commit_a_transaction(JS::Realm&, GC::Ref<IDBTransaction> transaction)
          if (transaction->state() != IDBTransaction::TransactionState::Committing)
              return;
  
@@ -327,10 +343,10 @@ index 6c2e7df5..cdfdd488 100644
      u64 count_records_in_range(GC::Ref<IDBKeyRange> range);
 diff --git a/Libraries/LibWeb/IndexedDB/Internal/Persistence.cpp b/Libraries/LibWeb/IndexedDB/Internal/Persistence.cpp
 new file mode 100644
-index 00000000..571e04e5
+index 00000000..ed754722
 --- /dev/null
 +++ b/Libraries/LibWeb/IndexedDB/Internal/Persistence.cpp
-@@ -0,0 +1,673 @@
+@@ -0,0 +1,747 @@
 +/*
 + * Copyright (c) 2026-present, the Ladybird developers.
 + *
@@ -344,6 +360,7 @@ index 00000000..571e04e5
 +#include <AK/NeverDestroyed.h>
 +#include <AK/QuickSort.h>
 +#include <LibGC/DeferGC.h>
++#include <LibGC/Function.h>
 +#include <LibGC/Heap.h>
 +#include <LibWeb/Bindings/PrincipalHostDefined.h>
 +#include <LibWeb/HTML/EventNames.h>
@@ -358,6 +375,7 @@ index 00000000..571e04e5
 +#include <LibWeb/IndexedDB/Internal/ObjectStore.h>
 +#include <LibWeb/IndexedDB/Internal/Persistence.h>
 +#include <LibWeb/Page/Page.h>
++#include <LibWeb/Platform/Timer.h>
 +
 +namespace Web::IndexedDB {
 +
@@ -712,6 +730,74 @@ index 00000000..571e04e5
 +    }
 +}
 +
++// Whether opening name with version may run an upgrade, going by what this process has.
++static bool open_may_upgrade(StorageAPI::StorageKey const& storage_key, Utf16String const& name, Optional<u64> version)
++{
++    auto database = Database::for_key_and_name(storage_key, name);
++    if (!database.has_value() || database->version() == 0)
++        return true;
++    return version.has_value() && database->version() < *version;
++}
++
++static Optional<u64> local_version(StorageAPI::StorageKey const& storage_key, Utf16String const& name)
++{
++    auto database = Database::for_key_and_name(storage_key, name);
++    if (!database.has_value() || database->version() == 0)
++        return {};
++    return database->version();
++}
++
++static void wait_for_upgrade_lock(JS::Realm& realm, StorageAPI::StorageKey const& storage_key, Utf16String const& name, Optional<u64> version, GC::Ref<GC::Function<void(bool)>> then, u32 attempt)
++{
++    if (!open_may_upgrade(storage_key, name, version)) {
++        then->function()(false);
++        return;
++    }
++
++    auto& environment = HTML::relevant_settings_object(realm.global_object());
++    auto& client = Bindings::principal_host_defined_page(realm).client();
++    auto lock = client.page_did_request_indexed_database_upgrade_lock(environment.id, name);
++
++    // What another process changed that we have not heard of yet is already on its way to us: try again once it is
++    // in (but not forever, should what we have never match).
++    static constexpr u32 max_attempts = 500;
++    bool behind = lock.granted && lock.stored_version != local_version(storage_key, name);
++    if (behind && attempt < max_attempts) {
++        client.page_did_release_indexed_database_upgrade_lock(environment.id, name);
++        lock.granted = false;
++    }
++
++    if (!lock.granted && attempt < max_attempts) {
++        auto timer = Platform::Timer::create_single_shot(GC::Heap::the(), AK::Duration::from_milliseconds(attempt < 10 ? 1 : 10), GC::create_function(GC::Heap::the(), [&realm, storage_key, name, version, then, attempt] {
++            wait_for_upgrade_lock(realm, storage_key, name, version, then, attempt + 1);
++        }));
++        timer->start();
++        return;
++    }
++
++    if (!lock.granted)
++        dbgln("IndexedDB: Gave up waiting to upgrade database '{}' of {}", name, storage_key.to_string());
++
++    // The database we now have may not need the upgrade after all.
++    if (lock.granted && !open_may_upgrade(storage_key, name, version)) {
++        client.page_did_release_indexed_database_upgrade_lock(environment.id, name);
++        then->function()(false);
++        return;
++    }
++    then->function()(lock.granted);
++}
++
++void wait_for_upgrade_lock(JS::Realm& realm, StorageAPI::StorageKey const& storage_key, Utf16String const& name, Optional<u64> version, GC::Ref<GC::Function<void(bool)>> then)
++{
++    wait_for_upgrade_lock(realm, storage_key, name, version, then, 0);
++}
++
++void release_upgrade_lock(JS::Realm& realm, Utf16String const& name)
++{
++    auto& environment = HTML::relevant_settings_object(realm.global_object());
++    Bindings::principal_host_defined_page(realm).client().page_did_release_indexed_database_upgrade_lock(environment.id, name);
++}
++
 +static PersistedDatabase snapshot_of(Database& database)
 +{
 +    PersistedDatabase persisted;
@@ -983,6 +1069,10 @@ index 00000000..571e04e5
 +    if (database && database->upgrade_transaction())
 +        return;
 +
++    // Versions only go up, short of a deletion.
++    if (database && changes.kind == PersistedDatabaseChanges::Kind::Replace && changes.replacement.has_value() && changes.replacement->version < database->version())
++        return;
++
 +    if (changes.kind == PersistedDatabaseChanges::Kind::Replace && changes.replacement.has_value()) {
 +        // Another process upgraded the database to what we have (most often: we both created it at once). Our
 +        // connections stay open, and only the records change.
@@ -1006,10 +1096,10 @@ index 00000000..571e04e5
 +}
 diff --git a/Libraries/LibWeb/IndexedDB/Internal/Persistence.h b/Libraries/LibWeb/IndexedDB/Internal/Persistence.h
 new file mode 100644
-index 00000000..8a60e2ff
+index 00000000..e6afc2f9
 --- /dev/null
 +++ b/Libraries/LibWeb/IndexedDB/Internal/Persistence.h
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,52 @@
 +/*
 + * Copyright (c) 2026-present, the Ladybird developers.
 + *
@@ -1042,6 +1132,13 @@ index 00000000..8a60e2ff
 +// Brings the databases the browser process has for storage key into this process, the first time it is asked to.
 +void load_persisted_databases(JS::Realm&, StorageAPI::StorageKey const&);
 +
++// AD-HOC: Two processes must not upgrade a database at once (each would build its own and one would lose). Before an
++//         open request that may upgrade goes on, this process takes the database's lock from the browser process,
++//         waiting while another process holds it; `then` is told whether it took the lock, which it must give back
++//         with release_upgrade_lock() once the request is done.
++void wait_for_upgrade_lock(JS::Realm&, StorageAPI::StorageKey const&, Utf16String const& name, Optional<u64> version, GC::Ref<GC::Function<void(bool)>> then);
++void release_upgrade_lock(JS::Realm&, Utf16String const& name);
++
 +// Sends what a committing transaction changed to the browser process.
 +void persist_committed_transaction(IDBTransaction&);
 +
@@ -1056,7 +1153,7 @@ index 00000000..8a60e2ff
 +
 +}
 diff --git a/Libraries/LibWeb/Page/Page.h b/Libraries/LibWeb/Page/Page.h
-index 69dadc17..188a222c 100644
+index 69dadc17..33795849 100644
 --- a/Libraries/LibWeb/Page/Page.h
 +++ b/Libraries/LibWeb/Page/Page.h
 @@ -80,6 +80,7 @@
@@ -1067,12 +1164,14 @@ index 69dadc17..188a222c 100644
  #include <LibWebCommon/IndexedDB/TransactionChanges.h>
  #include <LibWebCommon/Page/ContextMenuForInputEventsTarget.h>
  #include <LibWebCommon/Page/EventResult.h>
-@@ -806,6 +807,8 @@ public:
+@@ -806,6 +807,10 @@ public:
      virtual void page_did_remove_storage_item([[maybe_unused]] Web::StorageAPI::StorageEndpointType storage_endpoint, [[maybe_unused]] Web::HTML::EnvironmentId const& environment_id, [[maybe_unused]] Utf16String const& bottle_key) { }
      virtual Vector<Utf16String> page_did_request_storage_keys([[maybe_unused]] Web::StorageAPI::StorageEndpointType storage_endpoint, [[maybe_unused]] Web::HTML::EnvironmentId const& environment_id) { return {}; }
      virtual u64 page_did_request_storage_usage([[maybe_unused]] Web::HTML::EnvironmentId const& environment_id) { return {}; }
 +    virtual Vector<IndexedDB::PersistedDatabase> page_did_request_indexed_databases([[maybe_unused]] HTML::EnvironmentId const& environment_id) { return {}; }
 +    virtual void page_did_commit_indexed_database_changes([[maybe_unused]] HTML::EnvironmentId const& environment_id, [[maybe_unused]] u64 commit_id, [[maybe_unused]] IndexedDB::PersistedDatabaseChanges const& changes) { }
++    virtual IndexedDB::PersistedUpgradeLock page_did_request_indexed_database_upgrade_lock([[maybe_unused]] HTML::EnvironmentId const& environment_id, [[maybe_unused]] Utf16String const& name) { return { true, {} }; }
++    virtual void page_did_release_indexed_database_upgrade_lock([[maybe_unused]] HTML::EnvironmentId const& environment_id, [[maybe_unused]] Utf16String const& name) { }
      virtual void page_did_clear_storage([[maybe_unused]] Web::StorageAPI::StorageEndpointType storage_endpoint, [[maybe_unused]] Web::HTML::EnvironmentId const& environment_id) { }
      virtual void page_did_broadcast_storage_change([[maybe_unused]] Web::StorageAPI::StorageEndpointType storage_endpoint, [[maybe_unused]] String const& url, [[maybe_unused]] Optional<Utf16String> const& key, [[maybe_unused]] Optional<Utf16String> const& old_value, [[maybe_unused]] Optional<Utf16String> const& new_value) { }
  
@@ -1273,10 +1372,10 @@ index 00000000..7b6f1e3d
 +}
 diff --git a/Libraries/LibWebCommon/IndexedDB/PersistedDatabase.h b/Libraries/LibWebCommon/IndexedDB/PersistedDatabase.h
 new file mode 100644
-index 00000000..4e00f3b9
+index 00000000..da9f79c1
 --- /dev/null
 +++ b/Libraries/LibWebCommon/IndexedDB/PersistedDatabase.h
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,145 @@
 +/*
 + * Copyright (c) 2026-present, the Ladybird developers.
 + *
@@ -1348,6 +1447,13 @@ index 00000000..4e00f3b9
 +    Vector<PersistedRecord> stored;
 +    Vector<ByteBuffer> deleted;
 +    Vector<PersistedIndexChanges> indexes;
++};
++
++// The browser process lets one process at a time upgrade a database. A process that gets to is told the version stored
++// (none if there is no such database), which may be newer than what other processes told it of so far.
++struct PersistedUpgradeLock {
++    bool granted { false };
++    Optional<u64> stored_version;
 +};
 +
 +// What one committed transaction (or a deletion) did to one database.
@@ -1538,10 +1644,10 @@ index 3b6890f0..87c8a281 100644
  class ViewImplementation;
 diff --git a/Libraries/LibWebView/IndexedDBStore.cpp b/Libraries/LibWebView/IndexedDBStore.cpp
 new file mode 100644
-index 00000000..14e30bb0
+index 00000000..2e7b5533
 --- /dev/null
 +++ b/Libraries/LibWebView/IndexedDBStore.cpp
-@@ -0,0 +1,506 @@
+@@ -0,0 +1,532 @@
 +/*
 + * Copyright (c) 2026-present, the Ladybird developers.
 + *
@@ -1562,6 +1668,7 @@ index 00000000..14e30bb0
 +using Web::IndexedDB::PersistedIndex;
 +using Web::IndexedDB::PersistedKeyPath;
 +using Web::IndexedDB::PersistedObjectStore;
++using Web::IndexedDB::PersistedUpgradeLock;
 +
 +static constexpr u32 INDEXED_DB_SCHEMA_BASELINE_VERSION = 1u;
 +
@@ -1972,6 +2079,31 @@ index 00000000..14e30bb0
 +    send_to_subscribers(storage_key, &client, changes);
 +}
 +
++PersistedUpgradeLock IndexedDBStore::lock_for_upgrade(IndexedDBClient const& client, Web::StorageAPI::StorageKey const& storage_key, Utf16String const& name)
++{
++    // A lock whose holder went away is free.
++    m_upgrade_locks.remove_all_matching([](auto const& lock) {
++        return lock.client.visit([](auto const& weak_client) { return weak_client.is_null(); });
++    });
++
++    auto holder = m_upgrade_locks.find_if([&](auto const& lock) {
++        return lock.storage_key == storage_key && lock.name == name;
++    });
++    if (holder != m_upgrade_locks.end() && !is_same_client(holder->client, client))
++        return { false, {} };
++    if (holder == m_upgrade_locks.end())
++        m_upgrade_locks.append({ client, storage_key, name });
++
++    return { true, stored_version(storage_key.to_string(), name) };
++}
++
++void IndexedDBStore::release_upgrade_lock(IndexedDBClient const& client, Web::StorageAPI::StorageKey const& storage_key, Utf16String const& name)
++{
++    m_upgrade_locks.remove_all_matching([&](auto const& lock) {
++        return lock.storage_key == storage_key && lock.name == name && is_same_client(lock.client, client);
++    });
++}
++
 +void IndexedDBStore::send_to_subscribers(Web::StorageAPI::StorageKey const& storage_key, IndexedDBClient const* except, PersistedDatabaseChanges const& changes)
 +{
 +    m_subscribers.remove_all_matching([](auto const& subscriber) {
@@ -2050,10 +2182,10 @@ index 00000000..14e30bb0
 +}
 diff --git a/Libraries/LibWebView/IndexedDBStore.h b/Libraries/LibWebView/IndexedDBStore.h
 new file mode 100644
-index 00000000..7ffcf874
+index 00000000..e430524e
 --- /dev/null
 +++ b/Libraries/LibWebView/IndexedDBStore.h
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,107 @@
 +/*
 + * Copyright (c) 2026-present, the Ladybird developers.
 + *
@@ -2099,6 +2231,10 @@ index 00000000..7ffcf874
 +    Vector<Web::IndexedDB::PersistedDatabase> load(IndexedDBClient const&, Web::StorageAPI::StorageKey const&);
 +    void commit(IndexedDBClient const&, Web::StorageAPI::StorageKey const&, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges const&);
 +
++    // A client upgrades a database only while it holds its lock, so two processes never upgrade it at once.
++    Web::IndexedDB::PersistedUpgradeLock lock_for_upgrade(IndexedDBClient const&, Web::StorageAPI::StorageKey const&, Utf16String const& name);
++    void release_upgrade_lock(IndexedDBClient const&, Web::StorageAPI::StorageKey const&, Utf16String const& name);
++
 +    void remove_databases_accessed_since(UnixDateTime);
 +    Requests::CacheSizes estimate_storage_size_accessed_since(UnixDateTime) const;
 +
@@ -2133,6 +2269,12 @@ index 00000000..7ffcf874
 +        Web::StorageAPI::StorageKey storage_key;
 +    };
 +
++    struct UpgradeLock {
++        IndexedDBClient client;
++        Web::StorageAPI::StorageKey storage_key;
++        Utf16String name;
++    };
++
 +    IndexedDBStore(NonnullRefPtr<Database::Database>, Statements);
 +
 +    Vector<Web::IndexedDB::PersistedDatabase> read_databases(String const& storage_key);
@@ -2147,11 +2289,12 @@ index 00000000..7ffcf874
 +    NonnullRefPtr<Database::Database> m_database;
 +    Statements m_statements;
 +    Vector<Subscriber> m_subscribers;
++    Vector<UpgradeLock> m_upgrade_locks;
 +};
 +
 +}
 diff --git a/Libraries/LibWebView/WebContentClient.cpp b/Libraries/LibWebView/WebContentClient.cpp
-index 0afcf644..7bda5602 100644
+index 0afcf644..7ca09622 100644
 --- a/Libraries/LibWebView/WebContentClient.cpp
 +++ b/Libraries/LibWebView/WebContentClient.cpp
 @@ -36,6 +36,7 @@
@@ -2162,7 +2305,7 @@ index 0afcf644..7bda5602 100644
  #include <LibWebView/NavigationLoader.h>
  #include <LibWebView/PictureInPictureManager.h>
  #include <LibWebView/RequestServerManager.h>
-@@ -692,6 +693,33 @@ Messages::WebContentClient::DidRequestStorageKeysResponse WebContentClient::did_
+@@ -692,6 +693,60 @@ Messages::WebContentClient::DidRequestStorageKeysResponse WebContentClient::did_
      return Vector<Utf16String> {};
  }
  
@@ -2193,19 +2336,48 @@ index 0afcf644..7bda5602 100644
 +    session().indexed_db_store->commit(WeakPtr<WebContentClient> { *this }, *storage_key, commit_id, changes);
 +}
 +
++Messages::WebContentClient::DidRequestIndexedDatabaseUpgradeLockResponse WebContentClient::did_request_indexed_database_upgrade_lock(Web::PageId page_id, Web::HTML::EnvironmentId environment_id, Utf16String name)
++{
++    auto* page = this->page(page_id);
++    if (!page)
++        return { false, {} };
++
++    auto storage_key = page->indexed_database_storage_key(environment_id);
++    if (!storage_key.has_value())
++        return { false, {} };
++
++    auto lock = session().indexed_db_store->lock_for_upgrade(WeakPtr<WebContentClient> { *this }, *storage_key, name);
++    return { lock.granted, lock.stored_version };
++}
++
++void WebContentClient::did_release_indexed_database_upgrade_lock(Web::PageId page_id, Web::HTML::EnvironmentId environment_id, Utf16String name)
++{
++    auto* page = this->page(page_id);
++    if (!page)
++        return;
++
++    auto storage_key = page->indexed_database_storage_key(environment_id);
++    if (!storage_key.has_value())
++        return;
++
++    session().indexed_db_store->release_upgrade_lock(WeakPtr<WebContentClient> { *this }, *storage_key, name);
++}
++
  Messages::WebContentClient::DidRequestStorageUsageResponse WebContentClient::did_request_storage_usage(Web::PageId page_id, Web::HTML::EnvironmentId environment_id)
  {
      if (auto* page = this->page(page_id))
 diff --git a/Libraries/LibWebView/WebContentClient.h b/Libraries/LibWebView/WebContentClient.h
-index c7e227a4..093b91f1 100644
+index c7e227a4..c9f6f062 100644
 --- a/Libraries/LibWebView/WebContentClient.h
 +++ b/Libraries/LibWebView/WebContentClient.h
-@@ -188,6 +188,8 @@ private:
+@@ -188,6 +188,10 @@ private:
      virtual Messages::WebContentClient::DidRequestStorageItemResponse did_request_storage_item(Web::PageId page_id, Web::StorageAPI::StorageEndpointType, Web::HTML::EnvironmentId environment_id, Utf16String bottle_key) override;
      virtual Messages::WebContentClient::DidRequestStorageKeysResponse did_request_storage_keys(Web::PageId page_id, Web::StorageAPI::StorageEndpointType, Web::HTML::EnvironmentId environment_id) override;
      virtual Messages::WebContentClient::DidRequestStorageUsageResponse did_request_storage_usage(Web::PageId page_id, Web::HTML::EnvironmentId environment_id) override;
 +    virtual Messages::WebContentClient::DidRequestIndexedDatabasesResponse did_request_indexed_databases(Web::PageId page_id, Web::HTML::EnvironmentId environment_id) override;
 +    virtual void did_commit_indexed_database_changes(Web::PageId page_id, Web::HTML::EnvironmentId environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges changes) override;
++    virtual Messages::WebContentClient::DidRequestIndexedDatabaseUpgradeLockResponse did_request_indexed_database_upgrade_lock(Web::PageId page_id, Web::HTML::EnvironmentId environment_id, Utf16String name) override;
++    virtual void did_release_indexed_database_upgrade_lock(Web::PageId page_id, Web::HTML::EnvironmentId environment_id, Utf16String name) override;
      virtual Messages::WebContentClient::DidStartDownloadWithoutRequestResponse did_start_download_without_request(Web::PageId page_id, URL::URL, ByteString suggested_filename, Optional<u64> total_size) override;
      virtual Messages::WebContentClient::DidStartDownloadResponse did_start_download(Web::PageId page_id, Web::HTML::CrossProcessId navigable_id, Optional<Utf16String> navigation_id, URL::URL, ByteString suggested_filename, Optional<u64> total_size, int request_server_client_id, u64 request_server_request_id, ByteBuffer initial_data) override;
      virtual Messages::WebContentClient::DidRequestNewWebViewResponse did_request_new_web_view(Web::PageId page_id, Web::HTML::ActivateTab, Web::HTML::WebViewHints, Optional<Web::HTML::CrossProcessId> opener_navigable_id, Optional<URL::URL> opener_base_url, Utf16String target_name, Web::HTML::SandboxingFlagSet popup_sandboxing_flag_set) override;
@@ -2241,7 +2413,7 @@ index b1aac097..4ebed527 100644
      // The process and page hosting the document of a navigable that a page represents. A page represents every
      // navigable of its tab whose document it does not host, so those are the ones it can ask to navigate or post to.
 diff --git a/Libraries/LibWebView/WebWorkerClient.cpp b/Libraries/LibWebView/WebWorkerClient.cpp
-index d5ae74c2..6401504d 100644
+index d5ae74c2..e230e713 100644
 --- a/Libraries/LibWebView/WebWorkerClient.cpp
 +++ b/Libraries/LibWebView/WebWorkerClient.cpp
 @@ -12,6 +12,7 @@
@@ -2252,7 +2424,7 @@ index d5ae74c2..6401504d 100644
  #include <LibWebView/WebWorkerClient.h>
  #include <LibWebView/WorkerProcessManager.h>
  
-@@ -115,6 +116,34 @@ Messages::WebWorkerClient::DidRequestCookieResponse WebWorkerClient::did_request
+@@ -115,6 +116,63 @@ Messages::WebWorkerClient::DidRequestCookieResponse WebWorkerClient::did_request
      return cookie;
  }
  
@@ -2284,19 +2456,50 @@ index d5ae74c2..6401504d 100644
 +    session->indexed_db_store->commit(WeakPtr<WebWorkerClient> { *this }, *storage_key, commit_id, changes);
 +}
 +
++Messages::WebWorkerClient::DidRequestIndexedDatabaseUpgradeLockResponse WebWorkerClient::did_request_indexed_database_upgrade_lock(Web::HTML::EnvironmentId environment_id, Utf16String name)
++{
++    auto session = m_session.strong_ref();
++    auto environment = hosted_environment(environment_id);
++    if (!session || !environment.has_value())
++        return { false, {} };
++
++    auto storage_key = obtain_a_storage_key(*environment);
++    if (!storage_key.has_value())
++        return { false, {} };
++
++    auto lock = session->indexed_db_store->lock_for_upgrade(WeakPtr<WebWorkerClient> { *this }, *storage_key, name);
++    return { lock.granted, lock.stored_version };
++}
++
++void WebWorkerClient::did_release_indexed_database_upgrade_lock(Web::HTML::EnvironmentId environment_id, Utf16String name)
++{
++    auto session = m_session.strong_ref();
++    auto environment = hosted_environment(environment_id);
++    if (!session || !environment.has_value())
++        return;
++
++    auto storage_key = obtain_a_storage_key(*environment);
++    if (!storage_key.has_value())
++        return;
++
++    session->indexed_db_store->release_upgrade_lock(WeakPtr<WebWorkerClient> { *this }, *storage_key, name);
++}
++
  Messages::WebWorkerClient::DidAddBlobUrlEntryResponse WebWorkerClient::did_add_blob_url_entry(Web::HTML::EnvironmentId environment_id, Utf16String url, Web::FileAPI::SerializedBlobURLEntry entry)
  {
      auto session = m_session.strong_ref();
 diff --git a/Libraries/LibWebView/WebWorkerClient.h b/Libraries/LibWebView/WebWorkerClient.h
-index 98c961ff..b3eb55fc 100644
+index 98c961ff..aa153db8 100644
 --- a/Libraries/LibWebView/WebWorkerClient.h
 +++ b/Libraries/LibWebView/WebWorkerClient.h
-@@ -53,6 +53,8 @@ public:
+@@ -53,6 +53,10 @@ public:
      virtual void did_fail_loading_worker_script() override;
      virtual void did_report_worker_exception(Utf16String message, Utf16String filename, u32 lineno, u32 colno) override;
      virtual Messages::WebWorkerClient::DidRequestCookieResponse did_request_cookie(URL::URL, HTTP::Cookie::Source) override;
 +    virtual Messages::WebWorkerClient::DidRequestIndexedDatabasesResponse did_request_indexed_databases(Web::HTML::EnvironmentId environment_id) override;
 +    virtual void did_commit_indexed_database_changes(Web::HTML::EnvironmentId environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges changes) override;
++    virtual Messages::WebWorkerClient::DidRequestIndexedDatabaseUpgradeLockResponse did_request_indexed_database_upgrade_lock(Web::HTML::EnvironmentId environment_id, Utf16String name) override;
++    virtual void did_release_indexed_database_upgrade_lock(Web::HTML::EnvironmentId environment_id, Utf16String name) override;
      virtual Messages::WebWorkerClient::DidAddBlobUrlEntryResponse did_add_blob_url_entry(Web::HTML::EnvironmentId environment_id, Utf16String url, Web::FileAPI::SerializedBlobURLEntry entry) override;
      virtual void did_remove_blob_url_entries(Web::HTML::EnvironmentId environment_id, Vector<Utf16String> urls) override;
      virtual Messages::WebWorkerClient::DidRequestBlobUrlEntryResponse did_request_blob_url_entry(Utf16String url, Optional<URL::BlobURLEntry::Token> token) override;
@@ -2343,10 +2546,10 @@ index 9622b0af..7aff54af 100644
      virtual void update_system_theme(Web::PageId page_id, Core::AnonymousBuffer) override;
      virtual void update_screen_rects(Web::PageId page_id, Vector<Web::DevicePixelRect>, Vector<Web::DevicePixelRect>, u32) override;
 diff --git a/Services/WebContent/PageClient.cpp b/Services/WebContent/PageClient.cpp
-index c246e5b4..57ebbfb5 100644
+index c246e5b4..e0d638a0 100644
 --- a/Services/WebContent/PageClient.cpp
 +++ b/Services/WebContent/PageClient.cpp
-@@ -1584,6 +1584,21 @@ u64 PageClient::page_did_request_storage_usage(Web::HTML::EnvironmentId const& e
+@@ -1584,6 +1584,36 @@ u64 PageClient::page_did_request_storage_usage(Web::HTML::EnvironmentId const& e
      return response->usage();
  }
  
@@ -2365,24 +2568,41 @@ index c246e5b4..57ebbfb5 100644
 +    client().async_did_commit_indexed_database_changes(m_id, environment_id, commit_id, changes);
 +}
 +
++Web::IndexedDB::PersistedUpgradeLock PageClient::page_did_request_indexed_database_upgrade_lock(Web::HTML::EnvironmentId const& environment_id, Utf16String const& name)
++{
++    auto response = client().send_sync_but_allow_failure<Messages::WebContentClient::DidRequestIndexedDatabaseUpgradeLock>(m_id, environment_id, name);
++    if (!response) {
++        dbgln("WebContent client disconnected during DidRequestIndexedDatabaseUpgradeLock. Exiting peacefully.");
++        Core::Process::terminate_immediately(0);
++    }
++    return { response->granted(), response->stored_version() };
++}
++
++void PageClient::page_did_release_indexed_database_upgrade_lock(Web::HTML::EnvironmentId const& environment_id, Utf16String const& name)
++{
++    client().async_did_release_indexed_database_upgrade_lock(m_id, environment_id, name);
++}
++
  void PageClient::page_did_clear_storage(Web::StorageAPI::StorageEndpointType storage_endpoint, Web::HTML::EnvironmentId const& environment_id)
  {
      auto response = client().send_sync_but_allow_failure<Messages::WebContentClient::DidClearStorage>(m_id, storage_endpoint, environment_id);
 diff --git a/Services/WebContent/PageClient.h b/Services/WebContent/PageClient.h
-index 90e072a1..ec4f909a 100644
+index 90e072a1..f80821e8 100644
 --- a/Services/WebContent/PageClient.h
 +++ b/Services/WebContent/PageClient.h
-@@ -302,6 +302,8 @@ private:
+@@ -302,6 +302,10 @@ private:
      virtual void page_did_remove_storage_item(Web::StorageAPI::StorageEndpointType storage_endpoint, Web::HTML::EnvironmentId const& environment_id, Utf16String const& bottle_key) override;
      virtual Vector<Utf16String> page_did_request_storage_keys(Web::StorageAPI::StorageEndpointType storage_endpoint, Web::HTML::EnvironmentId const& environment_id) override;
      virtual u64 page_did_request_storage_usage(Web::HTML::EnvironmentId const& environment_id) override;
 +    virtual Vector<Web::IndexedDB::PersistedDatabase> page_did_request_indexed_databases(Web::HTML::EnvironmentId const& environment_id) override;
 +    virtual void page_did_commit_indexed_database_changes(Web::HTML::EnvironmentId const& environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges const& changes) override;
++    virtual Web::IndexedDB::PersistedUpgradeLock page_did_request_indexed_database_upgrade_lock(Web::HTML::EnvironmentId const& environment_id, Utf16String const& name) override;
++    virtual void page_did_release_indexed_database_upgrade_lock(Web::HTML::EnvironmentId const& environment_id, Utf16String const& name) override;
      virtual void page_did_clear_storage(Web::StorageAPI::StorageEndpointType storage_endpoint, Web::HTML::EnvironmentId const& environment_id) override;
      virtual void page_did_broadcast_storage_change(Web::StorageAPI::StorageEndpointType storage_endpoint, String const& url, Optional<Utf16String> const& key, Optional<Utf16String> const& old_value, Optional<Utf16String> const& new_value) override;
      virtual void page_did_update_indexed_database(String const& url, Web::IndexedDB::TransactionChanges const&) override;
 diff --git a/Services/WebContent/WebContentClient.ipc b/Services/WebContent/WebContentClient.ipc
-index 7a00b8c3..1d481ddb 100644
+index 7a00b8c3..0e404b6e 100644
 --- a/Services/WebContent/WebContentClient.ipc
 +++ b/Services/WebContent/WebContentClient.ipc
 @@ -13,6 +13,7 @@
@@ -2393,12 +2613,14 @@ index 7a00b8c3..1d481ddb 100644
  #include <LibWebCommon/HTML/PopulatedDocumentOrigin.h>
  #include <LibWeb/StorageAPI/StorageKey.h>
  #include <LibWebCommon/Bindings/Navigation.h>
-@@ -202,6 +203,8 @@ endpoint WebContentClient routed by Web::PageId page_id
+@@ -202,6 +203,10 @@ endpoint WebContentClient routed by Web::PageId page_id
      [NotRouted] did_request_storage_keys(Web::PageId page_id, Web::StorageAPI::StorageEndpointType storage_endpoint, Web::HTML::EnvironmentId environment_id) => (Vector<Utf16String> keys)
      did_clear_storage(Web::PageId page_id, Web::StorageAPI::StorageEndpointType storage_endpoint, Web::HTML::EnvironmentId environment_id) => ()
      [NotRouted] did_request_storage_usage(Web::PageId page_id, Web::HTML::EnvironmentId environment_id) => (u64 usage)
 +    [NotRouted] did_request_indexed_databases(Web::PageId page_id, Web::HTML::EnvironmentId environment_id) => (Vector<Web::IndexedDB::PersistedDatabase> databases)
 +    [NotRouted] did_commit_indexed_database_changes(Web::PageId page_id, Web::HTML::EnvironmentId environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges changes) =|
++    [NotRouted] did_request_indexed_database_upgrade_lock(Web::PageId page_id, Web::HTML::EnvironmentId environment_id, Utf16String name) => (bool granted, Optional<u64> stored_version)
++    [NotRouted] did_release_indexed_database_upgrade_lock(Web::PageId page_id, Web::HTML::EnvironmentId environment_id, Utf16String name) =|
      did_change_storage_item(Web::PageId page_id, Web::StorageAPI::StorageEndpointType storage_endpoint, String url, Optional<Utf16String> key, Optional<Utf16String> old_value, Optional<Utf16String> new_value) =|
      did_update_indexed_database(Web::PageId page_id, String update) =|
      did_post_broadcast_channel_message(Web::PageId page_id, Web::HTML::PostedBroadcastChannelMessage message) =|
@@ -2467,10 +2689,10 @@ index 34f534d5..b90f32e3 100644
      virtual void set_navigator_compatibility_mode(Web::NavigatorCompatibilityMode mode) override;
      virtual void set_preferred_languages(Vector<String> preferred_languages) override;
 diff --git a/Services/WebWorker/PageHost.cpp b/Services/WebWorker/PageHost.cpp
-index 28ac39e4..2d18b9e9 100644
+index 28ac39e4..17840143 100644
 --- a/Services/WebWorker/PageHost.cpp
 +++ b/Services/WebWorker/PageHost.cpp
-@@ -129,6 +129,16 @@ Optional<Web::FileAPI::SerializedBlobURLEntry> PageHost::page_did_request_blob_u
+@@ -129,6 +129,27 @@ Optional<Web::FileAPI::SerializedBlobURLEntry> PageHost::page_did_request_blob_u
      return m_client.did_request_blob_url_entry(url, token);
  }
  
@@ -2484,24 +2706,37 @@ index 28ac39e4..2d18b9e9 100644
 +    m_client.async_did_commit_indexed_database_changes(environment_id, commit_id, changes);
 +}
 +
++Web::IndexedDB::PersistedUpgradeLock PageHost::page_did_request_indexed_database_upgrade_lock(Web::HTML::EnvironmentId const& environment_id, Utf16String const& name)
++{
++    auto response = m_client.send_sync<Messages::WebWorkerClient::DidRequestIndexedDatabaseUpgradeLock>(environment_id, name);
++    return { response->granted(), response->stored_version() };
++}
++
++void PageHost::page_did_release_indexed_database_upgrade_lock(Web::HTML::EnvironmentId const& environment_id, Utf16String const& name)
++{
++    m_client.async_did_release_indexed_database_upgrade_lock(environment_id, name);
++}
++
  Web::HTML::WorkerAgentId PageHost::start_worker_agent(Web::HTML::WorkerAgentStartRequest&& request)
  {
      return m_client.start_worker_agent(move(request));
 diff --git a/Services/WebWorker/PageHost.h b/Services/WebWorker/PageHost.h
-index a1b31ca2..3a7909fe 100644
+index a1b31ca2..6af05501 100644
 --- a/Services/WebWorker/PageHost.h
 +++ b/Services/WebWorker/PageHost.h
-@@ -46,6 +46,8 @@ public:
+@@ -46,6 +46,10 @@ public:
      virtual URL::BlobURLEntry::Token page_did_add_blob_url_entry(Web::HTML::EnvironmentSettingsObject const&, Utf16String const& url, Web::FileAPI::SerializedBlobURLEntry const&) override;
      virtual void page_did_remove_blob_url_entries(Web::HTML::EnvironmentSettingsObject const&, Vector<Utf16String> const& urls) override;
      virtual Optional<Web::FileAPI::SerializedBlobURLEntry> page_did_request_blob_url_entry(Utf16String const& url, Optional<URL::BlobURLEntry::Token> token) override;
 +    virtual Vector<Web::IndexedDB::PersistedDatabase> page_did_request_indexed_databases(Web::HTML::EnvironmentId const& environment_id) override;
 +    virtual void page_did_commit_indexed_database_changes(Web::HTML::EnvironmentId const& environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges const& changes) override;
++    virtual Web::IndexedDB::PersistedUpgradeLock page_did_request_indexed_database_upgrade_lock(Web::HTML::EnvironmentId const& environment_id, Utf16String const& name) override;
++    virtual void page_did_release_indexed_database_upgrade_lock(Web::HTML::EnvironmentId const& environment_id, Utf16String const& name) override;
      virtual Web::HTML::WorkerAgentId start_worker_agent(Web::HTML::WorkerAgentStartRequest&&) override;
      virtual void close_worker_agent(Web::HTML::WorkerAgentId, Web::HTML::WorkerAgentOwnerToken) override;
      virtual bool supports_compositor() const override { return true; }
 diff --git a/Services/WebWorker/WebWorkerClient.ipc b/Services/WebWorker/WebWorkerClient.ipc
-index 2551c57f..09901803 100644
+index 2551c57f..ca9a0606 100644
 --- a/Services/WebWorker/WebWorkerClient.ipc
 +++ b/Services/WebWorker/WebWorkerClient.ipc
 @@ -4,6 +4,8 @@
@@ -2513,12 +2748,14 @@ index 2551c57f..09901803 100644
  #include <LibWebCommon/HTML/BroadcastChannelMessage.h>
  #include <LibWebCommon/HTML/WorkerAgentForward.h>
  #include <LibWebCommon/HTML/WorkerAgentTypes.h>
-@@ -17,6 +19,8 @@ endpoint WebWorkerClient {
+@@ -17,6 +19,10 @@ endpoint WebWorkerClient {
      did_finish_loading_worker_script(bool worker_is_secure_context) =|
      did_fail_loading_worker_script() =|
      did_report_worker_exception(Utf16String message, Utf16String filename, u32 lineno, u32 colno) =|
 +    did_request_indexed_databases(Web::HTML::EnvironmentId environment_id) => (Vector<Web::IndexedDB::PersistedDatabase> databases)
 +    did_commit_indexed_database_changes(Web::HTML::EnvironmentId environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges changes) =|
++    did_request_indexed_database_upgrade_lock(Web::HTML::EnvironmentId environment_id, Utf16String name) => (bool granted, Optional<u64> stored_version)
++    did_release_indexed_database_upgrade_lock(Web::HTML::EnvironmentId environment_id, Utf16String name) =|
      did_request_cookie(URL::URL url, HTTP::Cookie::Source source) => (HTTP::Cookie::VersionedCookie cookie)
      did_request_file(ByteString path, i32 request_id) =|
      did_is_known_hsts_host(String domain) => (bool result)
