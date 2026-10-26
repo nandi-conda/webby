@@ -17,6 +17,7 @@
 #include <LibGfx/SharedImageBuffer.h>
 #include <LibWebCommon/StorageAPI/StorageEndpoint.h>
 #include <LibWebView/BrowsingSession.h>
+#include <LibWebView/CanonicalTraversable.h>
 #include <LibWebView/CookieJar.h>
 #include <LibWebView/IndexedDBStore.h>
 #include <LibWebView/Menu.h>
@@ -107,8 +108,10 @@ void Application::clear_site_data(URL::Origin const& origin)
     clear(default_session());
 
     WebView::ViewImplementation::for_each_view([&](WebView::ViewImplementation& view) {
-        if (view.url().origin().is_same_origin(origin))
-            view.clear_session_storage();
+        // Straight from the tab's session storage, which the browser process keeps: asking the page to clear it
+        // deadlocked, as the page asks us how much it holds while we wait for its answer.
+        if (view.url().origin().is_same_origin(origin) && view.has_traversable())
+            view.traversable().session_storage().clear_storage_key(Web::StorageAPI::StorageEndpointType::SessionStorage, origin_string);
         return IterationDecision::Continue;
     });
 }
