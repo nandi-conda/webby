@@ -1644,10 +1644,10 @@ index 3b6890f0..87c8a281 100644
  class ViewImplementation;
 diff --git a/Libraries/LibWebView/IndexedDBStore.cpp b/Libraries/LibWebView/IndexedDBStore.cpp
 new file mode 100644
-index 00000000..2e7b5533
+index 00000000..a361734d
 --- /dev/null
 +++ b/Libraries/LibWebView/IndexedDBStore.cpp
-@@ -0,0 +1,532 @@
+@@ -0,0 +1,555 @@
 +/*
 + * Copyright (c) 2026-present, the Ladybird developers.
 + *
@@ -1862,6 +1862,19 @@ index 00000000..2e7b5533
 +        },
 +        storage_key, name);
 +    return version;
++}
++
++Vector<Utf16String> IndexedDBStore::read_database_names(String const& key)
++{
++    Vector<Utf16String> names;
++    m_database->execute_statement(
++        m_statements.select_databases,
++        [&](auto statement_id) -> ErrorOr<void> {
++            names.append(m_database->result_column<Utf16String>(statement_id, 0));
++            return {};
++        },
++        key);
++    return names;
 +}
 +
 +Vector<PersistedDatabase> IndexedDBStore::read_databases(String const& key)
@@ -2124,10 +2137,6 @@ index 00000000..2e7b5533
 +
 +void IndexedDBStore::remove_databases_accessed_since(UnixDateTime since)
 +{
-+    struct RemovedDatabase {
-+        String storage_key;
-+        Utf16String name;
-+    };
 +    Vector<RemovedDatabase> removed;
 +
 +    m_database->execute_statement(
@@ -2138,6 +2147,20 @@ index 00000000..2e7b5533
 +        },
 +        since);
 +
++    remove_databases(removed);
++}
++
++void IndexedDBStore::remove_databases_of(Web::StorageAPI::StorageKey const& storage_key)
++{
++    auto key = storage_key.to_string();
++    Vector<RemovedDatabase> removed;
++    for (auto const& database : read_database_names(key))
++        removed.append({ key, database });
++    remove_databases(removed);
++}
++
++void IndexedDBStore::remove_databases(Vector<RemovedDatabase> const& removed)
++{
 +    auto result = m_database->transaction([&]() -> ErrorOr<void> {
 +        for (auto const& database : removed)
 +            delete_database_rows(database.storage_key, database.name);
@@ -2182,10 +2205,10 @@ index 00000000..2e7b5533
 +}
 diff --git a/Libraries/LibWebView/IndexedDBStore.h b/Libraries/LibWebView/IndexedDBStore.h
 new file mode 100644
-index 00000000..e430524e
+index 00000000..b34e5757
 --- /dev/null
 +++ b/Libraries/LibWebView/IndexedDBStore.h
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,115 @@
 +/*
 + * Copyright (c) 2026-present, the Ladybird developers.
 + *
@@ -2236,6 +2259,7 @@ index 00000000..e430524e
 +    void release_upgrade_lock(IndexedDBClient const&, Web::StorageAPI::StorageKey const&, Utf16String const& name);
 +
 +    void remove_databases_accessed_since(UnixDateTime);
++    void remove_databases_of(Web::StorageAPI::StorageKey const&);
 +    Requests::CacheSizes estimate_storage_size_accessed_since(UnixDateTime) const;
 +
 +private:
@@ -2269,6 +2293,11 @@ index 00000000..e430524e
 +        Web::StorageAPI::StorageKey storage_key;
 +    };
 +
++    struct RemovedDatabase {
++        String storage_key;
++        Utf16String name;
++    };
++
 +    struct UpgradeLock {
 +        IndexedDBClient client;
 +        Web::StorageAPI::StorageKey storage_key;
@@ -2279,6 +2308,8 @@ index 00000000..e430524e
 +
 +    Vector<Web::IndexedDB::PersistedDatabase> read_databases(String const& storage_key);
 +    Optional<u64> stored_version(String const& storage_key, Utf16String const& name);
++    Vector<Utf16String> read_database_names(String const& storage_key);
++    void remove_databases(Vector<RemovedDatabase> const&);
 +
 +    void delete_database_rows(String const& storage_key, Utf16String const& name);
 +    void insert_database_rows(String const& storage_key, Web::IndexedDB::PersistedDatabase const&);

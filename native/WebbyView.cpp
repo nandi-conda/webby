@@ -18,6 +18,7 @@
 #include <LibWebCommon/StorageAPI/StorageEndpoint.h>
 #include <LibWebView/BrowsingSession.h>
 #include <LibWebView/CookieJar.h>
+#include <LibWebView/IndexedDBStore.h>
 #include <LibWebView/Menu.h>
 #include <LibWebView/StorageJar.h>
 #include <WebbyView.h>
@@ -100,6 +101,8 @@ void Application::clear_site_data(URL::Origin const& origin)
         }
         for (auto endpoint : { Web::StorageAPI::StorageEndpointType::LocalStorage, Web::StorageAPI::StorageEndpointType::IndexedDB, Web::StorageAPI::StorageEndpointType::Caches })
             session.storage_jar->clear_storage_key(endpoint, origin_string);
+        // IndexedDB lives in its own store (patch 0037), which also tells the site's open pages and workers.
+        session.indexed_db_store->remove_databases_of(Web::StorageAPI::StorageKey { origin });
     };
     clear(default_session());
 
