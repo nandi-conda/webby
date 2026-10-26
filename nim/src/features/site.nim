@@ -2,7 +2,7 @@
 ## (GeoClue), web notifications, clearing a site's data, the desktop's light or dark scheme, site icons, workers that
 ## share the page's IndexedDB, and (on the desktop) screen recording and web push.
 
-import site/[filepicker, geolocation, http, icons, notifications, notifprefs, permissions, settings, workers]
+import site/[filepicker, geolocation, http, icons, notifcentre, notifications, notifprefs, permissions, settings, workers]
 when not defined(android):
   # Through the desktop's settings portal and GTK's settings (on Android, features/android.nim follows the theme).
   import site/[colorscheme, fontsettings, push, screencapture]
@@ -14,6 +14,7 @@ proc install*() =
   filepicker.install()
   geolocation.install()
   notifications.install()
+  notifcentre.install()
   notifprefs.install()
   when not defined(android):
     colorscheme.install()

@@ -20,8 +20,16 @@ when not defined(android):
 type Shown = object
   tab: Tab
   pageId: int
-  origin: string
+  origin, url: string
   onClick, onClosed: proc ()   ## a service worker's notification (features/site/push.nim; no tab)
+
+type ShownNotification* = object
+  ## A notification as the notification centre (features/site/notifcentre.nim) keeps it.
+  origin*, tag*, title*, body*: string
+  url*: string   ## the page it came from, or the service worker's scope
+  id*: uint32    ## while it's on screen (0 for one that was never shown)
+
+var shownHooks*: seq[proc (n: ShownNotification)]   ## each notification that is shown (or that a backlog dropped)
 
 var
   shown: Table[uint32, Shown]     ## system id to the page's notification
@@ -127,16 +135,32 @@ proc show(origin, tag, title, body: string, entry: Shown, done: proc (id: uint32
   let key = if tag.len > 0: origin & " " & tag else: ""
   # Like Chrome, say which site it came from.
   let text = if body.len == 0: site else: body & "\n" & site
+  let url = if entry.tab != nil and not entry.tab.closed: entry.tab.url elif entry.url.len > 0: entry.url
+            else: origin & "/"
   systemShow(tagged.getOrDefault(key, 0'u32), title, text, proc (id: uint32) =
     if key.len > 0: tagged[key] = id
     shown[id] = entry
-    if done != nil: done(id))
+    if done != nil: done(id)
+    for h in shownHooks: h(ShownNotification(origin: origin, tag: tag, title: title, body: body, url: url, id: id)))
 
-proc notify*(origin, tag, title, body: string, onClick, onClosed: proc (), done: proc (id: uint32) = nil) =
+proc missed*(origin, tag, title, body, url: string) =
+  ## A notification that isn't shown (the backlog had too many) but goes in the notification centre.
+  if notificationsMuted() or get(origin, "notifications") == blocked: return
+  for h in shownHooks: h(ShownNotification(origin: origin, tag: tag, title: title, body: body, url: url))
+
+proc activate*(id: uint32): bool =
+  ## Does what clicking notification `id` does, if it's still on screen, and takes it off.
+  if id notin shown: return false
+  clicked(id)
+  systemClose(id)
+  true
+
+proc notify*(origin, tag, title, body: string, onClick, onClosed: proc (), done: proc (id: uint32) = nil,
+              url = "") =
   ## Shows a notification for `origin` that belongs to no page (a service worker's): `onClick` runs when it's
   ## clicked, `onClosed` when it's dismissed. `done` gets its id for closeNotification. A later one with the same
-  ## tag replaces it.
-  show(origin, tag, title, body, Shown(origin: origin, onClick: onClick, onClosed: onClosed), done)
+  ## tag replaces it. `url` is what the notification centre opens once it's gone (the site by default).
+  show(origin, tag, title, body, Shown(origin: origin, url: url, onClick: onClick, onClosed: onClosed), done)
 
 proc closeNotification*(id: uint32) =
   if id in shown:

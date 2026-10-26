@@ -55,6 +55,11 @@ proc diskFile(origin: string): string =
   for c in origin: name.add(if c in {'a'..'z', 'A'..'Z', '0'..'9', '.', '-'}: c else: '_')
   profileDir() / "site-icons" / name
 
+proc savedIcon*(origin: string): string =
+  ## The site's icon as last seen, for lists of sites (the notification centre); "" if there's none.
+  result = if origin.len == 0: "" else: (try: readFile(diskFile(origin)) except CatchableError: "")
+  if kit.imageMime(result).len == 0: result = ""
+
 proc changed(t: Tab) =
   ## The strip shows a letter badge or the picture (features/tabs/strip.nim), so it hears of every change.
   updateTabButton(t)

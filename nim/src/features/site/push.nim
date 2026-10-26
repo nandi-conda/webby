@@ -255,7 +255,7 @@ proc displayWorkerNotification(reg: Registration, nid: int, title: string, optio
     onClosed = proc () =
       shownNotifications.del nid
       dispatch(reg, "notificationclose", payload),
-    done = proc (id: uint32) = shownNotifications[nid] = id)
+    done = proc (id: uint32) = shownNotifications[nid] = id, url = reg.scope)
 
 proc showWorkerNotification(reg: Registration, title: string, options: JsonNode): int =
   ## Shows a notification of `reg`'s; clicks and dismissals go to its worker. The id the worker knows it by.
@@ -296,6 +296,9 @@ proc flushCatchUp() =
           if tabsHere.len > 0: activateTab(tabsHere[0]) else: discard openTab(reg.scope)
           present(),
         onClosed = proc () = discard)
+      for i in countdown(kept.high, catchUpKeep):   # still listed in the notification centre
+        let h = kept[i]
+        missed(origin, h.options{"tag"}.getStr, h.title, h.options{"body"}.getStr, h.reg.scope)
       kept.setLen catchUpKeep
     for i in countdown(kept.high, 0):
       let h = kept[i]
