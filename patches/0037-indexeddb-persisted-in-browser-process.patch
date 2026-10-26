@@ -1,0 +1,2545 @@
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+index e6807f77..306d45ef 100644
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -719,6 +719,7 @@ set(SOURCES
+     IndexedDB/Internal/Key.cpp
+     IndexedDB/Internal/MutationLog.cpp
+     IndexedDB/Internal/ObjectStore.cpp
++    IndexedDB/Internal/Persistence.cpp
+     IndexedDB/Internal/RequestList.cpp
+     Infra/ByteSequences.cpp
+     Infra/JSON.cpp
+diff --git a/Libraries/LibWeb/IndexedDB/IDBFactory.cpp b/Libraries/LibWeb/IndexedDB/IDBFactory.cpp
+index d9f8c44a..808dd832 100644
+--- a/Libraries/LibWeb/IndexedDB/IDBFactory.cpp
++++ b/Libraries/LibWeb/IndexedDB/IDBFactory.cpp
+@@ -19,6 +19,7 @@
+ #include <LibWeb/IndexedDB/IDBFactory.h>
+ #include <LibWeb/IndexedDB/Internal/Algorithms.h>
+ #include <LibWeb/IndexedDB/Internal/Key.h>
++#include <LibWeb/IndexedDB/Internal/Persistence.h>
+ #include <LibWeb/Platform/EventLoopPlugin.h>
+ #include <LibWeb/StorageAPI/StorageKey.h>
+ 
+@@ -235,6 +236,9 @@ void IDBFactory::databases(GC::Ref<WebIDL::Promise> promise)
+     Platform::EventLoopPlugin::the().deferred_invoke(GC::create_function(GC::Heap::the(), [&realm, storage_key, promise]() {
+         HTML::TemporaryExecutionContext context(realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
+ 
++        // AD-HOC: Bring in the databases the browser process keeps for storageKey.
++        load_persisted_databases(realm, storage_key);
++
+         // 1. Let databases be the set of databases in storageKey.
+         //    If this cannot be determined for any reason, then reject p with an appropriate error (e.g. an "UnknownError" DOMException) and terminate these steps.
+         auto databases = Database::for_key(storage_key);
+diff --git a/Libraries/LibWeb/IndexedDB/IDBTransaction.h b/Libraries/LibWeb/IndexedDB/IDBTransaction.h
+index 39bc6ef0..1a94d222 100644
+--- a/Libraries/LibWeb/IndexedDB/IDBTransaction.h
++++ b/Libraries/LibWeb/IndexedDB/IDBTransaction.h
+@@ -105,6 +105,16 @@ public:
+     void revert_all_mutations();
+     void discard_mutation_logs();
+ 
++    // The database's version before this transaction (for an upgrade transaction: the version it upgrades from).
++    u64 original_version() const { return m_original_version; }
++
++    template<typename Callback>
++    void for_each_store_mutation_log(Callback callback) const
++    {
++        for (auto const& entry : m_store_mutation_logs)
++            callback(*entry.store, *entry.log);
++    }
++
+     WebIDL::ExceptionOr<void> abort();
+     WebIDL::ExceptionOr<void> commit();
+     WebIDL::ExceptionOr<GC::Ref<IDBObjectStore>> object_store(Utf16String const& name);
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp b/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp
+index 7fb59624..5df6df3c 100644
+--- a/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp
++++ b/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp
+@@ -45,6 +45,7 @@
+ #include <LibWeb/IndexedDB/Internal/Database.h>
+ #include <LibWeb/IndexedDB/Internal/Index.h>
+ #include <LibWeb/IndexedDB/Internal/Key.h>
++#include <LibWeb/IndexedDB/Internal/Persistence.h>
+ #include <LibWeb/StorageAPI/StorageKey.h>
+ #include <LibWeb/WebIDL/AbstractOperations.h>
+ #include <LibWeb/WebIDL/Buffers.h>
+@@ -109,6 +110,9 @@ void open_a_database_connection(JS::Realm& realm, StorageAPI::StorageKey storage
+             queue.on_request_processed();
+         };
+ 
++        // AD-HOC: Bring in the databases the browser process keeps for storageKey.
++        load_persisted_databases(realm, storage_key);
++
+         // 4. Let db be the database named name in storageKey, or null otherwise.
+         GC::Ptr<Database> db;
+         auto maybe_db = Database::for_key_and_name(storage_key, name);
+@@ -521,6 +525,9 @@ void delete_a_database(JS::Realm& realm, StorageAPI::StorageKey storage_key, Utf
+             queue.on_request_processed();
+         };
+ 
++        // AD-HOC: Bring in the databases the browser process keeps for storageKey.
++        load_persisted_databases(realm, storage_key);
++
+         // 4. Let db be the database named name in storageKey, if one exists. Otherwise, return 0 (zero).
+         auto maybe_db = Database::for_key_and_name(storage_key, name);
+         if (!maybe_db.has_value()) {
+@@ -581,7 +588,7 @@ void delete_a_database(JS::Realm& realm, StorageAPI::StorageKey storage_key, Utf
+                 }
+             }
+ 
+-            db->wait_for_connections_to_close(open_connections->elements(), GC::create_function(GC::Heap::the(), [&queue, db, storage_key, name, on_complete] {
++            db->wait_for_connections_to_close(open_connections->elements(), GC::create_function(GC::Heap::the(), [&realm, &queue, db, storage_key, name, on_complete] {
+                 // 10. Let version be db’s version.
+                 auto version = db->version();
+ 
+@@ -591,6 +598,7 @@ void delete_a_database(JS::Realm& realm, StorageAPI::StorageKey storage_key, Utf
+                     call_completion(queue, on_complete, WebIDL::OperationError::create("Unable to delete database"_utf16));
+                     return;
+                 }
++                persist_deleted_database(realm, storage_key, name);
+ 
+                 // 12. Return version.
+                 call_completion(queue, on_complete, version);
+@@ -919,7 +927,10 @@ void commit_a_transaction(JS::Realm&, GC::Ref<IDBTransaction> transaction)
+         if (transaction->state() != IDBTransaction::TransactionState::Committing)
+             return;
+ 
+-        // FIXME: 3. Attempt to write any outstanding changes made by transaction to the database, considering transaction’s durability hint.
++        // 3. Attempt to write any outstanding changes made by transaction to the database, considering transaction’s durability hint.
++        // AD-HOC: The changes are sent to the browser process, which stores them after the transaction completes.
++        persist_committed_transaction(*transaction);
++
+         // FIXME: 4. If an error occurs while writing the changes to the database, then run abort a transaction with transaction and an appropriate type for the error, for example "QuotaExceededError" or "UnknownError" DOMException, and terminate these steps.
+ 
+         // 5. Queue a database task to run these steps:
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/Database.cpp b/Libraries/LibWeb/IndexedDB/Internal/Database.cpp
+index 8533e53c..74af06d5 100644
+--- a/Libraries/LibWeb/IndexedDB/Internal/Database.cpp
++++ b/Libraries/LibWeb/IndexedDB/Internal/Database.cpp
+@@ -101,6 +101,7 @@ ErrorOr<GC::Ref<Database>> Database::create_for_key_and_name(GC::Heap& heap, Sto
+     }));
+ 
+     auto value = Database::create(heap, name);
++    value->m_storage_key = key;
+ 
+     database_mapping.set(name, value);
+     idb_databases().set(key, database_mapping);
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/Database.h b/Libraries/LibWeb/IndexedDB/Internal/Database.h
+index b19359bb..a4617ace 100644
+--- a/Libraries/LibWeb/IndexedDB/Internal/Database.h
++++ b/Libraries/LibWeb/IndexedDB/Internal/Database.h
+@@ -27,6 +27,9 @@ public:
+     u64 version() const { return m_version; }
+     Utf16String name() const { return m_name; }
+ 
++    // AD-HOC: The storage key the database belongs to, so its changes can be persisted.
++    Optional<StorageAPI::StorageKey> const& storage_key() const { return m_storage_key; }
++
+     void set_upgrade_transaction(GC::Ptr<IDBTransaction> transaction) { m_upgrade_transaction = transaction; }
+     [[nodiscard]] GC::Ptr<IDBTransaction> upgrade_transaction() { return m_upgrade_transaction; }
+ 
+@@ -79,6 +82,7 @@ private:
+ 
+     // A database has a name which identifies it within a specific storage key.
+     Utf16String m_name;
++    Optional<StorageAPI::StorageKey> m_storage_key;
+ 
+     // A database has a version. When a database is first created, its version is 0 (zero).
+     u64 m_version { 0 };
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/Index.cpp b/Libraries/LibWeb/IndexedDB/Internal/Index.cpp
+index 4b26ece9..bddbebed 100644
+--- a/Libraries/LibWeb/IndexedDB/Internal/Index.cpp
++++ b/Libraries/LibWeb/IndexedDB/Internal/Index.cpp
+@@ -151,6 +151,12 @@ void Index::remove_record(IndexRecord const& record)
+         m_records.remove(index);
+ }
+ 
++bool Index::has_record(IndexRecord const& record) const
++{
++    auto index = AK::lower_bound_index(m_records, record, compare_index_records);
++    return index < m_records.size() && compare_index_records(m_records[index], record) == 0;
++}
++
+ void Index::remove_records_with_value_in_range(GC::Ref<IDBKeyRange> range)
+ {
+     auto log = m_object_store->mutation_log();
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/Index.h b/Libraries/LibWeb/IndexedDB/Internal/Index.h
+index b36de9e9..6fd21067 100644
+--- a/Libraries/LibWeb/IndexedDB/Internal/Index.h
++++ b/Libraries/LibWeb/IndexedDB/Internal/Index.h
+@@ -44,6 +44,7 @@ public:
+     u64 count_records_in_range(GC::Ref<IDBKeyRange> range);
+     void store_a_record(IndexRecord const& record);
+     void remove_record(IndexRecord const& record);
++    [[nodiscard]] bool has_record(IndexRecord const& record) const;
+     void remove_records_with_value_in_range(GC::Ref<IDBKeyRange> range);
+ 
+     HTML::StorageSerializationRecord const& referenced_value(IndexRecord const& index_record) const;
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/MutationLog.cpp b/Libraries/LibWeb/IndexedDB/Internal/MutationLog.cpp
+index 70e3bdd2..25be2520 100644
+--- a/Libraries/LibWeb/IndexedDB/Internal/MutationLog.cpp
++++ b/Libraries/LibWeb/IndexedDB/Internal/MutationLog.cpp
+@@ -12,6 +12,7 @@
+ #include <LibWeb/IndexedDB/Internal/Key.h>
+ #include <LibWeb/IndexedDB/Internal/MutationLog.h>
+ #include <LibWeb/IndexedDB/Internal/ObjectStore.h>
++#include <LibWeb/IndexedDB/Internal/Persistence.h>
+ 
+ namespace Web::IndexedDB {
+ 
+@@ -188,6 +189,78 @@ void MutationLog::append_changes(Utf16String const& database_name, Utf16String c
+         changes.deleted.append({ database_name, object_store_name, serialize_key_for_inspection(key) });
+ }
+ 
++bool MutationLog::append_persisted_changes(ObjectStore& store, PersistedObjectStoreChanges& changes) const
++{
++    // The records and index records this log stored or deleted, by their encoded keys. What gets persisted is whether
++    // each is there now, and with which value.
++    HashMap<ByteBuffer, GC::Ref<Key>> record_keys;
++    HashMap<Utf16String, HashMap<ByteBuffer, IndexRecord>> index_records;
++    bool key_generator_changed = false;
++
++    auto note_index_record = [&](Index const& index, IndexRecord const& record) {
++        auto encoded = encode_key(*record.key);
++        encoded.append(encode_key(*record.value).bytes());
++        index_records.ensure(index.name()).set(move(encoded), record);
++    };
++
++    for (auto const& entry : m_entries) {
++        entry.visit(
++            [&](RecordsDeleted const& e) {
++                for (auto const& record : e.records)
++                    record_keys.set(encode_key(*record.key), record.key);
++            },
++            [&](RecordStored const& e) {
++                record_keys.set(encode_key(*e.key), e.key);
++            },
++            [&](IndexRecordsDeleted const& e) {
++                for (auto const& record : e.records)
++                    note_index_record(*e.index, record);
++            },
++            [&](IndexRecordStored const& e) {
++                note_index_record(*e.index, e.record);
++            },
++            [&](KeyGeneratorChanged const&) {
++                key_generator_changed = true;
++            },
++            [&](auto const&) {
++            });
++    }
++
++    if (record_keys.is_empty() && index_records.is_empty() && !key_generator_changed)
++        return false;
++
++    changes.name = store.name();
++
++    for (auto const& [encoded_key, key] : record_keys) {
++        if (auto record = store.record_with_key(key); record.has_value())
++            changes.stored.append({ encoded_key, MUST(ByteBuffer::copy(record->value->data)) });
++        else
++            changes.deleted.append(encoded_key);
++    }
++
++    for (auto const& [index_name, records] : index_records) {
++        auto index = store.index_set().get(index_name);
++        if (!index.has_value())
++            continue;
++
++        PersistedIndexChanges index_changes;
++        index_changes.name = index_name;
++        for (auto const& [_, record] : records) {
++            PersistedIndexRecord persisted_record { encode_key(*record.key), encode_key(*record.value) };
++            if ((*index)->has_record(record))
++                index_changes.stored.append(move(persisted_record));
++            else
++                index_changes.deleted.append(move(persisted_record));
++        }
++        changes.indexes.append(move(index_changes));
++    }
++
++    if (store.uses_a_key_generator())
++        changes.key_generator = store.key_generator().current_number();
++
++    return true;
++}
++
+ void MutationLog::revert(ObjectStore& store, GC::Ref<Database> database, GC::Ref<IDBDatabase> connection)
+ {
+     revert_entries(store, 0, database, connection);
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/MutationLog.h b/Libraries/LibWeb/IndexedDB/Internal/MutationLog.h
+index f3a4bdff..87d44d76 100644
+--- a/Libraries/LibWeb/IndexedDB/Internal/MutationLog.h
++++ b/Libraries/LibWeb/IndexedDB/Internal/MutationLog.h
+@@ -12,6 +12,7 @@
+ #include <LibJS/Heap/Cell.h>
+ #include <LibWeb/IndexedDB/IDBRecord.h>
+ #include <LibWeb/IndexedDB/Internal/KeyGenerator.h>
++#include <LibWebCommon/IndexedDB/PersistedDatabase.h>
+ #include <LibWebCommon/IndexedDB/TransactionChanges.h>
+ 
+ namespace Web::IndexedDB {
+@@ -70,6 +71,10 @@ public:
+ 
+     void append_changes(Utf16String const& database_name, Utf16String const& object_store_name, TransactionChanges&) const;
+ 
++    // AD-HOC: Describes where the records this log touched in store ended up, for the browser process to store.
++    //         Returns whether anything changed. Readwrite transactions only: schema entries are not described.
++    bool append_persisted_changes(ObjectStore& store, PersistedObjectStoreChanges&) const;
++
+     [[nodiscard]] size_t position() const { return m_entries.size(); }
+ 
+ protected:
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/ObjectStore.cpp b/Libraries/LibWeb/IndexedDB/Internal/ObjectStore.cpp
+index a911b86a..82cf9f65 100644
+--- a/Libraries/LibWeb/IndexedDB/Internal/ObjectStore.cpp
++++ b/Libraries/LibWeb/IndexedDB/Internal/ObjectStore.cpp
+@@ -96,6 +96,16 @@ bool ObjectStore::has_record_with_key(GC::Ref<Key> key)
+     }) != nullptr;
+ }
+ 
++Optional<ObjectStoreRecord&> ObjectStore::record_with_key(GC::Ref<Key> key)
++{
++    auto* record = binary_search(m_records, key, nullptr, [](auto const& needle, auto const& record) -> int {
++        return Key::compare_two_keys(needle, record.key);
++    });
++    if (!record)
++        return {};
++    return *record;
++}
++
+ void ObjectStore::store_a_record(ObjectStoreRecord record)
+ {
+     if (m_mutation_log)
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/ObjectStore.h b/Libraries/LibWeb/IndexedDB/Internal/ObjectStore.h
+index 6c2e7df5..cdfdd488 100644
+--- a/Libraries/LibWeb/IndexedDB/Internal/ObjectStore.h
++++ b/Libraries/LibWeb/IndexedDB/Internal/ObjectStore.h
+@@ -50,6 +50,7 @@ public:
+ 
+     void remove_records_in_range(GC::Ref<IDBKeyRange> range);
+     bool has_record_with_key(GC::Ref<Key> key);
++    Optional<ObjectStoreRecord&> record_with_key(GC::Ref<Key> key);
+     void store_a_record(ObjectStoreRecord record);
+     void remove_record_with_key(GC::Ref<Key> key);
+     u64 count_records_in_range(GC::Ref<IDBKeyRange> range);
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/Persistence.cpp b/Libraries/LibWeb/IndexedDB/Internal/Persistence.cpp
+new file mode 100644
+index 00000000..571e04e5
+--- /dev/null
++++ b/Libraries/LibWeb/IndexedDB/Internal/Persistence.cpp
+@@ -0,0 +1,673 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <AK/BitCast.h>
++#include <AK/Endian.h>
++#include <AK/HashMap.h>
++#include <AK/HashTable.h>
++#include <AK/NeverDestroyed.h>
++#include <AK/QuickSort.h>
++#include <LibGC/DeferGC.h>
++#include <LibGC/Heap.h>
++#include <LibWeb/Bindings/PrincipalHostDefined.h>
++#include <LibWeb/HTML/EventNames.h>
++#include <LibWeb/HTML/Scripting/Environments.h>
++#include <LibWeb/IndexedDB/IDBDatabase.h>
++#include <LibWeb/IndexedDB/IDBTransaction.h>
++#include <LibWeb/IndexedDB/Internal/Algorithms.h>
++#include <LibWeb/IndexedDB/Internal/Database.h>
++#include <LibWeb/IndexedDB/Internal/Index.h>
++#include <LibWeb/IndexedDB/Internal/Key.h>
++#include <LibWeb/IndexedDB/Internal/MutationLog.h>
++#include <LibWeb/IndexedDB/Internal/ObjectStore.h>
++#include <LibWeb/IndexedDB/Internal/Persistence.h>
++#include <LibWeb/Page/Page.h>
++
++namespace Web::IndexedDB {
++
++// Key encoding: a type byte, then the value. Numbers and dates are IEEE doubles, strings their UTF-16 code units, binary
++// keys their bytes, array keys their subkeys. Lengths and counts are u32. Everything is little-endian.
++enum class EncodedKeyType : u8 {
++    Number = 1,
++    Date = 2,
++    String = 3,
++    Binary = 4,
++    Array = 5,
++};
++
++static constexpr size_t MAX_KEY_DEPTH = 1024;
++
++static void append_u32(ByteBuffer& buffer, u32 value)
++{
++    LittleEndian<u32> little_endian = value;
++    buffer.append(&little_endian, sizeof(little_endian));
++}
++
++static void append_double(ByteBuffer& buffer, double value)
++{
++    // NB: Keys are never NaN, and -0 is the same key as +0, so it is stored as +0.
++    if (value == 0)
++        value = 0;
++    LittleEndian<u64> little_endian = bit_cast<u64>(value);
++    buffer.append(&little_endian, sizeof(little_endian));
++}
++
++static void append_key(ByteBuffer& buffer, Key const& key)
++{
++    switch (key.type()) {
++    case Key::KeyType::Number:
++        buffer.append(to_underlying(EncodedKeyType::Number));
++        append_double(buffer, key.value_as_double());
++        break;
++    case Key::KeyType::Date:
++        buffer.append(to_underlying(EncodedKeyType::Date));
++        append_double(buffer, key.value_as_double());
++        break;
++    case Key::KeyType::String: {
++        buffer.append(to_underlying(EncodedKeyType::String));
++        auto view = key.value_as_string().utf16_view();
++        append_u32(buffer, view.length_in_code_units());
++        for (size_t i = 0; i < view.length_in_code_units(); ++i) {
++            LittleEndian<u16> code_unit = view.code_unit_at(i);
++            buffer.append(&code_unit, sizeof(code_unit));
++        }
++        break;
++    }
++    case Key::KeyType::Binary: {
++        buffer.append(to_underlying(EncodedKeyType::Binary));
++        auto const& bytes = key.value_as_byte_buffer();
++        append_u32(buffer, bytes.size());
++        buffer.append(bytes.bytes());
++        break;
++    }
++    case Key::KeyType::Array: {
++        buffer.append(to_underlying(EncodedKeyType::Array));
++        auto subkeys = key.subkeys();
++        append_u32(buffer, subkeys.size());
++        for (auto const& subkey : subkeys)
++            append_key(buffer, *subkey);
++        break;
++    }
++    case Key::KeyType::Invalid:
++        VERIFY_NOT_REACHED();
++    }
++}
++
++ByteBuffer encode_key(Key const& key)
++{
++    ByteBuffer buffer;
++    append_key(buffer, key);
++    return buffer;
++}
++
++class KeyReader {
++public:
++    explicit KeyReader(ReadonlyBytes bytes)
++        : m_bytes(bytes)
++    {
++    }
++
++    bool is_at_end() const { return m_offset == m_bytes.size(); }
++
++    ErrorOr<ReadonlyBytes> read_bytes(size_t count)
++    {
++        if (count > m_bytes.size() - m_offset)
++            return Error::from_string_literal("Truncated IndexedDB key");
++        auto bytes = m_bytes.slice(m_offset, count);
++        m_offset += count;
++        return bytes;
++    }
++
++    ErrorOr<u8> read_u8() { return TRY(read_bytes(1))[0]; }
++
++    ErrorOr<u64> read_little_endian(size_t size)
++    {
++        auto bytes = TRY(read_bytes(size));
++        u64 value = 0;
++        for (size_t i = 0; i < size; ++i)
++            value |= static_cast<u64>(bytes[i]) << (8 * i);
++        return value;
++    }
++
++    ErrorOr<u16> read_u16() { return static_cast<u16>(TRY(read_little_endian(2))); }
++    ErrorOr<u32> read_u32() { return static_cast<u32>(TRY(read_little_endian(4))); }
++    ErrorOr<double> read_double() { return bit_cast<double>(TRY(read_little_endian(8))); }
++
++private:
++    ReadonlyBytes m_bytes;
++    size_t m_offset { 0 };
++};
++
++static ErrorOr<GC::Ref<Key>> read_key(KeyReader& reader, size_t depth)
++{
++    if (depth > MAX_KEY_DEPTH)
++        return Error::from_string_literal("IndexedDB key nested too deeply");
++
++    switch (static_cast<EncodedKeyType>(TRY(reader.read_u8()))) {
++    case EncodedKeyType::Number:
++        return Key::create_number(TRY(reader.read_double()));
++    case EncodedKeyType::Date:
++        return Key::create_date(TRY(reader.read_double()));
++    case EncodedKeyType::String: {
++        auto length = TRY(reader.read_u32());
++        Vector<char16_t> code_units;
++        TRY(code_units.try_ensure_capacity(length));
++        for (u32 i = 0; i < length; ++i)
++            code_units.unchecked_append(TRY(reader.read_u16()));
++        return Key::create_string(Utf16String::from_utf16(Utf16View { code_units.data(), code_units.size() }));
++    }
++    case EncodedKeyType::Binary: {
++        auto length = TRY(reader.read_u32());
++        return Key::create_binary(TRY(ByteBuffer::copy(TRY(reader.read_bytes(length)))));
++    }
++    case EncodedKeyType::Array: {
++        auto count = TRY(reader.read_u32());
++        auto keys = GC::Heap::the().allocate<GC::HeapVector<GC::Ref<Key>>>();
++        for (u32 i = 0; i < count; ++i)
++            keys->elements().append(TRY(read_key(reader, depth + 1)));
++        return Key::create_array(keys);
++    }
++    }
++
++    return Error::from_string_literal("Unknown IndexedDB key type");
++}
++
++ErrorOr<GC::Ref<Key>> decode_key(ReadonlyBytes bytes)
++{
++    KeyReader reader { bytes };
++    auto key = TRY(read_key(reader, 0));
++    if (!reader.is_at_end())
++        return Error::from_string_literal("Trailing bytes after IndexedDB key");
++    return key;
++}
++
++// The storage keys whose databases this process has loaded. Only those are kept up to date.
++static HashTable<StorageAPI::StorageKey>& loaded_storage_keys()
++{
++    static NeverDestroyed<HashTable<StorageAPI::StorageKey>> storage_keys;
++    return *storage_keys;
++}
++
++// Our commits the browser process has not stored yet. A change another process committed that reaches us before one of
++// them was stored before it, so ours supersedes it wherever both wrote.
++struct PendingWrites {
++    // Commits that replaced or deleted the whole database.
++    u32 whole_database { 0 };
++    // Per object store: the encoded keys of the records commits wrote, with how many commits wrote each.
++    HashMap<Utf16String, HashMap<ByteBuffer, u32>> keys;
++
++    bool is_empty() const { return whole_database == 0 && keys.is_empty(); }
++};
++
++using PendingWritesByDatabase = HashMap<Utf16String, PendingWrites>;
++
++static HashMap<StorageAPI::StorageKey, PendingWritesByDatabase>& pending_writes()
++{
++    static NeverDestroyed<HashMap<StorageAPI::StorageKey, PendingWritesByDatabase>> writes;
++    return *writes;
++}
++
++struct SentCommit {
++    StorageAPI::StorageKey storage_key;
++    Utf16String database_name;
++    bool whole_database { false };
++    Vector<Utf16String> object_store_names;
++    Vector<ByteBuffer> keys;
++};
++
++static HashMap<u64, SentCommit>& sent_commits()
++{
++    static NeverDestroyed<HashMap<u64, SentCommit>> commits;
++    return *commits;
++}
++
++static PendingWrites const* pending_writes_for(StorageAPI::StorageKey const& storage_key, Utf16String const& database_name)
++{
++    auto by_database = pending_writes().find(storage_key);
++    if (by_database == pending_writes().end())
++        return nullptr;
++    auto writes = by_database->value.find(database_name);
++    if (writes == by_database->value.end())
++        return nullptr;
++    return &writes->value;
++}
++
++static bool is_pending(PendingWrites const* writes, Utf16String const& object_store_name, ByteBuffer const& key)
++{
++    if (!writes)
++        return false;
++    auto keys = writes->keys.find(object_store_name);
++    if (keys == writes->keys.end())
++        return false;
++    return keys->value.contains(key);
++}
++
++static void send_commit(JS::Realm& realm, StorageAPI::StorageKey const& storage_key, PersistedDatabaseChanges const& changes)
++{
++    static u64 next_commit_id = 1;
++    auto commit_id = next_commit_id++;
++
++    SentCommit sent { storage_key, changes.name, changes.kind != PersistedDatabaseChanges::Kind::Update, {}, {} };
++    auto& writes = pending_writes().ensure(storage_key).ensure(changes.name);
++
++    if (sent.whole_database) {
++        ++writes.whole_database;
++    } else {
++        auto note_key = [&](Utf16String const& object_store_name, ByteBuffer const& key) {
++            ++writes.keys.ensure(object_store_name).ensure(key, [] { return 0u; });
++            sent.object_store_names.append(object_store_name);
++            sent.keys.append(key);
++        };
++        for (auto const& store : changes.object_stores) {
++            for (auto const& record : store.stored)
++                note_key(store.name, record.key);
++            for (auto const& key : store.deleted)
++                note_key(store.name, key);
++        }
++    }
++
++    sent_commits().set(commit_id, move(sent));
++
++    auto& environment = HTML::relevant_settings_object(realm.global_object());
++    Bindings::principal_host_defined_page(realm).client().page_did_commit_indexed_database_changes(environment.id, commit_id, changes);
++}
++
++void did_persist_database_changes(u64 commit_id)
++{
++    auto sent = sent_commits().take(commit_id);
++    if (!sent.has_value())
++        return;
++
++    auto by_database = pending_writes().find(sent->storage_key);
++    if (by_database == pending_writes().end())
++        return;
++    auto writes = by_database->value.find(sent->database_name);
++    if (writes == by_database->value.end())
++        return;
++
++    if (sent->whole_database && writes->value.whole_database > 0)
++        --writes->value.whole_database;
++
++    for (size_t i = 0; i < sent->keys.size(); ++i) {
++        auto keys = writes->value.keys.find(sent->object_store_names[i]);
++        if (keys == writes->value.keys.end())
++            continue;
++        auto count = keys->value.find(sent->keys[i]);
++        if (count == keys->value.end())
++            continue;
++        if (--count->value == 0)
++            keys->value.remove(count);
++        if (keys->value.is_empty())
++            writes->value.keys.remove(keys);
++    }
++
++    if (writes->value.is_empty())
++        by_database->value.remove(writes);
++    if (by_database->value.is_empty())
++        pending_writes().remove(by_database);
++}
++
++static int compare_index_records(IndexRecord const& a, IndexRecord const& b)
++{
++    if (auto result = Key::compare_two_keys(a.key, b.key); result != 0)
++        return result;
++    return Key::compare_two_keys(a.value, b.value);
++}
++
++static GC::Ref<Database> install_database(StorageAPI::StorageKey const& storage_key, PersistedDatabase const& persisted)
++{
++    GC::DeferGC defer_gc { GC::Heap::the() };
++
++    auto database = MUST(Database::create_for_key_and_name(GC::Heap::the(), storage_key, persisted.name));
++    database->set_version(persisted.version);
++
++    for (auto const& persisted_store : persisted.object_stores) {
++        auto store = ObjectStore::create(database, persisted_store.name, persisted_store.key_generator.has_value(), persisted_store.key_path);
++        if (persisted_store.key_generator.has_value())
++            store->key_generator().set(*persisted_store.key_generator);
++
++        Vector<ObjectStoreRecord> records;
++        records.ensure_capacity(persisted_store.records.size());
++        for (auto const& persisted_record : persisted_store.records) {
++            auto key = decode_key(persisted_record.key);
++            auto value = ByteBuffer::copy(persisted_record.value);
++            if (key.is_error() || value.is_error())
++                continue;
++            records.unchecked_append(ObjectStoreRecord { key.release_value(), make<HTML::StorageSerializationRecord>(value.release_value()) });
++        }
++        quick_sort(records, [](auto const& a, auto const& b) { return Key::less_than(a.key, b.key); });
++        for (auto& record : records)
++            store->store_a_record(move(record));
++
++        for (auto const& persisted_index : persisted_store.indexes) {
++            auto index = Index::create(store, persisted_index.name, persisted_index.key_path, persisted_index.unique, persisted_index.multi_entry);
++
++            Vector<IndexRecord> index_records;
++            index_records.ensure_capacity(persisted_index.records.size());
++            for (auto const& persisted_record : persisted_index.records) {
++                auto key = decode_key(persisted_record.key);
++                auto primary_key = decode_key(persisted_record.primary_key);
++                if (key.is_error() || primary_key.is_error())
++                    continue;
++                index_records.unchecked_append({ key.release_value(), primary_key.release_value() });
++            }
++            quick_sort(index_records, [](auto const& a, auto const& b) { return compare_index_records(a, b) < 0; });
++            for (auto const& record : index_records)
++                index->store_a_record(record);
++        }
++    }
++
++    return database;
++}
++
++void load_persisted_databases(JS::Realm& realm, StorageAPI::StorageKey const& storage_key)
++{
++    if (loaded_storage_keys().contains(storage_key))
++        return;
++    loaded_storage_keys().set(storage_key);
++
++    auto& environment = HTML::relevant_settings_object(realm.global_object());
++    auto databases = Bindings::principal_host_defined_page(realm).client().page_did_request_indexed_databases(environment.id);
++
++    for (auto const& database : databases) {
++        if (Database::for_key_and_name(storage_key, database.name).has_value())
++            continue;
++        install_database(storage_key, database);
++    }
++}
++
++static PersistedDatabase snapshot_of(Database& database)
++{
++    PersistedDatabase persisted;
++    persisted.name = database.name();
++    persisted.version = database.version();
++
++    for (auto const& store : database.object_stores()) {
++        PersistedObjectStore persisted_store;
++        persisted_store.name = store->name();
++        persisted_store.key_path = store->key_path();
++        if (store->uses_a_key_generator())
++            persisted_store.key_generator = store->key_generator().current_number();
++
++        persisted_store.records.ensure_capacity(store->records().size());
++        for (auto const& record : store->records())
++            persisted_store.records.unchecked_append({ encode_key(*record.key), MUST(ByteBuffer::copy(record.value->data)) });
++
++        for (auto const& [name, index] : store->index_set()) {
++            PersistedIndex persisted_index;
++            persisted_index.name = name;
++            persisted_index.key_path = index->key_path();
++            persisted_index.unique = index->unique();
++            persisted_index.multi_entry = index->multi_entry();
++            persisted_index.records.ensure_capacity(index->records().size());
++            for (auto const& record : index->records())
++                persisted_index.records.unchecked_append({ encode_key(*record.key), encode_key(*record.value) });
++            persisted_store.indexes.append(move(persisted_index));
++        }
++
++        persisted.object_stores.append(move(persisted_store));
++    }
++
++    return persisted;
++}
++
++void persist_committed_transaction(IDBTransaction& transaction)
++{
++    if (transaction.mode() == TransactionMode::Readonly)
++        return;
++
++    auto database = transaction.connection()->associated_database();
++    auto const& storage_key = database->storage_key();
++    if (!storage_key.has_value() || !loaded_storage_keys().contains(*storage_key))
++        return;
++
++    // A connection to a database another process has since replaced or deleted writes to what is no longer stored.
++    auto current = Database::for_key_and_name(*storage_key, database->name());
++    if (!current.has_value() || &current.value() != database.ptr())
++        return;
++
++    PersistedDatabaseChanges changes;
++    changes.name = database->name();
++
++    if (transaction.is_upgrade_transaction()) {
++        changes.kind = PersistedDatabaseChanges::Kind::Replace;
++        changes.base_version = transaction.original_version();
++        changes.replacement = snapshot_of(*database);
++    } else {
++        changes.kind = PersistedDatabaseChanges::Kind::Update;
++        transaction.for_each_store_mutation_log([&](ObjectStore& store, MutationLog& log) {
++            PersistedObjectStoreChanges store_changes;
++            if (log.append_persisted_changes(store, store_changes))
++                changes.object_stores.append(move(store_changes));
++        });
++        if (changes.object_stores.is_empty())
++            return;
++    }
++
++    send_commit(HTML::relevant_realm(transaction.relevant_global_object()), *storage_key, changes);
++}
++
++void persist_deleted_database(JS::Realm& realm, StorageAPI::StorageKey const& storage_key, Utf16String const& name)
++{
++    if (!loaded_storage_keys().contains(storage_key))
++        return;
++
++    PersistedDatabaseChanges changes;
++    changes.kind = PersistedDatabaseChanges::Kind::Delete;
++    changes.name = name;
++    send_commit(realm, storage_key, changes);
++}
++
++// Applies what another process changed in database, except where a commit of ours that is not stored yet wrote.
++static void apply_object_store_changes(Database& database, PendingWrites const* writes, PersistedObjectStoreChanges const& changes)
++{
++    auto store = database.object_store_with_name(changes.name);
++    if (!store)
++        return;
++
++    // NB: These changes are already committed, so they are no part of any transaction of ours that may revert.
++    auto saved_log = store->mutation_log();
++    store->set_mutation_log(nullptr);
++
++    for (auto const& encoded_key : changes.deleted) {
++        if (is_pending(writes, changes.name, encoded_key))
++            continue;
++        if (auto key = decode_key(encoded_key); !key.is_error())
++            store->remove_record_with_key(key.value());
++    }
++
++    for (auto const& record : changes.stored) {
++        if (is_pending(writes, changes.name, record.key))
++            continue;
++        auto key = decode_key(record.key);
++        auto value = ByteBuffer::copy(record.value);
++        if (key.is_error() || value.is_error())
++            continue;
++        store->remove_record_with_key(key.value());
++        store->store_a_record(ObjectStoreRecord { key.value(), make<HTML::StorageSerializationRecord>(value.release_value()) });
++    }
++
++    for (auto const& index_changes : changes.indexes) {
++        auto index = store->index_set().get(index_changes.name);
++        if (!index.has_value())
++            continue;
++
++        auto decode_record = [&](PersistedIndexRecord const& record) -> Optional<IndexRecord> {
++            if (is_pending(writes, changes.name, record.primary_key))
++                return {};
++            auto key = decode_key(record.key);
++            auto primary_key = decode_key(record.primary_key);
++            if (key.is_error() || primary_key.is_error())
++                return {};
++            return IndexRecord { key.release_value(), primary_key.release_value() };
++        };
++
++        for (auto const& persisted_record : index_changes.deleted) {
++            if (auto record = decode_record(persisted_record); record.has_value())
++                (*index)->remove_record(*record);
++        }
++        for (auto const& persisted_record : index_changes.stored) {
++            if (auto record = decode_record(persisted_record); record.has_value()) {
++                (*index)->remove_record(*record);
++                (*index)->store_a_record(*record);
++            }
++        }
++    }
++
++    if (changes.key_generator.has_value() && store->uses_a_key_generator() && *changes.key_generator > store->key_generator().current_number())
++        store->key_generator().set(*changes.key_generator);
++
++    store->set_mutation_log(saved_log);
++}
++
++static bool key_paths_match(Optional<KeyPath> const& a, Optional<KeyPath> const& b)
++{
++    if (a.has_value() != b.has_value())
++        return false;
++    if (!a.has_value())
++        return true;
++    if (a->index() != b->index())
++        return false;
++    if (a->has<Utf16String>())
++        return a->get<Utf16String>() == b->get<Utf16String>();
++    return a->get<Vector<Utf16String>>() == b->get<Vector<Utf16String>>();
++}
++
++// Whether database has the version, object stores and indexes of persisted, so the records can be swapped in place.
++static bool has_schema_of(Database& database, PersistedDatabase const& persisted)
++{
++    if (database.version() != persisted.version || database.object_stores().size() != persisted.object_stores.size())
++        return false;
++
++    for (auto const& persisted_store : persisted.object_stores) {
++        auto store = database.object_store_with_name(persisted_store.name);
++        if (!store || !key_paths_match(store->key_path(), persisted_store.key_path) || store->uses_a_key_generator() != persisted_store.key_generator.has_value())
++            return false;
++        if (store->index_set().size() != persisted_store.indexes.size())
++            return false;
++        for (auto const& persisted_index : persisted_store.indexes) {
++            auto index = store->index_set().get(persisted_index.name);
++            if (!index.has_value() || !key_paths_match((*index)->key_path(), persisted_index.key_path) || (*index)->unique() != persisted_index.unique || (*index)->multi_entry() != persisted_index.multi_entry)
++                return false;
++        }
++    }
++    return true;
++}
++
++// Makes database's records those of persisted, as a set of changes: whatever persisted lacks is deleted.
++static void replace_records_in_place(Database& database, PendingWrites const* writes, PersistedDatabase const& persisted)
++{
++    for (auto const& persisted_store : persisted.object_stores) {
++        auto store = database.object_store_with_name(persisted_store.name);
++        VERIFY(store);
++
++        PersistedObjectStoreChanges changes;
++        changes.name = persisted_store.name;
++        changes.key_generator = persisted_store.key_generator;
++        changes.stored = persisted_store.records;
++
++        HashTable<ByteBuffer> persisted_keys;
++        for (auto const& record : persisted_store.records)
++            persisted_keys.set(record.key);
++        for (auto const& record : store->records()) {
++            auto key = encode_key(*record.key);
++            if (!persisted_keys.contains(key))
++                changes.deleted.append(move(key));
++        }
++
++        for (auto const& persisted_index : persisted_store.indexes) {
++            auto index = store->index_set().get(persisted_index.name).value();
++
++            PersistedIndexChanges index_changes;
++            index_changes.name = persisted_index.name;
++            index_changes.stored = persisted_index.records;
++
++            HashTable<ByteBuffer> persisted_records;
++            for (auto const& record : persisted_index.records) {
++                auto pair = record.key;
++                pair.append(record.primary_key.bytes());
++                persisted_records.set(move(pair));
++            }
++            for (auto const& record : index->records()) {
++                PersistedIndexRecord persisted_record { encode_key(*record.key), encode_key(*record.value) };
++                auto pair = persisted_record.key;
++                pair.append(persisted_record.primary_key.bytes());
++                if (!persisted_records.contains(pair))
++                    index_changes.deleted.append(move(persisted_record));
++            }
++
++            changes.indexes.append(move(index_changes));
++        }
++
++        apply_object_store_changes(database, writes, changes);
++    }
++}
++
++// As when a connection in this process upgrades or deletes a database: open connections hear of it first, and those
++// that do not close themselves are closed.
++static void close_connections_to_superseded_database(Database& database, Optional<u64> new_version)
++{
++    auto old_version = database.version();
++    for (auto const& connection : database.associated_connections_as_root_vector()) {
++        if (connection->close_pending())
++            continue;
++        queue_a_database_task(GC::create_function(GC::Heap::the(), [connection, old_version, new_version] {
++            if (connection->close_pending())
++                return;
++            fire_a_version_change_event(HTML::relevant_realm(connection->relevant_global_object()), HTML::EventNames::versionchange, connection, old_version, new_version);
++            if (!connection->close_pending())
++                close_a_database_connection(connection, nullptr, true);
++        }));
++    }
++}
++
++void apply_persisted_database_changes(StorageAPI::StorageKey const& storage_key, PersistedDatabaseChanges changes)
++{
++    if (!loaded_storage_keys().contains(storage_key))
++        return;
++
++    auto const* writes = pending_writes_for(storage_key, changes.name);
++
++    // A replacement or deletion of ours that is not stored yet supersedes this (or, if it is refused, we are sent what
++    // is stored instead).
++    if (writes && writes->whole_database > 0)
++        return;
++
++    auto existing = Database::for_key_and_name(storage_key, changes.name);
++    GC::Ptr<Database> database = existing.has_value() ? &existing.value() : nullptr;
++
++    if (changes.kind == PersistedDatabaseChanges::Kind::Update) {
++        if (database)
++            for (auto const& store_changes : changes.object_stores)
++                apply_object_store_changes(*database, writes, store_changes);
++        return;
++    }
++
++    // An upgrade of ours that is still running replaces the database when it commits, or is refused.
++    if (database && database->upgrade_transaction())
++        return;
++
++    if (changes.kind == PersistedDatabaseChanges::Kind::Replace && changes.replacement.has_value()) {
++        // Another process upgraded the database to what we have (most often: we both created it at once). Our
++        // connections stay open, and only the records change.
++        if (database && has_schema_of(*database, *changes.replacement)) {
++            replace_records_in_place(*database, writes, *changes.replacement);
++            return;
++        }
++    }
++
++    Optional<u64> new_version;
++    if (database)
++        MUST(Database::delete_for_key_and_name(storage_key, changes.name));
++    if (changes.kind == PersistedDatabaseChanges::Kind::Replace && changes.replacement.has_value()) {
++        install_database(storage_key, *changes.replacement);
++        new_version = changes.replacement->version;
++    }
++    if (database)
++        close_connections_to_superseded_database(*database, new_version);
++}
++
++}
+diff --git a/Libraries/LibWeb/IndexedDB/Internal/Persistence.h b/Libraries/LibWeb/IndexedDB/Internal/Persistence.h
+new file mode 100644
+index 00000000..8a60e2ff
+--- /dev/null
++++ b/Libraries/LibWeb/IndexedDB/Internal/Persistence.h
+@@ -0,0 +1,45 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/ByteBuffer.h>
++#include <AK/Utf16String.h>
++#include <LibGC/Ptr.h>
++#include <LibJS/Forward.h>
++#include <LibWeb/Export.h>
++#include <LibWeb/Forward.h>
++#include <LibWebCommon/IndexedDB/PersistedDatabase.h>
++#include <LibWebCommon/StorageAPI/StorageKey.h>
++
++// AD-HOC: The spec leaves where databases live to the user agent. Ours live in the browser process, which keeps them
++//         for the session (on disk, unless the session is private) and shares them between processes; see
++//         LibWebCommon/IndexedDB/PersistedDatabase.h. Each process keeps working on its own in-memory copy.
++namespace Web::IndexedDB {
++
++class IDBTransaction;
++class Key;
++
++// The browser process tells keys apart by these bytes alone, so equal keys must encode to equal bytes.
++ByteBuffer encode_key(Key const&);
++ErrorOr<GC::Ref<Key>> decode_key(ReadonlyBytes);
++
++// Brings the databases the browser process has for storage key into this process, the first time it is asked to.
++void load_persisted_databases(JS::Realm&, StorageAPI::StorageKey const&);
++
++// Sends what a committing transaction changed to the browser process.
++void persist_committed_transaction(IDBTransaction&);
++
++// Tells the browser process that this process deleted a database.
++void persist_deleted_database(JS::Realm&, StorageAPI::StorageKey const&, Utf16String const& name);
++
++// What another process committed, which the browser process passes on.
++WEB_API void apply_persisted_database_changes(StorageAPI::StorageKey const&, PersistedDatabaseChanges);
++
++// The browser process has stored the changes of one of our commits.
++WEB_API void did_persist_database_changes(u64 commit_id);
++
++}
+diff --git a/Libraries/LibWeb/Page/Page.h b/Libraries/LibWeb/Page/Page.h
+index 69dadc17..188a222c 100644
+--- a/Libraries/LibWeb/Page/Page.h
++++ b/Libraries/LibWeb/Page/Page.h
+@@ -80,6 +80,7 @@
+ #include <LibWebCommon/HTML/UserActivationConsumption.h>
+ #include <LibWebCommon/HTML/VisibilityState.h>
+ #include <LibWebCommon/HTML/WorkerAgentForward.h>
++#include <LibWebCommon/IndexedDB/PersistedDatabase.h>
+ #include <LibWebCommon/IndexedDB/TransactionChanges.h>
+ #include <LibWebCommon/Page/ContextMenuForInputEventsTarget.h>
+ #include <LibWebCommon/Page/EventResult.h>
+@@ -806,6 +807,8 @@ public:
+     virtual void page_did_remove_storage_item([[maybe_unused]] Web::StorageAPI::StorageEndpointType storage_endpoint, [[maybe_unused]] Web::HTML::EnvironmentId const& environment_id, [[maybe_unused]] Utf16String const& bottle_key) { }
+     virtual Vector<Utf16String> page_did_request_storage_keys([[maybe_unused]] Web::StorageAPI::StorageEndpointType storage_endpoint, [[maybe_unused]] Web::HTML::EnvironmentId const& environment_id) { return {}; }
+     virtual u64 page_did_request_storage_usage([[maybe_unused]] Web::HTML::EnvironmentId const& environment_id) { return {}; }
++    virtual Vector<IndexedDB::PersistedDatabase> page_did_request_indexed_databases([[maybe_unused]] HTML::EnvironmentId const& environment_id) { return {}; }
++    virtual void page_did_commit_indexed_database_changes([[maybe_unused]] HTML::EnvironmentId const& environment_id, [[maybe_unused]] u64 commit_id, [[maybe_unused]] IndexedDB::PersistedDatabaseChanges const& changes) { }
+     virtual void page_did_clear_storage([[maybe_unused]] Web::StorageAPI::StorageEndpointType storage_endpoint, [[maybe_unused]] Web::HTML::EnvironmentId const& environment_id) { }
+     virtual void page_did_broadcast_storage_change([[maybe_unused]] Web::StorageAPI::StorageEndpointType storage_endpoint, [[maybe_unused]] String const& url, [[maybe_unused]] Optional<Utf16String> const& key, [[maybe_unused]] Optional<Utf16String> const& old_value, [[maybe_unused]] Optional<Utf16String> const& new_value) { }
+ 
+diff --git a/Libraries/LibWebCommon/CMakeLists.txt b/Libraries/LibWebCommon/CMakeLists.txt
+index e5b5cf16..ed3fa8d3 100644
+--- a/Libraries/LibWebCommon/CMakeLists.txt
++++ b/Libraries/LibWebCommon/CMakeLists.txt
+@@ -39,6 +39,7 @@ set(SOURCES
+     HTML/SessionHistoryEntryIdentity.cpp
+     HTML/WebViewHints.cpp
+     HTML/WorkerAgentTypes.cpp
++    IndexedDB/PersistedDatabase.cpp
+     Infra/Strings.cpp
+     Loader/ContentBlocking.cpp
+     Loader/DownloadFilename.cpp
+diff --git a/Libraries/LibWebCommon/IndexedDB/PersistedDatabase.cpp b/Libraries/LibWebCommon/IndexedDB/PersistedDatabase.cpp
+new file mode 100644
+index 00000000..7b6f1e3d
+--- /dev/null
++++ b/Libraries/LibWebCommon/IndexedDB/PersistedDatabase.cpp
+@@ -0,0 +1,177 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <LibIPC/Decoder.h>
++#include <LibIPC/Encoder.h>
++#include <LibWebCommon/IndexedDB/PersistedDatabase.h>
++
++namespace IPC {
++
++using namespace Web::IndexedDB;
++
++template<>
++ErrorOr<void> encode(Encoder& encoder, PersistedRecord const& record)
++{
++    TRY(encoder.encode(record.key));
++    TRY(encoder.encode(record.value));
++    return {};
++}
++
++template<>
++ErrorOr<PersistedRecord> decode(Decoder& decoder)
++{
++    auto key = TRY(decoder.decode<ByteBuffer>());
++    auto value = TRY(decoder.decode<ByteBuffer>());
++    return PersistedRecord { move(key), move(value) };
++}
++
++template<>
++ErrorOr<void> encode(Encoder& encoder, PersistedIndexRecord const& record)
++{
++    TRY(encoder.encode(record.key));
++    TRY(encoder.encode(record.primary_key));
++    return {};
++}
++
++template<>
++ErrorOr<PersistedIndexRecord> decode(Decoder& decoder)
++{
++    auto key = TRY(decoder.decode<ByteBuffer>());
++    auto primary_key = TRY(decoder.decode<ByteBuffer>());
++    return PersistedIndexRecord { move(key), move(primary_key) };
++}
++
++template<>
++ErrorOr<void> encode(Encoder& encoder, PersistedIndex const& index)
++{
++    TRY(encoder.encode(index.name));
++    TRY(encoder.encode(index.key_path));
++    TRY(encoder.encode(index.unique));
++    TRY(encoder.encode(index.multi_entry));
++    TRY(encoder.encode(index.records));
++    return {};
++}
++
++template<>
++ErrorOr<PersistedIndex> decode(Decoder& decoder)
++{
++    PersistedIndex index;
++    index.name = TRY(decoder.decode<Utf16String>());
++    index.key_path = TRY(decoder.decode<PersistedKeyPath>());
++    index.unique = TRY(decoder.decode<bool>());
++    index.multi_entry = TRY(decoder.decode<bool>());
++    index.records = TRY(decoder.decode<Vector<PersistedIndexRecord>>());
++    return index;
++}
++
++template<>
++ErrorOr<void> encode(Encoder& encoder, PersistedObjectStore const& store)
++{
++    TRY(encoder.encode(store.name));
++    TRY(encoder.encode(store.key_path));
++    TRY(encoder.encode(store.key_generator));
++    TRY(encoder.encode(store.records));
++    TRY(encoder.encode(store.indexes));
++    return {};
++}
++
++template<>
++ErrorOr<PersistedObjectStore> decode(Decoder& decoder)
++{
++    PersistedObjectStore store;
++    store.name = TRY(decoder.decode<Utf16String>());
++    store.key_path = TRY(decoder.decode<Optional<PersistedKeyPath>>());
++    store.key_generator = TRY(decoder.decode<Optional<u64>>());
++    store.records = TRY(decoder.decode<Vector<PersistedRecord>>());
++    store.indexes = TRY(decoder.decode<Vector<PersistedIndex>>());
++    return store;
++}
++
++template<>
++ErrorOr<void> encode(Encoder& encoder, PersistedDatabase const& database)
++{
++    TRY(encoder.encode(database.name));
++    TRY(encoder.encode(database.version));
++    TRY(encoder.encode(database.object_stores));
++    return {};
++}
++
++template<>
++ErrorOr<PersistedDatabase> decode(Decoder& decoder)
++{
++    PersistedDatabase database;
++    database.name = TRY(decoder.decode<Utf16String>());
++    database.version = TRY(decoder.decode<u64>());
++    database.object_stores = TRY(decoder.decode<Vector<PersistedObjectStore>>());
++    return database;
++}
++
++template<>
++ErrorOr<void> encode(Encoder& encoder, PersistedIndexChanges const& changes)
++{
++    TRY(encoder.encode(changes.name));
++    TRY(encoder.encode(changes.stored));
++    TRY(encoder.encode(changes.deleted));
++    return {};
++}
++
++template<>
++ErrorOr<PersistedIndexChanges> decode(Decoder& decoder)
++{
++    PersistedIndexChanges changes;
++    changes.name = TRY(decoder.decode<Utf16String>());
++    changes.stored = TRY(decoder.decode<Vector<PersistedIndexRecord>>());
++    changes.deleted = TRY(decoder.decode<Vector<PersistedIndexRecord>>());
++    return changes;
++}
++
++template<>
++ErrorOr<void> encode(Encoder& encoder, PersistedObjectStoreChanges const& changes)
++{
++    TRY(encoder.encode(changes.name));
++    TRY(encoder.encode(changes.key_generator));
++    TRY(encoder.encode(changes.stored));
++    TRY(encoder.encode(changes.deleted));
++    TRY(encoder.encode(changes.indexes));
++    return {};
++}
++
++template<>
++ErrorOr<PersistedObjectStoreChanges> decode(Decoder& decoder)
++{
++    PersistedObjectStoreChanges changes;
++    changes.name = TRY(decoder.decode<Utf16String>());
++    changes.key_generator = TRY(decoder.decode<Optional<u64>>());
++    changes.stored = TRY(decoder.decode<Vector<PersistedRecord>>());
++    changes.deleted = TRY(decoder.decode<Vector<ByteBuffer>>());
++    changes.indexes = TRY(decoder.decode<Vector<PersistedIndexChanges>>());
++    return changes;
++}
++
++template<>
++ErrorOr<void> encode(Encoder& encoder, PersistedDatabaseChanges const& changes)
++{
++    TRY(encoder.encode(changes.kind));
++    TRY(encoder.encode(changes.name));
++    TRY(encoder.encode(changes.base_version));
++    TRY(encoder.encode(changes.replacement));
++    TRY(encoder.encode(changes.object_stores));
++    return {};
++}
++
++template<>
++ErrorOr<PersistedDatabaseChanges> decode(Decoder& decoder)
++{
++    PersistedDatabaseChanges changes;
++    changes.kind = TRY(decoder.decode<PersistedDatabaseChanges::Kind>());
++    changes.name = TRY(decoder.decode<Utf16String>());
++    changes.base_version = TRY(decoder.decode<u64>());
++    changes.replacement = TRY(decoder.decode<Optional<PersistedDatabase>>());
++    changes.object_stores = TRY(decoder.decode<Vector<PersistedObjectStoreChanges>>());
++    return changes;
++}
++
++}
+diff --git a/Libraries/LibWebCommon/IndexedDB/PersistedDatabase.h b/Libraries/LibWebCommon/IndexedDB/PersistedDatabase.h
+new file mode 100644
+index 00000000..5f1187c6
+--- /dev/null
++++ b/Libraries/LibWebCommon/IndexedDB/PersistedDatabase.h
+@@ -0,0 +1,138 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/ByteBuffer.h>
++#include <AK/Optional.h>
++#include <AK/Utf16String.h>
++#include <AK/Variant.h>
++#include <AK/Vector.h>
++#include <LibIPC/Forward.h>
++#include <LibWebCommon/Export.h>
++
++// AD-HOC: The browser process keeps every storage key's IndexedDB databases (on disk, unless the session is private),
++//         so that they outlive the processes that use them and every content and worker process sees the same ones.
++//         A process loads a storage key's databases from it once, sends it what each transaction it commits changed,
++//         and is sent what other processes committed. Keys and values are opaque bytes here: LibWeb encodes keys, and
++//         values are storage serialization records.
++namespace Web::IndexedDB {
++
++using PersistedKeyPath = Variant<Utf16String, Vector<Utf16String>>;
++
++struct PersistedRecord {
++    ByteBuffer key;
++    ByteBuffer value;
++};
++
++struct PersistedIndexRecord {
++    ByteBuffer key;
++    ByteBuffer primary_key;
++};
++
++struct PersistedIndex {
++    Utf16String name;
++    PersistedKeyPath key_path;
++    bool unique { false };
++    bool multi_entry { false };
++    Vector<PersistedIndexRecord> records;
++};
++
++struct PersistedObjectStore {
++    Utf16String name;
++    Optional<PersistedKeyPath> key_path;
++    // The key generator's current number, if the store has a key generator.
++    Optional<u64> key_generator;
++    Vector<PersistedRecord> records;
++    Vector<PersistedIndex> indexes;
++};
++
++struct PersistedDatabase {
++    Utf16String name;
++    u64 version { 0 };
++    Vector<PersistedObjectStore> object_stores;
++};
++
++struct PersistedIndexChanges {
++    Utf16String name;
++    Vector<PersistedIndexRecord> stored;
++    Vector<PersistedIndexRecord> deleted;
++};
++
++struct PersistedObjectStoreChanges {
++    Utf16String name;
++    Optional<u64> key_generator;
++    // Records stored replace any record with the same key.
++    Vector<PersistedRecord> stored;
++    Vector<ByteBuffer> deleted;
++    Vector<PersistedIndexChanges> indexes;
++};
++
++// What one committed transaction (or a deletion) did to one database.
++struct PersistedDatabaseChanges {
++    enum class Kind : u8 {
++        // An upgrade transaction: the database is now `replacement` in full.
++        Replace,
++        // The database was deleted.
++        Delete,
++        // A readwrite transaction: `object_stores` lists what changed.
++        Update,
++    };
++
++    Kind kind { Kind::Update };
++    Utf16String name;
++    // For Replace: the version the upgrade started from (0 for a new database). The browser process refuses an upgrade
++    // of a database another process upgraded or deleted first, and sends the refused process what it has instead.
++    u64 base_version { 0 };
++    Optional<PersistedDatabase> replacement;
++    Vector<PersistedObjectStoreChanges> object_stores;
++};
++
++}
++
++namespace IPC {
++
++template<>
++WEBCOMMON_API ErrorOr<void> encode(Encoder&, Web::IndexedDB::PersistedRecord const&);
++template<>
++WEBCOMMON_API ErrorOr<Web::IndexedDB::PersistedRecord> decode(Decoder&);
++
++template<>
++WEBCOMMON_API ErrorOr<void> encode(Encoder&, Web::IndexedDB::PersistedIndexRecord const&);
++template<>
++WEBCOMMON_API ErrorOr<Web::IndexedDB::PersistedIndexRecord> decode(Decoder&);
++
++template<>
++WEBCOMMON_API ErrorOr<void> encode(Encoder&, Web::IndexedDB::PersistedIndex const&);
++template<>
++WEBCOMMON_API ErrorOr<Web::IndexedDB::PersistedIndex> decode(Decoder&);
++
++template<>
++WEBCOMMON_API ErrorOr<void> encode(Encoder&, Web::IndexedDB::PersistedObjectStore const&);
++template<>
++WEBCOMMON_API ErrorOr<Web::IndexedDB::PersistedObjectStore> decode(Decoder&);
++
++template<>
++WEBCOMMON_API ErrorOr<void> encode(Encoder&, Web::IndexedDB::PersistedDatabase const&);
++template<>
++WEBCOMMON_API ErrorOr<Web::IndexedDB::PersistedDatabase> decode(Decoder&);
++
++template<>
++WEBCOMMON_API ErrorOr<void> encode(Encoder&, Web::IndexedDB::PersistedIndexChanges const&);
++template<>
++WEBCOMMON_API ErrorOr<Web::IndexedDB::PersistedIndexChanges> decode(Decoder&);
++
++template<>
++WEBCOMMON_API ErrorOr<void> encode(Encoder&, Web::IndexedDB::PersistedObjectStoreChanges const&);
++template<>
++WEBCOMMON_API ErrorOr<Web::IndexedDB::PersistedObjectStoreChanges> decode(Decoder&);
++
++template<>
++WEBCOMMON_API ErrorOr<void> encode(Encoder&, Web::IndexedDB::PersistedDatabaseChanges const&);
++template<>
++WEBCOMMON_API ErrorOr<Web::IndexedDB::PersistedDatabaseChanges> decode(Decoder&);
++
++}
+diff --git a/Libraries/LibWebView/Application.cpp b/Libraries/LibWebView/Application.cpp
+index fcf7c9bb..a9c16ea2 100644
+--- a/Libraries/LibWebView/Application.cpp
++++ b/Libraries/LibWebView/Application.cpp
+@@ -58,6 +58,7 @@
+ #include <LibWebView/HeadlessWebView.h>
+ #include <LibWebView/HelperProcess.h>
+ #include <LibWebView/HistoryStore.h>
++#include <LibWebView/IndexedDBStore.h>
+ #include <LibWebView/Menu.h>
+ #include <LibWebView/PictureInPictureWindow.h>
+ #include <LibWebView/ProcessType.h>
+@@ -1697,6 +1698,20 @@ ErrorOr<void> Application::launch_services()
+             m_default_session->history_store = HistoryStore::create(*m_default_session->favicon_store);
+         }
+ 
++        // AD-HOC: IndexedDB databases get a file of their own, so a store that finds it too new leaves the others be.
++        auto indexed_db_store = [&]() -> ErrorOr<NonnullOwnPtr<IndexedDBStore>> {
++            auto indexed_db_database = TRY(Database::Database::create(database_path, "IndexedDB"sv));
++            if (TRY(IndexedDBStore::migrate_schema(indexed_db_database, Database::MigrationMode::Apply)) != Database::MigrationOutcome::Success)
++                return Error::from_string_literal("IndexedDB database was created by a newer Ladybird version");
++            return IndexedDBStore::create(indexed_db_database);
++        }();
++        if (indexed_db_store.is_error()) {
++            dbgln("IndexedDB databases will not be persisted this session: {}", indexed_db_store.error());
++            m_default_session->indexed_db_store = IndexedDBStore::create();
++        } else {
++            m_default_session->indexed_db_store = indexed_db_store.release_value();
++        }
++
+         // Fall back without modifying the existing Sessions database.
+         auto session_store = [&]() -> ErrorOr<NonnullOwnPtr<SessionStore>> {
+             auto session_database = TRY(Database::Database::create(database_path, "Sessions"sv, { .foreign_keys = Database::Database::ForeignKeys::Yes }));
+@@ -1718,6 +1733,7 @@ ErrorOr<void> Application::launch_services()
+         m_default_session->history_store = HistoryStore::create_disabled();
+         m_default_session->hsts_store = HSTSStore::create();
+         m_default_session->storage_jar = StorageJar::create();
++        m_default_session->indexed_db_store = IndexedDBStore::create();
+         m_download_store = DownloadStore::create_disabled();
+         m_default_session->session_store = SessionStore::create();
+     }
+@@ -2395,6 +2411,9 @@ NonnullRefPtr<Core::Promise<Application::BrowsingDataSizes>> Application::estima
+         ->when_resolved([this, promise, since](Requests::CacheSizes cache_sizes) {
+             auto cookie_sizes = m_default_session->cookie_jar->estimate_storage_size_accessed_since(since);
+             auto storage_sizes = m_default_session->storage_jar->estimate_storage_size_accessed_since(since);
++            auto indexed_db_sizes = m_default_session->indexed_db_store->estimate_storage_size_accessed_since(since);
++            storage_sizes.since_requested_time += indexed_db_sizes.since_requested_time;
++            storage_sizes.total += indexed_db_sizes.total;
+ 
+             BrowsingDataSizes sizes;
+ 
+@@ -2447,11 +2466,13 @@ NonnullRefPtr<Core::Promise<Empty>> Application::clear_browsing_data(ClearBrowsi
+     if (options.delete_site_data == ClearBrowsingDataOptions::Delete::Yes) {
+         m_default_session->cookie_jar->expire_cookies_accessed_since(options.since);
+         m_default_session->storage_jar->remove_items_accessed_since(options.since);
++        m_default_session->indexed_db_store->remove_databases_accessed_since(options.since);
+         m_default_session->hsts_store->remove_policies_observed_since(options.since);
+ 
+         if (auto private_session = m_private_session.strong_ref()) {
+             private_session->cookie_jar->expire_cookies_accessed_since(options.since);
+             private_session->storage_jar->remove_items_accessed_since(options.since);
++            private_session->indexed_db_store->remove_databases_accessed_since(options.since);
+             private_session->hsts_store->remove_policies_observed_since(options.since);
+         }
+     }
+diff --git a/Libraries/LibWebView/BrowsingSession.cpp b/Libraries/LibWebView/BrowsingSession.cpp
+index 42ef0d58..5dd6f8c1 100644
+--- a/Libraries/LibWebView/BrowsingSession.cpp
++++ b/Libraries/LibWebView/BrowsingSession.cpp
+@@ -10,6 +10,7 @@
+ #include <LibWebView/FaviconStore.h>
+ #include <LibWebView/HSTSStore.h>
+ #include <LibWebView/HistoryStore.h>
++#include <LibWebView/IndexedDBStore.h>
+ #include <LibWebView/SessionStore.h>
+ #include <LibWebView/StorageJar.h>
+ 
+@@ -29,6 +30,7 @@ NonnullRefPtr<BrowsingSession> BrowsingSession::create(IsPrivate is_private)
+     if (is_private == IsPrivate::Yes) {
+         session->cookie_jar = CookieJar::create(IsPrivate::Yes);
+         session->storage_jar = StorageJar::create();
++        session->indexed_db_store = IndexedDBStore::create();
+         session->blob_url_store = make<BlobURLStore>();
+         session->hsts_store = HSTSStore::create();
+         session->favicon_store = FaviconStore::create();
+diff --git a/Libraries/LibWebView/BrowsingSession.h b/Libraries/LibWebView/BrowsingSession.h
+index 785f3b73..f890a65c 100644
+--- a/Libraries/LibWebView/BrowsingSession.h
++++ b/Libraries/LibWebView/BrowsingSession.h
+@@ -35,6 +35,7 @@ public:
+     // NB: Null for the ordinary session until Application fills these in during startup.
+     OwnPtr<CookieJar> cookie_jar;
+     OwnPtr<StorageJar> storage_jar;
++    OwnPtr<IndexedDBStore> indexed_db_store;
+     OwnPtr<BlobURLStore> blob_url_store;
+     OwnPtr<HSTSStore> hsts_store;
+     OwnPtr<FaviconStore> favicon_store;
+diff --git a/Libraries/LibWebView/CMakeLists.txt b/Libraries/LibWebView/CMakeLists.txt
+index 3633093c..4800d8f8 100644
+--- a/Libraries/LibWebView/CMakeLists.txt
++++ b/Libraries/LibWebView/CMakeLists.txt
+@@ -63,6 +63,7 @@ set(SOURCES
+     Settings.cpp
+     SiteCompatibility.cpp
+     StorageJar.cpp
++    IndexedDBStore.cpp
+     TestSpellChecker.cpp
+     URL.cpp
+     UserAgent.cpp
+diff --git a/Libraries/LibWebView/Forward.h b/Libraries/LibWebView/Forward.h
+index 3b6890f0..87c8a281 100644
+--- a/Libraries/LibWebView/Forward.h
++++ b/Libraries/LibWebView/Forward.h
+@@ -57,6 +57,7 @@ class Settings;
+ class SettingsUI;
+ class SpellChecker;
+ class StorageJar;
++class IndexedDBStore;
+ class TraversableSessionHistory;
+ class VideoDecoderServerControlClient;
+ class ViewImplementation;
+diff --git a/Libraries/LibWebView/IndexedDBStore.cpp b/Libraries/LibWebView/IndexedDBStore.cpp
+new file mode 100644
+index 00000000..14e30bb0
+--- /dev/null
++++ b/Libraries/LibWebView/IndexedDBStore.cpp
+@@ -0,0 +1,506 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <AK/Array.h>
++#include <AK/HashMap.h>
++#include <LibDatabase/Database.h>
++#include <LibWebView/IndexedDBStore.h>
++#include <LibWebView/WebContentClient.h>
++#include <LibWebView/WebWorkerClient.h>
++
++namespace WebView {
++
++using Web::IndexedDB::PersistedDatabase;
++using Web::IndexedDB::PersistedDatabaseChanges;
++using Web::IndexedDB::PersistedIndex;
++using Web::IndexedDB::PersistedKeyPath;
++using Web::IndexedDB::PersistedObjectStore;
++
++static constexpr u32 INDEXED_DB_SCHEMA_BASELINE_VERSION = 1u;
++
++ErrorOr<Database::MigrationOutcome> IndexedDBStore::migrate_schema(Database::Database& database, Database::MigrationMode mode)
++{
++    auto migrations = to_array<Database::Migration>({
++        {
++            .version = INDEXED_DB_SCHEMA_BASELINE_VERSION,
++            .sql = R"#(
++                CREATE TABLE IF NOT EXISTS IndexedDBDatabases (
++                    storage_key TEXT,
++                    name TEXT,
++                    version INTEGER,
++                    last_access_time INTEGER,
++                    PRIMARY KEY(storage_key, name)
++                );
++                CREATE TABLE IF NOT EXISTS IndexedDBObjectStores (
++                    storage_key TEXT,
++                    database_name TEXT,
++                    name TEXT,
++                    key_path_type INTEGER,
++                    key_path TEXT,
++                    key_generator INTEGER,
++                    PRIMARY KEY(storage_key, database_name, name)
++                );
++                CREATE TABLE IF NOT EXISTS IndexedDBIndexes (
++                    storage_key TEXT,
++                    database_name TEXT,
++                    object_store_name TEXT,
++                    name TEXT,
++                    key_path_type INTEGER,
++                    key_path TEXT,
++                    is_unique INTEGER,
++                    multi_entry INTEGER,
++                    PRIMARY KEY(storage_key, database_name, object_store_name, name)
++                );
++                CREATE TABLE IF NOT EXISTS IndexedDBRecords (
++                    storage_key TEXT,
++                    database_name TEXT,
++                    object_store_name TEXT,
++                    key BLOB,
++                    value BLOB,
++                    PRIMARY KEY(storage_key, database_name, object_store_name, key)
++                );
++                CREATE TABLE IF NOT EXISTS IndexedDBIndexRecords (
++                    storage_key TEXT,
++                    database_name TEXT,
++                    object_store_name TEXT,
++                    index_name TEXT,
++                    key BLOB,
++                    primary_key BLOB,
++                    PRIMARY KEY(storage_key, database_name, object_store_name, index_name, key, primary_key)
++                );
++            )#"sv,
++        },
++    });
++
++    return database.migrate("IndexedDB"sv, migrations, mode);
++}
++
++ErrorOr<NonnullOwnPtr<IndexedDBStore>> IndexedDBStore::create(Database::Database& database)
++{
++    Statements statements {};
++
++    statements.select_databases = TRY(database.prepare_statement("SELECT name, version FROM IndexedDBDatabases WHERE storage_key = ?;"sv));
++    statements.select_database_version = TRY(database.prepare_statement("SELECT version FROM IndexedDBDatabases WHERE storage_key = ? AND name = ?;"sv));
++    statements.select_object_stores = TRY(database.prepare_statement("SELECT database_name, name, key_path_type, key_path, COALESCE(key_generator, -1) FROM IndexedDBObjectStores WHERE storage_key = ?;"sv));
++    statements.select_indexes = TRY(database.prepare_statement("SELECT database_name, object_store_name, name, key_path_type, key_path, is_unique, multi_entry FROM IndexedDBIndexes WHERE storage_key = ?;"sv));
++    statements.select_records = TRY(database.prepare_statement("SELECT database_name, object_store_name, key, value FROM IndexedDBRecords WHERE storage_key = ?;"sv));
++    statements.select_index_records = TRY(database.prepare_statement("SELECT database_name, object_store_name, index_name, key, primary_key FROM IndexedDBIndexRecords WHERE storage_key = ?;"sv));
++    statements.touch_database = TRY(database.prepare_statement("UPDATE IndexedDBDatabases SET last_access_time = ? WHERE storage_key = ? AND name = ?;"sv));
++    statements.insert_database = TRY(database.prepare_statement("INSERT OR REPLACE INTO IndexedDBDatabases (storage_key, name, version, last_access_time) VALUES (?, ?, ?, ?);"sv));
++    statements.insert_object_store = TRY(database.prepare_statement("INSERT OR REPLACE INTO IndexedDBObjectStores (storage_key, database_name, name, key_path_type, key_path, key_generator) VALUES (?, ?, ?, ?, ?, ?);"sv));
++    statements.insert_index = TRY(database.prepare_statement("INSERT OR REPLACE INTO IndexedDBIndexes (storage_key, database_name, object_store_name, name, key_path_type, key_path, is_unique, multi_entry) VALUES (?, ?, ?, ?, ?, ?, ?, ?);"sv));
++    statements.insert_record = TRY(database.prepare_statement("INSERT OR REPLACE INTO IndexedDBRecords (storage_key, database_name, object_store_name, key, value) VALUES (?, ?, ?, ?, ?);"sv));
++    statements.insert_index_record = TRY(database.prepare_statement("INSERT OR REPLACE INTO IndexedDBIndexRecords (storage_key, database_name, object_store_name, index_name, key, primary_key) VALUES (?, ?, ?, ?, ?, ?);"sv));
++    statements.delete_record = TRY(database.prepare_statement("DELETE FROM IndexedDBRecords WHERE storage_key = ? AND database_name = ? AND object_store_name = ? AND key = ?;"sv));
++    statements.delete_index_record = TRY(database.prepare_statement("DELETE FROM IndexedDBIndexRecords WHERE storage_key = ? AND database_name = ? AND object_store_name = ? AND index_name = ? AND key = ? AND primary_key = ?;"sv));
++    statements.update_key_generator = TRY(database.prepare_statement("UPDATE IndexedDBObjectStores SET key_generator = ? WHERE storage_key = ? AND database_name = ? AND name = ?;"sv));
++    statements.delete_database = TRY(database.prepare_statement("DELETE FROM IndexedDBDatabases WHERE storage_key = ? AND name = ?;"sv));
++    statements.delete_object_stores = TRY(database.prepare_statement("DELETE FROM IndexedDBObjectStores WHERE storage_key = ? AND database_name = ?;"sv));
++    statements.delete_indexes = TRY(database.prepare_statement("DELETE FROM IndexedDBIndexes WHERE storage_key = ? AND database_name = ?;"sv));
++    statements.delete_records = TRY(database.prepare_statement("DELETE FROM IndexedDBRecords WHERE storage_key = ? AND database_name = ?;"sv));
++    statements.delete_index_records = TRY(database.prepare_statement("DELETE FROM IndexedDBIndexRecords WHERE storage_key = ? AND database_name = ?;"sv));
++    statements.select_databases_accessed_since = TRY(database.prepare_statement("SELECT storage_key, name FROM IndexedDBDatabases WHERE last_access_time >= ?;"sv));
++    statements.estimate_size_accessed_since = TRY(database.prepare_statement(R"#(
++        SELECT COALESCE(SUM(LENGTH(r.key) + LENGTH(r.value)), 0) FROM IndexedDBRecords r
++        JOIN IndexedDBDatabases d ON d.storage_key = r.storage_key AND d.name = r.database_name
++        WHERE d.last_access_time >= ?;
++    )#"sv));
++
++    return adopt_own(*new IndexedDBStore { database, statements });
++}
++
++NonnullOwnPtr<IndexedDBStore> IndexedDBStore::create()
++{
++    auto database = MUST(Database::Database::create_memory_backed());
++    MUST(migrate_schema(*database, Database::MigrationMode::Apply));
++    return MUST(create(*database));
++}
++
++IndexedDBStore::IndexedDBStore(NonnullRefPtr<Database::Database> database, Statements statements)
++    : m_database(move(database))
++    , m_statements(statements)
++{
++}
++
++IndexedDBStore::~IndexedDBStore() = default;
++
++// A key path is stored as its type (0: none, 1: a string, 2: a list of strings) and its text, a list's strings joined
++// by commas (key path identifiers cannot contain one).
++enum class KeyPathType : u8 {
++    None = 0,
++    String = 1,
++    List = 2,
++};
++
++static Utf16String key_path_text(PersistedKeyPath const& key_path)
++{
++    return key_path.visit(
++        [](Utf16String const& string) { return string; },
++        [](Vector<Utf16String> const& strings) { return Utf16String::join(","sv, strings); });
++}
++
++static u8 key_path_type(Optional<PersistedKeyPath> const& key_path)
++{
++    if (!key_path.has_value())
++        return to_underlying(KeyPathType::None);
++    return to_underlying(key_path->has<Utf16String>() ? KeyPathType::String : KeyPathType::List);
++}
++
++static Optional<PersistedKeyPath> key_path_from(i64 type, Utf16String const& text)
++{
++    if (type == to_underlying(KeyPathType::String))
++        return PersistedKeyPath { text };
++    if (type == to_underlying(KeyPathType::List)) {
++        Vector<Utf16String> strings;
++        auto utf8 = text.to_utf8();
++        utf8.bytes_as_string_view().for_each_split_view(',', SplitBehavior::KeepEmpty, [&](StringView part) {
++            strings.append(Utf16String::from_utf8(part));
++        });
++        return PersistedKeyPath { move(strings) };
++    }
++    return {};
++}
++
++static bool is_same_client(IndexedDBClient const& a, IndexedDBClient const& b)
++{
++    if (a.index() != b.index())
++        return false;
++    return a.visit([&](auto const& weak_client) {
++        using ClientType = RemoveCVReference<decltype(weak_client)>;
++        return weak_client.ptr() == b.template get<ClientType>().ptr();
++    });
++}
++
++static i64 to_sql_integer(u64 value)
++{
++    // Versions and key generator numbers are at most 2^53 + 1 (an IndexedDB version is an unsigned long long, but
++    // one above 2^63 would not survive the trip).
++    return static_cast<i64>(min(value, static_cast<u64>(NumericLimits<i64>::max())));
++}
++
++Vector<PersistedDatabase> IndexedDBStore::load(IndexedDBClient const& client, Web::StorageAPI::StorageKey const& storage_key)
++{
++    // From now on, the client hears of every change another process commits to these databases.
++    bool already_subscribed = m_subscribers.find_if([&](auto const& subscriber) {
++        return is_same_client(subscriber.client, client) && subscriber.storage_key == storage_key;
++    }) != m_subscribers.end();
++    if (!already_subscribed)
++        m_subscribers.append({ client, storage_key });
++
++    auto key = storage_key.to_string();
++    auto databases = read_databases(key);
++
++    auto now = UnixDateTime::now();
++    for (auto const& database : databases)
++        m_database->execute_statement(m_statements.touch_database, {}, now, key, database.name);
++
++    return databases;
++}
++
++Optional<u64> IndexedDBStore::stored_version(String const& storage_key, Utf16String const& name)
++{
++    Optional<u64> version;
++    m_database->execute_statement(
++        m_statements.select_database_version,
++        [&](auto statement_id) -> ErrorOr<void> {
++            version = static_cast<u64>(m_database->result_column<i64>(statement_id, 0));
++            return {};
++        },
++        storage_key, name);
++    return version;
++}
++
++Vector<PersistedDatabase> IndexedDBStore::read_databases(String const& key)
++{
++    Vector<PersistedDatabase> databases;
++    HashMap<Utf16String, size_t> database_indices;
++
++    m_database->execute_statement(
++        m_statements.select_databases,
++        [&](auto statement_id) -> ErrorOr<void> {
++            PersistedDatabase database;
++            database.name = m_database->result_column<Utf16String>(statement_id, 0);
++            database.version = static_cast<u64>(m_database->result_column<i64>(statement_id, 1));
++            database_indices.set(database.name, databases.size());
++            databases.append(move(database));
++            return {};
++        },
++        key);
++
++    auto object_store = [&](Utf16String const& database_name, Utf16String const& name) -> PersistedObjectStore* {
++        auto index = database_indices.get(database_name);
++        if (!index.has_value())
++            return nullptr;
++        for (auto& store : databases[*index].object_stores) {
++            if (store.name == name)
++                return &store;
++        }
++        return nullptr;
++    };
++
++    m_database->execute_statement(
++        m_statements.select_object_stores,
++        [&](auto statement_id) -> ErrorOr<void> {
++            auto database_name = m_database->result_column<Utf16String>(statement_id, 0);
++            auto index = database_indices.get(database_name);
++            if (!index.has_value())
++                return {};
++            PersistedObjectStore store;
++            store.name = m_database->result_column<Utf16String>(statement_id, 1);
++            store.key_path = key_path_from(m_database->result_column<i64>(statement_id, 2), m_database->result_column<Utf16String>(statement_id, 3));
++            if (auto key_generator = m_database->result_column<i64>(statement_id, 4); key_generator >= 0)
++                store.key_generator = static_cast<u64>(key_generator);
++            databases[*index].object_stores.append(move(store));
++            return {};
++        },
++        key);
++
++    m_database->execute_statement(
++        m_statements.select_indexes,
++        [&](auto statement_id) -> ErrorOr<void> {
++            auto* store = object_store(m_database->result_column<Utf16String>(statement_id, 0), m_database->result_column<Utf16String>(statement_id, 1));
++            if (!store)
++                return {};
++            auto key_path = key_path_from(m_database->result_column<i64>(statement_id, 3), m_database->result_column<Utf16String>(statement_id, 4));
++            if (!key_path.has_value())
++                return {};
++            PersistedIndex index;
++            index.name = m_database->result_column<Utf16String>(statement_id, 2);
++            index.key_path = key_path.release_value();
++            index.unique = m_database->result_column<i64>(statement_id, 5) != 0;
++            index.multi_entry = m_database->result_column<i64>(statement_id, 6) != 0;
++            store->indexes.append(move(index));
++            return {};
++        },
++        key);
++
++    m_database->execute_statement(
++        m_statements.select_records,
++        [&](auto statement_id) -> ErrorOr<void> {
++            auto* store = object_store(m_database->result_column<Utf16String>(statement_id, 0), m_database->result_column<Utf16String>(statement_id, 1));
++            if (!store)
++                return {};
++            store->records.append({ m_database->result_column<ByteBuffer>(statement_id, 2), m_database->result_column<ByteBuffer>(statement_id, 3) });
++            return {};
++        },
++        key);
++
++    m_database->execute_statement(
++        m_statements.select_index_records,
++        [&](auto statement_id) -> ErrorOr<void> {
++            auto* store = object_store(m_database->result_column<Utf16String>(statement_id, 0), m_database->result_column<Utf16String>(statement_id, 1));
++            if (!store)
++                return {};
++            auto index_name = m_database->result_column<Utf16String>(statement_id, 2);
++            for (auto& index : store->indexes) {
++                if (index.name == index_name) {
++                    index.records.append({ m_database->result_column<ByteBuffer>(statement_id, 3), m_database->result_column<ByteBuffer>(statement_id, 4) });
++                    break;
++                }
++            }
++            return {};
++        },
++        key);
++
++    return databases;
++}
++
++void IndexedDBStore::delete_database_rows(String const& storage_key, Utf16String const& name)
++{
++    m_database->execute_statement(m_statements.delete_database, {}, storage_key, name);
++    m_database->execute_statement(m_statements.delete_object_stores, {}, storage_key, name);
++    m_database->execute_statement(m_statements.delete_indexes, {}, storage_key, name);
++    m_database->execute_statement(m_statements.delete_records, {}, storage_key, name);
++    m_database->execute_statement(m_statements.delete_index_records, {}, storage_key, name);
++}
++
++void IndexedDBStore::insert_database_rows(String const& storage_key, PersistedDatabase const& database)
++{
++    m_database->execute_statement(m_statements.insert_database, {}, storage_key, database.name, to_sql_integer(database.version), UnixDateTime::now());
++
++    for (auto const& store : database.object_stores) {
++        // A store without a key generator has none (NULL).
++        Optional<i64> key_generator;
++        if (store.key_generator.has_value())
++            key_generator = to_sql_integer(*store.key_generator);
++        auto key_path = store.key_path.has_value() ? key_path_text(*store.key_path) : Utf16String {};
++        m_database->execute_statement(m_statements.insert_object_store, {}, storage_key, database.name, store.name, key_path_type(store.key_path), key_path, key_generator);
++
++        for (auto const& record : store.records)
++            m_database->execute_statement(m_statements.insert_record, {}, storage_key, database.name, store.name, record.key, record.value);
++
++        for (auto const& index : store.indexes) {
++            m_database->execute_statement(m_statements.insert_index, {}, storage_key, database.name, store.name, index.name,
++                key_path_type(index.key_path), key_path_text(index.key_path), index.unique, index.multi_entry);
++            for (auto const& record : index.records)
++                m_database->execute_statement(m_statements.insert_index_record, {}, storage_key, database.name, store.name, index.name, record.key, record.primary_key);
++        }
++    }
++}
++
++void IndexedDBStore::update_database_rows(String const& storage_key, PersistedDatabaseChanges const& changes)
++{
++    for (auto const& store : changes.object_stores) {
++        for (auto const& key : store.deleted)
++            m_database->execute_statement(m_statements.delete_record, {}, storage_key, changes.name, store.name, key);
++        for (auto const& record : store.stored)
++            m_database->execute_statement(m_statements.insert_record, {}, storage_key, changes.name, store.name, record.key, record.value);
++
++        for (auto const& index : store.indexes) {
++            for (auto const& record : index.deleted)
++                m_database->execute_statement(m_statements.delete_index_record, {}, storage_key, changes.name, store.name, index.name, record.key, record.primary_key);
++            for (auto const& record : index.stored)
++                m_database->execute_statement(m_statements.insert_index_record, {}, storage_key, changes.name, store.name, index.name, record.key, record.primary_key);
++        }
++
++        if (store.key_generator.has_value())
++            m_database->execute_statement(m_statements.update_key_generator, {}, to_sql_integer(*store.key_generator), storage_key, changes.name, store.name);
++    }
++
++    m_database->execute_statement(m_statements.touch_database, {}, UnixDateTime::now(), storage_key, changes.name);
++}
++
++void IndexedDBStore::commit(IndexedDBClient const& client, Web::StorageAPI::StorageKey const& storage_key, u64 commit_id, PersistedDatabaseChanges const& changes)
++{
++    auto key = storage_key.to_string();
++
++    // An upgrade (or a write) to a database that has since changed under the committer is refused.
++    bool refused = false;
++    auto version = stored_version(key, changes.name);
++    if (changes.kind == PersistedDatabaseChanges::Kind::Replace)
++        refused = version.value_or(0) != changes.base_version;
++    else if (changes.kind == PersistedDatabaseChanges::Kind::Update)
++        refused = !version.has_value();
++
++    auto result = m_database->transaction([&]() -> ErrorOr<void> {
++        if (refused)
++            return {};
++        switch (changes.kind) {
++        case PersistedDatabaseChanges::Kind::Replace:
++            delete_database_rows(key, changes.name);
++            if (changes.replacement.has_value())
++                insert_database_rows(key, *changes.replacement);
++            break;
++        case PersistedDatabaseChanges::Kind::Delete:
++            delete_database_rows(key, changes.name);
++            break;
++        case PersistedDatabaseChanges::Kind::Update:
++            update_database_rows(key, changes);
++            break;
++        }
++        return {};
++    });
++    if (result.is_error())
++        dbgln("IndexedDBStore: Unable to store changes to database '{}' of {}: {}", changes.name, key, result.error());
++
++    // The committer hears that its changes are in, after any change another process committed before them, so it knows
++    // which of those its own change supersedes.
++    client.visit([&](auto const& weak_client) {
++        if (auto strong_client = weak_client.strong_ref())
++            strong_client->async_indexed_database_changes_persisted(commit_id);
++    });
++
++    if (refused) {
++        // The committer gets the database as it is stored, which supersedes what it has.
++        PersistedDatabaseChanges current;
++        current.name = changes.name;
++        current.kind = PersistedDatabaseChanges::Kind::Delete;
++        if (version.has_value()) {
++            for (auto& database : read_databases(key)) {
++                if (database.name == changes.name) {
++                    current.kind = PersistedDatabaseChanges::Kind::Replace;
++                    current.base_version = changes.base_version;
++                    current.replacement = move(database);
++                    break;
++                }
++            }
++        }
++        client.visit([&](auto const& weak_client) {
++            if (auto strong_client = weak_client.strong_ref())
++                strong_client->async_indexed_database_changed(storage_key, current);
++        });
++        return;
++    }
++
++    send_to_subscribers(storage_key, &client, changes);
++}
++
++void IndexedDBStore::send_to_subscribers(Web::StorageAPI::StorageKey const& storage_key, IndexedDBClient const* except, PersistedDatabaseChanges const& changes)
++{
++    m_subscribers.remove_all_matching([](auto const& subscriber) {
++        return subscriber.client.visit([](auto const& weak_client) { return weak_client.is_null(); });
++    });
++
++    for (auto const& subscriber : m_subscribers) {
++        if (!(subscriber.storage_key == storage_key))
++            continue;
++        if (except && is_same_client(subscriber.client, *except))
++            continue;
++        subscriber.client.visit([&](auto const& weak_client) {
++            if (auto strong_client = weak_client.strong_ref())
++                strong_client->async_indexed_database_changed(storage_key, changes);
++        });
++    }
++}
++
++void IndexedDBStore::remove_databases_accessed_since(UnixDateTime since)
++{
++    struct RemovedDatabase {
++        String storage_key;
++        Utf16String name;
++    };
++    Vector<RemovedDatabase> removed;
++
++    m_database->execute_statement(
++        m_statements.select_databases_accessed_since,
++        [&](auto statement_id) -> ErrorOr<void> {
++            removed.append({ m_database->result_column<String>(statement_id, 0), m_database->result_column<Utf16String>(statement_id, 1) });
++            return {};
++        },
++        since);
++
++    auto result = m_database->transaction([&]() -> ErrorOr<void> {
++        for (auto const& database : removed)
++            delete_database_rows(database.storage_key, database.name);
++        return {};
++    });
++    if (result.is_error())
++        dbgln("IndexedDBStore: Unable to remove databases: {}", result.error());
++
++    // Processes that hold a removed database drop it too.
++    for (auto const& database : removed) {
++        PersistedDatabaseChanges changes;
++        changes.kind = PersistedDatabaseChanges::Kind::Delete;
++        changes.name = database.name;
++
++        Vector<Web::StorageAPI::StorageKey> storage_keys;
++        for (auto const& subscriber : m_subscribers) {
++            if (subscriber.storage_key.to_string() == database.storage_key && !storage_keys.contains_slow(subscriber.storage_key))
++                storage_keys.append(subscriber.storage_key);
++        }
++        for (auto const& storage_key : storage_keys)
++            send_to_subscribers(storage_key, nullptr, changes);
++    }
++}
++
++Requests::CacheSizes IndexedDBStore::estimate_storage_size_accessed_since(UnixDateTime since) const
++{
++    Requests::CacheSizes sizes;
++
++    m_database->execute_statement(
++        m_statements.estimate_size_accessed_since,
++        [&](auto statement_id) -> ErrorOr<void> { sizes.since_requested_time = static_cast<u64>(m_database->result_column<i64>(statement_id, 0)); return {}; },
++        since);
++
++    m_database->execute_statement(
++        m_statements.estimate_size_accessed_since,
++        [&](auto statement_id) -> ErrorOr<void> { sizes.total = static_cast<u64>(m_database->result_column<i64>(statement_id, 0)); return {}; },
++        UnixDateTime::earliest());
++
++    return sizes;
++}
++
++}
+diff --git a/Libraries/LibWebView/IndexedDBStore.h b/Libraries/LibWebView/IndexedDBStore.h
+new file mode 100644
+index 00000000..7ffcf874
+--- /dev/null
++++ b/Libraries/LibWebView/IndexedDBStore.h
+@@ -0,0 +1,96 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/NonnullOwnPtr.h>
++#include <AK/NonnullRefPtr.h>
++#include <AK/Time.h>
++#include <AK/Variant.h>
++#include <AK/Vector.h>
++#include <AK/WeakPtr.h>
++#include <LibDatabase/Forward.h>
++#include <LibRequests/CacheSizes.h>
++#include <LibWebCommon/IndexedDB/PersistedDatabase.h>
++#include <LibWebCommon/StorageAPI/StorageKey.h>
++#include <LibWebView/Export.h>
++#include <LibWebView/Forward.h>
++
++namespace WebView {
++
++using IndexedDBClient = Variant<WeakPtr<WebContentClient>, WeakPtr<WebWorkerClient>>;
++
++// AD-HOC: Every IndexedDB database of a browsing session, shared by all of its content and worker processes. A process
++//         loads a storage key's databases once (and is then told of every change other processes commit to them) and
++//         sends what each of its transactions commits. The ordinary session keeps them in SQLite in the profile; a
++//         private one keeps them in memory.
++class WEBVIEW_API IndexedDBStore {
++    AK_MAKE_NONCOPYABLE(IndexedDBStore);
++    AK_MAKE_NONMOVABLE(IndexedDBStore);
++
++public:
++    AK_ALLOC_WITH_KMALLOC;
++
++    static ErrorOr<Database::MigrationOutcome> migrate_schema(Database::Database&, Database::MigrationMode);
++    static ErrorOr<NonnullOwnPtr<IndexedDBStore>> create(Database::Database&);
++    static NonnullOwnPtr<IndexedDBStore> create();
++
++    ~IndexedDBStore();
++
++    Vector<Web::IndexedDB::PersistedDatabase> load(IndexedDBClient const&, Web::StorageAPI::StorageKey const&);
++    void commit(IndexedDBClient const&, Web::StorageAPI::StorageKey const&, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges const&);
++
++    void remove_databases_accessed_since(UnixDateTime);
++    Requests::CacheSizes estimate_storage_size_accessed_since(UnixDateTime) const;
++
++private:
++    struct Statements {
++        Database::StatementID select_databases { 0 };
++        Database::StatementID select_database_version { 0 };
++        Database::StatementID select_object_stores { 0 };
++        Database::StatementID select_indexes { 0 };
++        Database::StatementID select_records { 0 };
++        Database::StatementID select_index_records { 0 };
++        Database::StatementID touch_database { 0 };
++        Database::StatementID insert_database { 0 };
++        Database::StatementID insert_object_store { 0 };
++        Database::StatementID insert_index { 0 };
++        Database::StatementID insert_record { 0 };
++        Database::StatementID insert_index_record { 0 };
++        Database::StatementID delete_record { 0 };
++        Database::StatementID delete_index_record { 0 };
++        Database::StatementID update_key_generator { 0 };
++        Database::StatementID delete_database { 0 };
++        Database::StatementID delete_object_stores { 0 };
++        Database::StatementID delete_indexes { 0 };
++        Database::StatementID delete_records { 0 };
++        Database::StatementID delete_index_records { 0 };
++        Database::StatementID select_databases_accessed_since { 0 };
++        Database::StatementID estimate_size_accessed_since { 0 };
++    };
++
++    struct Subscriber {
++        IndexedDBClient client;
++        Web::StorageAPI::StorageKey storage_key;
++    };
++
++    IndexedDBStore(NonnullRefPtr<Database::Database>, Statements);
++
++    Vector<Web::IndexedDB::PersistedDatabase> read_databases(String const& storage_key);
++    Optional<u64> stored_version(String const& storage_key, Utf16String const& name);
++
++    void delete_database_rows(String const& storage_key, Utf16String const& name);
++    void insert_database_rows(String const& storage_key, Web::IndexedDB::PersistedDatabase const&);
++    void update_database_rows(String const& storage_key, Web::IndexedDB::PersistedDatabaseChanges const&);
++
++    void send_to_subscribers(Web::StorageAPI::StorageKey const&, IndexedDBClient const* except, Web::IndexedDB::PersistedDatabaseChanges const&);
++
++    NonnullRefPtr<Database::Database> m_database;
++    Statements m_statements;
++    Vector<Subscriber> m_subscribers;
++};
++
++}
+diff --git a/Libraries/LibWebView/WebContentClient.cpp b/Libraries/LibWebView/WebContentClient.cpp
+index 0afcf644..7bda5602 100644
+--- a/Libraries/LibWebView/WebContentClient.cpp
++++ b/Libraries/LibWebView/WebContentClient.cpp
+@@ -36,6 +36,7 @@
+ #include <LibWebView/HSTSStore.h>
+ #include <LibWebView/HelperProcess.h>
+ #include <LibWebView/HistoryStore.h>
++#include <LibWebView/IndexedDBStore.h>
+ #include <LibWebView/NavigationLoader.h>
+ #include <LibWebView/PictureInPictureManager.h>
+ #include <LibWebView/RequestServerManager.h>
+@@ -692,6 +693,33 @@ Messages::WebContentClient::DidRequestStorageKeysResponse WebContentClient::did_
+     return Vector<Utf16String> {};
+ }
+ 
++// The browser process obtains the storage key of a page's IndexedDB databases from the environment that asks.
++Messages::WebContentClient::DidRequestIndexedDatabasesResponse WebContentClient::did_request_indexed_databases(Web::PageId page_id, Web::HTML::EnvironmentId environment_id)
++{
++    auto* page = this->page(page_id);
++    if (!page)
++        return Vector<Web::IndexedDB::PersistedDatabase> {};
++
++    auto storage_key = page->indexed_database_storage_key(environment_id);
++    if (!storage_key.has_value())
++        return Vector<Web::IndexedDB::PersistedDatabase> {};
++
++    return session().indexed_db_store->load(WeakPtr<WebContentClient> { *this }, *storage_key);
++}
++
++void WebContentClient::did_commit_indexed_database_changes(Web::PageId page_id, Web::HTML::EnvironmentId environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges changes)
++{
++    auto* page = this->page(page_id);
++    if (!page)
++        return;
++
++    auto storage_key = page->indexed_database_storage_key(environment_id);
++    if (!storage_key.has_value())
++        return;
++
++    session().indexed_db_store->commit(WeakPtr<WebContentClient> { *this }, *storage_key, commit_id, changes);
++}
++
+ Messages::WebContentClient::DidRequestStorageUsageResponse WebContentClient::did_request_storage_usage(Web::PageId page_id, Web::HTML::EnvironmentId environment_id)
+ {
+     if (auto* page = this->page(page_id))
+diff --git a/Libraries/LibWebView/WebContentClient.h b/Libraries/LibWebView/WebContentClient.h
+index c7e227a4..093b91f1 100644
+--- a/Libraries/LibWebView/WebContentClient.h
++++ b/Libraries/LibWebView/WebContentClient.h
+@@ -188,6 +188,8 @@ private:
+     virtual Messages::WebContentClient::DidRequestStorageItemResponse did_request_storage_item(Web::PageId page_id, Web::StorageAPI::StorageEndpointType, Web::HTML::EnvironmentId environment_id, Utf16String bottle_key) override;
+     virtual Messages::WebContentClient::DidRequestStorageKeysResponse did_request_storage_keys(Web::PageId page_id, Web::StorageAPI::StorageEndpointType, Web::HTML::EnvironmentId environment_id) override;
+     virtual Messages::WebContentClient::DidRequestStorageUsageResponse did_request_storage_usage(Web::PageId page_id, Web::HTML::EnvironmentId environment_id) override;
++    virtual Messages::WebContentClient::DidRequestIndexedDatabasesResponse did_request_indexed_databases(Web::PageId page_id, Web::HTML::EnvironmentId environment_id) override;
++    virtual void did_commit_indexed_database_changes(Web::PageId page_id, Web::HTML::EnvironmentId environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges changes) override;
+     virtual Messages::WebContentClient::DidStartDownloadWithoutRequestResponse did_start_download_without_request(Web::PageId page_id, URL::URL, ByteString suggested_filename, Optional<u64> total_size) override;
+     virtual Messages::WebContentClient::DidStartDownloadResponse did_start_download(Web::PageId page_id, Web::HTML::CrossProcessId navigable_id, Optional<Utf16String> navigation_id, URL::URL, ByteString suggested_filename, Optional<u64> total_size, int request_server_client_id, u64 request_server_request_id, ByteBuffer initial_data) override;
+     virtual Messages::WebContentClient::DidRequestNewWebViewResponse did_request_new_web_view(Web::PageId page_id, Web::HTML::ActivateTab, Web::HTML::WebViewHints, Optional<Web::HTML::CrossProcessId> opener_navigable_id, Optional<URL::URL> opener_base_url, Utf16String target_name, Web::HTML::SandboxingFlagSet popup_sandboxing_flag_set) override;
+diff --git a/Libraries/LibWebView/WebContentPage.cpp b/Libraries/LibWebView/WebContentPage.cpp
+index beb13d81..aae3f225 100644
+--- a/Libraries/LibWebView/WebContentPage.cpp
++++ b/Libraries/LibWebView/WebContentPage.cpp
+@@ -266,6 +266,14 @@ bool WebContentPage::hosts_an_environment_with_storage_key(Web::StorageAPI::Stor
+     return hosts_one;
+ }
+ 
++Optional<Web::StorageAPI::StorageKey> WebContentPage::indexed_database_storage_key(Web::HTML::EnvironmentId const& environment_id) const
++{
++    auto environment = hosted_environment(environment_id);
++    if (!environment.has_value())
++        return {};
++    return obtain_a_storage_key(*environment);
++}
++
+ Optional<CanonicalEnvironmentSettingsObject const&> WebContentPage::hosted_environment(Web::HTML::EnvironmentId const& environment_id) const
+ {
+     auto document = document_with_hosted_environment(environment_id);
+diff --git a/Libraries/LibWebView/WebContentPage.h b/Libraries/LibWebView/WebContentPage.h
+index b1aac097..4ebed527 100644
+--- a/Libraries/LibWebView/WebContentPage.h
++++ b/Libraries/LibWebView/WebContentPage.h
+@@ -92,6 +92,7 @@ public:
+     // such environment.
+     Optional<bool> hosted_environment_has_cross_site_ancestor(Web::HTML::EnvironmentId const& environment_id) const;
+     bool hosts_an_environment_with_storage_key(Web::StorageAPI::StorageKey const&) const;
++    Optional<Web::StorageAPI::StorageKey> indexed_database_storage_key(Web::HTML::EnvironmentId const&) const;
+     void spoof_document_origin_for_testing(Web::HTML::EnvironmentId const& environment_id, URL::Origin);
+     // The process and page hosting the document of a navigable that a page represents. A page represents every
+     // navigable of its tab whose document it does not host, so those are the ones it can ask to navigate or post to.
+diff --git a/Libraries/LibWebView/WebWorkerClient.cpp b/Libraries/LibWebView/WebWorkerClient.cpp
+index d5ae74c2..6401504d 100644
+--- a/Libraries/LibWebView/WebWorkerClient.cpp
++++ b/Libraries/LibWebView/WebWorkerClient.cpp
+@@ -12,6 +12,7 @@
+ #include <LibWebView/CookieJar.h>
+ #include <LibWebView/HSTSStore.h>
+ #include <LibWebView/HelperProcess.h>
++#include <LibWebView/IndexedDBStore.h>
+ #include <LibWebView/WebWorkerClient.h>
+ #include <LibWebView/WorkerProcessManager.h>
+ 
+@@ -115,6 +116,34 @@ Messages::WebWorkerClient::DidRequestCookieResponse WebWorkerClient::did_request
+     return cookie;
+ }
+ 
++Messages::WebWorkerClient::DidRequestIndexedDatabasesResponse WebWorkerClient::did_request_indexed_databases(Web::HTML::EnvironmentId environment_id)
++{
++    auto session = m_session.strong_ref();
++    auto environment = hosted_environment(environment_id);
++    if (!session || !environment.has_value())
++        return Vector<Web::IndexedDB::PersistedDatabase> {};
++
++    auto storage_key = obtain_a_storage_key(*environment);
++    if (!storage_key.has_value())
++        return Vector<Web::IndexedDB::PersistedDatabase> {};
++
++    return session->indexed_db_store->load(WeakPtr<WebWorkerClient> { *this }, *storage_key);
++}
++
++void WebWorkerClient::did_commit_indexed_database_changes(Web::HTML::EnvironmentId environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges changes)
++{
++    auto session = m_session.strong_ref();
++    auto environment = hosted_environment(environment_id);
++    if (!session || !environment.has_value())
++        return;
++
++    auto storage_key = obtain_a_storage_key(*environment);
++    if (!storage_key.has_value())
++        return;
++
++    session->indexed_db_store->commit(WeakPtr<WebWorkerClient> { *this }, *storage_key, commit_id, changes);
++}
++
+ Messages::WebWorkerClient::DidAddBlobUrlEntryResponse WebWorkerClient::did_add_blob_url_entry(Web::HTML::EnvironmentId environment_id, Utf16String url, Web::FileAPI::SerializedBlobURLEntry entry)
+ {
+     auto session = m_session.strong_ref();
+diff --git a/Libraries/LibWebView/WebWorkerClient.h b/Libraries/LibWebView/WebWorkerClient.h
+index 98c961ff..b3eb55fc 100644
+--- a/Libraries/LibWebView/WebWorkerClient.h
++++ b/Libraries/LibWebView/WebWorkerClient.h
+@@ -53,6 +53,8 @@ public:
+     virtual void did_fail_loading_worker_script() override;
+     virtual void did_report_worker_exception(Utf16String message, Utf16String filename, u32 lineno, u32 colno) override;
+     virtual Messages::WebWorkerClient::DidRequestCookieResponse did_request_cookie(URL::URL, HTTP::Cookie::Source) override;
++    virtual Messages::WebWorkerClient::DidRequestIndexedDatabasesResponse did_request_indexed_databases(Web::HTML::EnvironmentId environment_id) override;
++    virtual void did_commit_indexed_database_changes(Web::HTML::EnvironmentId environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges changes) override;
+     virtual Messages::WebWorkerClient::DidAddBlobUrlEntryResponse did_add_blob_url_entry(Web::HTML::EnvironmentId environment_id, Utf16String url, Web::FileAPI::SerializedBlobURLEntry entry) override;
+     virtual void did_remove_blob_url_entries(Web::HTML::EnvironmentId environment_id, Vector<Utf16String> urls) override;
+     virtual Messages::WebWorkerClient::DidRequestBlobUrlEntryResponse did_request_blob_url_entry(Utf16String url, Optional<URL::BlobURLEntry::Token> token) override;
+diff --git a/Services/WebContent/ConnectionFromClient.cpp b/Services/WebContent/ConnectionFromClient.cpp
+index dd55e550..8298c9b9 100644
+--- a/Services/WebContent/ConnectionFromClient.cpp
++++ b/Services/WebContent/ConnectionFromClient.cpp
+@@ -33,6 +33,7 @@
+ #include <LibJS/Runtime/Date.h>
+ #include <LibUnicode/TimeZone.h>
+ #include <LibWasm/Types.h>
++#include <LibWeb/IndexedDB/Internal/Persistence.h>
+ #include <LibWeb/ARIA/RoleType.h>
+ #include <LibWeb/Bindings/MainThreadVM.h>
+ #include <LibWeb/CSS/CustomPropertyData.h>
+@@ -512,6 +513,16 @@ void ConnectionFromClient::update_system_theme(Web::PageId page_id, Core::Anonym
+     page->set_palette_impl(*impl);
+ }
+ 
++void ConnectionFromClient::indexed_database_changed(Web::StorageAPI::StorageKey storage_key, Web::IndexedDB::PersistedDatabaseChanges changes)
++{
++    Web::IndexedDB::apply_persisted_database_changes(storage_key, move(changes));
++}
++
++void ConnectionFromClient::indexed_database_changes_persisted(u64 commit_id)
++{
++    Web::IndexedDB::did_persist_database_changes(commit_id);
++}
++
+ void ConnectionFromClient::set_site_compatibility_data(JsonValue data)
+ {
+     auto parsed_data = Web::SiteCompatibilityData::from_json(data);
+diff --git a/Services/WebContent/ConnectionFromClient.h b/Services/WebContent/ConnectionFromClient.h
+index 9622b0af..7aff54af 100644
+--- a/Services/WebContent/ConnectionFromClient.h
++++ b/Services/WebContent/ConnectionFromClient.h
+@@ -118,6 +118,8 @@ private:
+     virtual void connect_to_wasm_compiler(IPC::TransportHandle handle) override;
+     virtual void connect_to_compositor_process(IPC::TransportHandle handle, IPC::TransportHandle render_clock_handle) override;
+     virtual void set_site_compatibility_data(JsonValue data) override;
++    virtual void indexed_database_changed(Web::StorageAPI::StorageKey storage_key, Web::IndexedDB::PersistedDatabaseChanges changes) override;
++    virtual void indexed_database_changes_persisted(u64 commit_id) override;
+     virtual void compositor_process_reconnected() override;
+     virtual void update_system_theme(Web::PageId page_id, Core::AnonymousBuffer) override;
+     virtual void update_screen_rects(Web::PageId page_id, Vector<Web::DevicePixelRect>, Vector<Web::DevicePixelRect>, u32) override;
+diff --git a/Services/WebContent/PageClient.cpp b/Services/WebContent/PageClient.cpp
+index c246e5b4..57ebbfb5 100644
+--- a/Services/WebContent/PageClient.cpp
++++ b/Services/WebContent/PageClient.cpp
+@@ -1584,6 +1584,21 @@ u64 PageClient::page_did_request_storage_usage(Web::HTML::EnvironmentId const& e
+     return response->usage();
+ }
+ 
++Vector<Web::IndexedDB::PersistedDatabase> PageClient::page_did_request_indexed_databases(Web::HTML::EnvironmentId const& environment_id)
++{
++    auto response = client().send_sync_but_allow_failure<Messages::WebContentClient::DidRequestIndexedDatabases>(m_id, environment_id);
++    if (!response) {
++        dbgln("WebContent client disconnected during DidRequestIndexedDatabases. Exiting peacefully.");
++        Core::Process::terminate_immediately(0);
++    }
++    return response->take_databases();
++}
++
++void PageClient::page_did_commit_indexed_database_changes(Web::HTML::EnvironmentId const& environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges const& changes)
++{
++    client().async_did_commit_indexed_database_changes(m_id, environment_id, commit_id, changes);
++}
++
+ void PageClient::page_did_clear_storage(Web::StorageAPI::StorageEndpointType storage_endpoint, Web::HTML::EnvironmentId const& environment_id)
+ {
+     auto response = client().send_sync_but_allow_failure<Messages::WebContentClient::DidClearStorage>(m_id, storage_endpoint, environment_id);
+diff --git a/Services/WebContent/PageClient.h b/Services/WebContent/PageClient.h
+index 90e072a1..ec4f909a 100644
+--- a/Services/WebContent/PageClient.h
++++ b/Services/WebContent/PageClient.h
+@@ -302,6 +302,8 @@ private:
+     virtual void page_did_remove_storage_item(Web::StorageAPI::StorageEndpointType storage_endpoint, Web::HTML::EnvironmentId const& environment_id, Utf16String const& bottle_key) override;
+     virtual Vector<Utf16String> page_did_request_storage_keys(Web::StorageAPI::StorageEndpointType storage_endpoint, Web::HTML::EnvironmentId const& environment_id) override;
+     virtual u64 page_did_request_storage_usage(Web::HTML::EnvironmentId const& environment_id) override;
++    virtual Vector<Web::IndexedDB::PersistedDatabase> page_did_request_indexed_databases(Web::HTML::EnvironmentId const& environment_id) override;
++    virtual void page_did_commit_indexed_database_changes(Web::HTML::EnvironmentId const& environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges const& changes) override;
+     virtual void page_did_clear_storage(Web::StorageAPI::StorageEndpointType storage_endpoint, Web::HTML::EnvironmentId const& environment_id) override;
+     virtual void page_did_broadcast_storage_change(Web::StorageAPI::StorageEndpointType storage_endpoint, String const& url, Optional<Utf16String> const& key, Optional<Utf16String> const& old_value, Optional<Utf16String> const& new_value) override;
+     virtual void page_did_update_indexed_database(String const& url, Web::IndexedDB::TransactionChanges const&) override;
+diff --git a/Services/WebContent/WebContentClient.ipc b/Services/WebContent/WebContentClient.ipc
+index 7a00b8c3..1d481ddb 100644
+--- a/Services/WebContent/WebContentClient.ipc
++++ b/Services/WebContent/WebContentClient.ipc
+@@ -13,6 +13,7 @@
+ #include <LibRequests/RequestTimingInfo.h>
+ #include <LibURL/Origin.h>
+ #include <LibURL/URL.h>
++#include <LibWebCommon/IndexedDB/PersistedDatabase.h>
+ #include <LibWebCommon/HTML/PopulatedDocumentOrigin.h>
+ #include <LibWeb/StorageAPI/StorageKey.h>
+ #include <LibWebCommon/Bindings/Navigation.h>
+@@ -202,6 +203,8 @@ endpoint WebContentClient routed by Web::PageId page_id
+     [NotRouted] did_request_storage_keys(Web::PageId page_id, Web::StorageAPI::StorageEndpointType storage_endpoint, Web::HTML::EnvironmentId environment_id) => (Vector<Utf16String> keys)
+     did_clear_storage(Web::PageId page_id, Web::StorageAPI::StorageEndpointType storage_endpoint, Web::HTML::EnvironmentId environment_id) => ()
+     [NotRouted] did_request_storage_usage(Web::PageId page_id, Web::HTML::EnvironmentId environment_id) => (u64 usage)
++    [NotRouted] did_request_indexed_databases(Web::PageId page_id, Web::HTML::EnvironmentId environment_id) => (Vector<Web::IndexedDB::PersistedDatabase> databases)
++    [NotRouted] did_commit_indexed_database_changes(Web::PageId page_id, Web::HTML::EnvironmentId environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges changes) =|
+     did_change_storage_item(Web::PageId page_id, Web::StorageAPI::StorageEndpointType storage_endpoint, String url, Optional<Utf16String> key, Optional<Utf16String> old_value, Optional<Utf16String> new_value) =|
+     did_update_indexed_database(Web::PageId page_id, String update) =|
+     did_post_broadcast_channel_message(Web::PageId page_id, Web::HTML::PostedBroadcastChannelMessage message) =|
+diff --git a/Services/WebContent/WebContentServer.ipc b/Services/WebContent/WebContentServer.ipc
+index 735bb24c..69294b3f 100644
+--- a/Services/WebContent/WebContentServer.ipc
++++ b/Services/WebContent/WebContentServer.ipc
+@@ -5,6 +5,8 @@
+ #include <LibIPC/File.h>
+ #include <LibIPC/TransportHandle.h>
+ #include <LibURL/URL.h>
++#include <LibWebCommon/IndexedDB/PersistedDatabase.h>
++#include <LibWebCommon/StorageAPI/StorageKey.h>
+ #include <LibWebCommon/Bindings/Navigation.h>
+ #include <LibWebCommon/Bindings/NavigationType.h>
+ #include <LibWebCommon/CSS/PreferredColorScheme.h>
+@@ -91,6 +93,8 @@ endpoint WebContentServer routed by Web::PageId page_id
+     connect_to_compositor_process(IPC::TransportHandle handle, IPC::TransportHandle render_clock_handle) =|
+     compositor_process_reconnected() =|
+     set_site_compatibility_data(JsonValue data) =|
++    indexed_database_changed(Web::StorageAPI::StorageKey storage_key, Web::IndexedDB::PersistedDatabaseChanges changes) =|
++    indexed_database_changes_persisted(u64 commit_id) =|
+ 
+     update_system_theme(Web::PageId page_id, Core::AnonymousBuffer theme_buffer) =|
+     update_screen_rects(Web::PageId page_id, Vector<Web::DevicePixelRect> rects, Vector<Web::DevicePixelRect> available_rects, u32 main_screen_index) =|
+diff --git a/Services/WebWorker/ConnectionFromClient.cpp b/Services/WebWorker/ConnectionFromClient.cpp
+index ec8a506c..1f855ca9 100644
+--- a/Services/WebWorker/ConnectionFromClient.cpp
++++ b/Services/WebWorker/ConnectionFromClient.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include <LibCompositing/FontServiceClient.h>
+ #include <LibCore/Process.h>
++#include <LibWeb/IndexedDB/Internal/Persistence.h>
+ #include <LibWeb/Compositor/CompositorConnection.h>
+ #include <LibWeb/DOMURL/DOMURL.h>
+ #include <LibWeb/FileAPI/BlobURLStore.h>
+@@ -83,6 +84,16 @@ void ConnectionFromClient::set_system_font_family(String family)
+     Web::Platform::FontPlugin::the().set_system_font_family(FlyString { family });
+ }
+ 
++void ConnectionFromClient::indexed_database_changed(Web::StorageAPI::StorageKey storage_key, Web::IndexedDB::PersistedDatabaseChanges changes)
++{
++    Web::IndexedDB::apply_persisted_database_changes(storage_key, move(changes));
++}
++
++void ConnectionFromClient::indexed_database_changes_persisted(u64 commit_id)
++{
++    Web::IndexedDB::did_persist_database_changes(commit_id);
++}
++
+ void ConnectionFromClient::set_site_compatibility_data(JsonValue data)
+ {
+     auto parsed_data = Web::SiteCompatibilityData::from_json(data);
+diff --git a/Services/WebWorker/ConnectionFromClient.h b/Services/WebWorker/ConnectionFromClient.h
+index 34f534d5..b90f32e3 100644
+--- a/Services/WebWorker/ConnectionFromClient.h
++++ b/Services/WebWorker/ConnectionFromClient.h
+@@ -63,6 +63,8 @@ private:
+     virtual void connect_to_wasm_compiler(IPC::TransportHandle handle) override;
+     virtual void connect_to_compositor(IPC::TransportHandle handle) override;
+     virtual void set_site_compatibility_data(JsonValue data) override;
++    virtual void indexed_database_changed(Web::StorageAPI::StorageKey storage_key, Web::IndexedDB::PersistedDatabaseChanges changes) override;
++    virtual void indexed_database_changes_persisted(u64 commit_id) override;
+     virtual void set_user_agent(String user_agent) override;
+     virtual void set_navigator_compatibility_mode(Web::NavigatorCompatibilityMode mode) override;
+     virtual void set_preferred_languages(Vector<String> preferred_languages) override;
+diff --git a/Services/WebWorker/PageHost.cpp b/Services/WebWorker/PageHost.cpp
+index 28ac39e4..2d18b9e9 100644
+--- a/Services/WebWorker/PageHost.cpp
++++ b/Services/WebWorker/PageHost.cpp
+@@ -129,6 +129,16 @@ Optional<Web::FileAPI::SerializedBlobURLEntry> PageHost::page_did_request_blob_u
+     return m_client.did_request_blob_url_entry(url, token);
+ }
+ 
++Vector<Web::IndexedDB::PersistedDatabase> PageHost::page_did_request_indexed_databases(Web::HTML::EnvironmentId const& environment_id)
++{
++    return m_client.did_request_indexed_databases(environment_id);
++}
++
++void PageHost::page_did_commit_indexed_database_changes(Web::HTML::EnvironmentId const& environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges const& changes)
++{
++    m_client.async_did_commit_indexed_database_changes(environment_id, commit_id, changes);
++}
++
+ Web::HTML::WorkerAgentId PageHost::start_worker_agent(Web::HTML::WorkerAgentStartRequest&& request)
+ {
+     return m_client.start_worker_agent(move(request));
+diff --git a/Services/WebWorker/PageHost.h b/Services/WebWorker/PageHost.h
+index a1b31ca2..3a7909fe 100644
+--- a/Services/WebWorker/PageHost.h
++++ b/Services/WebWorker/PageHost.h
+@@ -46,6 +46,8 @@ public:
+     virtual URL::BlobURLEntry::Token page_did_add_blob_url_entry(Web::HTML::EnvironmentSettingsObject const&, Utf16String const& url, Web::FileAPI::SerializedBlobURLEntry const&) override;
+     virtual void page_did_remove_blob_url_entries(Web::HTML::EnvironmentSettingsObject const&, Vector<Utf16String> const& urls) override;
+     virtual Optional<Web::FileAPI::SerializedBlobURLEntry> page_did_request_blob_url_entry(Utf16String const& url, Optional<URL::BlobURLEntry::Token> token) override;
++    virtual Vector<Web::IndexedDB::PersistedDatabase> page_did_request_indexed_databases(Web::HTML::EnvironmentId const& environment_id) override;
++    virtual void page_did_commit_indexed_database_changes(Web::HTML::EnvironmentId const& environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges const& changes) override;
+     virtual Web::HTML::WorkerAgentId start_worker_agent(Web::HTML::WorkerAgentStartRequest&&) override;
+     virtual void close_worker_agent(Web::HTML::WorkerAgentId, Web::HTML::WorkerAgentOwnerToken) override;
+     virtual bool supports_compositor() const override { return true; }
+diff --git a/Services/WebWorker/WebWorkerClient.ipc b/Services/WebWorker/WebWorkerClient.ipc
+index 2551c57f..09901803 100644
+--- a/Services/WebWorker/WebWorkerClient.ipc
++++ b/Services/WebWorker/WebWorkerClient.ipc
+@@ -4,6 +4,8 @@
+ #include <LibIPC/TransportHandle.h>
+ #include <LibURL/URL.h>
+ #include <LibWebCommon/FileAPI/SerializedBlobURLEntry.h>
++#include <LibWebCommon/HTML/Scripting/EnvironmentId.h>
++#include <LibWebCommon/IndexedDB/PersistedDatabase.h>
+ #include <LibWebCommon/HTML/BroadcastChannelMessage.h>
+ #include <LibWebCommon/HTML/WorkerAgentForward.h>
+ #include <LibWebCommon/HTML/WorkerAgentTypes.h>
+@@ -17,6 +19,8 @@ endpoint WebWorkerClient {
+     did_finish_loading_worker_script(bool worker_is_secure_context) =|
+     did_fail_loading_worker_script() =|
+     did_report_worker_exception(Utf16String message, Utf16String filename, u32 lineno, u32 colno) =|
++    did_request_indexed_databases(Web::HTML::EnvironmentId environment_id) => (Vector<Web::IndexedDB::PersistedDatabase> databases)
++    did_commit_indexed_database_changes(Web::HTML::EnvironmentId environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges changes) =|
+     did_request_cookie(URL::URL url, HTTP::Cookie::Source source) => (HTTP::Cookie::VersionedCookie cookie)
+     did_request_file(ByteString path, i32 request_id) =|
+     did_is_known_hsts_host(String domain) => (bool result)
+diff --git a/Services/WebWorker/WebWorkerServer.ipc b/Services/WebWorker/WebWorkerServer.ipc
+index 356a6406..0fcb34b8 100644
+--- a/Services/WebWorker/WebWorkerServer.ipc
++++ b/Services/WebWorker/WebWorkerServer.ipc
+@@ -3,6 +3,8 @@
+ #include <LibIPC/TransportHandle.h>
+ #include <LibURL/URL.h>
+ #include <LibWebCommon/HTML/BroadcastChannelMessage.h>
++#include <LibWebCommon/IndexedDB/PersistedDatabase.h>
++#include <LibWebCommon/StorageAPI/StorageKey.h>
+ #include <LibWebCommon/HTML/Scripting/SerializedEnvironmentSettingsObject.h>
+ #include <LibWebCommon/HTML/SerializationRecords.h>
+ #include <LibWebCommon/HTML/WorkerAgentForward.h>
+@@ -19,6 +21,8 @@ endpoint WebWorkerServer {
+     connect_to_wasm_compiler(IPC::TransportHandle handle) =|
+     connect_to_compositor(IPC::TransportHandle handle) =|
+     set_site_compatibility_data(JsonValue data) =|
++    indexed_database_changed(Web::StorageAPI::StorageKey storage_key, Web::IndexedDB::PersistedDatabaseChanges changes) =|
++    indexed_database_changes_persisted(u64 commit_id) =|
+     set_user_agent(String user_agent) =|
+     set_navigator_compatibility_mode(Web::NavigatorCompatibilityMode mode) =|
+     set_preferred_languages(Vector<String> preferred_languages) =|
