@@ -1,5 +1,5 @@
 ## Saved sessions: the Sessions side panel, the quit prompt that offers to save the open tabs,
-## and "Close all tabs and save as session". The store is store.nim. Incognito windows have none of it.
+## and "Close all tabs and save as session" (no prompt: it saves under the date and time). The store is store.nim. Incognito windows have none of it.
 
 import ../../browser
 import store, common
@@ -55,21 +55,25 @@ proc closeAllTabs() =
   for t in old: closeTab(t)
 
 proc saveOpenTabs(closeAll = false) =
-  ## Asks for a name and saves the open tabs as a session.
+  ## Saves the open tabs as a session. Plain save asks for a name; close all saves under the date and time and
+  ## closes the tabs straight away, with no dialog.
   if incognito: return
   let list = openTabsAsSession()
   let count = sessionTabCount(list)
   if count == 0:
     toast("There are no open pages to save")
     return
-  nameDialog(
-    if closeAll: "Close all tabs and save as session" else: "Save open tabs as session",
-    "The " & plural(count, "open tab") & " can be restored later from Sessions.", defaultSessionName(),
-    if closeAll: "Save and close tabs" else: "Save", proc (name: string) =
-      let s = saveSession(list, name, activeIndex)
-      if s == nil: return
-      if closeAll: closeAllTabs()
-      toast("Saved session \"" & s.name & "\""))
+  let active = activeIndex
+  proc save(name: string) =
+    let s = saveSession(list, name, active)
+    if s == nil: return
+    if closeAll: closeAllTabs()
+    toast("Saved session \"" & s.name & "\"")
+  if closeAll:
+    save(defaultSessionName())
+    return
+  nameDialog("Save open tabs as session",
+    "The " & plural(count, "open tab") & " can be restored later from Sessions.", defaultSessionName(), "Save", save)
 
 # ---------------------------------------------------------------------------------------------------------------
 # The panel
