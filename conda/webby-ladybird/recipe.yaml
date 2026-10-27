@@ -3,7 +3,7 @@
 # never shadow conda-forge's; activation sets WEBBY_LADYBIRD_PREFIX to it.
 # Build + upload: scripts/publish_conda.sh (uploads to prefix.dev channel nandi-testing; needs PREFIX_API_KEY).
 context:
-  version: "2026.10.26.4"
+  version: "2026.10.27.1"
 
 package:
   name: webby-ladybird
@@ -12,7 +12,7 @@ package:
 source:
   # GitHub Release made by .github/workflows/runtime-build.yml (all patches, 0018 included)
   - url: https://github.com/nandi-conda/webby/releases/download/webby-prebuilt-${{ version }}/webby-prebuilt-linux-x64.tar.zst
-    sha256: 457790969b27e92f73adccf6d6fb17c9c87b725341c4b52bc8e2320e94c46694
+    sha256: d9d5bd86981318b2cb5bff7b0a37c57ee4abbb27b1a71b8eb526827b3f512bbf
 
 build:
   number: 0
