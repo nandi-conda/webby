@@ -16,6 +16,7 @@
 #include <LibMain/Main.h>
 #include <LibWebCommon/CSS/PreferredColorScheme.h>
 #include <LibWebCommon/Page/InputEvent.h>
+#include <LibWebCommon/UIEvents/KeyCode.h>
 #include <LibRequests/RequestControlClient.h>
 #include <LibURL/Parser.h>
 #include <LibWebView/Application.h>
@@ -709,12 +710,27 @@ void webby_view_wheel_event(WebbyView* handle, int x, int y, double delta_x, dou
     });
 }
 
+// A key code the engine has no KeyCode for crashed WebContent on its keydown (a VERIFY in KeyboardEvent.cpp, now
+// patches/0038): it goes as Key_Invalid, so the page still gets the key's text, and the number is logged.
+static Web::UIEvents::KeyCode to_key_code(int key_code)
+{
+    switch (key_code) {
+#define __ENUMERATE_KEY_CODE(name, ui_name, code) case code:
+        ENUMERATE_KEY_CODES
+#undef __ENUMERATE_KEY_CODE
+        return static_cast<Web::UIEvents::KeyCode>(key_code);
+    default:
+        warnln("webby: Key code {:#x} has no Ladybird KeyCode, sent as Invalid", key_code);
+        return Web::UIEvents::KeyCode::Key_Invalid;
+    }
+}
+
 void webby_view_key_event(WebbyView* handle, int is_down, int key_code, int modifiers, uint32_t code_point, int repeat)
 {
     auto type = is_down ? Web::KeyEvent::Type::KeyDown : Web::KeyEvent::Type::KeyUp;
     handle->view->enqueue_input_event(Web::KeyEvent {
         .type = type,
-        .key = static_cast<Web::UIEvents::KeyCode>(key_code),
+        .key = to_key_code(key_code),
         .modifiers = to_modifiers(modifiers),
         .code_point = code_point,
         .repeat = repeat != 0,

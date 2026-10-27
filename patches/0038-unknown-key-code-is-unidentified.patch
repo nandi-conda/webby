@@ -1,0 +1,15 @@
+diff --git a/Libraries/LibWeb/UIEvents/KeyboardEvent.cpp b/Libraries/LibWeb/UIEvents/KeyboardEvent.cpp
+index 0f633fb773..30c0bf3e04 100644
+--- a/Libraries/LibWeb/UIEvents/KeyboardEvent.cpp
++++ b/Libraries/LibWeb/UIEvents/KeyboardEvent.cpp
+@@ -671,7 +671,9 @@ static ErrorOr<Utf16FlyString> get_event_code(KeyCode platform_key, unsigned mod
+         return "Unidentified"_utf16_fly_string;
+     }
+ 
+-    VERIFY_NOT_REACHED();
++    // webby: The key code comes from the UI process, over IPC, unchecked. A number no KeyCode has used to kill
++    //        WebContent here on the keydown (a SIGILL from this VERIFY); the key is just one we can't name.
++    return "Unidentified"_utf16_fly_string;
+ }
+ 
+ // 5.6.2. Keyboard Event Key Location, https://www.w3.org/TR/uievents/#events-keyboard-key-location
