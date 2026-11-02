@@ -149,9 +149,6 @@ private:
     void copy_front_bitmap();
     void state_changed() { ++m_state_serial; }
 
-    // Puts the site-permission check in front of Ladybird's geolocation handlers. Call after initialize_tab(), which
-    // installs them.
-    void install_permission_checks();
     void update_permission_request();
 
     void handle_webauthn_request(WebView::WebContentPage&, u64 request_id, String const& request);
@@ -192,20 +189,12 @@ private:
         u64 id { 0 };
         ByteString permission;
         ByteString origin;
-        // Geolocation requests, so a cancelled one can be withdrawn; null for others.
-        RefPtr<WebView::WebContentPage> page;
-        u64 request_id { 0 };
-        bool is_watch { false };
         Function<void(bool granted)> answer;
     };
-    void ask_permission(StringView permission, Function<void(bool granted)> answer, RefPtr<WebView::WebContentPage> = {}, u64 request_id = 0, bool is_watch = false);
+    void ask_permission(StringView permission, Function<void(bool granted)> answer);
     Vector<PendingPermission> m_pending_permissions;
     u64 m_next_permission_id { 0 };
     ByteString m_permission_request_json;
-    Function<void(WebView::WebContentPage&, u64)> m_request_geolocation_position;
-    Function<void(WebView::WebContentPage&, u64)> m_cancel_geolocation_position_request;
-    Function<void(WebView::WebContentPage&, u64)> m_start_geolocation_position_watch;
-    Function<void(WebView::WebContentPage&, u64)> m_stop_geolocation_position_watch;
 
     enum class DialogType : u8 {
         None,
