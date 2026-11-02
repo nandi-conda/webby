@@ -1,5 +1,5 @@
 diff --git a/Libraries/LibMedia/DecoderRegistrations.cpp b/Libraries/LibMedia/DecoderRegistrations.cpp
-index 2400ee2b89..30a324ab07 100644
+index b44824c5db..c22276840e 100644
 --- a/Libraries/LibMedia/DecoderRegistrations.cpp
 +++ b/Libraries/LibMedia/DecoderRegistrations.cpp
 @@ -12,7 +12,7 @@
@@ -10,8 +10,8 @@ index 2400ee2b89..30a324ab07 100644
 +#if defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)
  #    include <LibMedia/FFmpeg/SystemFFmpegDecoders.h>
  #endif
- 
-@@ -40,7 +40,7 @@ ReadonlySpan<VideoDecoderRegistration> ffmpeg_video_decoders()
+ #ifdef AK_OS_WINDOWS
+@@ -43,7 +43,7 @@ ReadonlySpan<VideoDecoderRegistration> ffmpeg_video_decoders()
  {
      static Array const decoders {
          VideoDecoderRegistration { FFmpeg::FFmpegVideoDecoder::capabilities, create_ffmpeg_video_decoder },
@@ -20,8 +20,8 @@ index 2400ee2b89..30a324ab07 100644
          VideoDecoderRegistration { FFmpeg::system_ffmpeg_video_decoder_capabilities, FFmpeg::create_system_ffmpeg_video_decoder },
  #endif
      };
-@@ -66,7 +66,7 @@ ReadonlySpan<AudioDecoderRegistration> audio_decoders()
-         AudioDecoderRegistration { AudioToolbox::AudioToolboxAudioDecoder::capabilities, create_audiotoolbox_audio_decoder },
+@@ -79,7 +79,7 @@ ReadonlySpan<AudioDecoderRegistration> audio_decoders()
+         AudioDecoderRegistration { WindowsMediaFoundation::WindowsMediaFoundationAudioDecoder::capabilities, create_windows_media_foundation_audio_decoder },
  #endif
          AudioDecoderRegistration { FFmpeg::FFmpegAudioDecoder::capabilities, create_ffmpeg_audio_decoder },
 -#ifdef AK_OS_LINUX
@@ -30,10 +30,10 @@ index 2400ee2b89..30a324ab07 100644
  #endif
      };
 diff --git a/Libraries/LibWebView/CrashReport.cpp b/Libraries/LibWebView/CrashReport.cpp
-index f6ed976a3c..f55df09d1b 100644
+index b20330f6e5..0ed71bcb77 100644
 --- a/Libraries/LibWebView/CrashReport.cpp
 +++ b/Libraries/LibWebView/CrashReport.cpp
-@@ -252,7 +252,8 @@ ErrorOr<void> CrashReport::record_build_description(StringView) { return {}; }
+@@ -253,7 +253,8 @@ ErrorOr<void> CrashReport::record_build_description(StringView) { return {}; }
  
  #endif
  
@@ -44,10 +44,10 @@ index f6ed976a3c..f55df09d1b 100644
  {
  }
 diff --git a/Libraries/LibWebView/HelperProcess.cpp b/Libraries/LibWebView/HelperProcess.cpp
-index 824b847fc4..798591f999 100644
+index 30b27b691b..9674c073fa 100644
 --- a/Libraries/LibWebView/HelperProcess.cpp
 +++ b/Libraries/LibWebView/HelperProcess.cpp
-@@ -218,7 +218,7 @@ static ErrorOr<ChildIdentity> launch_helper_process(StringView server_name, Vect
+@@ -220,7 +220,7 @@ static ErrorOr<ChildIdentity> launch_helper_process(StringView server_name, Vect
              }
          }
  #endif
@@ -56,7 +56,7 @@ index 824b847fc4..798591f999 100644
          OwnPtr<Sandbox::ConnectBroker> connect_broker;
          OwnPtr<Core::File> connect_broker_child_file;
  
-@@ -251,7 +251,7 @@ static ErrorOr<ChildIdentity> launch_helper_process(StringView server_name, Vect
+@@ -253,7 +253,7 @@ static ErrorOr<ChildIdentity> launch_helper_process(StringView server_name, Vect
              auto process = result.release_value();
              if (crash_report)
                  process.set_crash_report(crash_report.release_nonnull());
@@ -80,12 +80,12 @@ index 6f9d021fa5..76792561a2 100644
      if (connect_broker_fd != -1 && !disable_sandbox) {
          Sandbox::set_connect_broker_fd(connect_broker_fd);
 diff --git a/Services/Compositor/main.cpp b/Services/Compositor/main.cpp
-index d2b348e797..b384e7360d 100644
+index dad98161b6..f6ec2910fb 100644
 --- a/Services/Compositor/main.cpp
 +++ b/Services/Compositor/main.cpp
-@@ -74,7 +74,8 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+@@ -100,7 +100,8 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
      if (force_fontconfig)
-         Gfx::FontDatabase::the().set_force_freetype_rasterization(true);
+         Compositor::set_font_rasterizer(Compositor::FontRasterizer::FreeType);
  
 -#if defined(AK_OS_LINUX)
 +// Android helpers run unsandboxed (see SandboxUnimplemented.cpp), so they skip the Linux sandbox's setup.

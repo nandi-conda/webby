@@ -1,8 +1,8 @@
 diff --git a/Libraries/LibWeb/DOM/Node.cpp b/Libraries/LibWeb/DOM/Node.cpp
-index c281d93f9..51890d800 100644
+index f93547c06d..6df7ba34e9 100644
 --- a/Libraries/LibWeb/DOM/Node.cpp
 +++ b/Libraries/LibWeb/DOM/Node.cpp
-@@ -1530,8 +1530,10 @@ void Node::update_layout_tree_for_removal(Layout::BegunRead const& read, Node& p
+@@ -1561,8 +1561,10 @@ void Node::update_layout_tree_for_removal(Layout::BegunRead const& read, Node& p
          document().set_needs_repaint(Badge<Node> {}, InvalidateDisplayList::No);
          for (Element* node = parent_element; node && node->is_svg_element(); node = node->parent_element().ptr())
              static_cast<SVG::SVGElement&>(*node).mark_resource_box_referencing_elements_for_content_change();
@@ -16,18 +16,10 @@ index c281d93f9..51890d800 100644
              document().schedule_scroll_container_resnap();
              document().set_needs_repaint(Badge<Node> {}, InvalidateDisplayList::PaintCommandsAndHitTestList);
 diff --git a/Libraries/LibWeb/Rust/src/layout/box_removal.rs b/Libraries/LibWeb/Rust/src/layout/box_removal.rs
-index 631ecef58..cdbad16ef 100644
+index fd86f5984e..e0626df4ac 100644
 --- a/Libraries/LibWeb/Rust/src/layout/box_removal.rs
 +++ b/Libraries/LibWeb/Rust/src/layout/box_removal.rs
-@@ -16,7 +16,6 @@ use super::node_facts::{self, has_flag};
- use super::tree_builder::node_kind_is_node_with_style;
- use super::tree_mutation::HostWorkDue;
- use super::tree_update_marks::FfiLayoutTreeUpdateMark;
--use crate::css::css_enums::positioning;
- use crate::css::style::tree::StyleNodeID;
- use crate::layout::FfiDisplay;
- use crate::painting::paint_read::PaintRead;
-@@ -67,11 +66,13 @@ impl LayoutNodeArena {
+@@ -142,11 +142,13 @@ impl LayoutNodeArena {
              .map_or_else(FfiDisplay::block, |style| style.display())
      }
  

@@ -1,8 +1,8 @@
 diff --git a/Services/Compositor/OpenGLContext.cpp b/Services/Compositor/OpenGLContext.cpp
-index b7d4730466..65b4f32016 100644
+index 9e626621b1..55a5ddcbb5 100644
 --- a/Services/Compositor/OpenGLContext.cpp
 +++ b/Services/Compositor/OpenGLContext.cpp
-@@ -608,6 +608,24 @@ void OpenGLContext::allocate_painting_surface_if_needed()
+@@ -712,6 +712,24 @@ void OpenGLContext::allocate_painting_surface_if_needed()
          return;
      m_drawing_buffer_needs_allocation = false;
  
@@ -27,7 +27,7 @@ index b7d4730466..65b4f32016 100644
      free_surface_resources();
  
      VERIFY(!m_size.is_empty());
-@@ -663,6 +681,11 @@ void OpenGLContext::allocate_painting_surface_if_needed()
+@@ -756,6 +774,11 @@ void OpenGLContext::allocate_painting_surface_if_needed()
      }
  
      VERIFY(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);

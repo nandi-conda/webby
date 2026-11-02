@@ -1,8 +1,8 @@
 diff --git a/Libraries/LibWeb/Platform/FontPlugin.cpp b/Libraries/LibWeb/Platform/FontPlugin.cpp
-index b8fd9e1151..9b94405adf 100644
+index 4af0feb6e6..55a5a0f74f 100644
 --- a/Libraries/LibWeb/Platform/FontPlugin.cpp
 +++ b/Libraries/LibWeb/Platform/FontPlugin.cpp
-@@ -161,27 +161,33 @@ FlyString FontPlugin::compute_generic_font_name(GenericFont generic_font)
+@@ -153,27 +153,33 @@ FlyString FontPlugin::compute_generic_font_name(GenericFont generic_font)
          VERIFY_NOT_REACHED();
      }
  

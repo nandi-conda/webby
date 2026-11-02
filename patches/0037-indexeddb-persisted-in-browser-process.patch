@@ -1,1105 +1,2515 @@
-diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
-index e6807f77..306d45ef 100644
---- a/Libraries/LibWeb/CMakeLists.txt
-+++ b/Libraries/LibWeb/CMakeLists.txt
-@@ -719,6 +719,7 @@ set(SOURCES
-     IndexedDB/Internal/Key.cpp
-     IndexedDB/Internal/MutationLog.cpp
-     IndexedDB/Internal/ObjectStore.cpp
-+    IndexedDB/Internal/Persistence.cpp
-     IndexedDB/Internal/RequestList.cpp
-     Infra/ByteSequences.cpp
-     Infra/JSON.cpp
-diff --git a/Libraries/LibWeb/IndexedDB/IDBFactory.cpp b/Libraries/LibWeb/IndexedDB/IDBFactory.cpp
-index d9f8c44a..808dd832 100644
---- a/Libraries/LibWeb/IndexedDB/IDBFactory.cpp
-+++ b/Libraries/LibWeb/IndexedDB/IDBFactory.cpp
-@@ -19,6 +19,7 @@
- #include <LibWeb/IndexedDB/IDBFactory.h>
- #include <LibWeb/IndexedDB/Internal/Algorithms.h>
- #include <LibWeb/IndexedDB/Internal/Key.h>
-+#include <LibWeb/IndexedDB/Internal/Persistence.h>
- #include <LibWeb/Platform/EventLoopPlugin.h>
- #include <LibWeb/StorageAPI/StorageKey.h>
- 
-@@ -235,6 +236,9 @@ void IDBFactory::databases(GC::Ref<WebIDL::Promise> promise)
-     Platform::EventLoopPlugin::the().deferred_invoke(GC::create_function(GC::Heap::the(), [&realm, storage_key, promise]() {
-         HTML::TemporaryExecutionContext context(realm, HTML::TemporaryExecutionContext::CallbacksEnabled::Yes);
- 
-+        // AD-HOC: Bring in the databases the browser process keeps for storageKey.
-+        load_persisted_databases(realm, storage_key);
-+
-         // 1. Let databases be the set of databases in storageKey.
-         //    If this cannot be determined for any reason, then reject p with an appropriate error (e.g. an "UnknownError" DOMException) and terminate these steps.
-         auto databases = Database::for_key(storage_key);
-diff --git a/Libraries/LibWeb/IndexedDB/IDBTransaction.h b/Libraries/LibWeb/IndexedDB/IDBTransaction.h
-index 39bc6ef0..1a94d222 100644
---- a/Libraries/LibWeb/IndexedDB/IDBTransaction.h
-+++ b/Libraries/LibWeb/IndexedDB/IDBTransaction.h
-@@ -105,6 +105,16 @@ public:
-     void revert_all_mutations();
-     void discard_mutation_logs();
- 
-+    // The database's version before this transaction (for an upgrade transaction: the version it upgrades from).
-+    u64 original_version() const { return m_original_version; }
-+
-+    template<typename Callback>
-+    void for_each_store_mutation_log(Callback callback) const
-+    {
-+        for (auto const& entry : m_store_mutation_logs)
-+            callback(*entry.store, *entry.log);
-+    }
-+
-     WebIDL::ExceptionOr<void> abort();
-     WebIDL::ExceptionOr<void> commit();
-     WebIDL::ExceptionOr<GC::Ref<IDBObjectStore>> object_store(Utf16String const& name);
-diff --git a/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp b/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp
-index 7fb59624..8bdff2e8 100644
---- a/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp
-+++ b/Libraries/LibWeb/IndexedDB/Internal/Algorithms.cpp
-@@ -45,6 +45,7 @@
- #include <LibWeb/IndexedDB/Internal/Database.h>
- #include <LibWeb/IndexedDB/Internal/Index.h>
- #include <LibWeb/IndexedDB/Internal/Key.h>
-+#include <LibWeb/IndexedDB/Internal/Persistence.h>
- #include <LibWeb/StorageAPI/StorageKey.h>
- #include <LibWeb/WebIDL/AbstractOperations.h>
- #include <LibWeb/WebIDL/Buffers.h>
-@@ -109,6 +110,17 @@ void open_a_database_connection(JS::Realm& realm, StorageAPI::StorageKey storage
-             queue.on_request_processed();
-         };
- 
-+        // AD-HOC: Bring in the databases the browser process keeps for storageKey, and wait for any other process
-+        //         upgrading this database to be done.
-+        load_persisted_databases(realm, storage_key);
-+        wait_for_upgrade_lock(realm, storage_key, name, maybe_version, GC::create_function(GC::Heap::the(), [&realm, &queue, storage_key, name, maybe_version, request, on_complete](bool holds_upgrade_lock) mutable -> void {
-+        if (holds_upgrade_lock) {
-+            on_complete = GC::create_function(GC::Heap::the(), [&realm, name, inner = on_complete](WebIDL::ExceptionOr<GC::Ref<IDBDatabase>> result) {
-+                release_upgrade_lock(realm, name);
-+                inner->function()(move(result));
-+            });
-+        }
-+
-         // 4. Let db be the database named name in storageKey, or null otherwise.
-         GC::Ptr<Database> db;
-         auto maybe_db = Database::for_key_and_name(storage_key, name);
-@@ -249,6 +261,7 @@ void open_a_database_connection(JS::Realm& realm, StorageAPI::StorageKey storage
-         // 11. Return connection.
-         dbgln_if(IDB_DEBUG, "open_a_database_connection: step 11: no upgrade required, completing with new connection");
-         call_completion(queue, on_complete, connection);
-+        }));
-     }));
+diff --git a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/cpp.rs b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/cpp.rs
+index 8f5b87f568..ef32ed52a4 100644
+--- a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/cpp.rs
++++ b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/cpp.rs
+@@ -126,7 +126,7 @@ pub(crate) fn create_dom_string_list(cx: &CallContext, strings: &[Utf16String])
+     unsafe { CppInterface::from_wrapper(Gc::from_non_null(wrapper)) }
  }
  
-@@ -521,6 +534,9 @@ void delete_a_database(JS::Realm& realm, StorageAPI::StorageKey storage_key, Utf
-             queue.on_request_processed();
-         };
+-unsafe extern "C" fn run_function(vm: *mut c_void, cell: *mut c_void) {
++pub(crate) unsafe extern "C" fn run_function(vm: *mut c_void, cell: *mut c_void) {
+     // SAFETY: LibWeb passes the VM and the cell of the function, which it kept alive.
+     let (vm, function) = unsafe {
+         (
+diff --git a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/idb_factory.rs b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/idb_factory.rs
+index c048eb85b3..9a7977d8ac 100644
+--- a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/idb_factory.rs
++++ b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/idb_factory.rs
+@@ -284,6 +284,8 @@ impl IDBFactory {
+                     crate::bindings::interface::with_temporary_execution_context_and_callbacks(realm, || {
+                         // 1. Let databases be the set of databases in storageKey.
+                         //    If this cannot be determined for any reason, then queue a database task to reject p with an appropriate error (e.g. an "UnknownError" DOMException) and terminate these steps.
++                        // AD-HOC: Bring in the databases the browser process keeps for storageKey.
++                        crate::indexed_db::internal::persistence::load_persisted_databases(vm, realm, &storage_key.0);
+                         let databases = Database::for_key(vm, &storage_key.0);
  
-+        // AD-HOC: Bring in the databases the browser process keeps for storageKey.
-+        load_persisted_databases(realm, storage_key);
+                         // 2. Let result be a new list.
+diff --git a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/idb_transaction.rs b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/idb_transaction.rs
+index a1f9214ca1..ab03dc5e2f 100644
+--- a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/idb_transaction.rs
++++ b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/idb_transaction.rs
+@@ -294,6 +294,14 @@ impl IDBTransaction {
+         }
+     }
+ 
++    pub(crate) fn store_mutation_logs<'vm>(&self, vm: &'vm Vm) -> MarkedVec<'vm, (ObjectStoreRef, MutationLogRef)> {
++        let entries = MarkedVec::new(vm);
++        for entry in self.store_mutation_logs.borrow().iter() {
++            entries.push((entry.store, entry.log));
++        }
++        entries
++    }
 +
-         // 4. Let db be the database named name in storageKey, if one exists. Otherwise, return 0 (zero).
-         auto maybe_db = Database::for_key_and_name(storage_key, name);
-         if (!maybe_db.has_value()) {
-@@ -581,7 +597,7 @@ void delete_a_database(JS::Realm& realm, StorageAPI::StorageKey storage_key, Utf
+     pub(crate) fn original_version(&self) -> u64 {
+         self.original_version.get()
+     }
+diff --git a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/algorithms.rs b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/algorithms.rs
+index 281829249c..edb9faef47 100644
+--- a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/algorithms.rs
++++ b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/algorithms.rs
+@@ -42,8 +42,10 @@ use crate::indexed_db::idb_transaction::{IDBTransaction, IDBTransactionMode, Tra
+ use crate::indexed_db::idb_version_change_event::{IDBVersionChangeEvent, IDBVersionChangeEventInit};
+ use crate::indexed_db::internal::database::Database;
+ use crate::indexed_db::internal::function::{
+-    Function, FunctionWith, NoCells, Operation, create_function, create_operation, perform_operation,
++    Function, FunctionWith, NoCells, Operation, create_function, create_function_with, create_operation,
++    perform_operation,
+ };
++use crate::indexed_db::internal::persistence;
+ use crate::indexed_db::internal::index::{Index, IndexRef};
+ use crate::indexed_db::internal::key::{Key, KeyType, code_unit_order};
+ use crate::indexed_db::internal::object_store::{ObjectStore, ObjectStoreRef};
+@@ -135,196 +137,242 @@ pub(crate) fn open_a_database_connection(
+             on_complete,
+         ),
+         |vm, &(realm, queue, ref storage_key, ref name, maybe_version, request, on_complete), ()| {
+-            // 4. Let db be the database named name in storageKey, or null otherwise.
+-            let maybe_db = Database::for_key_and_name(vm, &storage_key.0, name);
++            // AD-HOC: Bring in the databases the browser process keeps for storageKey, and wait for any other process
++            //         upgrading this database to be done.
++            persistence::load_persisted_databases(vm, realm, &storage_key.0);
++            let then = create_function_with(
++                vm,
++                (realm, queue, NoCells(storage_key.0.clone()), name.clone(), maybe_version, request, on_complete),
++                |vm, &(realm, queue, ref storage_key, ref name, maybe_version, request, on_complete), holds_upgrade_lock: bool| {
++                    let on_complete = if holds_upgrade_lock {
++                        create_function_with(
++                            vm,
++                            (realm, name.clone(), on_complete),
++                            |vm, &(realm, ref name, inner), result: OpenResult| {
++                                persistence::release_upgrade_lock(realm, name);
++                                inner.call(vm, result);
++                            },
++                        )
++                    } else {
++                        on_complete
++                    };
++                    open_a_database_connection_with_lock_settled(
++                        vm,
++                        realm,
++                        queue,
++                        &storage_key.0,
++                        name,
++                        maybe_version,
++                        request,
++                        on_complete,
++                    );
++                },
++            );
++            persistence::wait_for_upgrade_lock(vm, realm, &storage_key.0, name, maybe_version, then);
++        },
++    );
++    queue.request_list.enqueue(vm, request, steps);
++}
+ 
+-            // 5. If version is undefined, let version be 1 if db is null, or db’s version otherwise.
+-            let version = maybe_version.unwrap_or_else(|| maybe_db.map_or(1, |db| db.version()));
++// The steps of open a database connection from step 4 on, once this process may go on to them.
++#[allow(clippy::too_many_arguments, reason = "the captures of the steps")]
++fn open_a_database_connection_with_lock_settled(
++    vm: &Vm,
++    realm: Gc<Realm>,
++    queue: ConnectionQueueRef,
++    storage_key: &StorageKey,
++    name: &Utf16String,
++    maybe_version: Option<u64>,
++    request: AnyIDBRequest,
++    on_complete: FunctionWith<OpenResult>,
++) {
++    // 4. Let db be the database named name in storageKey, or null otherwise.
++    let maybe_db = Database::for_key_and_name(vm, storage_key, name);
+ 
+-            // 6. If db is null, let db be a new database with name name, version 0 (zero), and with no object stores.
+-            //    If this fails for any reason, return an appropriate error (e.g. a QuotaExceededError, or an "UnknownError" DOMException).
+-            let db = maybe_db.unwrap_or_else(|| Database::create_for_key_and_name(vm, &storage_key.0, name));
++    // 5. If version is undefined, let version be 1 if db is null, or db’s version otherwise.
++    let version = maybe_version.unwrap_or_else(|| maybe_db.map_or(1, |db| db.version()));
+ 
+-            // 7. If db’s version is greater than version, return a newly created "VersionError" DOMException and abort these steps.
+-            if db.version() > version {
+-                call_completion(
+-                    vm,
+-                    queue,
+-                    on_complete,
+-                    Err(DomException::create(
+-                        "VersionError",
+-                        "Database version is greater than the requested version",
+-                    )),
+-                );
+-                return;
+-            }
++    // 6. If db is null, let db be a new database with name name, version 0 (zero), and with no object stores.
++    //    If this fails for any reason, return an appropriate error (e.g. a QuotaExceededError, or an "UnknownError" DOMException).
++    let db = maybe_db.unwrap_or_else(|| Database::create_for_key_and_name(vm, storage_key, name));
+ 
+-            // 8. Let connection be a new connection to db.
+-            let connection = IDBDatabase::create(vm, realm, db);
++    // 7. If db’s version is greater than version, return a newly created "VersionError" DOMException and abort these steps.
++    if db.version() > version {
++        call_completion(
++            vm,
++            queue,
++            on_complete,
++            Err(DomException::create(
++                "VersionError",
++                "Database version is greater than the requested version",
++            )),
++        );
++        return;
++    }
+ 
+-            // 9. Set connection’s version to version.
+-            connection.set_version(version);
++    // 8. Let connection be a new connection to db.
++    let connection = IDBDatabase::create(vm, realm, db);
+ 
+-            // 10. If db’s version is less than version, then:
+-            if db.version() < version {
+-                // 1. Let openConnections be the set of all connections, except connection, associated with db.
+-                let open_connections = db.associated_connections_except(vm, connection);
++    // 9. Set connection’s version to version.
++    connection.set_version(version);
+ 
+-                // 2. For each entry of openConnections that does not have its close pending flag set to true,
+-                //    queue a database task to fire a version change event named versionchange at entry with db’s version and version.
+-                let mut task_counter_state: Option<TaskCounterStateRef> = None;
+-                for &entry in open_connections.values().iter() {
+-                    if !entry.close_pending() {
+-                        let state = *task_counter_state.get_or_insert_with(|| TaskCounterState::create(vm));
++    // 10. If db’s version is less than version, then:
++    if db.version() < version {
++        // 1. Let openConnections be the set of all connections, except connection, associated with db.
++        let open_connections = db.associated_connections_except(vm, connection);
+ 
+-                        state.remaining_tasks.set(state.remaining_tasks.get() + 1);
+-                        queue_a_database_task(
+-                            vm,
+-                            create_function(
++        // 2. For each entry of openConnections that does not have its close pending flag set to true,
++        //    queue a database task to fire a version change event named versionchange at entry with db’s version and version.
++        let mut task_counter_state: Option<TaskCounterStateRef> = None;
++        for &entry in open_connections.values().iter() {
++            if !entry.close_pending() {
++                let state = *task_counter_state.get_or_insert_with(|| TaskCounterState::create(vm));
++
++                state.remaining_tasks.set(state.remaining_tasks.get() + 1);
++                queue_a_database_task(
++                    vm,
++                    create_function(
++                        vm,
++                        (realm, entry, db, version, state),
++                        |vm, &(realm, entry, db, version, state), ()| {
++                            fire_a_version_change_event(
+                                 vm,
+-                                (realm, entry, db, version, state),
+-                                |vm, &(realm, entry, db, version, state), ()| {
+-                                    fire_a_version_change_event(
+-                                        vm,
+-                                        realm,
+-                                        "versionchange",
+-                                        entry.event_target(),
+-                                        db.version(),
+-                                        Some(version),
+-                                    );
+-                                    state.decrement_remaining_tasks(vm);
+-                                },
+-                            ),
+-                        );
+-                    }
++                                realm,
++                                "versionchange",
++                                entry.event_target(),
++                                db.version(),
++                                Some(version),
++                            );
++                            state.decrement_remaining_tasks(vm);
++                        },
++                    ),
++                );
++            }
++        }
++
++        // 3. Wait for all of the events to be fired.
++        let after_all = create_function(
++            vm,
++            (
++                realm,
++                queue,
++                OpenConnections(open_connections.to_vec()),
++                db,
++                version,
++                connection,
++                request,
++                on_complete,
++            ),
++            |vm, &(realm, queue, ref open_connections, db, version, connection, request, on_complete), ()| {
++                // 4. If any of the connections in openConnections are still not closed,
++                //    queue a database task to fire a version change event named blocked at request with db’s version and version.
++                let any_connection_is_not_closed = open_connections
++                    .0
++                    .iter()
++                    .any(|entry| entry.state() != ConnectionState::Closed);
++                if any_connection_is_not_closed {
++                    queue_a_database_task(
++                        vm,
++                        create_function(
++                            vm,
++                            (realm, request, db, version),
++                            |vm, &(realm, request, db, version), ()| {
++                                fire_a_version_change_event(
++                                    vm,
++                                    realm,
++                                    "blocked",
++                                    request.event_target(),
++                                    db.version(),
++                                    Some(version),
++                                );
++                            },
++                        ),
++                    );
                  }
+ 
+-                // 3. Wait for all of the events to be fired.
+-                let after_all = create_function(
++                // 5. Wait until all connections in openConnections are closed.
++                db.wait_for_connections_to_close(
+                     vm,
+-                    (
+-                        realm,
+-                        queue,
+-                        OpenConnections(open_connections.to_vec()),
+-                        db,
+-                        version,
+-                        connection,
+-                        request,
+-                        on_complete,
+-                    ),
+-                    |vm, &(realm, queue, ref open_connections, db, version, connection, request, on_complete), ()| {
+-                        // 4. If any of the connections in openConnections are still not closed,
+-                        //    queue a database task to fire a version change event named blocked at request with db’s version and version.
+-                        let any_connection_is_not_closed = open_connections
+-                            .0
+-                            .iter()
+-                            .any(|entry| entry.state() != ConnectionState::Closed);
+-                        if any_connection_is_not_closed {
+-                            queue_a_database_task(
++                    &open_connections.0,
++                    create_function(
++                        vm,
++                        (realm, queue, connection, version, request, on_complete),
++                        |vm, &(realm, queue, connection, version, request, on_complete), ()| {
++                            // 6. Run upgrade a database using connection, version and request.
++                            upgrade_a_database(
+                                 vm,
++                                realm,
++                                connection,
++                                version,
++                                request,
+                                 create_function(
+                                     vm,
+-                                    (realm, request, db, version),
+-                                    |vm, &(realm, request, db, version), ()| {
+-                                        fire_a_version_change_event(
+-                                            vm,
+-                                            realm,
+-                                            "blocked",
+-                                            request.event_target(),
+-                                            db.version(),
+-                                            Some(version),
+-                                        );
++                                    (queue, connection, request, on_complete),
++                                    |vm, &(queue, connection, request, on_complete), ()| {
++                                        // 7. If connection was closed, return a newly created "AbortError" DOMException and abort these steps.
++                                        if connection.state() == ConnectionState::Closed {
++                                            call_completion(
++                                                vm,
++                                                queue,
++                                                on_complete,
++                                                Err(DomException::create(
++                                                    "AbortError",
++                                                    "Connection was closed",
++                                                )),
++                                            );
++                                            return;
++                                        }
++
++                                        // 8. If request's error is set, run the steps to close a database connection with connection,
++                                        //    return a newly created "AbortError" DOMException and abort these steps.
++                                        if request.has_error() {
++                                            close_a_database_connection(
++                                                vm,
++                                                connection,
++                                                Some(create_function(
++                                                    vm,
++                                                    (queue, on_complete),
++                                                    |vm, &(queue, on_complete), ()| {
++                                                        call_completion(
++                                                            vm,
++                                                            queue,
++                                                            on_complete,
++                                                            Err(DomException::create(
++                                                                "AbortError",
++                                                                "Upgrade transaction was aborted",
++                                                            )),
++                                                        );
++                                                    },
++                                                )),
++                                                false,
++                                            );
++                                            return;
++                                        }
++
++                                        // 11. Return connection.
++                                        call_completion(vm, queue, on_complete, Ok(connection));
+                                     },
+                                 ),
+                             );
+-                        }
+-
+-                        // 5. Wait until all connections in openConnections are closed.
+-                        db.wait_for_connections_to_close(
+-                            vm,
+-                            &open_connections.0,
+-                            create_function(
+-                                vm,
+-                                (realm, queue, connection, version, request, on_complete),
+-                                |vm, &(realm, queue, connection, version, request, on_complete), ()| {
+-                                    // 6. Run upgrade a database using connection, version and request.
+-                                    upgrade_a_database(
+-                                        vm,
+-                                        realm,
+-                                        connection,
+-                                        version,
+-                                        request,
+-                                        create_function(
+-                                            vm,
+-                                            (queue, connection, request, on_complete),
+-                                            |vm, &(queue, connection, request, on_complete), ()| {
+-                                                // 7. If connection was closed, return a newly created "AbortError" DOMException and abort these steps.
+-                                                if connection.state() == ConnectionState::Closed {
+-                                                    call_completion(
+-                                                        vm,
+-                                                        queue,
+-                                                        on_complete,
+-                                                        Err(DomException::create(
+-                                                            "AbortError",
+-                                                            "Connection was closed",
+-                                                        )),
+-                                                    );
+-                                                    return;
+-                                                }
+-
+-                                                // 8. If request's error is set, run the steps to close a database connection with connection,
+-                                                //    return a newly created "AbortError" DOMException and abort these steps.
+-                                                if request.has_error() {
+-                                                    close_a_database_connection(
+-                                                        vm,
+-                                                        connection,
+-                                                        Some(create_function(
+-                                                            vm,
+-                                                            (queue, on_complete),
+-                                                            |vm, &(queue, on_complete), ()| {
+-                                                                call_completion(
+-                                                                    vm,
+-                                                                    queue,
+-                                                                    on_complete,
+-                                                                    Err(DomException::create(
+-                                                                        "AbortError",
+-                                                                        "Upgrade transaction was aborted",
+-                                                                    )),
+-                                                                );
+-                                                            },
+-                                                        )),
+-                                                        false,
+-                                                    );
+-                                                    return;
+-                                                }
+-
+-                                                // 11. Return connection.
+-                                                call_completion(vm, queue, on_complete, Ok(connection));
+-                                            },
+-                                        ),
+-                                    );
+-                                },
+-                            ),
+-                        );
+-                    },
++                        },
++                    ),
+                 );
++            },
++        );
+ 
+-                if let Some(state) = task_counter_state {
+-                    state.after_all.set(Some(after_all));
+-                } else {
+-                    queue_a_database_task(vm, after_all);
+-                }
++        if let Some(state) = task_counter_state {
++            state.after_all.set(Some(after_all));
++        } else {
++            queue_a_database_task(vm, after_all);
++        }
+ 
+-                // NOTE: Because of the async nature of this function, we return here and call the on_complete function
+-                //       with the connection when necessary.
+-                return;
+-            }
++        // NOTE: Because of the async nature of this function, we return here and call the on_complete function
++        //       with the connection when necessary.
++        return;
++    }
+ 
+-            // 11. Return connection.
+-            call_completion(vm, queue, on_complete, Ok(connection));
+-        },
+-    );
+-    queue.request_list.enqueue(vm, request, steps);
++    // 11. Return connection.
++    call_completion(vm, queue, on_complete, Ok(connection));
+ }
+ 
+ /// The connections that an algorithm waits on, which it keeps alive while it waits.
+@@ -688,6 +736,9 @@ pub(crate) fn delete_a_database(
+         vm,
+         (realm, queue, NoCells(storage_key), name, request, on_complete),
+         |vm, &(realm, queue, ref storage_key, ref name, request, on_complete), ()| {
++            // AD-HOC: Bring in the databases the browser process keeps for storageKey.
++            persistence::load_persisted_databases(vm, realm, &storage_key.0);
++
+             // 4. Let db be the database named name in storageKey, if one exists. Otherwise, return 0 (zero).
+             let Some(db) = Database::for_key_and_name(vm, &storage_key.0, name) else {
+                 call_completion(vm, queue, on_complete, Ok(0));
+@@ -764,13 +815,14 @@ pub(crate) fn delete_a_database(
+                         &open_connections.0,
+                         create_function(
+                             vm,
+-                            (queue, db, storage_key.clone(), name.clone(), on_complete),
+-                            |vm, &(queue, db, ref storage_key, ref name, on_complete), ()| {
++                            (realm, queue, db, storage_key.clone(), name.clone(), on_complete),
++                            |vm, &(realm, queue, db, ref storage_key, ref name, on_complete), ()| {
+                                 // 10. Let version be db’s version.
+                                 let version = db.version();
+ 
+                                 // 11. Delete db. If this fails for any reason, return an appropriate error (e.g. a QuotaExceededError, or an "UnknownError" DOMException).
+                                 Database::delete_for_key_and_name(vm, &storage_key.0, name);
++                                persistence::persist_deleted_database(realm, &storage_key.0, name);
+ 
+                                 // 12. Return version.
+                                 call_completion(vm, queue, on_complete, Ok(version));
+@@ -1151,7 +1203,10 @@ pub(crate) fn commit_a_transaction(vm: &Vm, transaction: Ref<IDBTransaction>) {
+                 return;
              }
  
--            db->wait_for_connections_to_close(open_connections->elements(), GC::create_function(GC::Heap::the(), [&queue, db, storage_key, name, on_complete] {
-+            db->wait_for_connections_to_close(open_connections->elements(), GC::create_function(GC::Heap::the(), [&realm, &queue, db, storage_key, name, on_complete] {
-                 // 10. Let version be db’s version.
-                 auto version = db->version();
- 
-@@ -591,6 +607,7 @@ void delete_a_database(JS::Realm& realm, StorageAPI::StorageKey storage_key, Utf
-                     call_completion(queue, on_complete, WebIDL::OperationError::create("Unable to delete database"_utf16));
-                     return;
-                 }
-+                persist_deleted_database(realm, storage_key, name);
- 
-                 // 12. Return version.
-                 call_completion(queue, on_complete, version);
-@@ -919,7 +936,10 @@ void commit_a_transaction(JS::Realm&, GC::Ref<IDBTransaction> transaction)
-         if (transaction->state() != IDBTransaction::TransactionState::Committing)
-             return;
- 
--        // FIXME: 3. Attempt to write any outstanding changes made by transaction to the database, considering transaction’s durability hint.
-+        // 3. Attempt to write any outstanding changes made by transaction to the database, considering transaction’s durability hint.
-+        // AD-HOC: The changes are sent to the browser process, which stores them after the transaction completes.
-+        persist_committed_transaction(*transaction);
+-            // FIXME: 3. Attempt to write any outstanding changes made by transaction to the database, considering transaction’s durability hint.
++            // 3. Attempt to write any outstanding changes made by transaction to the database, considering transaction’s durability hint.
++            // AD-HOC: The changes are sent to the browser process, which stores them after the transaction completes.
++            persistence::persist_committed_transaction(vm, transaction);
 +
-         // FIXME: 4. If an error occurs while writing the changes to the database, then run abort a transaction with transaction and an appropriate type for the error, for example "QuotaExceededError" or "UnknownError" DOMException, and terminate these steps.
+             // FIXME: 4. If an error occurs while writing the changes to the database, then run abort a transaction with transaction and an appropriate type for the error, for example a QuotaExceededError or an "UnknownError" DOMException, and terminate these steps.
  
-         // 5. Queue a database task to run these steps:
-diff --git a/Libraries/LibWeb/IndexedDB/Internal/Database.cpp b/Libraries/LibWeb/IndexedDB/Internal/Database.cpp
-index 8533e53c..74af06d5 100644
---- a/Libraries/LibWeb/IndexedDB/Internal/Database.cpp
-+++ b/Libraries/LibWeb/IndexedDB/Internal/Database.cpp
-@@ -101,6 +101,7 @@ ErrorOr<GC::Ref<Database>> Database::create_for_key_and_name(GC::Heap& heap, Sto
-     }));
- 
-     auto value = Database::create(heap, name);
-+    value->m_storage_key = key;
- 
-     database_mapping.set(name, value);
-     idb_databases().set(key, database_mapping);
-diff --git a/Libraries/LibWeb/IndexedDB/Internal/Database.h b/Libraries/LibWeb/IndexedDB/Internal/Database.h
-index b19359bb..a4617ace 100644
---- a/Libraries/LibWeb/IndexedDB/Internal/Database.h
-+++ b/Libraries/LibWeb/IndexedDB/Internal/Database.h
-@@ -27,6 +27,9 @@ public:
-     u64 version() const { return m_version; }
-     Utf16String name() const { return m_name; }
- 
-+    // AD-HOC: The storage key the database belongs to, so its changes can be persisted.
-+    Optional<StorageAPI::StorageKey> const& storage_key() const { return m_storage_key; }
-+
-     void set_upgrade_transaction(GC::Ptr<IDBTransaction> transaction) { m_upgrade_transaction = transaction; }
-     [[nodiscard]] GC::Ptr<IDBTransaction> upgrade_transaction() { return m_upgrade_transaction; }
- 
-@@ -79,6 +82,7 @@ private:
- 
+             // 5. Queue a database task to run these steps:
+diff --git a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/database.rs b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/database.rs
+index 5df403b663..11b479d878 100644
+--- a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/database.rs
++++ b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/database.rs
+@@ -41,6 +41,10 @@ pub(crate) struct Database {
      // A database has a name which identifies it within a specific storage key.
-     Utf16String m_name;
-+    Optional<StorageAPI::StorageKey> m_storage_key;
+     name: Utf16String,
  
++    // AD-HOC: The storage key the database belongs to, so that its changes can be persisted.
++    #[gc(untraced)]
++    storage_key: RefCell<Option<StorageKey>>,
++
      // A database has a version. When a database is first created, its version is 0 (zero).
-     u64 m_version { 0 };
-diff --git a/Libraries/LibWeb/IndexedDB/Internal/Index.cpp b/Libraries/LibWeb/IndexedDB/Internal/Index.cpp
-index 4b26ece9..bddbebed 100644
---- a/Libraries/LibWeb/IndexedDB/Internal/Index.cpp
-+++ b/Libraries/LibWeb/IndexedDB/Internal/Index.cpp
-@@ -151,6 +151,12 @@ void Index::remove_record(IndexRecord const& record)
-         m_records.remove(index);
- }
+     version: Cell<u64>,
  
-+bool Index::has_record(IndexRecord const& record) const
-+{
-+    auto index = AK::lower_bound_index(m_records, record, compare_index_records);
-+    return index < m_records.size() && compare_index_records(m_records[index], record) == 0;
-+}
-+
- void Index::remove_records_with_value_in_range(GC::Ref<IDBKeyRange> range)
- {
-     auto log = m_object_store->mutation_log();
-diff --git a/Libraries/LibWeb/IndexedDB/Internal/Index.h b/Libraries/LibWeb/IndexedDB/Internal/Index.h
-index b36de9e9..6fd21067 100644
---- a/Libraries/LibWeb/IndexedDB/Internal/Index.h
-+++ b/Libraries/LibWeb/IndexedDB/Internal/Index.h
-@@ -44,6 +44,7 @@ public:
-     u64 count_records_in_range(GC::Ref<IDBKeyRange> range);
-     void store_a_record(IndexRecord const& record);
-     void remove_record(IndexRecord const& record);
-+    [[nodiscard]] bool has_record(IndexRecord const& record) const;
-     void remove_records_with_value_in_range(GC::Ref<IDBKeyRange> range);
+@@ -65,6 +69,7 @@ impl Database {
+             associated_connections: RefCell::new(Vec::new()),
+             pending_connection_wait: GcRefCell::new(None),
+             name: name.clone(),
++            storage_key: RefCell::new(None),
+             version: Cell::new(0),
+             upgrade_transaction: Cell::new(None),
+             object_stores: GcRefCell::new(Vec::new()),
+@@ -83,6 +88,10 @@ impl Database {
+         self.name.clone()
+     }
  
-     HTML::StorageSerializationRecord const& referenced_value(IndexRecord const& index_record) const;
-diff --git a/Libraries/LibWeb/IndexedDB/Internal/MutationLog.cpp b/Libraries/LibWeb/IndexedDB/Internal/MutationLog.cpp
-index 70e3bdd2..98982fcb 100644
---- a/Libraries/LibWeb/IndexedDB/Internal/MutationLog.cpp
-+++ b/Libraries/LibWeb/IndexedDB/Internal/MutationLog.cpp
-@@ -12,6 +12,7 @@
- #include <LibWeb/IndexedDB/Internal/Key.h>
- #include <LibWeb/IndexedDB/Internal/MutationLog.h>
- #include <LibWeb/IndexedDB/Internal/ObjectStore.h>
-+#include <LibWeb/IndexedDB/Internal/Persistence.h>
- 
- namespace Web::IndexedDB {
- 
-@@ -188,6 +189,79 @@ void MutationLog::append_changes(Utf16String const& database_name, Utf16String c
-         changes.deleted.append({ database_name, object_store_name, serialize_key_for_inspection(key) });
- }
- 
-+bool MutationLog::append_persisted_changes(ObjectStore& store, PersistedObjectStoreChanges& changes) const
-+{
-+    // The records and index records this log stored or deleted, by their encoded keys. What gets persisted is whether
-+    // each is there now, and with which value.
-+    HashMap<ByteBuffer, GC::Ref<Key>> record_keys;
-+    HashMap<Utf16String, HashMap<ByteBuffer, IndexRecord>> index_records;
-+    bool key_generator_changed = false;
-+
-+    auto note_index_record = [&](Index const& index, IndexRecord const& record) {
-+        auto encoded = encode_key(*record.key);
-+        auto encoded_value = encode_key(*record.value);
-+        encoded.append(encoded_value.bytes());
-+        index_records.ensure(index.name()).set(move(encoded), record);
-+    };
-+
-+    for (auto const& entry : m_entries) {
-+        entry.visit(
-+            [&](RecordsDeleted const& e) {
-+                for (auto const& record : e.records)
-+                    record_keys.set(encode_key(*record.key), record.key);
-+            },
-+            [&](RecordStored const& e) {
-+                record_keys.set(encode_key(*e.key), e.key);
-+            },
-+            [&](IndexRecordsDeleted const& e) {
-+                for (auto const& record : e.records)
-+                    note_index_record(*e.index, record);
-+            },
-+            [&](IndexRecordStored const& e) {
-+                note_index_record(*e.index, e.record);
-+            },
-+            [&](KeyGeneratorChanged const&) {
-+                key_generator_changed = true;
-+            },
-+            [&](auto const&) {
-+            });
++    pub(crate) fn storage_key(&self) -> Option<StorageKey> {
++        self.storage_key.borrow().clone()
 +    }
 +
-+    if (record_keys.is_empty() && index_records.is_empty() && !key_generator_changed)
-+        return false;
-+
-+    changes.name = store.name();
-+
-+    for (auto const& [encoded_key, key] : record_keys) {
-+        if (auto record = store.record_with_key(key); record.has_value())
-+            changes.stored.append({ encoded_key, MUST(ByteBuffer::copy(record->value->data)) });
-+        else
-+            changes.deleted.append(encoded_key);
+     pub(crate) fn set_upgrade_transaction(&self, transaction: Option<Ref<IDBTransaction>>) {
+         self.upgrade_transaction.set(transaction);
+     }
+@@ -166,6 +175,7 @@ impl Database {
+ 
+     pub(crate) fn create_for_key_and_name(vm: &Vm, key: &StorageKey, name: &Utf16String) -> DatabaseRef {
+         let value = Database::create(vm, name);
++        *value.storage_key.borrow_mut() = Some(key.clone());
+         storage(vm).set_database(vm, key, name, value);
+         value
+     }
+diff --git a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/index.rs b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/index.rs
+index f153ae9981..fac9b41c26 100644
+--- a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/index.rs
++++ b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/index.rs
+@@ -248,6 +248,12 @@ impl Index {
+         }
+     }
+ 
++    pub(crate) fn has_record(&self, record: &IndexRecord) -> bool {
++        let records = self.records.borrow();
++        let position = records.partition_point(|existing| compare_index_records(existing, record) == Ordering::Less);
++        position < records.len() && compare_index_records(&records[position], record) == Ordering::Equal
 +    }
 +
-+    for (auto const& [index_name, records] : index_records) {
-+        auto index = store.index_set().get(index_name);
-+        if (!index.has_value())
-+            continue;
+     pub(crate) fn remove_records_with_value_in_range(this: IndexRef, vm: &Vm, range: &IDBKeyRange) {
+         let log = this.object_store.mutation_log();
+         let mut removed_records = Vec::new();
+diff --git a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/mod.rs b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/mod.rs
+index be74d52d75..8d42a67f76 100644
+--- a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/mod.rs
++++ b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/mod.rs
+@@ -14,6 +14,7 @@ pub(crate) mod key;
+ pub(crate) mod key_generator;
+ pub(crate) mod mutation_log;
+ pub(crate) mod object_store;
++pub(crate) mod persistence;
+ pub(crate) mod record_range;
+ pub(crate) mod request_list;
+ pub(crate) mod storage;
+diff --git a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/mutation_log.rs b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/mutation_log.rs
+index 4cf714c8c5..04582ca3ee 100644
+--- a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/mutation_log.rs
++++ b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/mutation_log.rs
+@@ -7,6 +7,7 @@
+ 
+ //! The log of what a transaction changed in an object store, which an abort reverts
+ 
++use std::collections::HashMap;
+ use std::rc::Rc;
+ 
+ use ak::Utf16String;
+@@ -19,6 +20,9 @@ use crate::indexed_db::internal::database::{Database, DatabaseRef};
+ use crate::indexed_db::internal::index::{Index, IndexRef};
+ use crate::indexed_db::internal::key::Key;
+ use crate::indexed_db::internal::object_store::ObjectStoreRef;
++use crate::indexed_db::internal::persistence::{
++    PersistedIndexChanges, PersistedIndexRecord, PersistedObjectStoreChanges, PersistedRecord, encode_key,
++};
+ 
+ // https://w3c.github.io/IndexedDB/ has no notion of these changes: they are what DevTools reports of a transaction
+ // that commits, as Web::IndexedDB::TransactionChanges of LibWebCommon.
+@@ -245,6 +249,102 @@ impl MutationLog {
+         }
+     }
+ 
++    // AD-HOC: Describes where the records this log touched in store ended up, for the browser process to store, or
++    //         None if nothing changed. Readwrite transactions only: schema entries are not described.
++    pub(crate) fn persisted_changes(&self, store: ObjectStoreRef) -> Option<PersistedObjectStoreChanges> {
++        // The records and index records this log stored or deleted, by their encoded keys. What gets persisted is
++        // whether each is there now, and with which value.
++        let mut record_keys: HashMap<Vec<u8>, Rc<Key>> = HashMap::new();
++        let mut index_records: Vec<(IndexRef, HashMap<Vec<u8>, IndexRecord>)> = Vec::new();
++        let mut key_generator_changed = false;
 +
-+        PersistedIndexChanges index_changes;
-+        index_changes.name = index_name;
-+        for (auto const& [_, record] : records) {
-+            PersistedIndexRecord persisted_record { encode_key(*record.key), encode_key(*record.value) };
-+            if ((*index)->has_record(record))
-+                index_changes.stored.append(move(persisted_record));
-+            else
-+                index_changes.deleted.append(move(persisted_record));
++        let mut note_index_record = |index: IndexRef, record: &IndexRecord| {
++            let mut encoded = encode_key(&record.key);
++            encoded.extend_from_slice(&encode_key(&record.value));
++            let position = match index_records.iter().position(|(entry, _)| *entry == index) {
++                Some(position) => position,
++                None => {
++                    index_records.push((index, HashMap::new()));
++                    index_records.len() - 1
++                }
++            };
++            index_records[position].1.insert(encoded, record.clone());
++        };
++
++        for entry in self.entries.borrow().iter() {
++            match entry {
++                Entry::RecordsDeleted { records } => {
++                    for record in records {
++                        record_keys.insert(encode_key(&record.key), record.key.clone());
++                    }
++                }
++                Entry::RecordStored { key } => {
++                    record_keys.insert(encode_key(key), key.clone());
++                }
++                Entry::IndexRecordsDeleted { index, records } => {
++                    for record in records {
++                        note_index_record(*index, record);
++                    }
++                }
++                Entry::IndexRecordStored { index, record } => {
++                    note_index_record(*index, record);
++                }
++                Entry::KeyGeneratorChanged { .. } => {
++                    key_generator_changed = true;
++                }
++                _ => {}
++            }
 +        }
-+        changes.indexes.append(move(index_changes));
++
++        if record_keys.is_empty() && index_records.is_empty() && !key_generator_changed {
++            return None;
++        }
++
++        let mut changes = PersistedObjectStoreChanges {
++            name: store.name(),
++            ..PersistedObjectStoreChanges::default()
++        };
++
++        for (encoded_key, key) in record_keys {
++            match store.record_with_key(&key) {
++                Some(record) => changes.stored.push(PersistedRecord {
++                    key: encoded_key,
++                    value: record.value.to_vec(),
++                }),
++                None => changes.deleted.push(encoded_key),
++            }
++        }
++
++        for (index, records) in index_records {
++            // An index deleted since is not persisted.
++            if store.index_set_get(&index.name()).is_none_or(|current| current != index) {
++                continue;
++            }
++            let mut index_changes = PersistedIndexChanges {
++                name: index.name(),
++                ..PersistedIndexChanges::default()
++            };
++            for record in records.values() {
++                let persisted_record = PersistedIndexRecord {
++                    key: encode_key(&record.key),
++                    primary_key: encode_key(&record.value),
++                };
++                if index.has_record(record) {
++                    index_changes.stored.push(persisted_record);
++                } else {
++                    index_changes.deleted.push(persisted_record);
++                }
++            }
++            changes.indexes.push(index_changes);
++        }
++
++        if store.uses_a_key_generator() {
++            changes.key_generator = Some(store.key_generator().current_number());
++        }
++
++        Some(changes)
 +    }
 +
-+    if (store.uses_a_key_generator())
-+        changes.key_generator = store.key_generator().current_number();
+     // Undo all logged mutations in reverse order. Database and connection are required for schema entries.
+     pub(crate) fn revert(&self, vm: &Vm, store: ObjectStoreRef, database: DatabaseRef, connection: Ref<IDBDatabase>) {
+         self.revert_entries(vm, store, 0, Some((database, connection)));
+diff --git a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/object_store.rs b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/object_store.rs
+index 132ef38988..5b51c8572b 100644
+--- a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/object_store.rs
++++ b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/object_store.rs
+@@ -227,6 +227,14 @@ impl ObjectStore {
+         }
+     }
+ 
++    pub(crate) fn record_with_key(&self, key: &Key) -> Option<ObjectStoreRecord> {
++        let records = self.records.borrow();
++        let position = records
++            .binary_search_by(|record| Key::ordering(&record.key, key))
++            .ok()?;
++        Some(records[position].clone())
++    }
 +
-+    return true;
-+}
-+
- void MutationLog::revert(ObjectStore& store, GC::Ref<Database> database, GC::Ref<IDBDatabase> connection)
- {
-     revert_entries(store, 0, database, connection);
-diff --git a/Libraries/LibWeb/IndexedDB/Internal/MutationLog.h b/Libraries/LibWeb/IndexedDB/Internal/MutationLog.h
-index f3a4bdff..87d44d76 100644
---- a/Libraries/LibWeb/IndexedDB/Internal/MutationLog.h
-+++ b/Libraries/LibWeb/IndexedDB/Internal/MutationLog.h
-@@ -12,6 +12,7 @@
- #include <LibJS/Heap/Cell.h>
- #include <LibWeb/IndexedDB/IDBRecord.h>
- #include <LibWeb/IndexedDB/Internal/KeyGenerator.h>
-+#include <LibWebCommon/IndexedDB/PersistedDatabase.h>
- #include <LibWebCommon/IndexedDB/TransactionChanges.h>
- 
- namespace Web::IndexedDB {
-@@ -70,6 +71,10 @@ public:
- 
-     void append_changes(Utf16String const& database_name, Utf16String const& object_store_name, TransactionChanges&) const;
- 
-+    // AD-HOC: Describes where the records this log touched in store ended up, for the browser process to store.
-+    //         Returns whether anything changed. Readwrite transactions only: schema entries are not described.
-+    bool append_persisted_changes(ObjectStore& store, PersistedObjectStoreChanges&) const;
-+
-     [[nodiscard]] size_t position() const { return m_entries.size(); }
- 
- protected:
-diff --git a/Libraries/LibWeb/IndexedDB/Internal/ObjectStore.cpp b/Libraries/LibWeb/IndexedDB/Internal/ObjectStore.cpp
-index a911b86a..82cf9f65 100644
---- a/Libraries/LibWeb/IndexedDB/Internal/ObjectStore.cpp
-+++ b/Libraries/LibWeb/IndexedDB/Internal/ObjectStore.cpp
-@@ -96,6 +96,16 @@ bool ObjectStore::has_record_with_key(GC::Ref<Key> key)
-     }) != nullptr;
- }
- 
-+Optional<ObjectStoreRecord&> ObjectStore::record_with_key(GC::Ref<Key> key)
-+{
-+    auto* record = binary_search(m_records, key, nullptr, [](auto const& needle, auto const& record) -> int {
-+        return Key::compare_two_keys(needle, record.key);
-+    });
-+    if (!record)
-+        return {};
-+    return *record;
-+}
-+
- void ObjectStore::store_a_record(ObjectStoreRecord record)
- {
-     if (m_mutation_log)
-diff --git a/Libraries/LibWeb/IndexedDB/Internal/ObjectStore.h b/Libraries/LibWeb/IndexedDB/Internal/ObjectStore.h
-index 6c2e7df5..cdfdd488 100644
---- a/Libraries/LibWeb/IndexedDB/Internal/ObjectStore.h
-+++ b/Libraries/LibWeb/IndexedDB/Internal/ObjectStore.h
-@@ -50,6 +50,7 @@ public:
- 
-     void remove_records_in_range(GC::Ref<IDBKeyRange> range);
-     bool has_record_with_key(GC::Ref<Key> key);
-+    Optional<ObjectStoreRecord&> record_with_key(GC::Ref<Key> key);
-     void store_a_record(ObjectStoreRecord record);
-     void remove_record_with_key(GC::Ref<Key> key);
-     u64 count_records_in_range(GC::Ref<IDBKeyRange> range);
-diff --git a/Libraries/LibWeb/IndexedDB/Internal/Persistence.cpp b/Libraries/LibWeb/IndexedDB/Internal/Persistence.cpp
+     pub(crate) fn has_record_with_key(&self, key: &Key) -> bool {
+         self.records
+             .borrow()
+diff --git a/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/persistence.rs b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/persistence.rs
 new file mode 100644
-index 00000000..ed754722
+index 0000000000..4855357f65
 --- /dev/null
-+++ b/Libraries/LibWeb/IndexedDB/Internal/Persistence.cpp
-@@ -0,0 +1,747 @@
++++ b/Libraries/LibWeb/Bindings/Rust/src/indexed_db/internal/persistence.rs
+@@ -0,0 +1,1370 @@
 +/*
 + * Copyright (c) 2026-present, the Ladybird developers.
 + *
 + * SPDX-License-Identifier: BSD-2-Clause
 + */
 +
-+#include <AK/BitCast.h>
++//! AD-HOC: The spec leaves where databases live to the user agent. Ours live in the browser process, which keeps them
++//! for the session (on disk, unless the session is private) and shares them between processes; see
++//! LibWebCommon/IndexedDB/PersistedDatabase.h. Each process keeps working on its own in-memory copy: it loads a
++//! storage key's databases from the browser process once, sends it what each transaction it commits changed, and is
++//! sent what other processes committed. LibWeb/IndexedDB/Persistence.cpp is the bridge to the page client, and the
++//! databases and changes cross it as bytes, in the layout described there.
++
++use core::cell::RefCell;
++use core::ffi::c_void;
++use std::collections::HashMap;
++use std::rc::Rc;
++
++use ak::Utf16String;
++use libjs_rust::api::{Gc, Realm, Vm};
++use liburl_rust::FfiOrigin;
++
++use crate::bindings::interface::Ref;
++use crate::indexed_db::cpp::run_function;
++use crate::indexed_db::idb_record::{IndexRecord, ObjectStoreRecord};
++use crate::indexed_db::idb_transaction::IDBTransaction;
++use crate::indexed_db::internal::algorithms::{
++    KeyPath, close_a_database_connection, fire_a_version_change_event, queue_a_database_task,
++};
++use crate::indexed_db::internal::database::{Database, DatabaseRef};
++use crate::indexed_db::internal::function::{FunctionWith, NoCells, create_function};
++use crate::indexed_db::internal::index::Index;
++use crate::indexed_db::internal::key::{Key, KeyType};
++use crate::indexed_db::internal::object_store::ObjectStore;
++use crate::indexed_db::internal::storage::StorageKey;
++
++unsafe extern "C" {
++    fn web_indexed_db_request_persisted_databases(
++        realm: *mut c_void,
++        ctx: *mut c_void,
++        on_bytes: unsafe extern "C" fn(*mut c_void, ak::Span<'_, u8>),
++    );
++    fn web_indexed_db_commit_persisted_changes(realm: *mut c_void, commit_id: u64, changes: ak::Span<'_, u8>);
++    fn web_indexed_db_request_upgrade_lock(
++        realm: *mut c_void,
++        name: usize,
++        granted: *mut bool,
++        has_stored_version: *mut bool,
++        stored_version: *mut u64,
++    );
++    fn web_indexed_db_release_upgrade_lock(realm: *mut c_void, name: usize);
++    fn web_indexed_db_run_after(
++        cell: *mut c_void,
++        milliseconds: u32,
++        steps: unsafe extern "C" fn(*mut c_void, *mut c_void),
++    );
++}
++
++// Persisted databases and changes, as LibWebCommon/IndexedDB/PersistedDatabase.h has them. Keys are encode_key()'s
++// bytes, values the bytes of storage serialization records.
++
++#[derive(Clone, Default)]
++pub(crate) struct PersistedRecord {
++    pub(crate) key: Vec<u8>,
++    pub(crate) value: Vec<u8>,
++}
++
++#[derive(Clone, Default)]
++pub(crate) struct PersistedIndexRecord {
++    pub(crate) key: Vec<u8>,
++    pub(crate) primary_key: Vec<u8>,
++}
++
++pub(crate) struct PersistedIndex {
++    name: Utf16String,
++    key_path: KeyPath,
++    unique: bool,
++    multi_entry: bool,
++    records: Vec<PersistedIndexRecord>,
++}
++
++pub(crate) struct PersistedObjectStore {
++    name: Utf16String,
++    key_path: Option<KeyPath>,
++    key_generator: Option<u64>,
++    records: Vec<PersistedRecord>,
++    indexes: Vec<PersistedIndex>,
++}
++
++pub(crate) struct PersistedDatabase {
++    name: Utf16String,
++    version: u64,
++    object_stores: Vec<PersistedObjectStore>,
++}
++
++#[derive(Default)]
++pub(crate) struct PersistedIndexChanges {
++    pub(crate) name: Utf16String,
++    pub(crate) stored: Vec<PersistedIndexRecord>,
++    pub(crate) deleted: Vec<PersistedIndexRecord>,
++}
++
++#[derive(Default)]
++pub(crate) struct PersistedObjectStoreChanges {
++    pub(crate) name: Utf16String,
++    pub(crate) key_generator: Option<u64>,
++    // Records stored replace any record with the same key.
++    pub(crate) stored: Vec<PersistedRecord>,
++    pub(crate) deleted: Vec<Vec<u8>>,
++    pub(crate) indexes: Vec<PersistedIndexChanges>,
++}
++
++#[derive(Clone, Copy, PartialEq, Eq)]
++enum ChangesKind {
++    // An upgrade transaction: the database is now `replacement` in full.
++    Replace = 0,
++    // The database was deleted.
++    Delete = 1,
++    // A readwrite transaction: `object_stores` lists what changed.
++    Update = 2,
++}
++
++struct PersistedDatabaseChanges {
++    kind: ChangesKind,
++    name: Utf16String,
++    // For Replace: the version the upgrade started from (0 for a new database).
++    base_version: u64,
++    replacement: Option<PersistedDatabase>,
++    object_stores: Vec<PersistedObjectStoreChanges>,
++}
++
++// Key encoding: a type byte, then the value. Numbers and dates are IEEE doubles, strings their UTF-16 code units, binary
++// keys their bytes, array keys their subkeys. Lengths and counts are u32. Everything is little-endian. The browser
++// process tells keys apart by these bytes alone, so equal keys must encode to equal bytes; profiles already hold keys in
++// this encoding.
++const ENCODED_NUMBER: u8 = 1;
++const ENCODED_DATE: u8 = 2;
++const ENCODED_STRING: u8 = 3;
++const ENCODED_BINARY: u8 = 4;
++const ENCODED_ARRAY: u8 = 5;
++const MAX_KEY_DEPTH: usize = 1024;
++
++#[allow(clippy::cast_possible_truncation, reason = "lengths of keys fit in u32")]
++fn append_length(buffer: &mut Vec<u8>, length: usize) {
++    buffer.extend_from_slice(&(length as u32).to_le_bytes());
++}
++
++fn append_double(buffer: &mut Vec<u8>, value: f64) {
++    // NB: Keys are never NaN, and -0 is the same key as +0, so it is stored as +0.
++    let value = if value == 0.0 { 0.0 } else { value };
++    buffer.extend_from_slice(&value.to_bits().to_le_bytes());
++}
++
++fn append_key(buffer: &mut Vec<u8>, key: &Key) {
++    match key.r#type() {
++        KeyType::Number => {
++            buffer.push(ENCODED_NUMBER);
++            append_double(buffer, key.value_as_double());
++        }
++        KeyType::Date => {
++            buffer.push(ENCODED_DATE);
++            append_double(buffer, key.value_as_double());
++        }
++        KeyType::String => {
++            buffer.push(ENCODED_STRING);
++            let code_units = key.value_as_string().to_utf16();
++            append_length(buffer, code_units.len());
++            for code_unit in code_units.iter() {
++                buffer.extend_from_slice(&code_unit.to_le_bytes());
++            }
++        }
++        KeyType::Binary => {
++            buffer.push(ENCODED_BINARY);
++            let bytes = key.value_as_byte_buffer();
++            append_length(buffer, bytes.len());
++            buffer.extend_from_slice(bytes);
++        }
++        KeyType::Array => {
++            buffer.push(ENCODED_ARRAY);
++            let subkeys = key.subkeys();
++            append_length(buffer, subkeys.len());
++            for subkey in subkeys {
++                append_key(buffer, subkey);
++            }
++        }
++        KeyType::Invalid => unreachable!("an invalid key is never stored"),
++    }
++}
++
++pub(crate) fn encode_key(key: &Key) -> Vec<u8> {
++    let mut buffer = Vec::new();
++    append_key(&mut buffer, key);
++    buffer
++}
++
++struct ByteReader<'a> {
++    bytes: &'a [u8],
++    offset: usize,
++}
++
++impl<'a> ByteReader<'a> {
++    fn new(bytes: &'a [u8]) -> Self {
++        Self { bytes, offset: 0 }
++    }
++
++    fn is_at_end(&self) -> bool {
++        self.offset == self.bytes.len()
++    }
++
++    fn take(&mut self, count: usize) -> Option<&'a [u8]> {
++        if count > self.bytes.len() - self.offset {
++            return None;
++        }
++        let bytes = &self.bytes[self.offset..self.offset + count];
++        self.offset += count;
++        Some(bytes)
++    }
++
++    fn u8(&mut self) -> Option<u8> {
++        Some(self.take(1)?[0])
++    }
++
++    fn u16(&mut self) -> Option<u16> {
++        Some(u16::from_le_bytes(self.take(2)?.try_into().ok()?))
++    }
++
++    fn u32(&mut self) -> Option<u32> {
++        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
++    }
++
++    fn u64(&mut self) -> Option<u64> {
++        Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
++    }
++
++    fn double(&mut self) -> Option<f64> {
++        Some(f64::from_bits(self.u64()?))
++    }
++
++    fn boolean(&mut self) -> Option<bool> {
++        Some(self.u8()? != 0)
++    }
++
++    fn bytes(&mut self) -> Option<Vec<u8>> {
++        let length = self.u32()? as usize;
++        Some(self.take(length)?.to_vec())
++    }
++
++    fn string(&mut self) -> Option<Utf16String> {
++        let length = self.u32()? as usize;
++        let bytes = self.take(length.checked_mul(2)?)?;
++        let code_units: Vec<u16> = bytes
++            .as_chunks::<2>()
++            .0
++            .iter()
++            .map(|pair| u16::from_le_bytes(*pair))
++            .collect();
++        Some(Utf16String::from_utf16(&code_units))
++    }
++
++    fn count(&mut self) -> Option<usize> {
++        let count = self.u32()? as usize;
++        // NB: Every element takes at least a byte, which keeps a corrupt count from reserving too much.
++        if count > self.bytes.len() - self.offset {
++            return None;
++        }
++        Some(count)
++    }
++
++    fn key_path(&mut self) -> Option<KeyPath> {
++        if self.u8()? == 0 {
++            return Some(KeyPath::String(self.string()?));
++        }
++        let count = self.count()?;
++        let mut strings = Vec::with_capacity(count);
++        for _ in 0..count {
++            strings.push(self.string()?);
++        }
++        Some(KeyPath::Sequence(strings))
++    }
++
++    fn optional_u64(&mut self) -> Option<Option<u64>> {
++        if !self.boolean()? {
++            return Some(None);
++        }
++        Some(Some(self.u64()?))
++    }
++
++    fn key(&mut self, depth: usize) -> Option<Rc<Key>> {
++        if depth > MAX_KEY_DEPTH {
++            return None;
++        }
++        match self.u8()? {
++            ENCODED_NUMBER => Some(Key::create_number(self.double()?)),
++            ENCODED_DATE => Some(Key::create_date(self.double()?)),
++            ENCODED_STRING => {
++                let length = self.u32()? as usize;
++                let mut code_units = Vec::with_capacity(length.min(self.bytes.len()));
++                for _ in 0..length {
++                    code_units.push(self.u16()?);
++                }
++                Some(Key::create_string(Utf16String::from_utf16(&code_units)))
++            }
++            ENCODED_BINARY => Some(Key::create_binary(self.bytes()?)),
++            ENCODED_ARRAY => {
++                let count = self.count()?;
++                let mut subkeys = Vec::with_capacity(count);
++                for _ in 0..count {
++                    subkeys.push(self.key(depth + 1)?);
++                }
++                Some(Key::create_array(subkeys))
++            }
++            _ => None,
++        }
++    }
++
++    fn records(&mut self) -> Option<Vec<PersistedRecord>> {
++        let count = self.count()?;
++        let mut records = Vec::with_capacity(count);
++        for _ in 0..count {
++            let key = self.bytes()?;
++            let value = self.bytes()?;
++            records.push(PersistedRecord { key, value });
++        }
++        Some(records)
++    }
++
++    fn index_records(&mut self) -> Option<Vec<PersistedIndexRecord>> {
++        let count = self.count()?;
++        let mut records = Vec::with_capacity(count);
++        for _ in 0..count {
++            let key = self.bytes()?;
++            let primary_key = self.bytes()?;
++            records.push(PersistedIndexRecord { key, primary_key });
++        }
++        Some(records)
++    }
++
++    fn database(&mut self) -> Option<PersistedDatabase> {
++        let name = self.string()?;
++        let version = self.u64()?;
++        let store_count = self.count()?;
++        let mut object_stores = Vec::with_capacity(store_count);
++        for _ in 0..store_count {
++            let name = self.string()?;
++            let key_path = if self.boolean()? { Some(self.key_path()?) } else { None };
++            let key_generator = self.optional_u64()?;
++            let records = self.records()?;
++            let index_count = self.count()?;
++            let mut indexes = Vec::with_capacity(index_count);
++            for _ in 0..index_count {
++                let name = self.string()?;
++                let key_path = self.key_path()?;
++                let unique = self.boolean()?;
++                let multi_entry = self.boolean()?;
++                let records = self.index_records()?;
++                indexes.push(PersistedIndex {
++                    name,
++                    key_path,
++                    unique,
++                    multi_entry,
++                    records,
++                });
++            }
++            object_stores.push(PersistedObjectStore {
++                name,
++                key_path,
++                key_generator,
++                records,
++                indexes,
++            });
++        }
++        Some(PersistedDatabase {
++            name,
++            version,
++            object_stores,
++        })
++    }
++
++    fn changes(&mut self) -> Option<PersistedDatabaseChanges> {
++        let kind = match self.u8()? {
++            0 => ChangesKind::Replace,
++            1 => ChangesKind::Delete,
++            2 => ChangesKind::Update,
++            _ => return None,
++        };
++        let name = self.string()?;
++        let base_version = self.u64()?;
++        let replacement = if self.boolean()? { Some(self.database()?) } else { None };
++        let store_count = self.count()?;
++        let mut object_stores = Vec::with_capacity(store_count);
++        for _ in 0..store_count {
++            let name = self.string()?;
++            let key_generator = self.optional_u64()?;
++            let stored = self.records()?;
++            let deleted_count = self.count()?;
++            let mut deleted = Vec::with_capacity(deleted_count);
++            for _ in 0..deleted_count {
++                deleted.push(self.bytes()?);
++            }
++            let index_count = self.count()?;
++            let mut indexes = Vec::with_capacity(index_count);
++            for _ in 0..index_count {
++                let name = self.string()?;
++                let stored = self.index_records()?;
++                let deleted = self.index_records()?;
++                indexes.push(PersistedIndexChanges { name, stored, deleted });
++            }
++            object_stores.push(PersistedObjectStoreChanges {
++                name,
++                key_generator,
++                stored,
++                deleted,
++                indexes,
++            });
++        }
++        Some(PersistedDatabaseChanges {
++            kind,
++            name,
++            base_version,
++            replacement,
++            object_stores,
++        })
++    }
++}
++
++pub(crate) fn decode_key(bytes: &[u8]) -> Option<Rc<Key>> {
++    let mut reader = ByteReader::new(bytes);
++    let key = reader.key(0)?;
++    reader.is_at_end().then_some(key)
++}
++
++#[derive(Default)]
++struct ByteWriter {
++    buffer: Vec<u8>,
++}
++
++impl ByteWriter {
++    fn u8(&mut self, value: u8) {
++        self.buffer.push(value);
++    }
++
++    fn u32(&mut self, value: usize) {
++        append_length(&mut self.buffer, value);
++    }
++
++    fn u64(&mut self, value: u64) {
++        self.buffer.extend_from_slice(&value.to_le_bytes());
++    }
++
++    fn boolean(&mut self, value: bool) {
++        self.u8(u8::from(value));
++    }
++
++    fn bytes(&mut self, bytes: &[u8]) {
++        self.u32(bytes.len());
++        self.buffer.extend_from_slice(bytes);
++    }
++
++    fn string(&mut self, string: &Utf16String) {
++        let code_units = string.to_utf16();
++        self.u32(code_units.len());
++        for code_unit in code_units.iter() {
++            self.buffer.extend_from_slice(&code_unit.to_le_bytes());
++        }
++    }
++
++    fn key_path(&mut self, key_path: &KeyPath) {
++        match key_path {
++            KeyPath::String(string) => {
++                self.u8(0);
++                self.string(string);
++            }
++            KeyPath::Sequence(strings) => {
++                self.u8(1);
++                self.u32(strings.len());
++                for string in strings {
++                    self.string(string);
++                }
++            }
++        }
++    }
++
++    fn optional_u64(&mut self, value: Option<u64>) {
++        self.boolean(value.is_some());
++        if let Some(value) = value {
++            self.u64(value);
++        }
++    }
++
++    fn records(&mut self, records: &[PersistedRecord]) {
++        self.u32(records.len());
++        for record in records {
++            self.bytes(&record.key);
++            self.bytes(&record.value);
++        }
++    }
++
++    fn index_records(&mut self, records: &[PersistedIndexRecord]) {
++        self.u32(records.len());
++        for record in records {
++            self.bytes(&record.key);
++            self.bytes(&record.primary_key);
++        }
++    }
++
++    fn database(&mut self, database: &PersistedDatabase) {
++        self.string(&database.name);
++        self.u64(database.version);
++        self.u32(database.object_stores.len());
++        for store in &database.object_stores {
++            self.string(&store.name);
++            self.boolean(store.key_path.is_some());
++            if let Some(key_path) = &store.key_path {
++                self.key_path(key_path);
++            }
++            self.optional_u64(store.key_generator);
++            self.records(&store.records);
++            self.u32(store.indexes.len());
++            for index in &store.indexes {
++                self.string(&index.name);
++                self.key_path(&index.key_path);
++                self.boolean(index.unique);
++                self.boolean(index.multi_entry);
++                self.index_records(&index.records);
++            }
++        }
++    }
++
++    fn changes(&mut self, changes: &PersistedDatabaseChanges) {
++        self.u8(changes.kind as u8);
++        self.string(&changes.name);
++        self.u64(changes.base_version);
++        self.boolean(changes.replacement.is_some());
++        if let Some(replacement) = &changes.replacement {
++            self.database(replacement);
++        }
++        self.u32(changes.object_stores.len());
++        for store in &changes.object_stores {
++            self.string(&store.name);
++            self.optional_u64(store.key_generator);
++            self.records(&store.stored);
++            self.u32(store.deleted.len());
++            for key in &store.deleted {
++                self.bytes(key);
++            }
++            self.u32(store.indexes.len());
++            for index in &store.indexes {
++                self.string(&index.name);
++                self.index_records(&index.stored);
++                self.index_records(&index.deleted);
++            }
++        }
++    }
++}
++
++// Our commits the browser process has not stored yet. A change another process committed that reaches us before one of
++// them was stored before it, so ours supersedes it wherever both wrote.
++#[derive(Clone, Default)]
++struct PendingWrites {
++    // Commits that replaced or deleted the whole database.
++    whole_database: u32,
++    // Per object store: the encoded keys of the records commits wrote, with how many commits wrote each.
++    keys: Vec<(Utf16String, HashMap<Vec<u8>, u32>)>,
++}
++
++impl PendingWrites {
++    fn is_empty(&self) -> bool {
++        self.whole_database == 0 && self.keys.is_empty()
++    }
++
++    fn is_pending(&self, object_store_name: &Utf16String, key: &[u8]) -> bool {
++        self.keys
++            .iter()
++            .find(|(name, _)| name == object_store_name)
++            .is_some_and(|(_, keys)| keys.contains_key(key))
++    }
++}
++
++fn is_pending(writes: Option<&PendingWrites>, object_store_name: &Utf16String, key: &[u8]) -> bool {
++    writes.is_some_and(|writes| writes.is_pending(object_store_name, key))
++}
++
++struct SentCommit {
++    storage_key: StorageKey,
++    database_name: Utf16String,
++    whole_database: bool,
++    keys: Vec<(Utf16String, Vec<u8>)>,
++}
++
++#[derive(Default)]
++struct State {
++    // The storage keys whose databases this process has loaded. Only those are kept up to date.
++    loaded_storage_keys: Vec<StorageKey>,
++    pending_writes: Vec<(StorageKey, Vec<(Utf16String, PendingWrites)>)>,
++    sent_commits: HashMap<u64, SentCommit>,
++    next_commit_id: u64,
++}
++
++impl State {
++    fn is_loaded(&self, storage_key: &StorageKey) -> bool {
++        self.loaded_storage_keys.iter().any(|key| key == storage_key)
++    }
++
++    fn pending_writes_for(&self, storage_key: &StorageKey, database_name: &Utf16String) -> Option<&PendingWrites> {
++        let (_, databases) = self.pending_writes.iter().find(|(key, _)| key == storage_key)?;
++        databases
++            .iter()
++            .find(|(name, _)| name == database_name)
++            .map(|(_, writes)| writes)
++    }
++
++    fn pending_writes_for_mut(&mut self, storage_key: &StorageKey, database_name: &Utf16String) -> &mut PendingWrites {
++        let position = match self.pending_writes.iter().position(|(key, _)| key == storage_key) {
++            Some(position) => position,
++            None => {
++                self.pending_writes.push((storage_key.clone(), Vec::new()));
++                self.pending_writes.len() - 1
++            }
++        };
++        let databases = &mut self.pending_writes[position].1;
++        let position = match databases.iter().position(|(name, _)| name == database_name) {
++            Some(position) => position,
++            None => {
++                databases.push((database_name.clone(), PendingWrites::default()));
++                databases.len() - 1
++            }
++        };
++        &mut databases[position].1
++    }
++}
++
++thread_local! {
++    static STATE: RefCell<State> = RefCell::new(State {
++        next_commit_id: 1,
++        ..State::default()
++    });
++}
++
++fn is_loaded(storage_key: &StorageKey) -> bool {
++    STATE.with_borrow(|state| state.is_loaded(storage_key))
++}
++
++fn realm_ptr(realm: Gc<Realm>) -> *mut c_void {
++    realm.as_ptr().cast()
++}
++
++fn send_commit(realm: Gc<Realm>, storage_key: &StorageKey, changes: &PersistedDatabaseChanges) {
++    let commit_id = STATE.with_borrow_mut(|state| {
++        let commit_id = state.next_commit_id;
++        state.next_commit_id += 1;
++
++        let mut sent = SentCommit {
++            storage_key: storage_key.clone(),
++            database_name: changes.name.clone(),
++            whole_database: changes.kind != ChangesKind::Update,
++            keys: Vec::new(),
++        };
++        let writes = state.pending_writes_for_mut(storage_key, &changes.name);
++        if sent.whole_database {
++            writes.whole_database += 1;
++        } else {
++            for store in &changes.object_stores {
++                let position = match writes.keys.iter().position(|(name, _)| *name == store.name) {
++                    Some(position) => position,
++                    None => {
++                        writes.keys.push((store.name.clone(), HashMap::new()));
++                        writes.keys.len() - 1
++                    }
++                };
++                let keys = &mut writes.keys[position].1;
++                let written = store
++                    .stored
++                    .iter()
++                    .map(|record| &record.key)
++                    .chain(store.deleted.iter());
++                for key in written {
++                    *keys.entry(key.clone()).or_insert(0) += 1;
++                    sent.keys.push((store.name.clone(), key.clone()));
++                }
++            }
++        }
++        state.sent_commits.insert(commit_id, sent);
++        commit_id
++    });
++
++    let mut writer = ByteWriter::default();
++    writer.changes(changes);
++    // SAFETY: The realm is live, and the bytes are lent for the call.
++    unsafe { web_indexed_db_commit_persisted_changes(realm_ptr(realm), commit_id, ak::Span::new(&writer.buffer)) };
++}
++
++fn did_persist_database_changes(commit_id: u64) {
++    STATE.with_borrow_mut(|state| {
++        let Some(sent) = state.sent_commits.remove(&commit_id) else {
++            return;
++        };
++        let Some(key_position) = state
++            .pending_writes
++            .iter()
++            .position(|(key, _)| *key == sent.storage_key)
++        else {
++            return;
++        };
++        let databases = &mut state.pending_writes[key_position].1;
++        let Some(database_position) = databases.iter().position(|(name, _)| *name == sent.database_name) else {
++            return;
++        };
++        let writes = &mut databases[database_position].1;
++
++        if sent.whole_database && writes.whole_database > 0 {
++            writes.whole_database -= 1;
++        }
++        for (store_name, key) in &sent.keys {
++            let Some(store_position) = writes.keys.iter().position(|(name, _)| name == store_name) else {
++                continue;
++            };
++            let keys = &mut writes.keys[store_position].1;
++            if let Some(count) = keys.get_mut(key) {
++                *count -= 1;
++                if *count == 0 {
++                    keys.remove(key);
++                }
++            }
++            if keys.is_empty() {
++                writes.keys.remove(store_position);
++            }
++        }
++
++        if writes.is_empty() {
++            databases.remove(database_position);
++        }
++        if databases.is_empty() {
++            state.pending_writes.remove(key_position);
++        }
++    });
++}
++
++fn compare_index_records(a: &IndexRecord, b: &IndexRecord) -> core::cmp::Ordering {
++    Key::ordering(&a.key, &b.key).then_with(|| Key::ordering(&a.value, &b.value))
++}
++
++fn install_database(vm: &Vm, storage_key: &StorageKey, persisted: &PersistedDatabase) -> DatabaseRef {
++    let database = Database::create_for_key_and_name(vm, storage_key, &persisted.name);
++    database.set_version(persisted.version);
++
++    for persisted_store in &persisted.object_stores {
++        let store = ObjectStore::create(
++            vm,
++            database,
++            persisted_store.name.clone(),
++            persisted_store.key_generator.is_some(),
++            persisted_store.key_path.clone(),
++        );
++        if let Some(current_number) = persisted_store.key_generator {
++            store.key_generator().set(current_number);
++        }
++
++        let mut records: Vec<ObjectStoreRecord> = persisted_store
++            .records
++            .iter()
++            .filter_map(|record| {
++                Some(ObjectStoreRecord {
++                    key: decode_key(&record.key)?,
++                    value: Rc::from(record.value.as_slice()),
++                })
++            })
++            .collect();
++        records.sort_by(|a, b| Key::ordering(&a.key, &b.key));
++        for record in records {
++            store.store_a_record(vm, record);
++        }
++
++        for persisted_index in &persisted_store.indexes {
++            let index = Index::create(
++                vm,
++                store,
++                &persisted_index.name,
++                &persisted_index.key_path,
++                persisted_index.unique,
++                persisted_index.multi_entry,
++            );
++            let mut index_records: Vec<IndexRecord> = persisted_index
++                .records
++                .iter()
++                .filter_map(|record| {
++                    Some(IndexRecord {
++                        key: decode_key(&record.key)?,
++                        value: decode_key(&record.primary_key)?,
++                    })
++                })
++                .collect();
++            index_records.sort_by(compare_index_records);
++            for record in &index_records {
++                Index::store_a_record(index, vm, record);
++            }
++        }
++    }
++
++    database
++}
++
++/// Brings the databases the browser process has for the storage key into this process, the first time it is asked to.
++pub(crate) fn load_persisted_databases(vm: &Vm, realm: Gc<Realm>, storage_key: &StorageKey) {
++    if is_loaded(storage_key) {
++        return;
++    }
++    STATE.with_borrow_mut(|state| state.loaded_storage_keys.push(storage_key.clone()));
++
++    unsafe extern "C" fn on_bytes(ctx: *mut c_void, bytes: ak::Span<'_, u8>) {
++        // SAFETY: ctx is the vector below, and the bytes are lent for the call.
++        unsafe { (*ctx.cast::<Vec<u8>>()).extend_from_slice(bytes.as_slice()) };
++    }
++    let mut bytes: Vec<u8> = Vec::new();
++    // SAFETY: The realm is live, and the vector outlives the call.
++    unsafe { web_indexed_db_request_persisted_databases(realm_ptr(realm), (&raw mut bytes).cast(), on_bytes) };
++
++    let mut reader = ByteReader::new(&bytes);
++    let Some(count) = reader.count() else {
++        return;
++    };
++    for _ in 0..count {
++        let Some(database) = reader.database() else {
++            return;
++        };
++        if Database::for_key_and_name(vm, storage_key, &database.name).is_some() {
++            continue;
++        }
++        install_database(vm, storage_key, &database);
++    }
++}
++
++// Whether opening name with version may run an upgrade, going by what this process has.
++fn open_may_upgrade(vm: &Vm, storage_key: &StorageKey, name: &Utf16String, version: Option<u64>) -> bool {
++    let Some(database) = Database::for_key_and_name(vm, storage_key, name) else {
++        return true;
++    };
++    if database.version() == 0 {
++        return true;
++    }
++    version.is_some_and(|version| database.version() < version)
++}
++
++fn local_version(vm: &Vm, storage_key: &StorageKey, name: &Utf16String) -> Option<u64> {
++    let database = Database::for_key_and_name(vm, storage_key, name)?;
++    (database.version() != 0).then(|| database.version())
++}
++
++fn request_upgrade_lock(realm: Gc<Realm>, name: &Utf16String) -> (bool, Option<u64>) {
++    let mut granted = false;
++    let mut has_stored_version = false;
++    let mut stored_version = 0;
++    // SAFETY: The realm is live, the name is lent for the call, and the out-parameters outlive it.
++    unsafe {
++        web_indexed_db_request_upgrade_lock(
++            realm_ptr(realm),
++            name.raw_identity(),
++            &raw mut granted,
++            &raw mut has_stored_version,
++            &raw mut stored_version,
++        );
++    }
++    (granted, has_stored_version.then_some(stored_version))
++}
++
++/// AD-HOC: Two processes must not upgrade a database at once (each would build its own and one would lose). Before an
++/// open request that may upgrade goes on, this process takes the database's lock from the browser process, waiting
++/// while another process holds it; `then` is told whether it took the lock, which it must give back with
++/// release_upgrade_lock() once the request is done.
++pub(crate) fn wait_for_upgrade_lock(
++    vm: &Vm,
++    realm: Gc<Realm>,
++    storage_key: &StorageKey,
++    name: &Utf16String,
++    version: Option<u64>,
++    then: FunctionWith<bool>,
++) {
++    try_upgrade_lock(vm, realm, storage_key, name, version, then, 0);
++}
++
++fn try_upgrade_lock(
++    vm: &Vm,
++    realm: Gc<Realm>,
++    storage_key: &StorageKey,
++    name: &Utf16String,
++    version: Option<u64>,
++    then: FunctionWith<bool>,
++    attempt: u32,
++) {
++    // What another process changed that we have not heard of yet is already on its way to us: try again once it is in
++    // (but not forever, should what we have never match).
++    const MAX_ATTEMPTS: u32 = 500;
++
++    if !open_may_upgrade(vm, storage_key, name, version) {
++        then.call(vm, false);
++        return;
++    }
++
++    let (mut granted, stored_version) = request_upgrade_lock(realm, name);
++    let behind = granted && stored_version != local_version(vm, storage_key, name);
++    if behind && attempt < MAX_ATTEMPTS {
++        release_upgrade_lock(realm, name);
++        granted = false;
++    }
++
++    if !granted && attempt < MAX_ATTEMPTS {
++        let retry = create_function(
++            vm,
++            (
++                realm,
++                NoCells((storage_key.clone(), version, attempt)),
++                name.clone(),
++                then,
++            ),
++            |vm, &(realm, NoCells((ref storage_key, version, attempt)), ref name, then), ()| {
++                try_upgrade_lock(vm, realm, storage_key, name, version, then, attempt + 1);
++            },
++        );
++        let milliseconds = if attempt < 10 { 1 } else { 10 };
++        // SAFETY: The function is live, and the timer keeps it alive until it runs.
++        unsafe { web_indexed_db_run_after(retry.cell_as_ptr(), milliseconds, run_function) };
++        return;
++    }
++
++    if !granted {
++        eprintln!(
++            "IndexedDB: Gave up waiting to upgrade database '{}'",
++            String::from_utf16_lossy(&name.to_utf16())
++        );
++    }
++
++    // The database we now have may not need the upgrade after all.
++    if granted && !open_may_upgrade(vm, storage_key, name, version) {
++        release_upgrade_lock(realm, name);
++        then.call(vm, false);
++        return;
++    }
++    then.call(vm, granted);
++}
++
++pub(crate) fn release_upgrade_lock(realm: Gc<Realm>, name: &Utf16String) {
++    // SAFETY: The realm is live, and the name is lent for the call.
++    unsafe { web_indexed_db_release_upgrade_lock(realm_ptr(realm), name.raw_identity()) };
++}
++
++fn snapshot_of(vm: &Vm, database: DatabaseRef) -> PersistedDatabase {
++    let mut object_stores = Vec::new();
++    for store in database.object_stores(vm).values().iter() {
++        let records = store
++            .records()
++            .iter()
++            .map(|record| PersistedRecord {
++                key: encode_key(&record.key),
++                value: record.value.to_vec(),
++            })
++            .collect();
++        let mut indexes = Vec::new();
++        for index in store.indexes(vm).values().iter() {
++            indexes.push(PersistedIndex {
++                name: index.name(),
++                key_path: index.key_path().clone(),
++                unique: index.unique(),
++                multi_entry: index.multi_entry(),
++                records: index
++                    .records()
++                    .iter()
++                    .map(|record| PersistedIndexRecord {
++                        key: encode_key(&record.key),
++                        primary_key: encode_key(&record.value),
++                    })
++                    .collect(),
++            });
++        }
++        object_stores.push(PersistedObjectStore {
++            name: store.name(),
++            key_path: store.key_path().cloned(),
++            key_generator: store
++                .uses_a_key_generator()
++                .then(|| store.key_generator().current_number()),
++            records,
++            indexes,
++        });
++    }
++    PersistedDatabase {
++        name: database.name(),
++        version: database.version(),
++        object_stores,
++    }
++}
++
++/// Sends what a committing transaction changed to the browser process.
++pub(crate) fn persist_committed_transaction(vm: &Vm, transaction: Ref<IDBTransaction>) {
++    if transaction.is_readonly() {
++        return;
++    }
++
++    let database = transaction.connection_object().associated_database();
++    let Some(storage_key) = database.storage_key() else {
++        return;
++    };
++    if !is_loaded(&storage_key) {
++        return;
++    }
++
++    // A connection to a database another process has since replaced or deleted writes to what is no longer stored.
++    if Database::for_key_and_name(vm, &storage_key, &database.name()) != Some(database) {
++        return;
++    }
++
++    let mut changes = PersistedDatabaseChanges {
++        kind: ChangesKind::Update,
++        name: database.name(),
++        base_version: 0,
++        replacement: None,
++        object_stores: Vec::new(),
++    };
++
++    if transaction.is_upgrade_transaction() {
++        changes.kind = ChangesKind::Replace;
++        changes.base_version = transaction.original_version();
++        changes.replacement = Some(snapshot_of(vm, database));
++    } else {
++        for (store, log) in transaction.store_mutation_logs(vm).values().iter() {
++            if let Some(store_changes) = log.persisted_changes(*store) {
++                changes.object_stores.push(store_changes);
++            }
++        }
++        if changes.object_stores.is_empty() {
++            return;
++        }
++    }
++
++    send_commit(transaction.realm(), &storage_key, &changes);
++}
++
++/// Tells the browser process that this process deleted a database.
++pub(crate) fn persist_deleted_database(realm: Gc<Realm>, storage_key: &StorageKey, name: &Utf16String) {
++    if !is_loaded(storage_key) {
++        return;
++    }
++    let changes = PersistedDatabaseChanges {
++        kind: ChangesKind::Delete,
++        name: name.clone(),
++        base_version: 0,
++        replacement: None,
++        object_stores: Vec::new(),
++    };
++    send_commit(realm, storage_key, &changes);
++}
++
++// Applies what another process changed in database, except where a commit of ours that is not stored yet wrote.
++fn apply_object_store_changes(
++    vm: &Vm,
++    database: DatabaseRef,
++    writes: Option<&PendingWrites>,
++    changes: &PersistedObjectStoreChanges,
++) {
++    let Some(store) = database.object_store_with_name(&changes.name) else {
++        return;
++    };
++
++    // NB: These changes are already committed, so they are no part of any transaction of ours that may revert.
++    let saved_log = store.mutation_log();
++    store.set_mutation_log(None);
++
++    for encoded_key in &changes.deleted {
++        if is_pending(writes, &changes.name, encoded_key) {
++            continue;
++        }
++        if let Some(key) = decode_key(encoded_key) {
++            store.remove_record_with_key(&key);
++        }
++    }
++
++    for record in &changes.stored {
++        if is_pending(writes, &changes.name, &record.key) {
++            continue;
++        }
++        let Some(key) = decode_key(&record.key) else {
++            continue;
++        };
++        store.remove_record_with_key(&key);
++        store.store_a_record(
++            vm,
++            ObjectStoreRecord {
++                key,
++                value: Rc::from(record.value.as_slice()),
++            },
++        );
++    }
++
++    for index_changes in &changes.indexes {
++        let Some(index) = store.index_set_get(&index_changes.name) else {
++            continue;
++        };
++
++        let decode_record = |record: &PersistedIndexRecord| -> Option<IndexRecord> {
++            if is_pending(writes, &changes.name, &record.primary_key) {
++                return None;
++            }
++            Some(IndexRecord {
++                key: decode_key(&record.key)?,
++                value: decode_key(&record.primary_key)?,
++            })
++        };
++
++        for persisted_record in &index_changes.deleted {
++            if let Some(record) = decode_record(persisted_record) {
++                index.remove_record(&record);
++            }
++        }
++        for persisted_record in &index_changes.stored {
++            if let Some(record) = decode_record(persisted_record) {
++                index.remove_record(&record);
++                Index::store_a_record(index, vm, &record);
++            }
++        }
++    }
++
++    if let Some(current_number) = changes.key_generator
++        && store.uses_a_key_generator()
++        && current_number > store.key_generator().current_number()
++    {
++        store.key_generator().set(current_number);
++    }
++
++    store.set_mutation_log(saved_log);
++}
++
++fn key_paths_match(a: Option<&KeyPath>, b: Option<&KeyPath>) -> bool {
++    match (a, b) {
++        (None, None) => true,
++        (Some(KeyPath::String(a)), Some(KeyPath::String(b))) => a == b,
++        (Some(KeyPath::Sequence(a)), Some(KeyPath::Sequence(b))) => a == b,
++        _ => false,
++    }
++}
++
++// Whether database has the version, object stores and indexes of persisted, so the records can be swapped in place.
++fn has_schema_of(vm: &Vm, database: DatabaseRef, persisted: &PersistedDatabase) -> bool {
++    if database.version() != persisted.version
++        || database.object_stores(vm).values().len() != persisted.object_stores.len()
++    {
++        return false;
++    }
++
++    for persisted_store in &persisted.object_stores {
++        let Some(store) = database.object_store_with_name(&persisted_store.name) else {
++            return false;
++        };
++        if !key_paths_match(store.key_path(), persisted_store.key_path.as_ref())
++            || store.uses_a_key_generator() != persisted_store.key_generator.is_some()
++            || store.indexes(vm).values().len() != persisted_store.indexes.len()
++        {
++            return false;
++        }
++        for persisted_index in &persisted_store.indexes {
++            let Some(index) = store.index_set_get(&persisted_index.name) else {
++                return false;
++            };
++            if !key_paths_match(Some(index.key_path()), Some(&persisted_index.key_path))
++                || index.unique() != persisted_index.unique
++                || index.multi_entry() != persisted_index.multi_entry
++            {
++                return false;
++            }
++        }
++    }
++    true
++}
++
++// Makes database's records those of persisted, as a set of changes: whatever persisted lacks is deleted.
++fn replace_records_in_place(
++    vm: &Vm,
++    database: DatabaseRef,
++    writes: Option<&PendingWrites>,
++    persisted: &PersistedDatabase,
++) {
++    for persisted_store in &persisted.object_stores {
++        let store = database
++            .object_store_with_name(&persisted_store.name)
++            .expect("the database has the persisted schema");
++
++        let persisted_keys: std::collections::HashSet<&[u8]> = persisted_store
++            .records
++            .iter()
++            .map(|record| record.key.as_slice())
++            .collect();
++        let deleted = store
++            .records()
++            .iter()
++            .map(|record| encode_key(&record.key))
++            .filter(|key| !persisted_keys.contains(key.as_slice()))
++            .collect();
++
++        let mut indexes = Vec::new();
++        for persisted_index in &persisted_store.indexes {
++            let index = store
++                .index_set_get(&persisted_index.name)
++                .expect("the database has the persisted schema");
++            let pair = |key: &[u8], primary_key: &[u8]| {
++                let mut pair = key.to_vec();
++                pair.extend_from_slice(primary_key);
++                pair
++            };
++            let persisted_records: std::collections::HashSet<Vec<u8>> = persisted_index
++                .records
++                .iter()
++                .map(|record| pair(&record.key, &record.primary_key))
++                .collect();
++            let deleted = index
++                .records()
++                .iter()
++                .map(|record| PersistedIndexRecord {
++                    key: encode_key(&record.key),
++                    primary_key: encode_key(&record.value),
++                })
++                .filter(|record| !persisted_records.contains(&pair(&record.key, &record.primary_key)))
++                .collect();
++            indexes.push(PersistedIndexChanges {
++                name: persisted_index.name.clone(),
++                stored: persisted_index.records.clone(),
++                deleted,
++            });
++        }
++
++        let changes = PersistedObjectStoreChanges {
++            name: persisted_store.name.clone(),
++            key_generator: persisted_store.key_generator,
++            stored: persisted_store.records.clone(),
++            deleted,
++            indexes,
++        };
++        apply_object_store_changes(vm, database, writes, &changes);
++    }
++}
++
++// As when a connection in this process upgrades or deletes a database: open connections hear of it first, and those
++// that do not close themselves are closed.
++fn close_connections_to_superseded_database(vm: &Vm, database: DatabaseRef, new_version: Option<u64>) {
++    let old_version = database.version();
++    for connection in database.associated_connections(vm).values().iter() {
++        if connection.close_pending() {
++            continue;
++        }
++        queue_a_database_task(
++            vm,
++            create_function(
++                vm,
++                (*connection, NoCells((old_version, new_version))),
++                |vm, &(connection, NoCells((old_version, new_version))), ()| {
++                    if connection.close_pending() {
++                        return;
++                    }
++                    fire_a_version_change_event(
++                        vm,
++                        connection.realm(),
++                        "versionchange",
++                        connection.event_target(),
++                        old_version,
++                        new_version,
++                    );
++                    if !connection.close_pending() {
++                        close_a_database_connection(vm, connection, None, true);
++                    }
++                },
++            ),
++        );
++    }
++}
++
++fn apply_persisted_database_changes(vm: &Vm, storage_key: &StorageKey, changes: PersistedDatabaseChanges) {
++    if !is_loaded(storage_key) {
++        return;
++    }
++
++    let writes = STATE.with_borrow(|state| state.pending_writes_for(storage_key, &changes.name).cloned());
++    let writes = writes.as_ref();
++
++    // A replacement or deletion of ours that is not stored yet supersedes this (or, if it is refused, we are sent what
++    // is stored instead).
++    if writes.is_some_and(|writes| writes.whole_database > 0) {
++        return;
++    }
++
++    let database = Database::for_key_and_name(vm, storage_key, &changes.name);
++
++    if changes.kind == ChangesKind::Update {
++        if let Some(database) = database {
++            for store_changes in &changes.object_stores {
++                apply_object_store_changes(vm, database, writes, store_changes);
++            }
++        }
++        return;
++    }
++
++    // An upgrade of ours that is still running replaces the database when it commits, or is refused.
++    if database.is_some_and(|database| database.upgrade_transaction().is_some()) {
++        return;
++    }
++
++    if changes.kind == ChangesKind::Replace
++        && let Some(replacement) = &changes.replacement
++    {
++        // Versions only go up, short of a deletion.
++        if database.is_some_and(|database| replacement.version < database.version()) {
++            return;
++        }
++
++        // Another process upgraded the database to what we have (most often: we both created it at once). Our
++        // connections stay open, and only the records change.
++        if let Some(database) = database
++            && has_schema_of(vm, database, replacement)
++        {
++            replace_records_in_place(vm, database, writes, replacement);
++            return;
++        }
++    }
++
++    let mut new_version = None;
++    if database.is_some() {
++        Database::delete_for_key_and_name(vm, storage_key, &changes.name);
++    }
++    if changes.kind == ChangesKind::Replace
++        && let Some(replacement) = &changes.replacement
++    {
++        install_database(vm, storage_key, replacement);
++        new_version = Some(replacement.version);
++    }
++    if let Some(database) = database {
++        close_connections_to_superseded_database(vm, database, new_version);
++    }
++}
++
++/// What another process committed, which the browser process passes on.
++///
++/// # Safety
++///
++/// The pointers must be the live VM and an origin that LibWeb lends.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn web_rust_indexed_db_apply_persisted_changes(
++    vm: *mut c_void,
++    origin: *const FfiOrigin,
++    changes: ak::Span<'_, u8>,
++) {
++    // SAFETY: The caller passes the live VM and lends a live origin.
++    let (vm, storage_key) = unsafe {
++        (
++            &*vm.cast::<Vm>(),
++            StorageKey {
++                origin: (*origin).to_origin(),
++            },
++        )
++    };
++    let mut reader = ByteReader::new(changes.as_slice());
++    let Some(changes) = reader.changes() else {
++        eprintln!("IndexedDB: Could not read the changes another process committed");
++        return;
++    };
++    apply_persisted_database_changes(vm, &storage_key, changes);
++}
++
++/// The browser process has stored the changes of one of our commits.
++///
++/// # Safety
++///
++/// The pointer must be the live VM.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn web_rust_indexed_db_did_persist_changes(_vm: *mut c_void, commit_id: u64) {
++    did_persist_database_changes(commit_id);
++}
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+index 2ff8136d2a..7470d22014 100644
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -700,6 +700,7 @@ set(SOURCES
+     HTML/XMLSerializer.cpp
+     IndexedDB/IDBFactory.cpp
+     IndexedDB/Inspection.cpp
++    IndexedDB/Persistence.cpp
+     IndexedDB/RustIntegration.cpp
+     Infra/ByteSequences.cpp
+     Infra/JSON.cpp
+diff --git a/Libraries/LibWeb/IndexedDB/Persistence.cpp b/Libraries/LibWeb/IndexedDB/Persistence.cpp
+new file mode 100644
+index 0000000000..133d6d4de4
+--- /dev/null
++++ b/Libraries/LibWeb/IndexedDB/Persistence.cpp
+@@ -0,0 +1,386 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <AK/ByteBuffer.h>
 +#include <AK/Endian.h>
-+#include <AK/HashMap.h>
-+#include <AK/HashTable.h>
-+#include <AK/NeverDestroyed.h>
-+#include <AK/QuickSort.h>
-+#include <LibGC/DeferGC.h>
 +#include <LibGC/Function.h>
 +#include <LibGC/Heap.h>
++#include <LibJS/HostClassBuilder.h>
++#include <LibJS/Runtime/Realm.h>
++#include <LibURL/RustIntegration.h>
++#include <LibWeb/Bindings/MainThreadVM.h>
 +#include <LibWeb/Bindings/PrincipalHostDefined.h>
-+#include <LibWeb/HTML/EventNames.h>
 +#include <LibWeb/HTML/Scripting/Environments.h>
-+#include <LibWeb/IndexedDB/IDBDatabase.h>
-+#include <LibWeb/IndexedDB/IDBTransaction.h>
-+#include <LibWeb/IndexedDB/Internal/Algorithms.h>
-+#include <LibWeb/IndexedDB/Internal/Database.h>
-+#include <LibWeb/IndexedDB/Internal/Index.h>
-+#include <LibWeb/IndexedDB/Internal/Key.h>
-+#include <LibWeb/IndexedDB/Internal/MutationLog.h>
-+#include <LibWeb/IndexedDB/Internal/ObjectStore.h>
-+#include <LibWeb/IndexedDB/Internal/Persistence.h>
++#include <LibWeb/IndexedDB/Persistence.h>
 +#include <LibWeb/Page/Page.h>
 +#include <LibWeb/Platform/Timer.h>
 +
-+namespace Web::IndexedDB {
++// The persisted databases and changes cross to Rust as bytes, in this layout (little-endian): u32 counts and lengths,
++// strings as their UTF-16 code units, byte strings as their bytes, an optional as a presence byte then the value, a key
++// path as a tag byte (0: string, 1: sequence) then the string or the strings. Kept in step with persistence.rs.
 +
-+// Key encoding: a type byte, then the value. Numbers and dates are IEEE doubles, strings their UTF-16 code units, binary
-+// keys their bytes, array keys their subkeys. Lengths and counts are u32. Everything is little-endian.
-+enum class EncodedKeyType : u8 {
-+    Number = 1,
-+    Date = 2,
-+    String = 3,
-+    Binary = 4,
-+    Array = 5,
-+};
++using namespace Web;
++using namespace Web::IndexedDB;
 +
-+static constexpr size_t MAX_KEY_DEPTH = 1024;
++namespace {
 +
-+static void append_u32(ByteBuffer& buffer, u32 value)
-+{
-+    LittleEndian<u32> little_endian = value;
-+    buffer.append(&little_endian, sizeof(little_endian));
-+}
-+
-+static void append_double(ByteBuffer& buffer, double value)
-+{
-+    // NB: Keys are never NaN, and -0 is the same key as +0, so it is stored as +0.
-+    if (value == 0)
-+        value = 0;
-+    LittleEndian<u64> little_endian = bit_cast<u64>(value);
-+    buffer.append(&little_endian, sizeof(little_endian));
-+}
-+
-+static void append_key(ByteBuffer& buffer, Key const& key)
-+{
-+    switch (key.type()) {
-+    case Key::KeyType::Number:
-+        buffer.append(to_underlying(EncodedKeyType::Number));
-+        append_double(buffer, key.value_as_double());
-+        break;
-+    case Key::KeyType::Date:
-+        buffer.append(to_underlying(EncodedKeyType::Date));
-+        append_double(buffer, key.value_as_double());
-+        break;
-+    case Key::KeyType::String: {
-+        buffer.append(to_underlying(EncodedKeyType::String));
-+        auto view = key.value_as_string().utf16_view();
-+        append_u32(buffer, view.length_in_code_units());
++class Writer {
++public:
++    void u8(::u8 value) { m_buffer.append(value); }
++    void u32(::u32 value)
++    {
++        LittleEndian<::u32> le = value;
++        m_buffer.append(&le, sizeof(le));
++    }
++    void u64(::u64 value)
++    {
++        LittleEndian<::u64> le = value;
++        m_buffer.append(&le, sizeof(le));
++    }
++    void boolean(bool value) { u8(value ? 1 : 0); }
++    void bytes(ReadonlyBytes value)
++    {
++        u32(value.size());
++        m_buffer.append(value);
++    }
++    void string(Utf16String const& value)
++    {
++        auto view = value.utf16_view();
++        u32(view.length_in_code_units());
 +        for (size_t i = 0; i < view.length_in_code_units(); ++i) {
 +            LittleEndian<u16> code_unit = view.code_unit_at(i);
-+            buffer.append(&code_unit, sizeof(code_unit));
++            m_buffer.append(&code_unit, sizeof(code_unit));
 +        }
-+        break;
 +    }
-+    case Key::KeyType::Binary: {
-+        buffer.append(to_underlying(EncodedKeyType::Binary));
-+        auto const& bytes = key.value_as_byte_buffer();
-+        append_u32(buffer, bytes.size());
-+        buffer.append(bytes.bytes());
-+        break;
++    void key_path(PersistedKeyPath const& value)
++    {
++        value.visit(
++            [&](Utf16String const& string) {
++                u8(0);
++                string_(string);
++            },
++            [&](Vector<Utf16String> const& strings) {
++                u8(1);
++                u32(strings.size());
++                for (auto const& string : strings)
++                    string_(string);
++            });
 +    }
-+    case Key::KeyType::Array: {
-+        buffer.append(to_underlying(EncodedKeyType::Array));
-+        auto subkeys = key.subkeys();
-+        append_u32(buffer, subkeys.size());
-+        for (auto const& subkey : subkeys)
-+            append_key(buffer, *subkey);
-+        break;
++    void optional_u64(Optional<::u64> const& value)
++    {
++        boolean(value.has_value());
++        if (value.has_value())
++            u64(*value);
 +    }
-+    case Key::KeyType::Invalid:
-+        VERIFY_NOT_REACHED();
-+    }
-+}
 +
-+ByteBuffer encode_key(Key const& key)
-+{
-+    ByteBuffer buffer;
-+    append_key(buffer, key);
-+    return buffer;
-+}
++    void database(PersistedDatabase const& database)
++    {
++        string(database.name);
++        u64(database.version);
++        u32(database.object_stores.size());
++        for (auto const& store : database.object_stores) {
++            string(store.name);
++            boolean(store.key_path.has_value());
++            if (store.key_path.has_value())
++                key_path(*store.key_path);
++            optional_u64(store.key_generator);
++            u32(store.records.size());
++            for (auto const& record : store.records) {
++                bytes(record.key);
++                bytes(record.value);
++            }
++            u32(store.indexes.size());
++            for (auto const& index : store.indexes) {
++                string(index.name);
++                key_path(index.key_path);
++                boolean(index.unique);
++                boolean(index.multi_entry);
++                u32(index.records.size());
++                for (auto const& record : index.records) {
++                    bytes(record.key);
++                    bytes(record.primary_key);
++                }
++            }
++        }
++    }
 +
-+class KeyReader {
++    void index_records(Vector<PersistedIndexRecord> const& records)
++    {
++        u32(records.size());
++        for (auto const& record : records) {
++            bytes(record.key);
++            bytes(record.primary_key);
++        }
++    }
++
++    void changes(PersistedDatabaseChanges const& changes)
++    {
++        u8(to_underlying(changes.kind));
++        string(changes.name);
++        u64(changes.base_version);
++        boolean(changes.replacement.has_value());
++        if (changes.replacement.has_value())
++            database(*changes.replacement);
++        u32(changes.object_stores.size());
++        for (auto const& store : changes.object_stores) {
++            string(store.name);
++            optional_u64(store.key_generator);
++            u32(store.stored.size());
++            for (auto const& record : store.stored) {
++                bytes(record.key);
++                bytes(record.value);
++            }
++            u32(store.deleted.size());
++            for (auto const& key : store.deleted)
++                bytes(key);
++            u32(store.indexes.size());
++            for (auto const& index : store.indexes) {
++                string(index.name);
++                index_records(index.stored);
++                index_records(index.deleted);
++            }
++        }
++    }
++
++    ByteBuffer& buffer() { return m_buffer; }
++
++private:
++    void string_(Utf16String const& value) { string(value); }
++
++    ByteBuffer m_buffer;
++};
++
++class Reader {
 +public:
-+    explicit KeyReader(ReadonlyBytes bytes)
++    explicit Reader(ReadonlyBytes bytes)
 +        : m_bytes(bytes)
 +    {
 +    }
 +
 +    bool is_at_end() const { return m_offset == m_bytes.size(); }
 +
-+    ErrorOr<ReadonlyBytes> read_bytes(size_t count)
++    ErrorOr<ReadonlyBytes> take(size_t count)
 +    {
 +        if (count > m_bytes.size() - m_offset)
-+            return Error::from_string_literal("Truncated IndexedDB key");
++            return Error::from_string_literal("Truncated IndexedDB persistence data");
 +        auto bytes = m_bytes.slice(m_offset, count);
 +        m_offset += count;
 +        return bytes;
 +    }
 +
-+    ErrorOr<u8> read_u8() { return TRY(read_bytes(1))[0]; }
-+
-+    ErrorOr<u64> read_little_endian(size_t size)
++    ErrorOr<::u64> little_endian(size_t size)
 +    {
-+        auto bytes = TRY(read_bytes(size));
-+        u64 value = 0;
++        auto bytes = TRY(take(size));
++        ::u64 value = 0;
 +        for (size_t i = 0; i < size; ++i)
-+            value |= static_cast<u64>(bytes[i]) << (8 * i);
++            value |= static_cast<::u64>(bytes[i]) << (8 * i);
 +        return value;
 +    }
 +
-+    ErrorOr<u16> read_u16() { return static_cast<u16>(TRY(read_little_endian(2))); }
-+    ErrorOr<u32> read_u32() { return static_cast<u32>(TRY(read_little_endian(4))); }
-+    ErrorOr<double> read_double() { return bit_cast<double>(TRY(read_little_endian(8))); }
++    ErrorOr<::u8> u8() { return TRY(take(1))[0]; }
++    ErrorOr<::u32> u32() { return static_cast<::u32>(TRY(little_endian(4))); }
++    ErrorOr<::u64> u64() { return TRY(little_endian(8)); }
++    ErrorOr<bool> boolean() { return TRY(u8()) != 0; }
++    ErrorOr<ByteBuffer> bytes() { return ByteBuffer::copy(TRY(take(TRY(u32())))); }
++    ErrorOr<Utf16String> string()
++    {
++        auto length = TRY(u32());
++        Vector<char16_t> code_units;
++        TRY(code_units.try_ensure_capacity(length));
++        for (::u32 i = 0; i < length; ++i)
++            code_units.unchecked_append(static_cast<char16_t>(TRY(little_endian(2))));
++        return Utf16String::from_utf16(Utf16View { code_units.data(), code_units.size() });
++    }
++    ErrorOr<PersistedKeyPath> key_path()
++    {
++        if (TRY(u8()) == 0)
++            return PersistedKeyPath { TRY(string()) };
++        auto count = TRY(u32());
++        Vector<Utf16String> strings;
++        for (::u32 i = 0; i < count; ++i)
++            strings.append(TRY(string()));
++        return PersistedKeyPath { move(strings) };
++    }
++    ErrorOr<Optional<::u64>> optional_u64()
++    {
++        if (!TRY(boolean()))
++            return Optional<::u64> {};
++        return Optional<::u64> { TRY(u64()) };
++    }
++
++    ErrorOr<PersistedDatabase> database()
++    {
++        PersistedDatabase database;
++        database.name = TRY(string());
++        database.version = TRY(u64());
++        auto store_count = TRY(u32());
++        for (::u32 i = 0; i < store_count; ++i) {
++            PersistedObjectStore store;
++            store.name = TRY(string());
++            if (TRY(boolean()))
++                store.key_path = TRY(key_path());
++            store.key_generator = TRY(optional_u64());
++            auto record_count = TRY(u32());
++            for (::u32 j = 0; j < record_count; ++j) {
++                auto key = TRY(bytes());
++                auto value = TRY(bytes());
++                store.records.append({ move(key), move(value) });
++            }
++            auto index_count = TRY(u32());
++            for (::u32 j = 0; j < index_count; ++j) {
++                PersistedIndex index;
++                index.name = TRY(string());
++                index.key_path = TRY(key_path());
++                index.unique = TRY(boolean());
++                index.multi_entry = TRY(boolean());
++                index.records = TRY(index_records());
++                store.indexes.append(move(index));
++            }
++            database.object_stores.append(move(store));
++        }
++        return database;
++    }
++
++    ErrorOr<Vector<PersistedIndexRecord>> index_records()
++    {
++        Vector<PersistedIndexRecord> records;
++        auto count = TRY(u32());
++        for (::u32 i = 0; i < count; ++i) {
++            auto key = TRY(bytes());
++            auto primary_key = TRY(bytes());
++            records.append({ move(key), move(primary_key) });
++        }
++        return records;
++    }
++
++    ErrorOr<PersistedDatabaseChanges> changes()
++    {
++        PersistedDatabaseChanges changes;
++        auto kind = TRY(u8());
++        if (kind > to_underlying(PersistedDatabaseChanges::Kind::Update))
++            return Error::from_string_literal("Unknown IndexedDB change kind");
++        changes.kind = static_cast<PersistedDatabaseChanges::Kind>(kind);
++        changes.name = TRY(string());
++        changes.base_version = TRY(u64());
++        if (TRY(boolean()))
++            changes.replacement = TRY(database());
++        auto store_count = TRY(u32());
++        for (::u32 i = 0; i < store_count; ++i) {
++            PersistedObjectStoreChanges store;
++            store.name = TRY(string());
++            store.key_generator = TRY(optional_u64());
++            auto stored_count = TRY(u32());
++            for (::u32 j = 0; j < stored_count; ++j) {
++                auto key = TRY(bytes());
++                auto value = TRY(bytes());
++                store.stored.append({ move(key), move(value) });
++            }
++            auto deleted_count = TRY(u32());
++            for (::u32 j = 0; j < deleted_count; ++j)
++                store.deleted.append(TRY(bytes()));
++            auto index_count = TRY(u32());
++            for (::u32 j = 0; j < index_count; ++j) {
++                PersistedIndexChanges index;
++                index.name = TRY(string());
++                index.stored = TRY(index_records());
++                index.deleted = TRY(index_records());
++                store.indexes.append(move(index));
++            }
++            changes.object_stores.append(move(store));
++        }
++        return changes;
++    }
 +
 +private:
 +    ReadonlyBytes m_bytes;
 +    size_t m_offset { 0 };
 +};
 +
-+static ErrorOr<GC::Ref<Key>> read_key(KeyReader& reader, size_t depth)
++Page& page_of(void* realm)
 +{
-+    if (depth > MAX_KEY_DEPTH)
-+        return Error::from_string_literal("IndexedDB key nested too deeply");
++    return Bindings::principal_host_defined_page(*static_cast<JS::Realm*>(realm));
++}
 +
-+    switch (static_cast<EncodedKeyType>(TRY(reader.read_u8()))) {
-+    case EncodedKeyType::Number:
-+        return Key::create_number(TRY(reader.read_double()));
-+    case EncodedKeyType::Date:
-+        return Key::create_date(TRY(reader.read_double()));
-+    case EncodedKeyType::String: {
-+        auto length = TRY(reader.read_u32());
-+        Vector<char16_t> code_units;
-+        TRY(code_units.try_ensure_capacity(length));
-+        for (u32 i = 0; i < length; ++i)
-+            code_units.unchecked_append(TRY(reader.read_u16()));
-+        return Key::create_string(Utf16String::from_utf16(Utf16View { code_units.data(), code_units.size() }));
++HTML::EnvironmentId environment_id_of(void* realm)
++{
++    return HTML::relevant_settings_object(static_cast<JS::Realm*>(realm)->global_object()).id;
++}
++
++}
++
++extern "C" {
++
++void web_rust_indexed_db_apply_persisted_changes(JSVM*, URL::FFI::FfiOrigin const*, ReadonlyBytes changes);
++void web_rust_indexed_db_did_persist_changes(JSVM*, u64 commit_id);
++
++void web_indexed_db_request_persisted_databases(void* realm, void* ctx, void (*on_bytes)(void*, ReadonlyBytes));
++void web_indexed_db_commit_persisted_changes(void* realm, u64 commit_id, ReadonlyBytes changes);
++void web_indexed_db_request_upgrade_lock(void* realm, FlatPtr name, bool* granted, bool* has_stored_version, u64* stored_version);
++void web_indexed_db_release_upgrade_lock(void* realm, FlatPtr name);
++void web_indexed_db_run_after(void* cell, u32 milliseconds, void (*steps)(JSVM*, void*));
++}
++
++void web_indexed_db_request_persisted_databases(void* realm, void* ctx, void (*on_bytes)(void*, ReadonlyBytes))
++{
++    auto databases = page_of(realm).client().page_did_request_indexed_databases(environment_id_of(realm));
++    Writer writer;
++    writer.u32(databases.size());
++    for (auto const& database : databases)
++        writer.database(database);
++    on_bytes(ctx, writer.buffer().bytes());
++}
++
++void web_indexed_db_commit_persisted_changes(void* realm, u64 commit_id, ReadonlyBytes bytes)
++{
++    Reader reader { bytes };
++    auto changes = reader.changes();
++    if (changes.is_error() || !reader.is_at_end()) {
++        dbgln("IndexedDB: Could not read the changes of commit {} to persist", commit_id);
++        return;
 +    }
-+    case EncodedKeyType::Binary: {
-+        auto length = TRY(reader.read_u32());
-+        return Key::create_binary(TRY(ByteBuffer::copy(TRY(reader.read_bytes(length)))));
-+    }
-+    case EncodedKeyType::Array: {
-+        auto count = TRY(reader.read_u32());
-+        auto keys = GC::Heap::the().allocate<GC::HeapVector<GC::Ref<Key>>>();
-+        for (u32 i = 0; i < count; ++i)
-+            keys->elements().append(TRY(read_key(reader, depth + 1)));
-+        return Key::create_array(keys);
-+    }
-+    }
-+
-+    return Error::from_string_literal("Unknown IndexedDB key type");
++    page_of(realm).client().page_did_commit_indexed_database_changes(environment_id_of(realm), commit_id, changes.value());
 +}
 +
-+ErrorOr<GC::Ref<Key>> decode_key(ReadonlyBytes bytes)
++void web_indexed_db_request_upgrade_lock(void* realm, FlatPtr name, bool* granted, bool* has_stored_version, u64* stored_version)
 +{
-+    KeyReader reader { bytes };
-+    auto key = TRY(read_key(reader, 0));
-+    if (!reader.is_at_end())
-+        return Error::from_string_literal("Trailing bytes after IndexedDB key");
-+    return key;
++    auto lock = page_of(realm).client().page_did_request_indexed_database_upgrade_lock(environment_id_of(realm), Utf16String::from_raw(name));
++    *granted = lock.granted;
++    *has_stored_version = lock.stored_version.has_value();
++    *stored_version = lock.stored_version.value_or(0);
 +}
 +
-+// The storage keys whose databases this process has loaded. Only those are kept up to date.
-+static HashTable<StorageAPI::StorageKey>& loaded_storage_keys()
++void web_indexed_db_release_upgrade_lock(void* realm, FlatPtr name)
 +{
-+    static NeverDestroyed<HashTable<StorageAPI::StorageKey>> storage_keys;
-+    return *storage_keys;
++    page_of(realm).client().page_did_release_indexed_database_upgrade_lock(environment_id_of(realm), Utf16String::from_raw(name));
 +}
 +
-+// Our commits the browser process has not stored yet. A change another process committed that reaches us before one of
-+// them was stored before it, so ours supersedes it wherever both wrote.
-+struct PendingWrites {
-+    // Commits that replaced or deleted the whole database.
-+    u32 whole_database { 0 };
-+    // Per object store: the encoded keys of the records commits wrote, with how many commits wrote each.
-+    HashMap<Utf16String, HashMap<ByteBuffer, u32>> keys;
-+
-+    bool is_empty() const { return whole_database == 0 && keys.is_empty(); }
-+};
-+
-+using PendingWritesByDatabase = HashMap<Utf16String, PendingWrites>;
-+
-+static HashMap<StorageAPI::StorageKey, PendingWritesByDatabase>& pending_writes()
++void web_indexed_db_run_after(void* cell, u32 milliseconds, void (*steps)(JSVM*, void*))
 +{
-+    static NeverDestroyed<HashMap<StorageAPI::StorageKey, PendingWritesByDatabase>> writes;
-+    return *writes;
++    GC::Ref<GC::Cell> function = *static_cast<GC::Cell*>(cell);
++    // NB: The timer's callback, which the collector scans, keeps the function alive until the steps run.
++    auto timer = Platform::Timer::create_single_shot(GC::Heap::the(), AK::Duration::from_milliseconds(milliseconds), GC::create_function(GC::Heap::the(), [function, steps] {
++        steps(JS::HostABI::vm_to_abi(Bindings::main_thread_vm()), function.ptr());
++    }));
++    timer->start();
 +}
 +
-+struct SentCommit {
-+    StorageAPI::StorageKey storage_key;
-+    Utf16String database_name;
-+    bool whole_database { false };
-+    Vector<Utf16String> object_store_names;
-+    Vector<ByteBuffer> keys;
-+};
++namespace Web::IndexedDB {
 +
-+static HashMap<u64, SentCommit>& sent_commits()
++void apply_persisted_database_changes(StorageAPI::StorageKey const& storage_key, PersistedDatabaseChanges changes)
 +{
-+    static NeverDestroyed<HashMap<u64, SentCommit>> commits;
-+    return *commits;
-+}
-+
-+static PendingWrites const* pending_writes_for(StorageAPI::StorageKey const& storage_key, Utf16String const& database_name)
-+{
-+    auto by_database = pending_writes().find(storage_key);
-+    if (by_database == pending_writes().end())
-+        return nullptr;
-+    auto writes = by_database->value.find(database_name);
-+    if (writes == by_database->value.end())
-+        return nullptr;
-+    return &writes->value;
-+}
-+
-+static bool is_pending(PendingWrites const* writes, Utf16String const& object_store_name, ByteBuffer const& key)
-+{
-+    if (!writes)
-+        return false;
-+    auto keys = writes->keys.find(object_store_name);
-+    if (keys == writes->keys.end())
-+        return false;
-+    return keys->value.contains(key);
-+}
-+
-+static void send_commit(JS::Realm& realm, StorageAPI::StorageKey const& storage_key, PersistedDatabaseChanges const& changes)
-+{
-+    static u64 next_commit_id = 1;
-+    auto commit_id = next_commit_id++;
-+
-+    SentCommit sent { storage_key, changes.name, changes.kind != PersistedDatabaseChanges::Kind::Update, {}, {} };
-+    auto& writes = pending_writes().ensure(storage_key).ensure(changes.name);
-+
-+    if (sent.whole_database) {
-+        ++writes.whole_database;
-+    } else {
-+        auto note_key = [&](Utf16String const& object_store_name, ByteBuffer const& key) {
-+            ++writes.keys.ensure(object_store_name).ensure(key, [] { return 0u; });
-+            sent.object_store_names.append(object_store_name);
-+            sent.keys.append(key);
-+        };
-+        for (auto const& store : changes.object_stores) {
-+            for (auto const& record : store.stored)
-+                note_key(store.name, record.key);
-+            for (auto const& key : store.deleted)
-+                note_key(store.name, key);
-+        }
-+    }
-+
-+    sent_commits().set(commit_id, move(sent));
-+
-+    auto& environment = HTML::relevant_settings_object(realm.global_object());
-+    Bindings::principal_host_defined_page(realm).client().page_did_commit_indexed_database_changes(environment.id, commit_id, changes);
++    Writer writer;
++    writer.changes(changes);
++    URL::RustIntegration::lend_origin_to_ffi(storage_key.origin, [&](URL::FFI::FfiOrigin const& origin) {
++        web_rust_indexed_db_apply_persisted_changes(JS::HostABI::vm_to_abi(Bindings::main_thread_vm()), &origin, writer.buffer().bytes());
++    });
 +}
 +
 +void did_persist_database_changes(u64 commit_id)
 +{
-+    auto sent = sent_commits().take(commit_id);
-+    if (!sent.has_value())
-+        return;
-+
-+    auto by_database = pending_writes().find(sent->storage_key);
-+    if (by_database == pending_writes().end())
-+        return;
-+    auto writes = by_database->value.find(sent->database_name);
-+    if (writes == by_database->value.end())
-+        return;
-+
-+    if (sent->whole_database && writes->value.whole_database > 0)
-+        --writes->value.whole_database;
-+
-+    for (size_t i = 0; i < sent->keys.size(); ++i) {
-+        auto keys = writes->value.keys.find(sent->object_store_names[i]);
-+        if (keys == writes->value.keys.end())
-+            continue;
-+        auto count = keys->value.find(sent->keys[i]);
-+        if (count == keys->value.end())
-+            continue;
-+        if (--count->value == 0)
-+            keys->value.remove(count);
-+        if (keys->value.is_empty())
-+            writes->value.keys.remove(keys);
-+    }
-+
-+    if (writes->value.is_empty())
-+        by_database->value.remove(writes);
-+    if (by_database->value.is_empty())
-+        pending_writes().remove(by_database);
-+}
-+
-+static int compare_index_records(IndexRecord const& a, IndexRecord const& b)
-+{
-+    if (auto result = Key::compare_two_keys(a.key, b.key); result != 0)
-+        return result;
-+    return Key::compare_two_keys(a.value, b.value);
-+}
-+
-+static GC::Ref<Database> install_database(StorageAPI::StorageKey const& storage_key, PersistedDatabase const& persisted)
-+{
-+    GC::DeferGC defer_gc { GC::Heap::the() };
-+
-+    auto database = MUST(Database::create_for_key_and_name(GC::Heap::the(), storage_key, persisted.name));
-+    database->set_version(persisted.version);
-+
-+    for (auto const& persisted_store : persisted.object_stores) {
-+        auto store = ObjectStore::create(database, persisted_store.name, persisted_store.key_generator.has_value(), persisted_store.key_path);
-+        if (persisted_store.key_generator.has_value())
-+            store->key_generator().set(*persisted_store.key_generator);
-+
-+        Vector<ObjectStoreRecord> records;
-+        records.ensure_capacity(persisted_store.records.size());
-+        for (auto const& persisted_record : persisted_store.records) {
-+            auto key = decode_key(persisted_record.key);
-+            auto value = ByteBuffer::copy(persisted_record.value);
-+            if (key.is_error() || value.is_error())
-+                continue;
-+            records.unchecked_append(ObjectStoreRecord { key.release_value(), make<HTML::StorageSerializationRecord>(value.release_value()) });
-+        }
-+        quick_sort(records, [](auto const& a, auto const& b) { return Key::less_than(a.key, b.key); });
-+        for (auto& record : records)
-+            store->store_a_record(move(record));
-+
-+        for (auto const& persisted_index : persisted_store.indexes) {
-+            auto index = Index::create(store, persisted_index.name, persisted_index.key_path, persisted_index.unique, persisted_index.multi_entry);
-+
-+            Vector<IndexRecord> index_records;
-+            index_records.ensure_capacity(persisted_index.records.size());
-+            for (auto const& persisted_record : persisted_index.records) {
-+                auto key = decode_key(persisted_record.key);
-+                auto primary_key = decode_key(persisted_record.primary_key);
-+                if (key.is_error() || primary_key.is_error())
-+                    continue;
-+                index_records.unchecked_append({ key.release_value(), primary_key.release_value() });
-+            }
-+            quick_sort(index_records, [](auto const& a, auto const& b) { return compare_index_records(a, b) < 0; });
-+            for (auto const& record : index_records)
-+                index->store_a_record(record);
-+        }
-+    }
-+
-+    return database;
-+}
-+
-+void load_persisted_databases(JS::Realm& realm, StorageAPI::StorageKey const& storage_key)
-+{
-+    if (loaded_storage_keys().contains(storage_key))
-+        return;
-+    loaded_storage_keys().set(storage_key);
-+
-+    auto& environment = HTML::relevant_settings_object(realm.global_object());
-+    auto databases = Bindings::principal_host_defined_page(realm).client().page_did_request_indexed_databases(environment.id);
-+
-+    for (auto const& database : databases) {
-+        if (Database::for_key_and_name(storage_key, database.name).has_value())
-+            continue;
-+        install_database(storage_key, database);
-+    }
-+}
-+
-+// Whether opening name with version may run an upgrade, going by what this process has.
-+static bool open_may_upgrade(StorageAPI::StorageKey const& storage_key, Utf16String const& name, Optional<u64> version)
-+{
-+    auto database = Database::for_key_and_name(storage_key, name);
-+    if (!database.has_value() || database->version() == 0)
-+        return true;
-+    return version.has_value() && database->version() < *version;
-+}
-+
-+static Optional<u64> local_version(StorageAPI::StorageKey const& storage_key, Utf16String const& name)
-+{
-+    auto database = Database::for_key_and_name(storage_key, name);
-+    if (!database.has_value() || database->version() == 0)
-+        return {};
-+    return database->version();
-+}
-+
-+static void wait_for_upgrade_lock(JS::Realm& realm, StorageAPI::StorageKey const& storage_key, Utf16String const& name, Optional<u64> version, GC::Ref<GC::Function<void(bool)>> then, u32 attempt)
-+{
-+    if (!open_may_upgrade(storage_key, name, version)) {
-+        then->function()(false);
-+        return;
-+    }
-+
-+    auto& environment = HTML::relevant_settings_object(realm.global_object());
-+    auto& client = Bindings::principal_host_defined_page(realm).client();
-+    auto lock = client.page_did_request_indexed_database_upgrade_lock(environment.id, name);
-+
-+    // What another process changed that we have not heard of yet is already on its way to us: try again once it is
-+    // in (but not forever, should what we have never match).
-+    static constexpr u32 max_attempts = 500;
-+    bool behind = lock.granted && lock.stored_version != local_version(storage_key, name);
-+    if (behind && attempt < max_attempts) {
-+        client.page_did_release_indexed_database_upgrade_lock(environment.id, name);
-+        lock.granted = false;
-+    }
-+
-+    if (!lock.granted && attempt < max_attempts) {
-+        auto timer = Platform::Timer::create_single_shot(GC::Heap::the(), AK::Duration::from_milliseconds(attempt < 10 ? 1 : 10), GC::create_function(GC::Heap::the(), [&realm, storage_key, name, version, then, attempt] {
-+            wait_for_upgrade_lock(realm, storage_key, name, version, then, attempt + 1);
-+        }));
-+        timer->start();
-+        return;
-+    }
-+
-+    if (!lock.granted)
-+        dbgln("IndexedDB: Gave up waiting to upgrade database '{}' of {}", name, storage_key.to_string());
-+
-+    // The database we now have may not need the upgrade after all.
-+    if (lock.granted && !open_may_upgrade(storage_key, name, version)) {
-+        client.page_did_release_indexed_database_upgrade_lock(environment.id, name);
-+        then->function()(false);
-+        return;
-+    }
-+    then->function()(lock.granted);
-+}
-+
-+void wait_for_upgrade_lock(JS::Realm& realm, StorageAPI::StorageKey const& storage_key, Utf16String const& name, Optional<u64> version, GC::Ref<GC::Function<void(bool)>> then)
-+{
-+    wait_for_upgrade_lock(realm, storage_key, name, version, then, 0);
-+}
-+
-+void release_upgrade_lock(JS::Realm& realm, Utf16String const& name)
-+{
-+    auto& environment = HTML::relevant_settings_object(realm.global_object());
-+    Bindings::principal_host_defined_page(realm).client().page_did_release_indexed_database_upgrade_lock(environment.id, name);
-+}
-+
-+static PersistedDatabase snapshot_of(Database& database)
-+{
-+    PersistedDatabase persisted;
-+    persisted.name = database.name();
-+    persisted.version = database.version();
-+
-+    for (auto const& store : database.object_stores()) {
-+        PersistedObjectStore persisted_store;
-+        persisted_store.name = store->name();
-+        persisted_store.key_path = store->key_path();
-+        if (store->uses_a_key_generator())
-+            persisted_store.key_generator = store->key_generator().current_number();
-+
-+        persisted_store.records.ensure_capacity(store->records().size());
-+        for (auto const& record : store->records())
-+            persisted_store.records.unchecked_append({ encode_key(*record.key), MUST(ByteBuffer::copy(record.value->data)) });
-+
-+        for (auto const& [name, index] : store->index_set()) {
-+            PersistedIndex persisted_index;
-+            persisted_index.name = name;
-+            persisted_index.key_path = index->key_path();
-+            persisted_index.unique = index->unique();
-+            persisted_index.multi_entry = index->multi_entry();
-+            persisted_index.records.ensure_capacity(index->records().size());
-+            for (auto const& record : index->records())
-+                persisted_index.records.unchecked_append({ encode_key(*record.key), encode_key(*record.value) });
-+            persisted_store.indexes.append(move(persisted_index));
-+        }
-+
-+        persisted.object_stores.append(move(persisted_store));
-+    }
-+
-+    return persisted;
-+}
-+
-+void persist_committed_transaction(IDBTransaction& transaction)
-+{
-+    if (transaction.mode() == TransactionMode::Readonly)
-+        return;
-+
-+    auto database = transaction.connection()->associated_database();
-+    auto const& storage_key = database->storage_key();
-+    if (!storage_key.has_value() || !loaded_storage_keys().contains(*storage_key))
-+        return;
-+
-+    // A connection to a database another process has since replaced or deleted writes to what is no longer stored.
-+    auto current = Database::for_key_and_name(*storage_key, database->name());
-+    if (!current.has_value() || &current.value() != database.ptr())
-+        return;
-+
-+    PersistedDatabaseChanges changes;
-+    changes.name = database->name();
-+
-+    if (transaction.is_upgrade_transaction()) {
-+        changes.kind = PersistedDatabaseChanges::Kind::Replace;
-+        changes.base_version = transaction.original_version();
-+        changes.replacement = snapshot_of(*database);
-+    } else {
-+        changes.kind = PersistedDatabaseChanges::Kind::Update;
-+        transaction.for_each_store_mutation_log([&](ObjectStore& store, MutationLog& log) {
-+            PersistedObjectStoreChanges store_changes;
-+            if (log.append_persisted_changes(store, store_changes))
-+                changes.object_stores.append(move(store_changes));
-+        });
-+        if (changes.object_stores.is_empty())
-+            return;
-+    }
-+
-+    send_commit(HTML::relevant_realm(transaction.relevant_global_object()), *storage_key, changes);
-+}
-+
-+void persist_deleted_database(JS::Realm& realm, StorageAPI::StorageKey const& storage_key, Utf16String const& name)
-+{
-+    if (!loaded_storage_keys().contains(storage_key))
-+        return;
-+
-+    PersistedDatabaseChanges changes;
-+    changes.kind = PersistedDatabaseChanges::Kind::Delete;
-+    changes.name = name;
-+    send_commit(realm, storage_key, changes);
-+}
-+
-+// Applies what another process changed in database, except where a commit of ours that is not stored yet wrote.
-+static void apply_object_store_changes(Database& database, PendingWrites const* writes, PersistedObjectStoreChanges const& changes)
-+{
-+    auto store = database.object_store_with_name(changes.name);
-+    if (!store)
-+        return;
-+
-+    // NB: These changes are already committed, so they are no part of any transaction of ours that may revert.
-+    auto saved_log = store->mutation_log();
-+    store->set_mutation_log(nullptr);
-+
-+    for (auto const& encoded_key : changes.deleted) {
-+        if (is_pending(writes, changes.name, encoded_key))
-+            continue;
-+        if (auto key = decode_key(encoded_key); !key.is_error())
-+            store->remove_record_with_key(key.value());
-+    }
-+
-+    for (auto const& record : changes.stored) {
-+        if (is_pending(writes, changes.name, record.key))
-+            continue;
-+        auto key = decode_key(record.key);
-+        auto value = ByteBuffer::copy(record.value);
-+        if (key.is_error() || value.is_error())
-+            continue;
-+        store->remove_record_with_key(key.value());
-+        store->store_a_record(ObjectStoreRecord { key.value(), make<HTML::StorageSerializationRecord>(value.release_value()) });
-+    }
-+
-+    for (auto const& index_changes : changes.indexes) {
-+        auto index = store->index_set().get(index_changes.name);
-+        if (!index.has_value())
-+            continue;
-+
-+        auto decode_record = [&](PersistedIndexRecord const& record) -> Optional<IndexRecord> {
-+            if (is_pending(writes, changes.name, record.primary_key))
-+                return {};
-+            auto key = decode_key(record.key);
-+            auto primary_key = decode_key(record.primary_key);
-+            if (key.is_error() || primary_key.is_error())
-+                return {};
-+            return IndexRecord { key.release_value(), primary_key.release_value() };
-+        };
-+
-+        for (auto const& persisted_record : index_changes.deleted) {
-+            if (auto record = decode_record(persisted_record); record.has_value())
-+                (*index)->remove_record(*record);
-+        }
-+        for (auto const& persisted_record : index_changes.stored) {
-+            if (auto record = decode_record(persisted_record); record.has_value()) {
-+                (*index)->remove_record(*record);
-+                (*index)->store_a_record(*record);
-+            }
-+        }
-+    }
-+
-+    if (changes.key_generator.has_value() && store->uses_a_key_generator() && *changes.key_generator > store->key_generator().current_number())
-+        store->key_generator().set(*changes.key_generator);
-+
-+    store->set_mutation_log(saved_log);
-+}
-+
-+static bool key_paths_match(Optional<KeyPath> const& a, Optional<KeyPath> const& b)
-+{
-+    if (a.has_value() != b.has_value())
-+        return false;
-+    if (!a.has_value())
-+        return true;
-+    if (a->index() != b->index())
-+        return false;
-+    if (a->has<Utf16String>())
-+        return a->get<Utf16String>() == b->get<Utf16String>();
-+    return a->get<Vector<Utf16String>>() == b->get<Vector<Utf16String>>();
-+}
-+
-+// Whether database has the version, object stores and indexes of persisted, so the records can be swapped in place.
-+static bool has_schema_of(Database& database, PersistedDatabase const& persisted)
-+{
-+    if (database.version() != persisted.version || database.object_stores().size() != persisted.object_stores.size())
-+        return false;
-+
-+    for (auto const& persisted_store : persisted.object_stores) {
-+        auto store = database.object_store_with_name(persisted_store.name);
-+        if (!store || !key_paths_match(store->key_path(), persisted_store.key_path) || store->uses_a_key_generator() != persisted_store.key_generator.has_value())
-+            return false;
-+        if (store->index_set().size() != persisted_store.indexes.size())
-+            return false;
-+        for (auto const& persisted_index : persisted_store.indexes) {
-+            auto index = store->index_set().get(persisted_index.name);
-+            if (!index.has_value() || !key_paths_match((*index)->key_path(), persisted_index.key_path) || (*index)->unique() != persisted_index.unique || (*index)->multi_entry() != persisted_index.multi_entry)
-+                return false;
-+        }
-+    }
-+    return true;
-+}
-+
-+// Makes database's records those of persisted, as a set of changes: whatever persisted lacks is deleted.
-+static void replace_records_in_place(Database& database, PendingWrites const* writes, PersistedDatabase const& persisted)
-+{
-+    for (auto const& persisted_store : persisted.object_stores) {
-+        auto store = database.object_store_with_name(persisted_store.name);
-+        VERIFY(store);
-+
-+        PersistedObjectStoreChanges changes;
-+        changes.name = persisted_store.name;
-+        changes.key_generator = persisted_store.key_generator;
-+        changes.stored = persisted_store.records;
-+
-+        HashTable<ByteBuffer> persisted_keys;
-+        for (auto const& record : persisted_store.records)
-+            persisted_keys.set(record.key);
-+        for (auto const& record : store->records()) {
-+            auto key = encode_key(*record.key);
-+            if (!persisted_keys.contains(key))
-+                changes.deleted.append(move(key));
-+        }
-+
-+        for (auto const& persisted_index : persisted_store.indexes) {
-+            auto index = store->index_set().get(persisted_index.name).value();
-+
-+            PersistedIndexChanges index_changes;
-+            index_changes.name = persisted_index.name;
-+            index_changes.stored = persisted_index.records;
-+
-+            HashTable<ByteBuffer> persisted_records;
-+            for (auto const& record : persisted_index.records) {
-+                auto pair = record.key;
-+                pair.append(record.primary_key.bytes());
-+                persisted_records.set(move(pair));
-+            }
-+            for (auto const& record : index->records()) {
-+                PersistedIndexRecord persisted_record { encode_key(*record.key), encode_key(*record.value) };
-+                auto pair = persisted_record.key;
-+                pair.append(persisted_record.primary_key.bytes());
-+                if (!persisted_records.contains(pair))
-+                    index_changes.deleted.append(move(persisted_record));
-+            }
-+
-+            changes.indexes.append(move(index_changes));
-+        }
-+
-+        apply_object_store_changes(database, writes, changes);
-+    }
-+}
-+
-+// As when a connection in this process upgrades or deletes a database: open connections hear of it first, and those
-+// that do not close themselves are closed.
-+static void close_connections_to_superseded_database(Database& database, Optional<u64> new_version)
-+{
-+    auto old_version = database.version();
-+    for (auto const& connection : database.associated_connections_as_root_vector()) {
-+        if (connection->close_pending())
-+            continue;
-+        queue_a_database_task(GC::create_function(GC::Heap::the(), [connection, old_version, new_version] {
-+            if (connection->close_pending())
-+                return;
-+            fire_a_version_change_event(HTML::relevant_realm(connection->relevant_global_object()), HTML::EventNames::versionchange, connection, old_version, new_version);
-+            if (!connection->close_pending())
-+                close_a_database_connection(connection, nullptr, true);
-+        }));
-+    }
-+}
-+
-+void apply_persisted_database_changes(StorageAPI::StorageKey const& storage_key, PersistedDatabaseChanges changes)
-+{
-+    if (!loaded_storage_keys().contains(storage_key))
-+        return;
-+
-+    auto const* writes = pending_writes_for(storage_key, changes.name);
-+
-+    // A replacement or deletion of ours that is not stored yet supersedes this (or, if it is refused, we are sent what
-+    // is stored instead).
-+    if (writes && writes->whole_database > 0)
-+        return;
-+
-+    auto existing = Database::for_key_and_name(storage_key, changes.name);
-+    GC::Ptr<Database> database = existing.has_value() ? &existing.value() : nullptr;
-+
-+    if (changes.kind == PersistedDatabaseChanges::Kind::Update) {
-+        if (database)
-+            for (auto const& store_changes : changes.object_stores)
-+                apply_object_store_changes(*database, writes, store_changes);
-+        return;
-+    }
-+
-+    // An upgrade of ours that is still running replaces the database when it commits, or is refused.
-+    if (database && database->upgrade_transaction())
-+        return;
-+
-+    // Versions only go up, short of a deletion.
-+    if (database && changes.kind == PersistedDatabaseChanges::Kind::Replace && changes.replacement.has_value() && changes.replacement->version < database->version())
-+        return;
-+
-+    if (changes.kind == PersistedDatabaseChanges::Kind::Replace && changes.replacement.has_value()) {
-+        // Another process upgraded the database to what we have (most often: we both created it at once). Our
-+        // connections stay open, and only the records change.
-+        if (database && has_schema_of(*database, *changes.replacement)) {
-+            replace_records_in_place(*database, writes, *changes.replacement);
-+            return;
-+        }
-+    }
-+
-+    Optional<u64> new_version;
-+    if (database)
-+        MUST(Database::delete_for_key_and_name(storage_key, changes.name));
-+    if (changes.kind == PersistedDatabaseChanges::Kind::Replace && changes.replacement.has_value()) {
-+        install_database(storage_key, *changes.replacement);
-+        new_version = changes.replacement->version;
-+    }
-+    if (database)
-+        close_connections_to_superseded_database(*database, new_version);
++    web_rust_indexed_db_did_persist_changes(JS::HostABI::vm_to_abi(Bindings::main_thread_vm()), commit_id);
 +}
 +
 +}
-diff --git a/Libraries/LibWeb/IndexedDB/Internal/Persistence.h b/Libraries/LibWeb/IndexedDB/Internal/Persistence.h
+diff --git a/Libraries/LibWeb/IndexedDB/Persistence.h b/Libraries/LibWeb/IndexedDB/Persistence.h
 new file mode 100644
-index 00000000..e6afc2f9
+index 0000000000..90de371eb6
 --- /dev/null
-+++ b/Libraries/LibWeb/IndexedDB/Internal/Persistence.h
-@@ -0,0 +1,52 @@
++++ b/Libraries/LibWeb/IndexedDB/Persistence.h
+@@ -0,0 +1,26 @@
 +/*
 + * Copyright (c) 2026-present, the Ladybird developers.
 + *
@@ -1108,42 +2518,16 @@ index 00000000..e6afc2f9
 +
 +#pragma once
 +
-+#include <AK/ByteBuffer.h>
-+#include <AK/Utf16String.h>
-+#include <LibGC/Ptr.h>
-+#include <LibJS/Forward.h>
 +#include <LibWeb/Export.h>
-+#include <LibWeb/Forward.h>
 +#include <LibWebCommon/IndexedDB/PersistedDatabase.h>
 +#include <LibWebCommon/StorageAPI/StorageKey.h>
 +
 +// AD-HOC: The spec leaves where databases live to the user agent. Ours live in the browser process, which keeps them
 +//         for the session (on disk, unless the session is private) and shares them between processes; see
-+//         LibWebCommon/IndexedDB/PersistedDatabase.h. Each process keeps working on its own in-memory copy.
++//         LibWebCommon/IndexedDB/PersistedDatabase.h. Each process keeps working on its own in-memory copy, which the
++//         Rust implementation loads, persists and updates (Bindings/Rust/src/indexed_db/internal/persistence.rs); this
++//         is its bridge to the page client and the IPC endpoints.
 +namespace Web::IndexedDB {
-+
-+class IDBTransaction;
-+class Key;
-+
-+// The browser process tells keys apart by these bytes alone, so equal keys must encode to equal bytes.
-+ByteBuffer encode_key(Key const&);
-+ErrorOr<GC::Ref<Key>> decode_key(ReadonlyBytes);
-+
-+// Brings the databases the browser process has for storage key into this process, the first time it is asked to.
-+void load_persisted_databases(JS::Realm&, StorageAPI::StorageKey const&);
-+
-+// AD-HOC: Two processes must not upgrade a database at once (each would build its own and one would lose). Before an
-+//         open request that may upgrade goes on, this process takes the database's lock from the browser process,
-+//         waiting while another process holds it; `then` is told whether it took the lock, which it must give back
-+//         with release_upgrade_lock() once the request is done.
-+void wait_for_upgrade_lock(JS::Realm&, StorageAPI::StorageKey const&, Utf16String const& name, Optional<u64> version, GC::Ref<GC::Function<void(bool)>> then);
-+void release_upgrade_lock(JS::Realm&, Utf16String const& name);
-+
-+// Sends what a committing transaction changed to the browser process.
-+void persist_committed_transaction(IDBTransaction&);
-+
-+// Tells the browser process that this process deleted a database.
-+void persist_deleted_database(JS::Realm&, StorageAPI::StorageKey const&, Utf16String const& name);
 +
 +// What another process committed, which the browser process passes on.
 +WEB_API void apply_persisted_database_changes(StorageAPI::StorageKey const&, PersistedDatabaseChanges);
@@ -1153,33 +2537,33 @@ index 00000000..e6afc2f9
 +
 +}
 diff --git a/Libraries/LibWeb/Page/Page.h b/Libraries/LibWeb/Page/Page.h
-index 69dadc17..33795849 100644
+index f470307065..294ebbca1a 100644
 --- a/Libraries/LibWeb/Page/Page.h
 +++ b/Libraries/LibWeb/Page/Page.h
-@@ -80,6 +80,7 @@
- #include <LibWebCommon/HTML/UserActivationConsumption.h>
+@@ -83,6 +83,7 @@
  #include <LibWebCommon/HTML/VisibilityState.h>
+ #include <LibWebCommon/HTML/WindowType.h>
  #include <LibWebCommon/HTML/WorkerAgentForward.h>
 +#include <LibWebCommon/IndexedDB/PersistedDatabase.h>
  #include <LibWebCommon/IndexedDB/TransactionChanges.h>
  #include <LibWebCommon/Page/ContextMenuForInputEventsTarget.h>
  #include <LibWebCommon/Page/EventResult.h>
-@@ -806,6 +807,10 @@ public:
-     virtual void page_did_remove_storage_item([[maybe_unused]] Web::StorageAPI::StorageEndpointType storage_endpoint, [[maybe_unused]] Web::HTML::EnvironmentId const& environment_id, [[maybe_unused]] Utf16String const& bottle_key) { }
-     virtual Vector<Utf16String> page_did_request_storage_keys([[maybe_unused]] Web::StorageAPI::StorageEndpointType storage_endpoint, [[maybe_unused]] Web::HTML::EnvironmentId const& environment_id) { return {}; }
+@@ -850,6 +851,10 @@ public:
+     virtual void page_did_request_clear_storage_for_testing(StorageAPI::StorageEndpointType, HTML::EnvironmentSettingsObject const&) { }
+     virtual bool page_did_is_known_hsts_host(String const&) { return false; }
      virtual u64 page_did_request_storage_usage([[maybe_unused]] Web::HTML::EnvironmentId const& environment_id) { return {}; }
 +    virtual Vector<IndexedDB::PersistedDatabase> page_did_request_indexed_databases([[maybe_unused]] HTML::EnvironmentId const& environment_id) { return {}; }
 +    virtual void page_did_commit_indexed_database_changes([[maybe_unused]] HTML::EnvironmentId const& environment_id, [[maybe_unused]] u64 commit_id, [[maybe_unused]] IndexedDB::PersistedDatabaseChanges const& changes) { }
 +    virtual IndexedDB::PersistedUpgradeLock page_did_request_indexed_database_upgrade_lock([[maybe_unused]] HTML::EnvironmentId const& environment_id, [[maybe_unused]] Utf16String const& name) { return { true, {} }; }
 +    virtual void page_did_release_indexed_database_upgrade_lock([[maybe_unused]] HTML::EnvironmentId const& environment_id, [[maybe_unused]] Utf16String const& name) { }
-     virtual void page_did_clear_storage([[maybe_unused]] Web::StorageAPI::StorageEndpointType storage_endpoint, [[maybe_unused]] Web::HTML::EnvironmentId const& environment_id) { }
-     virtual void page_did_broadcast_storage_change([[maybe_unused]] Web::StorageAPI::StorageEndpointType storage_endpoint, [[maybe_unused]] String const& url, [[maybe_unused]] Optional<Utf16String> const& key, [[maybe_unused]] Optional<Utf16String> const& old_value, [[maybe_unused]] Optional<Utf16String> const& new_value) { }
  
+     virtual URL::BlobURLEntry::Token page_did_add_blob_url_entry(HTML::EnvironmentSettingsObject const&, [[maybe_unused]] Utf16String const& url, [[maybe_unused]] FileAPI::SerializedBlobURLEntry const& entry) { return 0; }
+     virtual void page_did_remove_blob_url_entries(HTML::EnvironmentSettingsObject const&, [[maybe_unused]] Vector<Utf16String> const& urls) { }
 diff --git a/Libraries/LibWebCommon/CMakeLists.txt b/Libraries/LibWebCommon/CMakeLists.txt
-index e5b5cf16..ed3fa8d3 100644
+index 749b47537a..41e5765c84 100644
 --- a/Libraries/LibWebCommon/CMakeLists.txt
 +++ b/Libraries/LibWebCommon/CMakeLists.txt
-@@ -39,6 +39,7 @@ set(SOURCES
+@@ -44,6 +44,7 @@ set(SOURCES
      HTML/SessionHistoryEntryIdentity.cpp
      HTML/WebViewHints.cpp
      HTML/WorkerAgentTypes.cpp
@@ -1189,7 +2573,7 @@ index e5b5cf16..ed3fa8d3 100644
      Loader/DownloadFilename.cpp
 diff --git a/Libraries/LibWebCommon/IndexedDB/PersistedDatabase.cpp b/Libraries/LibWebCommon/IndexedDB/PersistedDatabase.cpp
 new file mode 100644
-index 00000000..7b6f1e3d
+index 0000000000..7b6f1e3dae
 --- /dev/null
 +++ b/Libraries/LibWebCommon/IndexedDB/PersistedDatabase.cpp
 @@ -0,0 +1,177 @@
@@ -1372,7 +2756,7 @@ index 00000000..7b6f1e3d
 +}
 diff --git a/Libraries/LibWebCommon/IndexedDB/PersistedDatabase.h b/Libraries/LibWebCommon/IndexedDB/PersistedDatabase.h
 new file mode 100644
-index 00000000..da9f79c1
+index 0000000000..da9f79c16a
 --- /dev/null
 +++ b/Libraries/LibWebCommon/IndexedDB/PersistedDatabase.h
 @@ -0,0 +1,145 @@
@@ -1522,18 +2906,18 @@ index 00000000..da9f79c1
 +
 +}
 diff --git a/Libraries/LibWebView/Application.cpp b/Libraries/LibWebView/Application.cpp
-index fcf7c9bb..a9c16ea2 100644
+index 4aa82a1f29..454262e61a 100644
 --- a/Libraries/LibWebView/Application.cpp
 +++ b/Libraries/LibWebView/Application.cpp
-@@ -58,6 +58,7 @@
+@@ -60,6 +60,7 @@
  #include <LibWebView/HeadlessWebView.h>
  #include <LibWebView/HelperProcess.h>
  #include <LibWebView/HistoryStore.h>
 +#include <LibWebView/IndexedDBStore.h>
  #include <LibWebView/Menu.h>
- #include <LibWebView/PictureInPictureWindow.h>
- #include <LibWebView/ProcessType.h>
-@@ -1697,6 +1698,20 @@ ErrorOr<void> Application::launch_services()
+ #include <LibWebView/NoOpNotificationBackend.h>
+ #include <LibWebView/PermissionManager.h>
+@@ -1846,6 +1847,20 @@ ErrorOr<void> Application::launch_services()
              m_default_session->history_store = HistoryStore::create(*m_default_session->favicon_store);
          }
  
@@ -1553,8 +2937,8 @@ index fcf7c9bb..a9c16ea2 100644
 +
          // Fall back without modifying the existing Sessions database.
          auto session_store = [&]() -> ErrorOr<NonnullOwnPtr<SessionStore>> {
-             auto session_database = TRY(Database::Database::create(database_path, "Sessions"sv, { .foreign_keys = Database::Database::ForeignKeys::Yes }));
-@@ -1718,6 +1733,7 @@ ErrorOr<void> Application::launch_services()
+             // A headless run, a browser that WebDriver drives, and one that logs process statistics never join a browser
+@@ -1874,6 +1889,7 @@ ErrorOr<void> Application::launch_services()
          m_default_session->history_store = HistoryStore::create_disabled();
          m_default_session->hsts_store = HSTSStore::create();
          m_default_session->storage_jar = StorageJar::create();
@@ -1562,7 +2946,7 @@ index fcf7c9bb..a9c16ea2 100644
          m_download_store = DownloadStore::create_disabled();
          m_default_session->session_store = SessionStore::create();
      }
-@@ -2395,6 +2411,9 @@ NonnullRefPtr<Core::Promise<Application::BrowsingDataSizes>> Application::estima
+@@ -2552,6 +2568,9 @@ NonnullRefPtr<Core::Promise<Application::BrowsingDataSizes>> Application::estima
          ->when_resolved([this, promise, since](Requests::CacheSizes cache_sizes) {
              auto cookie_sizes = m_default_session->cookie_jar->estimate_storage_size_accessed_since(since);
              auto storage_sizes = m_default_session->storage_jar->estimate_storage_size_accessed_since(since);
@@ -1572,7 +2956,7 @@ index fcf7c9bb..a9c16ea2 100644
  
              BrowsingDataSizes sizes;
  
-@@ -2447,11 +2466,13 @@ NonnullRefPtr<Core::Promise<Empty>> Application::clear_browsing_data(ClearBrowsi
+@@ -2604,11 +2623,13 @@ NonnullRefPtr<Core::Promise<Empty>> Application::clear_browsing_data(ClearBrowsi
      if (options.delete_site_data == ClearBrowsingDataOptions::Delete::Yes) {
          m_default_session->cookie_jar->expire_cookies_accessed_since(options.since);
          m_default_session->storage_jar->remove_items_accessed_since(options.since);
@@ -1587,18 +2971,18 @@ index fcf7c9bb..a9c16ea2 100644
          }
      }
 diff --git a/Libraries/LibWebView/BrowsingSession.cpp b/Libraries/LibWebView/BrowsingSession.cpp
-index 42ef0d58..5dd6f8c1 100644
+index 2538a13383..f434839b7a 100644
 --- a/Libraries/LibWebView/BrowsingSession.cpp
 +++ b/Libraries/LibWebView/BrowsingSession.cpp
-@@ -10,6 +10,7 @@
- #include <LibWebView/FaviconStore.h>
+@@ -11,6 +11,7 @@
  #include <LibWebView/HSTSStore.h>
  #include <LibWebView/HistoryStore.h>
+ #include <LibWebView/PermissionManager.h>
 +#include <LibWebView/IndexedDBStore.h>
  #include <LibWebView/SessionStore.h>
  #include <LibWebView/StorageJar.h>
  
-@@ -29,6 +30,7 @@ NonnullRefPtr<BrowsingSession> BrowsingSession::create(IsPrivate is_private)
+@@ -30,6 +31,7 @@ NonnullRefPtr<BrowsingSession> BrowsingSession::create(IsPrivate is_private)
      if (is_private == IsPrivate::Yes) {
          session->cookie_jar = CookieJar::create(IsPrivate::Yes);
          session->storage_jar = StorageJar::create();
@@ -1607,7 +2991,7 @@ index 42ef0d58..5dd6f8c1 100644
          session->hsts_store = HSTSStore::create();
          session->favicon_store = FaviconStore::create();
 diff --git a/Libraries/LibWebView/BrowsingSession.h b/Libraries/LibWebView/BrowsingSession.h
-index 785f3b73..f890a65c 100644
+index 0e3a3b1494..0e8f66583c 100644
 --- a/Libraries/LibWebView/BrowsingSession.h
 +++ b/Libraries/LibWebView/BrowsingSession.h
 @@ -35,6 +35,7 @@ public:
@@ -1619,22 +3003,22 @@ index 785f3b73..f890a65c 100644
      OwnPtr<HSTSStore> hsts_store;
      OwnPtr<FaviconStore> favicon_store;
 diff --git a/Libraries/LibWebView/CMakeLists.txt b/Libraries/LibWebView/CMakeLists.txt
-index 3633093c..4800d8f8 100644
+index 35ca4f05b5..f787a76336 100644
 --- a/Libraries/LibWebView/CMakeLists.txt
 +++ b/Libraries/LibWebView/CMakeLists.txt
-@@ -63,6 +63,7 @@ set(SOURCES
-     Settings.cpp
+@@ -73,6 +73,7 @@ set(SOURCES
      SiteCompatibility.cpp
+     StorageAreaRegistry.cpp
      StorageJar.cpp
 +    IndexedDBStore.cpp
      TestSpellChecker.cpp
      URL.cpp
      UserAgent.cpp
 diff --git a/Libraries/LibWebView/Forward.h b/Libraries/LibWebView/Forward.h
-index 3b6890f0..87c8a281 100644
+index af52319d33..3923f461fc 100644
 --- a/Libraries/LibWebView/Forward.h
 +++ b/Libraries/LibWebView/Forward.h
-@@ -57,6 +57,7 @@ class Settings;
+@@ -62,6 +62,7 @@ class Settings;
  class SettingsUI;
  class SpellChecker;
  class StorageJar;
@@ -1644,7 +3028,7 @@ index 3b6890f0..87c8a281 100644
  class ViewImplementation;
 diff --git a/Libraries/LibWebView/IndexedDBStore.cpp b/Libraries/LibWebView/IndexedDBStore.cpp
 new file mode 100644
-index 00000000..a361734d
+index 0000000000..a361734dac
 --- /dev/null
 +++ b/Libraries/LibWebView/IndexedDBStore.cpp
 @@ -0,0 +1,555 @@
@@ -2205,7 +3589,7 @@ index 00000000..a361734d
 +}
 diff --git a/Libraries/LibWebView/IndexedDBStore.h b/Libraries/LibWebView/IndexedDBStore.h
 new file mode 100644
-index 00000000..b34e5757
+index 0000000000..b34e5757d8
 --- /dev/null
 +++ b/Libraries/LibWebView/IndexedDBStore.h
 @@ -0,0 +1,115 @@
@@ -2325,19 +3709,19 @@ index 00000000..b34e5757
 +
 +}
 diff --git a/Libraries/LibWebView/WebContentClient.cpp b/Libraries/LibWebView/WebContentClient.cpp
-index 0afcf644..7ca09622 100644
+index 95c8fc85b2..a967c145d9 100644
 --- a/Libraries/LibWebView/WebContentClient.cpp
 +++ b/Libraries/LibWebView/WebContentClient.cpp
-@@ -36,6 +36,7 @@
+@@ -37,6 +37,7 @@
  #include <LibWebView/HSTSStore.h>
  #include <LibWebView/HelperProcess.h>
  #include <LibWebView/HistoryStore.h>
 +#include <LibWebView/IndexedDBStore.h>
  #include <LibWebView/NavigationLoader.h>
- #include <LibWebView/PictureInPictureManager.h>
- #include <LibWebView/RequestServerManager.h>
-@@ -692,6 +693,60 @@ Messages::WebContentClient::DidRequestStorageKeysResponse WebContentClient::did_
-     return Vector<Utf16String> {};
+ #include <LibWebView/NotificationManager.h>
+ #include <LibWebView/PermissionManager.h>
+@@ -713,6 +714,60 @@ void WebContentClient::set_storage_item(Web::StorageAPI::StorageAreaId area_id,
+     StorageAreaRegistry::the().set_item(*this, area_id, key, value, url);
  }
  
 +// The browser process obtains the storage key of a page's IndexedDB databases from the environment that asks.
@@ -2394,29 +3778,29 @@ index 0afcf644..7ca09622 100644
 +    session().indexed_db_store->release_upgrade_lock(WeakPtr<WebContentClient> { *this }, *storage_key, name);
 +}
 +
- Messages::WebContentClient::DidRequestStorageUsageResponse WebContentClient::did_request_storage_usage(Web::PageId page_id, Web::HTML::EnvironmentId environment_id)
+ void WebContentClient::remove_storage_item(Web::StorageAPI::StorageAreaId area_id, Utf16String key, String url)
  {
-     if (auto* page = this->page(page_id))
+     StorageAreaRegistry::the().remove_item(*this, area_id, key, url);
 diff --git a/Libraries/LibWebView/WebContentClient.h b/Libraries/LibWebView/WebContentClient.h
-index c7e227a4..c9f6f062 100644
+index a39b0a5ab0..aad56cae5a 100644
 --- a/Libraries/LibWebView/WebContentClient.h
 +++ b/Libraries/LibWebView/WebContentClient.h
-@@ -188,6 +188,10 @@ private:
-     virtual Messages::WebContentClient::DidRequestStorageItemResponse did_request_storage_item(Web::PageId page_id, Web::StorageAPI::StorageEndpointType, Web::HTML::EnvironmentId environment_id, Utf16String bottle_key) override;
-     virtual Messages::WebContentClient::DidRequestStorageKeysResponse did_request_storage_keys(Web::PageId page_id, Web::StorageAPI::StorageEndpointType, Web::HTML::EnvironmentId environment_id) override;
-     virtual Messages::WebContentClient::DidRequestStorageUsageResponse did_request_storage_usage(Web::PageId page_id, Web::HTML::EnvironmentId environment_id) override;
+@@ -218,6 +218,10 @@ private:
+     virtual void storage_area_write_acknowledged(Web::StorageAPI::StorageAreaId) override;
+     virtual void storage_area_write_refused(Web::StorageAPI::StorageAreaId, Vector<StorageItem>) override;
+     virtual void storage_area_reset(Web::StorageAPI::StorageAreaId, Vector<StorageItem>) override;
 +    virtual Messages::WebContentClient::DidRequestIndexedDatabasesResponse did_request_indexed_databases(Web::PageId page_id, Web::HTML::EnvironmentId environment_id) override;
 +    virtual void did_commit_indexed_database_changes(Web::PageId page_id, Web::HTML::EnvironmentId environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges changes) override;
 +    virtual Messages::WebContentClient::DidRequestIndexedDatabaseUpgradeLockResponse did_request_indexed_database_upgrade_lock(Web::PageId page_id, Web::HTML::EnvironmentId environment_id, Utf16String name) override;
 +    virtual void did_release_indexed_database_upgrade_lock(Web::PageId page_id, Web::HTML::EnvironmentId environment_id, Utf16String name) override;
      virtual Messages::WebContentClient::DidStartDownloadWithoutRequestResponse did_start_download_without_request(Web::PageId page_id, URL::URL, ByteString suggested_filename, Optional<u64> total_size) override;
-     virtual Messages::WebContentClient::DidStartDownloadResponse did_start_download(Web::PageId page_id, Web::HTML::CrossProcessId navigable_id, Optional<Utf16String> navigation_id, URL::URL, ByteString suggested_filename, Optional<u64> total_size, int request_server_client_id, u64 request_server_request_id, ByteBuffer initial_data) override;
-     virtual Messages::WebContentClient::DidRequestNewWebViewResponse did_request_new_web_view(Web::PageId page_id, Web::HTML::ActivateTab, Web::HTML::WebViewHints, Optional<Web::HTML::CrossProcessId> opener_navigable_id, Optional<URL::URL> opener_base_url, Utf16String target_name, Web::HTML::SandboxingFlagSet popup_sandboxing_flag_set) override;
+     virtual Messages::WebContentClient::DidStartDownloadResponse did_start_download(Web::PageId page_id, Web::HTML::CrossProcessId navigable_id, Optional<Utf16String> navigation_id, URL::URL, ByteString suggested_filename, Optional<u64> total_size, int request_server_client_id, u64 request_server_request_id, ByteBuffer initial_data, JsonValue network_response) override;
+     virtual Messages::WebContentClient::DidRequestNewWebViewResponse did_request_new_web_view(Web::PageId page_id, Web::HTML::ActivateTab, Web::HTML::WebViewHints, Web::HTML::CrossProcessId current_navigable_id, Utf16String name, bool no_opener, Optional<URL::URL> current_document_base_url) override;
 diff --git a/Libraries/LibWebView/WebContentPage.cpp b/Libraries/LibWebView/WebContentPage.cpp
-index beb13d81..aae3f225 100644
+index bda02d79a0..7739e0d4d4 100644
 --- a/Libraries/LibWebView/WebContentPage.cpp
 +++ b/Libraries/LibWebView/WebContentPage.cpp
-@@ -266,6 +266,14 @@ bool WebContentPage::hosts_an_environment_with_storage_key(Web::StorageAPI::Stor
+@@ -285,6 +285,14 @@ bool WebContentPage::hosts_an_environment_with_storage_key(Web::StorageAPI::Stor
      return hosts_one;
  }
  
@@ -2432,30 +3816,30 @@ index beb13d81..aae3f225 100644
  {
      auto document = document_with_hosted_environment(environment_id);
 diff --git a/Libraries/LibWebView/WebContentPage.h b/Libraries/LibWebView/WebContentPage.h
-index b1aac097..4ebed527 100644
+index 9b171da404..e3747d917e 100644
 --- a/Libraries/LibWebView/WebContentPage.h
 +++ b/Libraries/LibWebView/WebContentPage.h
-@@ -92,6 +92,7 @@ public:
+@@ -95,6 +95,7 @@ public:
      // such environment.
      Optional<bool> hosted_environment_has_cross_site_ancestor(Web::HTML::EnvironmentId const& environment_id) const;
      bool hosts_an_environment_with_storage_key(Web::StorageAPI::StorageKey const&) const;
 +    Optional<Web::StorageAPI::StorageKey> indexed_database_storage_key(Web::HTML::EnvironmentId const&) const;
      void spoof_document_origin_for_testing(Web::HTML::EnvironmentId const& environment_id, URL::Origin);
-     // The process and page hosting the document of a navigable that a page represents. A page represents every
-     // navigable of its tab whose document it does not host, so those are the ones it can ask to navigate or post to.
+     // Clears the bottle an environment of this page names, the way the browser's own clearing does: through the jar.
+     void clear_storage_for_testing(Web::StorageAPI::StorageEndpointType, Web::HTML::EnvironmentId const&);
 diff --git a/Libraries/LibWebView/WebWorkerClient.cpp b/Libraries/LibWebView/WebWorkerClient.cpp
-index d5ae74c2..e230e713 100644
+index ee4845fdb7..0c8acf6ae1 100644
 --- a/Libraries/LibWebView/WebWorkerClient.cpp
 +++ b/Libraries/LibWebView/WebWorkerClient.cpp
-@@ -12,6 +12,7 @@
- #include <LibWebView/CookieJar.h>
+@@ -14,6 +14,7 @@
  #include <LibWebView/HSTSStore.h>
  #include <LibWebView/HelperProcess.h>
+ #include <LibWebView/PermissionManager.h>
 +#include <LibWebView/IndexedDBStore.h>
  #include <LibWebView/WebWorkerClient.h>
  #include <LibWebView/WorkerProcessManager.h>
  
-@@ -115,6 +116,63 @@ Messages::WebWorkerClient::DidRequestCookieResponse WebWorkerClient::did_request
+@@ -138,6 +139,63 @@ Messages::WebWorkerClient::DidRequestCookieResponse WebWorkerClient::did_request
      return cookie;
  }
  
@@ -2520,12 +3904,12 @@ index d5ae74c2..e230e713 100644
  {
      auto session = m_session.strong_ref();
 diff --git a/Libraries/LibWebView/WebWorkerClient.h b/Libraries/LibWebView/WebWorkerClient.h
-index 98c961ff..aa153db8 100644
+index 56452ab445..39f51c9380 100644
 --- a/Libraries/LibWebView/WebWorkerClient.h
 +++ b/Libraries/LibWebView/WebWorkerClient.h
-@@ -53,6 +53,10 @@ public:
-     virtual void did_fail_loading_worker_script() override;
+@@ -57,6 +57,10 @@ public:
      virtual void did_report_worker_exception(Utf16String message, Utf16String filename, u32 lineno, u32 colno) override;
+     virtual void did_report_outside_settings_content_security_policy_violation(u64 policy_index, String effective_directive, URL::URL resource) override;
      virtual Messages::WebWorkerClient::DidRequestCookieResponse did_request_cookie(URL::URL, HTTP::Cookie::Source) override;
 +    virtual Messages::WebWorkerClient::DidRequestIndexedDatabasesResponse did_request_indexed_databases(Web::HTML::EnvironmentId environment_id) override;
 +    virtual void did_commit_indexed_database_changes(Web::HTML::EnvironmentId environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges changes) override;
@@ -2535,18 +3919,18 @@ index 98c961ff..aa153db8 100644
      virtual void did_remove_blob_url_entries(Web::HTML::EnvironmentId environment_id, Vector<Utf16String> urls) override;
      virtual Messages::WebWorkerClient::DidRequestBlobUrlEntryResponse did_request_blob_url_entry(Utf16String url, Optional<URL::BlobURLEntry::Token> token) override;
 diff --git a/Services/WebContent/ConnectionFromClient.cpp b/Services/WebContent/ConnectionFromClient.cpp
-index dd55e550..8298c9b9 100644
+index 10ad3414f0..c92ef8e046 100644
 --- a/Services/WebContent/ConnectionFromClient.cpp
 +++ b/Services/WebContent/ConnectionFromClient.cpp
-@@ -33,6 +33,7 @@
+@@ -32,6 +32,7 @@
+ #include <LibJS/Runtime/ConsoleObject.h>
  #include <LibJS/Runtime/Date.h>
  #include <LibUnicode/TimeZone.h>
- #include <LibWasm/Types.h>
-+#include <LibWeb/IndexedDB/Internal/Persistence.h>
- #include <LibWeb/ARIA/RoleType.h>
++#include <LibWeb/IndexedDB/Persistence.h>
  #include <LibWeb/Bindings/MainThreadVM.h>
  #include <LibWeb/CSS/CustomPropertyData.h>
-@@ -512,6 +513,16 @@ void ConnectionFromClient::update_system_theme(Web::PageId page_id, Core::Anonym
+ #include <LibWeb/CSS/Parser/ErrorReporter.h>
+@@ -531,6 +532,16 @@ void ConnectionFromClient::update_system_theme(Web::PageId page_id, Core::Anonym
      page->set_palette_impl(*impl);
  }
  
@@ -2564,23 +3948,23 @@ index dd55e550..8298c9b9 100644
  {
      auto parsed_data = Web::SiteCompatibilityData::from_json(data);
 diff --git a/Services/WebContent/ConnectionFromClient.h b/Services/WebContent/ConnectionFromClient.h
-index 9622b0af..7aff54af 100644
+index 51b6463140..ce2ce3091c 100644
 --- a/Services/WebContent/ConnectionFromClient.h
 +++ b/Services/WebContent/ConnectionFromClient.h
 @@ -118,6 +118,8 @@ private:
-     virtual void connect_to_wasm_compiler(IPC::TransportHandle handle) override;
      virtual void connect_to_compositor_process(IPC::TransportHandle handle, IPC::TransportHandle render_clock_handle) override;
      virtual void set_site_compatibility_data(JsonValue data) override;
+     virtual void set_permission_snapshot(Web::Permissions::PermissionSnapshot snapshot) override;
 +    virtual void indexed_database_changed(Web::StorageAPI::StorageKey storage_key, Web::IndexedDB::PersistedDatabaseChanges changes) override;
 +    virtual void indexed_database_changes_persisted(u64 commit_id) override;
      virtual void compositor_process_reconnected() override;
      virtual void update_system_theme(Web::PageId page_id, Core::AnonymousBuffer) override;
      virtual void update_screen_rects(Web::PageId page_id, Vector<Web::DevicePixelRect>, Vector<Web::DevicePixelRect>, u32) override;
 diff --git a/Services/WebContent/PageClient.cpp b/Services/WebContent/PageClient.cpp
-index c246e5b4..e0d638a0 100644
+index 799376aab2..9d74963e4a 100644
 --- a/Services/WebContent/PageClient.cpp
 +++ b/Services/WebContent/PageClient.cpp
-@@ -1584,6 +1584,36 @@ u64 PageClient::page_did_request_storage_usage(Web::HTML::EnvironmentId const& e
+@@ -1699,6 +1699,36 @@ u64 PageClient::page_did_request_storage_usage(Web::HTML::EnvironmentId const& e
      return response->usage();
  }
  
@@ -2614,26 +3998,26 @@ index c246e5b4..e0d638a0 100644
 +    client().async_did_release_indexed_database_upgrade_lock(m_id, environment_id, name);
 +}
 +
- void PageClient::page_did_clear_storage(Web::StorageAPI::StorageEndpointType storage_endpoint, Web::HTML::EnvironmentId const& environment_id)
+ void PageClient::page_did_update_indexed_database(String const& url, Web::IndexedDB::TransactionChanges const& changes)
  {
-     auto response = client().send_sync_but_allow_failure<Messages::WebContentClient::DidClearStorage>(m_id, storage_endpoint, environment_id);
+     if (!has_devtools_client())
 diff --git a/Services/WebContent/PageClient.h b/Services/WebContent/PageClient.h
-index 90e072a1..f80821e8 100644
+index dff6ce199c..6890029204 100644
 --- a/Services/WebContent/PageClient.h
 +++ b/Services/WebContent/PageClient.h
-@@ -302,6 +302,10 @@ private:
-     virtual void page_did_remove_storage_item(Web::StorageAPI::StorageEndpointType storage_endpoint, Web::HTML::EnvironmentId const& environment_id, Utf16String const& bottle_key) override;
-     virtual Vector<Utf16String> page_did_request_storage_keys(Web::StorageAPI::StorageEndpointType storage_endpoint, Web::HTML::EnvironmentId const& environment_id) override;
+@@ -315,6 +315,10 @@ private:
+     virtual void page_did_request_clear_storage_for_testing(Web::StorageAPI::StorageEndpointType, Web::HTML::EnvironmentSettingsObject const&) override;
+     virtual bool page_did_is_known_hsts_host(String const&) override;
      virtual u64 page_did_request_storage_usage(Web::HTML::EnvironmentId const& environment_id) override;
 +    virtual Vector<Web::IndexedDB::PersistedDatabase> page_did_request_indexed_databases(Web::HTML::EnvironmentId const& environment_id) override;
 +    virtual void page_did_commit_indexed_database_changes(Web::HTML::EnvironmentId const& environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges const& changes) override;
 +    virtual Web::IndexedDB::PersistedUpgradeLock page_did_request_indexed_database_upgrade_lock(Web::HTML::EnvironmentId const& environment_id, Utf16String const& name) override;
 +    virtual void page_did_release_indexed_database_upgrade_lock(Web::HTML::EnvironmentId const& environment_id, Utf16String const& name) override;
-     virtual void page_did_clear_storage(Web::StorageAPI::StorageEndpointType storage_endpoint, Web::HTML::EnvironmentId const& environment_id) override;
-     virtual void page_did_broadcast_storage_change(Web::StorageAPI::StorageEndpointType storage_endpoint, String const& url, Optional<Utf16String> const& key, Optional<Utf16String> const& old_value, Optional<Utf16String> const& new_value) override;
      virtual void page_did_update_indexed_database(String const& url, Web::IndexedDB::TransactionChanges const&) override;
+     virtual void page_did_update_resource_count(i32) override;
+     virtual NewWebViewResult page_did_request_new_web_view(Web::HTML::ActivateTab, Web::HTML::WebViewHints, Web::HTML::CrossProcessId current_navigable_id, Utf16String const& name, Web::HTML::TokenizedFeature::NoOpener no_opener, Optional<URL::URL> current_document_base_url) override;
 diff --git a/Services/WebContent/WebContentClient.ipc b/Services/WebContent/WebContentClient.ipc
-index 7a00b8c3..0e404b6e 100644
+index 9b29cda922..1a1472621a 100644
 --- a/Services/WebContent/WebContentClient.ipc
 +++ b/Services/WebContent/WebContentClient.ipc
 @@ -13,6 +13,7 @@
@@ -2644,19 +4028,19 @@ index 7a00b8c3..0e404b6e 100644
  #include <LibWebCommon/HTML/PopulatedDocumentOrigin.h>
  #include <LibWeb/StorageAPI/StorageKey.h>
  #include <LibWebCommon/Bindings/Navigation.h>
-@@ -202,6 +203,10 @@ endpoint WebContentClient routed by Web::PageId page_id
-     [NotRouted] did_request_storage_keys(Web::PageId page_id, Web::StorageAPI::StorageEndpointType storage_endpoint, Web::HTML::EnvironmentId environment_id) => (Vector<Utf16String> keys)
-     did_clear_storage(Web::PageId page_id, Web::StorageAPI::StorageEndpointType storage_endpoint, Web::HTML::EnvironmentId environment_id) => ()
-     [NotRouted] did_request_storage_usage(Web::PageId page_id, Web::HTML::EnvironmentId environment_id) => (u64 usage)
+@@ -209,6 +210,10 @@ endpoint WebContentClient routed by Web::PageId page_id
+     set_storage_item(Web::StorageAPI::StorageAreaId area_id, Utf16String key, Utf16String value, String url) =|
+     remove_storage_item(Web::StorageAPI::StorageAreaId area_id, Utf16String key, String url) =|
+     clear_storage_area(Web::StorageAPI::StorageAreaId area_id, String url) =|
 +    [NotRouted] did_request_indexed_databases(Web::PageId page_id, Web::HTML::EnvironmentId environment_id) => (Vector<Web::IndexedDB::PersistedDatabase> databases)
 +    [NotRouted] did_commit_indexed_database_changes(Web::PageId page_id, Web::HTML::EnvironmentId environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges changes) =|
 +    [NotRouted] did_request_indexed_database_upgrade_lock(Web::PageId page_id, Web::HTML::EnvironmentId environment_id, Utf16String name) => (bool granted, Optional<u64> stored_version)
 +    [NotRouted] did_release_indexed_database_upgrade_lock(Web::PageId page_id, Web::HTML::EnvironmentId environment_id, Utf16String name) =|
-     did_change_storage_item(Web::PageId page_id, Web::StorageAPI::StorageEndpointType storage_endpoint, String url, Optional<Utf16String> key, Optional<Utf16String> old_value, Optional<Utf16String> new_value) =|
      did_update_indexed_database(Web::PageId page_id, String update) =|
      did_post_broadcast_channel_message(Web::PageId page_id, Web::HTML::PostedBroadcastChannelMessage message) =|
+ 
 diff --git a/Services/WebContent/WebContentServer.ipc b/Services/WebContent/WebContentServer.ipc
-index 735bb24c..69294b3f 100644
+index 0c8254edfa..b068018bb3 100644
 --- a/Services/WebContent/WebContentServer.ipc
 +++ b/Services/WebContent/WebContentServer.ipc
 @@ -5,6 +5,8 @@
@@ -2668,28 +4052,28 @@ index 735bb24c..69294b3f 100644
  #include <LibWebCommon/Bindings/Navigation.h>
  #include <LibWebCommon/Bindings/NavigationType.h>
  #include <LibWebCommon/CSS/PreferredColorScheme.h>
-@@ -91,6 +93,8 @@ endpoint WebContentServer routed by Web::PageId page_id
-     connect_to_compositor_process(IPC::TransportHandle handle, IPC::TransportHandle render_clock_handle) =|
+@@ -97,6 +99,8 @@ endpoint WebContentServer routed by Web::PageId page_id
      compositor_process_reconnected() =|
      set_site_compatibility_data(JsonValue data) =|
+     set_permission_snapshot(Web::Permissions::PermissionSnapshot snapshot) =|
 +    indexed_database_changed(Web::StorageAPI::StorageKey storage_key, Web::IndexedDB::PersistedDatabaseChanges changes) =|
 +    indexed_database_changes_persisted(u64 commit_id) =|
  
      update_system_theme(Web::PageId page_id, Core::AnonymousBuffer theme_buffer) =|
      update_screen_rects(Web::PageId page_id, Vector<Web::DevicePixelRect> rects, Vector<Web::DevicePixelRect> available_rects, u32 main_screen_index) =|
 diff --git a/Services/WebWorker/ConnectionFromClient.cpp b/Services/WebWorker/ConnectionFromClient.cpp
-index ec8a506c..1f855ca9 100644
+index 4cff64d66d..6c9f07b606 100644
 --- a/Services/WebWorker/ConnectionFromClient.cpp
 +++ b/Services/WebWorker/ConnectionFromClient.cpp
 @@ -6,6 +6,7 @@
  
  #include <LibCompositing/FontServiceClient.h>
  #include <LibCore/Process.h>
-+#include <LibWeb/IndexedDB/Internal/Persistence.h>
++#include <LibWeb/IndexedDB/Persistence.h>
  #include <LibWeb/Compositor/CompositorConnection.h>
  #include <LibWeb/DOMURL/DOMURL.h>
  #include <LibWeb/FileAPI/BlobURLStore.h>
-@@ -83,6 +84,16 @@ void ConnectionFromClient::set_system_font_family(String family)
+@@ -77,6 +78,16 @@ void ConnectionFromClient::set_system_font_family(String family)
      Web::Platform::FontPlugin::the().set_system_font_family(FlyString { family });
  }
  
@@ -2707,23 +4091,23 @@ index ec8a506c..1f855ca9 100644
  {
      auto parsed_data = Web::SiteCompatibilityData::from_json(data);
 diff --git a/Services/WebWorker/ConnectionFromClient.h b/Services/WebWorker/ConnectionFromClient.h
-index 34f534d5..b90f32e3 100644
+index 6aac41b95c..351e21fc75 100644
 --- a/Services/WebWorker/ConnectionFromClient.h
 +++ b/Services/WebWorker/ConnectionFromClient.h
-@@ -63,6 +63,8 @@ private:
-     virtual void connect_to_wasm_compiler(IPC::TransportHandle handle) override;
+@@ -60,6 +60,8 @@ private:
      virtual void connect_to_compositor(IPC::TransportHandle handle) override;
      virtual void set_site_compatibility_data(JsonValue data) override;
+     virtual void set_permission_snapshot(Web::Permissions::PermissionSnapshot snapshot) override;
 +    virtual void indexed_database_changed(Web::StorageAPI::StorageKey storage_key, Web::IndexedDB::PersistedDatabaseChanges changes) override;
 +    virtual void indexed_database_changes_persisted(u64 commit_id) override;
      virtual void set_user_agent(String user_agent) override;
      virtual void set_navigator_compatibility_mode(Web::NavigatorCompatibilityMode mode) override;
      virtual void set_preferred_languages(Vector<String> preferred_languages) override;
 diff --git a/Services/WebWorker/PageHost.cpp b/Services/WebWorker/PageHost.cpp
-index 28ac39e4..17840143 100644
+index f6cf841f29..87c1588bc5 100644
 --- a/Services/WebWorker/PageHost.cpp
 +++ b/Services/WebWorker/PageHost.cpp
-@@ -129,6 +129,27 @@ Optional<Web::FileAPI::SerializedBlobURLEntry> PageHost::page_did_request_blob_u
+@@ -143,6 +143,27 @@ Optional<Web::FileAPI::SerializedBlobURLEntry> PageHost::page_did_request_blob_u
      return m_client.did_request_blob_url_entry(url, token);
  }
  
@@ -2752,10 +4136,10 @@ index 28ac39e4..17840143 100644
  {
      return m_client.start_worker_agent(move(request));
 diff --git a/Services/WebWorker/PageHost.h b/Services/WebWorker/PageHost.h
-index a1b31ca2..6af05501 100644
+index 0d4c064451..00900a10ae 100644
 --- a/Services/WebWorker/PageHost.h
 +++ b/Services/WebWorker/PageHost.h
-@@ -46,6 +46,10 @@ public:
+@@ -48,6 +48,10 @@ public:
      virtual URL::BlobURLEntry::Token page_did_add_blob_url_entry(Web::HTML::EnvironmentSettingsObject const&, Utf16String const& url, Web::FileAPI::SerializedBlobURLEntry const&) override;
      virtual void page_did_remove_blob_url_entries(Web::HTML::EnvironmentSettingsObject const&, Vector<Utf16String> const& urls) override;
      virtual Optional<Web::FileAPI::SerializedBlobURLEntry> page_did_request_blob_url_entry(Utf16String const& url, Optional<URL::BlobURLEntry::Token> token) override;
@@ -2767,7 +4151,7 @@ index a1b31ca2..6af05501 100644
      virtual void close_worker_agent(Web::HTML::WorkerAgentId, Web::HTML::WorkerAgentOwnerToken) override;
      virtual bool supports_compositor() const override { return true; }
 diff --git a/Services/WebWorker/WebWorkerClient.ipc b/Services/WebWorker/WebWorkerClient.ipc
-index 2551c57f..ca9a0606 100644
+index 251c0dbe43..5069b09809 100644
 --- a/Services/WebWorker/WebWorkerClient.ipc
 +++ b/Services/WebWorker/WebWorkerClient.ipc
 @@ -4,6 +4,8 @@
@@ -2779,10 +4163,10 @@ index 2551c57f..ca9a0606 100644
  #include <LibWebCommon/HTML/BroadcastChannelMessage.h>
  #include <LibWebCommon/HTML/WorkerAgentForward.h>
  #include <LibWebCommon/HTML/WorkerAgentTypes.h>
-@@ -17,6 +19,10 @@ endpoint WebWorkerClient {
-     did_finish_loading_worker_script(bool worker_is_secure_context) =|
+@@ -19,6 +21,10 @@ endpoint WebWorkerClient {
      did_fail_loading_worker_script() =|
      did_report_worker_exception(Utf16String message, Utf16String filename, u32 lineno, u32 colno) =|
+     did_report_outside_settings_content_security_policy_violation(u64 policy_index, String effective_directive, URL::URL resource) =|
 +    did_request_indexed_databases(Web::HTML::EnvironmentId environment_id) => (Vector<Web::IndexedDB::PersistedDatabase> databases)
 +    did_commit_indexed_database_changes(Web::HTML::EnvironmentId environment_id, u64 commit_id, Web::IndexedDB::PersistedDatabaseChanges changes) =|
 +    did_request_indexed_database_upgrade_lock(Web::HTML::EnvironmentId environment_id, Utf16String name) => (bool granted, Optional<u64> stored_version)
@@ -2791,7 +4175,7 @@ index 2551c57f..ca9a0606 100644
      did_request_file(ByteString path, i32 request_id) =|
      did_is_known_hsts_host(String domain) => (bool result)
 diff --git a/Services/WebWorker/WebWorkerServer.ipc b/Services/WebWorker/WebWorkerServer.ipc
-index 356a6406..0fcb34b8 100644
+index a9270b470c..39fb417406 100644
 --- a/Services/WebWorker/WebWorkerServer.ipc
 +++ b/Services/WebWorker/WebWorkerServer.ipc
 @@ -3,6 +3,8 @@
@@ -2803,10 +4187,10 @@ index 356a6406..0fcb34b8 100644
  #include <LibWebCommon/HTML/Scripting/SerializedEnvironmentSettingsObject.h>
  #include <LibWebCommon/HTML/SerializationRecords.h>
  #include <LibWebCommon/HTML/WorkerAgentForward.h>
-@@ -19,6 +21,8 @@ endpoint WebWorkerServer {
-     connect_to_wasm_compiler(IPC::TransportHandle handle) =|
+@@ -20,6 +22,8 @@ endpoint WebWorkerServer {
      connect_to_compositor(IPC::TransportHandle handle) =|
      set_site_compatibility_data(JsonValue data) =|
+     set_permission_snapshot(Web::Permissions::PermissionSnapshot snapshot) =|
 +    indexed_database_changed(Web::StorageAPI::StorageKey storage_key, Web::IndexedDB::PersistedDatabaseChanges changes) =|
 +    indexed_database_changes_persisted(u64 commit_id) =|
      set_user_agent(String user_agent) =|

@@ -1,5 +1,5 @@
 diff --git a/Services/RequestServer/SandboxLinux.cpp b/Services/RequestServer/SandboxLinux.cpp
-index 348bb66..ac15aa1 100644
+index 348bb66a33..673798a4a4 100644
 --- a/Services/RequestServer/SandboxLinux.cpp
 +++ b/Services/RequestServer/SandboxLinux.cpp
 @@ -5,6 +5,7 @@
@@ -10,10 +10,7 @@ index 348bb66..ac15aa1 100644
  #include <AK/String.h>
  #include <LibCore/Directory.h>
  #include <LibCore/Environment.h>
-@@ -15,9 +16,10 @@
- #include <RequestServer/Sandbox.h>
- #include <curl/curl.h>
- #include <dlfcn.h>
+@@ -18,6 +19,7 @@
  #include <openssl/conf.h>
  #include <openssl/crypto.h>
  #include <openssl/x509.h>

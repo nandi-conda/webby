@@ -1,8 +1,8 @@
 diff --git a/Services/WebContent/PageClient.cpp b/Services/WebContent/PageClient.cpp
-index 29df9c58..c246e5b4 100644
+index 9b592f1269..799376aab2 100644
 --- a/Services/WebContent/PageClient.cpp
 +++ b/Services/WebContent/PageClient.cpp
-@@ -1070,11 +1070,20 @@ void PageClient::cancel_download(u64 download_id)
+@@ -1127,11 +1127,20 @@ void PageClient::cancel_download(u64 download_id)
  
      m_canceled_downloads.set(download_id);
  

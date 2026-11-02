@@ -1,8 +1,8 @@
 diff --git a/Services/WebWorker/WorkerHost.cpp b/Services/WebWorker/WorkerHost.cpp
-index c23d0bc8..d71af955 100644
+index 8bed86542f..1f83a4df78 100644
 --- a/Services/WebWorker/WorkerHost.cpp
 +++ b/Services/WebWorker/WorkerHost.cpp
-@@ -29,6 +29,7 @@
+@@ -31,6 +31,7 @@
  #include <LibWeb/HTML/WorkerGlobalScope.h>
  #include <LibWeb/HighResolutionTime/TimeOrigin.h>
  #include <LibWeb/Loader/ResourceLoader.h>
@@ -10,7 +10,7 @@ index c23d0bc8..d71af955 100644
  #include <WebWorker/PageHost.h>
  #include <WebWorker/WorkerHost.h>
  
-@@ -271,10 +272,11 @@ void WorkerHost::run(GC::Ref<Web::Page> page, Web::HTML::TransferDataEncoder mes
+@@ -287,10 +288,11 @@ void WorkerHost::run(GC::Ref<Web::Page> page, Web::HTML::TransferDataEncoder mes
  
          // 10. If script is a classic script, then run the classic script script.
          //     Otherwise, it is a module script; run the module script script.
@@ -23,7 +23,7 @@ index c23d0bc8..d71af955 100644
  
          as<WebWorker::PageHost>(page->client()).did_finish_loading_worker_script(Web::HTML::is_secure_context(*inside_settings));
  
-@@ -282,7 +284,21 @@ void WorkerHost::run(GC::Ref<Web::Page> page, Web::HTML::TransferDataEncoder mes
+@@ -298,7 +300,21 @@ void WorkerHost::run(GC::Ref<Web::Page> page, Web::HTML::TransferDataEncoder mes
  
          // 12. If is shared is false, enable the port message queue of the worker's implicit port.
          if (!is_shared) {

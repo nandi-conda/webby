@@ -1,8 +1,8 @@
 diff --git a/Libraries/LibWeb/Rust/src/css/style/publication.rs b/Libraries/LibWeb/Rust/src/css/style/publication.rs
-index d1fe5afa..0fd547ea 100644
+index 23711cd7ed..8b4062c946 100644
 --- a/Libraries/LibWeb/Rust/src/css/style/publication.rs
 +++ b/Libraries/LibWeb/Rust/src/css/style/publication.rs
-@@ -761,10 +761,18 @@ impl RetainedState {
+@@ -789,10 +789,18 @@ impl RetainedState {
          if goal == FontDriveGoal::RootInputs && delta.is_empty() && !flips_are_reflected {
              return Ok(ElementAnswer::RootInputs(None));
          }
@@ -25,7 +25,7 @@ index d1fe5afa..0fd547ea 100644
              && !parent_inputs_moved.display
              && !root_inputs_moved
              && !drive_in_full
-@@ -959,10 +967,10 @@ impl RetainedState {
+@@ -987,10 +995,10 @@ impl RetainedState {
          if inherited_text_can_be_partial {
              // NB: Group members are validated while selecting them, after cohort lookup, so
              //     siblings reusing the same result do not repeat the phase checks.
@@ -38,7 +38,7 @@ index d1fe5afa..0fd547ea 100644
                  {
                      inherited_text_needs_full_drive |= !property_computes_in_remaining_phase(property);
                      select(property);
-@@ -1001,7 +1009,7 @@ impl RetainedState {
+@@ -1029,7 +1037,7 @@ impl RetainedState {
          if delta
              .properties()
              .contains(&crate::css::property_metadata::property_id::COLOR)
