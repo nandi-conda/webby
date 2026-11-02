@@ -32,6 +32,7 @@
 #include <fcntl.h>
 #include <mutex>
 #include <poll.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <sys/eventfd.h>
 #include <thread>
@@ -188,6 +189,10 @@ int webby_pump(void)
     if (!s_application)
         return 0;
     auto events = static_cast<int>(Core::EventLoop::current().pump(Core::EventLoop::WaitMode::PollForEvents));
+    // Ladybird turns SIGINT/SIGTERM into a quit of its own event loop (to save its session), which the front end's
+    // main loop never sees, so Ctrl+C left webby running. Exit the way the signal used to make it.
+    if (Core::EventLoop::current().was_exit_requested())
+        _exit(128 + SIGINT);
     if (s_waker)
         arm_waker();
     return events;
