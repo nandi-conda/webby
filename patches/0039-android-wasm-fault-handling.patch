@@ -1,0 +1,84 @@
+diff --git a/Libraries/LibWasm/Engine/src/runtime/interpreter.rs b/Libraries/LibWasm/Engine/src/runtime/interpreter.rs
+index 8ea7209c84..3644718bba 100644
+--- a/Libraries/LibWasm/Engine/src/runtime/interpreter.rs
++++ b/Libraries/LibWasm/Engine/src/runtime/interpreter.rs
+@@ -169,7 +169,7 @@ pub fn stack_limit(reserve: usize) -> u64 {
+     (current.saturating_sub(1024 * 1024) + reserve) as u64
+ }
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "android"))]
+ fn thread_stack_lowest_address() -> Option<usize> {
+     unsafe {
+         let mut attributes: libc::pthread_attr_t = std::mem::zeroed();
+@@ -205,7 +205,7 @@ fn thread_stack_lowest_address() -> Option<usize> {
+     Some(low)
+ }
+ 
+-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
++#[cfg(not(any(any(target_os = "linux", target_os = "android"), target_os = "macos", windows)))]
+ fn thread_stack_lowest_address() -> Option<usize> {
+     None
+ }
+@@ -220,7 +220,7 @@ mod fault {
+     static mut PREVIOUS_SIGSEGV: libc::sigaction = unsafe { std::mem::zeroed() };
+     static mut PREVIOUS_SIGBUS: libc::sigaction = unsafe { std::mem::zeroed() };
+ 
+-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
++    #[cfg(all(any(target_os = "linux", target_os = "android"), target_arch = "x86_64"))]
+     unsafe fn instruction_pointer(context: *mut libc::c_void) -> *mut usize {
+         unsafe {
+             let context = context.cast::<libc::ucontext_t>();
+@@ -228,7 +228,7 @@ mod fault {
+         }
+     }
+ 
+-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
++    #[cfg(all(any(target_os = "linux", target_os = "android"), target_arch = "aarch64"))]
+     unsafe fn instruction_pointer(context: *mut libc::c_void) -> *mut usize {
+         unsafe {
+             let context = context.cast::<libc::ucontext_t>();
+diff --git a/Libraries/LibWasm/Engine/src/runtime/jit.rs b/Libraries/LibWasm/Engine/src/runtime/jit.rs
+index 7a8611b1bb..488003da8d 100644
+--- a/Libraries/LibWasm/Engine/src/runtime/jit.rs
++++ b/Libraries/LibWasm/Engine/src/runtime/jit.rs
+@@ -120,8 +120,8 @@ pub fn options() -> Options {
+         }
+         // NB: Only where compiled code can trap on memory faults (see `redirect_fault()`) and have executable memory.
+         options.enabled &= cfg!(any(
+-            all(any(target_os = "linux", target_os = "macos"), target_arch = "x86_64"),
+-            all(any(target_os = "linux", target_os = "macos"), target_arch = "aarch64")
++            all(any(any(target_os = "linux", target_os = "android"), target_os = "macos"), target_arch = "x86_64"),
++            all(any(any(target_os = "linux", target_os = "android"), target_os = "macos"), target_arch = "aarch64")
+         ));
+         options.enabled &= super::interpreter::cpu_supports_jit();
+         options
+@@ -298,7 +298,7 @@ pub fn instantiated(store: &mut Store, instance: InstanceAddress) {
+ /// # Safety
+ ///
+ /// Only the fault handler calls this, with its context.
+-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
++#[cfg(all(any(target_os = "linux", target_os = "android"), target_arch = "x86_64"))]
+ pub unsafe fn redirect_fault(context: *mut libc::c_void) -> bool {
+     unsafe {
+         let context = context.cast::<libc::ucontext_t>();
+@@ -321,7 +321,7 @@ pub unsafe fn redirect_fault(context: *mut libc::c_void) -> bool {
+ /// # Safety
+ ///
+ /// Only the fault handler calls this, with its context.
+-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
++#[cfg(all(any(target_os = "linux", target_os = "android"), target_arch = "aarch64"))]
+ pub unsafe fn redirect_fault(context: *mut libc::c_void) -> bool {
+     unsafe {
+         let context = context.cast::<libc::ucontext_t>();
+@@ -383,8 +383,8 @@ pub unsafe fn redirect_fault(context: *mut libc::c_void) -> bool {
+ }
+ 
+ #[cfg(not(any(
+-    all(any(target_os = "linux", target_os = "macos"), target_arch = "x86_64"),
+-    all(any(target_os = "linux", target_os = "macos"), target_arch = "aarch64")
++    all(any(any(target_os = "linux", target_os = "android"), target_os = "macos"), target_arch = "x86_64"),
++    all(any(any(target_os = "linux", target_os = "android"), target_os = "macos"), target_arch = "aarch64")
+ )))]
+ pub unsafe fn redirect_fault(_context: *mut libc::c_void) -> bool {
+     false
