@@ -17,20 +17,21 @@ index 4a1f9ca3a2..4c8355aa22 100644
 +
  endif ()
 diff --git a/Services/Compositor/OpenGLContext.cpp b/Services/Compositor/OpenGLContext.cpp
-index 00708d8bbb..b7d4730466 100644
+index 902c0d31de..9e626621b1 100644
 --- a/Services/Compositor/OpenGLContext.cpp
 +++ b/Services/Compositor/OpenGLContext.cpp
-@@ -200,6 +200,9 @@ OwnPtr<OpenGLContext> OpenGLContext::create(RefPtr<Gfx::SkiaBackendContext> skia
-     // FIXME: Share the drawing buffer with Skia's Direct3D 12 device (via an NT shared handle opened on ANGLE's
-     //        Direct3D 11 device) instead of reading it back to the CPU every frame.
-     bool use_cpu_painting_surface = true;
-+#    elif defined(AK_OS_ANDROID)
+@@ -225,6 +225,10 @@ OwnPtr<OpenGLContext> OpenGLContext::create(RefPtr<Gfx::SkiaBackendContext> skia
+ #ifdef ENABLE_WEBGL
+ #    ifdef ENABLE_WEBGL_CPU_PAINTING_SURFACE
+     bool use_cpu_painting_surface = !skia_backend_context;
++#        if defined(AK_OS_ANDROID)
 +    // FIXME: Share the drawing buffer through an AHardwareBuffer instead of reading it back to the CPU every frame.
-+    bool use_cpu_painting_surface = true;
++    use_cpu_painting_surface = true;
++#        endif
  #    else
-     bool use_cpu_painting_surface = false;
- #    endif
-@@ -224,6 +227,9 @@ OwnPtr<OpenGLContext> OpenGLContext::create(RefPtr<Gfx::SkiaBackendContext> skia
+     if (!skia_backend_context)
+         return {};
+@@ -246,6 +250,9 @@ OwnPtr<OpenGLContext> OpenGLContext::create(RefPtr<Gfx::SkiaBackendContext> skia
          EGL_PLATFORM_SURFACELESS_MESA,
  #    elif defined(AK_OS_WINDOWS)
          EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE,
@@ -38,28 +39,10 @@ index 00708d8bbb..b7d4730466 100644
 +        // ANGLE's GLES backend on top of the system's EGL and GLES driver.
 +        EGL_PLATFORM_ANGLE_TYPE_OPENGLES_ANGLE,
  #    endif
-         EGL_NONE,
      };
-@@ -627,7 +633,7 @@ void OpenGLContext::allocate_painting_surface_if_needed()
- #        else
-     (void)allocate_vkimage_color_buffer(color_buffer, m_size, Gfx::PaintingSurface::Origin::BottomLeft);
- #        endif
--#    elif (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)) || defined(AK_OS_WINDOWS)
-+#    elif defined(AK_OS_LINUX) || defined(AK_OS_WINDOWS)
-     allocate_cpu_painting_surface(color_buffer);
- #    endif
-     VERIFY(color_buffer.is_allocated());
-@@ -692,7 +698,7 @@ void OpenGLContext::flush_drawing_buffer()
- #    elif defined(USE_VULKAN_DMABUF_IMAGES)
-     // FIXME: CPU sync for now, but it would be better to export a fence and have Skia wait for it before reading from the surface
-     glFinish();
--#    elif (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)) || defined(AK_OS_WINDOWS)
-+#    elif defined(AK_OS_LINUX) || defined(AK_OS_WINDOWS)
-     glFinish();
- #    endif
- 
+ #    ifdef USE_DIRECTX
 diff --git a/Services/Compositor/OpenGLContext.h b/Services/Compositor/OpenGLContext.h
-index 2ec88c379c..d8dbff8f26 100644
+index 8a20a025ba..9a74aaffee 100644
 --- a/Services/Compositor/OpenGLContext.h
 +++ b/Services/Compositor/OpenGLContext.h
 @@ -18,7 +18,7 @@

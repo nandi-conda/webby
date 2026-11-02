@@ -1,8 +1,8 @@
 diff --git a/Services/RequestServer/ControlConnectionFromClient.cpp b/Services/RequestServer/ControlConnectionFromClient.cpp
-index e4415a4eb1..fd276f11f5 100644
+index 4db4705cd2..98e9313629 100644
 --- a/Services/RequestServer/ControlConnectionFromClient.cpp
 +++ b/Services/RequestServer/ControlConnectionFromClient.cpp
-@@ -124,6 +124,11 @@ void ControlConnectionFromClient::set_disk_cache_settings(HTTP::DiskCacheSetting
+@@ -146,6 +146,11 @@ void ControlConnectionFromClient::set_disk_cache_settings(HTTP::DiskCacheSetting
          m_disk_cache->set_maximum_disk_cache_size(disk_cache_settings.maximum_size);
  }
  
@@ -15,7 +15,7 @@ index e4415a4eb1..fd276f11f5 100644
  {
      auto& dns_info = DNSInfo::the();
 diff --git a/Services/RequestServer/ControlConnectionFromClient.h b/Services/RequestServer/ControlConnectionFromClient.h
-index 60af7871e2..bf49fe19a4 100644
+index f563164058..3d8e184eb1 100644
 --- a/Services/RequestServer/ControlConnectionFromClient.h
 +++ b/Services/RequestServer/ControlConnectionFromClient.h
 @@ -41,6 +41,7 @@ private:
@@ -27,10 +27,10 @@ index 60af7871e2..bf49fe19a4 100644
      virtual void set_dns_server(ByteString host_or_address, u16 port, bool use_tls, bool validate_dnssec_locally) override;
      virtual void set_use_system_dns() override;
 diff --git a/Services/RequestServer/Request.cpp b/Services/RequestServer/Request.cpp
-index c8d0ad7cd7..9316963b8f 100644
+index 2c92b82709..26f609b717 100644
 --- a/Services/RequestServer/Request.cpp
 +++ b/Services/RequestServer/Request.cpp
-@@ -38,6 +38,26 @@ static constexpr size_t max_response_header_count = 1000;
+@@ -40,6 +40,26 @@ static constexpr size_t max_response_header_count = 1000;
  static AK::Duration s_wait_for_cache_timeout = AK::Duration::from_seconds(10);
  static AK::Duration s_maximum_wait_for_cache = AK::Duration::from_seconds(30);
  static AK::Duration s_revalidation_stall_timeout = AK::Duration::from_seconds(30);
@@ -57,7 +57,7 @@ index c8d0ad7cd7..9316963b8f 100644
  
  // Let Fetch authorize credentials; otherwise curl sends URL credentials itself.
  static ByteString url_without_credentials(URL::URL url)
-@@ -529,7 +549,7 @@ Request::Request(
+@@ -531,7 +551,7 @@ Request::Request(
      , m_network_isolation_key(move(network_isolation_key))
      , m_disk_cache(m_network_isolation_key.has_value() && m_network_isolation_key->frame_site.has_value() ? disk_cache : OptionalNone {})
      , m_disk_cache_partition(m_network_isolation_key.has_value() ? m_network_isolation_key->disk_cache_partition() : OptionalNone {})
@@ -67,7 +67,7 @@ index c8d0ad7cd7..9316963b8f 100644
      , m_curl_multi_handle(curl_multi)
      , m_resolver(resolver)
 diff --git a/Services/RequestServer/Request.h b/Services/RequestServer/Request.h
-index 63fd505c1f..cf2e8c1df4 100644
+index b6bedba0d3..ad4423df10 100644
 --- a/Services/RequestServer/Request.h
 +++ b/Services/RequestServer/Request.h
 @@ -102,6 +102,10 @@ public:
@@ -82,7 +82,7 @@ index 63fd505c1f..cf2e8c1df4 100644
      void set_performance_origin(i32 process_id, u64 page_id);
      void sample_network_usage();
 diff --git a/Services/RequestServer/RequestServerControl.ipc b/Services/RequestServer/RequestServerControl.ipc
-index 321e419c70..451044419b 100644
+index 9c7964e169..171588b157 100644
 --- a/Services/RequestServer/RequestServerControl.ipc
 +++ b/Services/RequestServer/RequestServerControl.ipc
 @@ -19,6 +19,9 @@ endpoint RequestServerControl

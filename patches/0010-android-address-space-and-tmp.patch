@@ -16,10 +16,10 @@ index fbd0272769..27bc8b4f3e 100644
      case Mode::ReadWrite:
          protection = PROT_READ | PROT_WRITE;
 diff --git a/Libraries/LibCore/StandardPaths.cpp b/Libraries/LibCore/StandardPaths.cpp
-index 9b6c68c5f1..00203757c2 100644
+index 0a295e4d83..01d8f49eec 100644
 --- a/Libraries/LibCore/StandardPaths.cpp
 +++ b/Libraries/LibCore/StandardPaths.cpp
-@@ -251,6 +251,11 @@ ByteString StandardPaths::tempfile_directory()
+@@ -329,6 +329,11 @@ ByteString StandardPaths::tempfile_directory()
  {
  #if defined(AK_OS_WINDOWS)
      return getenv("TEMP");
@@ -58,11 +58,11 @@ index cd71044d7a..8fe5d5b312 100644
      static constexpr size_t cage_offset_mask = default_cage_size - 1;
      // NB: JIT code accesses typed array elements at a masked offset plus a
 diff --git a/Libraries/LibJS/Rust/build.rs b/Libraries/LibJS/Rust/build.rs
-index 6d6889cc56..65af88f7fb 100644
+index a594d911a0..9b2354786d 100644
 --- a/Libraries/LibJS/Rust/build.rs
 +++ b/Libraries/LibJS/Rust/build.rs
-@@ -110,6 +110,15 @@ fn heap_region_size(target: &Target, thread_sanitizer: bool) -> u64 {
-     }
+@@ -108,6 +108,15 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
+     })
  }
  
 +fn primitive_storage_cage_size(target: &Target) -> u64 {
@@ -77,9 +77,9 @@ index 6d6889cc56..65af88f7fb 100644
  fn main() {
      let manifest_directory = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
      let output_directory = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
-@@ -133,7 +142,7 @@ fn main() {
+@@ -143,7 +152,7 @@ fn main() {
      let configuration = layout_table::LayoutConfiguration {
-         heap_region_offset_mask: heap_region_size(&target, thread_sanitizer) - 1,
+         heap_region_offset_mask: HEAP_REGION_SIZE - 1,
          // Mirrors GC::PrimitiveStorage::default_cage_size.
 -        primitive_storage_cage_offset_mask: 4 * TIB - 1,
 +        primitive_storage_cage_offset_mask: primitive_storage_cage_size(&target) - 1,

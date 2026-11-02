@@ -8,9 +8,7 @@
 ##
 ## Conda installs update with `pixi global update webby` (or `pixi install` in a checkout) instead. That replaces the
 ## engine's files under a webby that is still running: pages then open in helpers from the new version while
-## the long-lived ones keep the old, and the sandboxed WasmCompiler may only run the cranelift-compiler file that
-## was there when it started (Landlock holds that file, not its path), so every WebAssembly JIT compile fails with
-## "Permission denied" and wasm runs interpreted (reams.ink's notes timed out). webby notices the engine's files
+## the long-lived ones keep the old, which can't talk to each other reliably. webby notices the engine's files
 ## changing and asks to restart; ⋮ > Help > Restart to finish updating does the same.
 
 import std/[json, os, strutils, times]
@@ -194,14 +192,14 @@ proc checkEngine() =
     if fileId(path) != id:
       engineChanged = true
       kit.confirm("Webby was updated",
-        "Its engine changed on disk while it was running. Pages can misbehave until it restarts (WebAssembly, " &
-        "for one, can't be compiled). Your tabs come back.", ok = "Restart",
+        "Its engine changed on disk while it was running. Pages can misbehave until it restarts. " &
+        "Your tabs come back.", ok = "Restart",
         onResult = proc (ok: bool) = (if ok: restartSelf()))
       return
 
 proc watchEngine() =
   let prefix = ladybirdPrefix()
-  for rel in ["lib/libwebby.so", "libexec/WebContent", "libexec/WasmCompiler", "libexec/cranelift-compiler"]:
+  for rel in ["lib/libwebby.so", "libexec/WebContent"]:
     let path = prefix / rel
     if fileExists(path): engineFiles.add((path, fileId(path)))
   if engineFiles.len == 0: return

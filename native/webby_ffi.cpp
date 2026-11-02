@@ -32,6 +32,7 @@
 #include <fcntl.h>
 #include <mutex>
 #include <poll.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <sys/eventfd.h>
 #include <thread>
@@ -90,8 +91,7 @@ int webby_init(char const* prefix)
     argv.append(nullptr);
     Main::Arguments arguments { static_cast<int>(strings.size()), argv.data(), strings.span() };
 
-    // Pages' navigator.geolocation gets positions from the UI; turn on Ladybird's engine-wide switch for it (off by
-    // default), as sites are asked about one by one instead (see View::install_permission_checks()).
+    // Pages' navigator.geolocation gets positions from the UI; Ladybird asks per site through on_request_permission.
     Webby::GeolocationProvider::install();
 
     auto application = Webby::Application::create(arguments, binary_directory);
@@ -101,8 +101,6 @@ int webby_init(char const* prefix)
     }
     s_application = application.release_value().leak_ptr();
     s_downloads_observer = new Webby::DownloadsObserver;
-    if (!WebView::Application::settings().geolocation_enabled())
-        WebView::Application::settings().set_geolocation_enabled(true);
 
     auto theme_path = LexicalPath::join(WebView::s_ladybird_resource_root, "themes"sv, "Default.ini"sv);
     auto theme = Gfx::load_system_theme(theme_path.string());
@@ -191,6 +189,10 @@ int webby_pump(void)
     if (!s_application)
         return 0;
     auto events = static_cast<int>(Core::EventLoop::current().pump(Core::EventLoop::WaitMode::PollForEvents));
+    // Ladybird turns SIGINT/SIGTERM into a quit of its own event loop (to save its session), which the front end's
+    // main loop never sees, so Ctrl+C left webby running. Exit the way the signal used to make it.
+    if (Core::EventLoop::current().was_exit_requested())
+        _exit(128 + SIGINT);
     if (s_waker)
         arm_waker();
     return events;

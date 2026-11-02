@@ -1,8 +1,8 @@
 diff --git a/Libraries/LibWeb/WebAudio/AudioContext.cpp b/Libraries/LibWeb/WebAudio/AudioContext.cpp
-index b1c63966..2f5eae51 100644
+index 32da77a219..c90d94f15c 100644
 --- a/Libraries/LibWeb/WebAudio/AudioContext.cpp
 +++ b/Libraries/LibWeb/WebAudio/AudioContext.cpp
-@@ -86,15 +86,16 @@ WebIDL::ExceptionOr<GC::Ref<AudioContext>> AudioContext::create_for_constructor(
+@@ -85,16 +85,16 @@ WebIDL::ExceptionOr<GC::Ref<AudioContext>> AudioContext::create_for_constructor(
          context->set_sample_rate(44100);
  
      // 11. If context is allowed to start, send a control message to start processing.
@@ -16,14 +16,15 @@ index b1c63966..2f5eae51 100644
  
          // 2. Attempt to acquire system resources to use a following audio output device based on [[sink ID]] for
          //    rendering.
--        context->m_renderer = Rendering::RealtimeAudioRenderer::create(context->control_message_queue(), context->destination()->node_id(), context->sample_rate(), render_quantum_size());
+-        auto audio_output_factory = context->relevant_window().page().client().create_audio_output_factory();
+-        context->m_renderer = Rendering::RealtimeAudioRenderer::create(context->control_message_queue(), context->destination()->node_id(), context->sample_rate(), render_quantum_size(), move(audio_output_factory));
 -        context->set_renderer_callbacks();
 -        context->m_renderer->start_rendering();
 +        context->create_renderer();
  
          // 2. Set this [[rendering thread state]] to running on the AudioContext.
          context->set_rendering_state(AudioContextState::Running);
-@@ -191,11 +192,16 @@ WebIDL::ExceptionOr<void> AudioContext::resume(GC::Ref<WebIDL::Promise> promise)
+@@ -191,11 +191,16 @@ WebIDL::ExceptionOr<void> AudioContext::resume(GC::Ref<WebIDL::Promise> promise)
      // 4. Set [[suspended by user]] to true.
      m_suspended_by_user = true;
  
@@ -44,7 +45,7 @@ index b1c63966..2f5eae51 100644
  
      // 6. Set the [[control thread state]] on the AudioContext to running.
      set_control_state(AudioContextState::Running);
-@@ -371,11 +377,23 @@ WebIDL::ExceptionOr<void> AudioContext::close(GC::Ref<WebIDL::Promise> promise)
+@@ -371,11 +376,24 @@ WebIDL::ExceptionOr<void> AudioContext::close(GC::Ref<WebIDL::Promise> promise)
  
  bool AudioContext::start_rendering_audio_graph()
  {
@@ -62,7 +63,8 @@ index b1c63966..2f5eae51 100644
 +void AudioContext::create_renderer()
 +{
 +    VERIFY(!m_renderer);
-+    m_renderer = Rendering::RealtimeAudioRenderer::create(control_message_queue(), destination()->node_id(), sample_rate(), render_quantum_size());
++    auto audio_output_factory = relevant_window().page().client().create_audio_output_factory();
++    m_renderer = Rendering::RealtimeAudioRenderer::create(control_message_queue(), destination()->node_id(), sample_rate(), render_quantum_size(), move(audio_output_factory));
 +    set_renderer_callbacks();
 +    m_renderer->start_rendering();
 +}
@@ -71,7 +73,7 @@ index b1c63966..2f5eae51 100644
  // by clearing the callbacks when the context is suspended, closed, or its document becomes inactive, so this is called
  // again to re-establish it whenever rendering resumes.
 diff --git a/Libraries/LibWeb/WebAudio/AudioContext.h b/Libraries/LibWeb/WebAudio/AudioContext.h
-index 4eabc201..62365179 100644
+index 4eabc20172..62365179c3 100644
 --- a/Libraries/LibWeb/WebAudio/AudioContext.h
 +++ b/Libraries/LibWeb/WebAudio/AudioContext.h
 @@ -54,13 +54,14 @@ private:
@@ -91,10 +93,10 @@ index 4eabc201..62365179 100644
  };
  
 diff --git a/Services/AudioServer/PlaybackStreamMixer.cpp b/Services/AudioServer/PlaybackStreamMixer.cpp
-index e02cb01e..6c5a63ae 100644
+index 09109340e0..6e662c43d7 100644
 --- a/Services/AudioServer/PlaybackStreamMixer.cpp
 +++ b/Services/AudioServer/PlaybackStreamMixer.cpp
-@@ -13,30 +13,54 @@
+@@ -13,32 +13,58 @@
  
  namespace Audio {
  
@@ -102,23 +104,27 @@ index e02cb01e..6c5a63ae 100644
 +// resuming a video does not reopen it.
 +static constexpr auto DEVICE_IDLE_CLOSE_DELAY = AK::Duration::from_seconds(10);
 +
- NonnullRefPtr<PlaybackStreamMixer> PlaybackStreamMixer::create(Core::EventLoop& control_loop, u32 target_latency_ms, DeviceStreamFactory factory)
+ NonnullRefPtr<PlaybackStreamMixer> PlaybackStreamMixer::create(Core::EventLoop& control_loop, u32 target_latency_ms, DeviceStreamFactory factory, AK::Duration audibility_linger)
  {
      auto state = make_ref_counted<MixState>(control_loop);
--    auto mixer = adopt_ref(*new PlaybackStreamMixer(state, target_latency_ms));
-+    auto mixer = adopt_ref(*new PlaybackStreamMixer(state, target_latency_ms, move(factory)));
+-    auto mixer = adopt_ref(*new PlaybackStreamMixer(state, target_latency_ms, audibility_linger));
++    auto mixer = adopt_ref(*new PlaybackStreamMixer(state, target_latency_ms, move(factory), audibility_linger));
      state->m_mixer = mixer.ptr();
 +    return mixer;
 +}
  
 -    auto promise = factory(OutputState::Suspended, target_latency_ms, [state](Span<float> buffer, MonotonicTime buffer_starts_playing_at) {
-+PlaybackStreamMixer::PlaybackStreamMixer(NonnullRefPtr<MixState> state, u32 device_target_latency_ms, DeviceStreamFactory factory)
++PlaybackStreamMixer::PlaybackStreamMixer(NonnullRefPtr<MixState> state, u32 device_target_latency_ms, DeviceStreamFactory factory, AK::Duration audibility_linger)
 +    : m_state(move(state))
 +    , m_device_target_latency_ms(device_target_latency_ms)
 +    , m_device_stream_factory(move(factory))
++    , m_audibility_linger(audibility_linger)
++    , m_audibility_timer(Core::Timer::create_single_shot(AK::Duration::zero(), [this] { expire_audibility(); }))
 +{
 +}
 +
++// webby: the device stream opens when a client first needs its format, and closes once nothing has played for a while,
++// so an idle tab holds no (silent) stream on the sound server.
 +void PlaybackStreamMixer::open_device_stream()
 +{
 +    if (m_device_stream || m_device_stream_is_opening)
@@ -140,9 +146,11 @@ index e02cb01e..6c5a63ae 100644
 -    return mixer;
  }
  
--PlaybackStreamMixer::PlaybackStreamMixer(NonnullRefPtr<MixState> state, u32 device_target_latency_ms)
+-PlaybackStreamMixer::PlaybackStreamMixer(NonnullRefPtr<MixState> state, u32 device_target_latency_ms, AK::Duration audibility_linger)
 -    : m_state(move(state))
 -    , m_device_target_latency_ms(device_target_latency_ms)
+-    , m_audibility_linger(audibility_linger)
+-    , m_audibility_timer(Core::Timer::create_single_shot(AK::Duration::zero(), [this] { expire_audibility(); }))
 +void PlaybackStreamMixer::close_device_stream_when_idle()
  {
 +    if (!m_idle_close_timer) {
@@ -157,7 +165,7 @@ index e02cb01e..6c5a63ae 100644
  }
  
  PlaybackStreamMixer::~PlaybackStreamMixer()
-@@ -46,13 +70,36 @@ PlaybackStreamMixer::~PlaybackStreamMixer()
+@@ -48,13 +74,36 @@ PlaybackStreamMixer::~PlaybackStreamMixer()
  
  void PlaybackStreamMixer::set_device_stream(NonnullRefPtr<PlaybackStream> stream)
  {
@@ -195,7 +203,7 @@ index e02cb01e..6c5a63ae 100644
      m_device_error = move(error);
      run_device_ready_callbacks();
  }
-@@ -60,6 +107,8 @@ void PlaybackStreamMixer::set_device_error(Error error)
+@@ -62,6 +111,8 @@ void PlaybackStreamMixer::set_device_error(Error error)
  void PlaybackStreamMixer::when_device_ready(DeviceReadyCallback callback)
  {
      m_device_ready_callbacks.append(move(callback));
@@ -204,7 +212,7 @@ index e02cb01e..6c5a63ae 100644
      run_device_ready_callbacks();
  }
  
-@@ -187,8 +236,14 @@ void PlaybackStreamMixer::client_became_active()
+@@ -285,8 +336,14 @@ void PlaybackStreamMixer::client_became_active()
      m_active_client_count++;
      if (m_active_client_count != 1 || m_device_is_playing)
          return;
@@ -220,7 +228,7 @@ index e02cb01e..6c5a63ae 100644
      // A ThreadedPromise resolved on the device thread spins until it has a rejection handler.
      m_device_stream->resume()->when_rejected([](Error&& error) {
          warnln("Unexpected error while resuming the mixer's device stream: {}", error);
-@@ -205,6 +260,7 @@ void PlaybackStreamMixer::client_became_inactive()
+@@ -303,6 +360,7 @@ void PlaybackStreamMixer::client_became_inactive()
      m_device_stream->drain_buffer_and_suspend()->when_rejected([](Error&& error) {
          warnln("Unexpected error while suspending the mixer's device stream: {}", error);
      });
@@ -229,40 +237,32 @@ index e02cb01e..6c5a63ae 100644
  
  void PlaybackStreamMixer::finish_drain_once_played(MixerClientId id, i64 played_at_ns)
 diff --git a/Services/AudioServer/PlaybackStreamMixer.h b/Services/AudioServer/PlaybackStreamMixer.h
-index cb4d3e5f..2dc1b140 100644
+index 29545f6d2d..de2f3a1125 100644
 --- a/Services/AudioServer/PlaybackStreamMixer.h
 +++ b/Services/AudioServer/PlaybackStreamMixer.h
-@@ -21,13 +21,14 @@ namespace Audio {
- 
- using MixerClientId = u64;
- 
--// Mixes the shared rings of one tab's client streams into one output device stream, which plays only while some
--// client is playing or draining.
-+// Mixes the shared rings of client streams into one output device stream, which plays only while some client is
-+// playing or draining. The device stream opens when the first client stream is created and closes once nothing has
-+// played for a while, so an idle browser holds no stream on the sound server; it opens again when a client plays.
- class PlaybackStreamMixer : public AtomicRefCounted<PlaybackStreamMixer> {
+@@ -46,7 +46,8 @@ class PlaybackStreamMixer : public AtomicRefCounted<PlaybackStreamMixer> {
  public:
      using DeviceStreamFactory = Function<NonnullRefPtr<PlaybackStream::CreatePromise>(OutputState, u32 target_latency_ms, PlaybackStream::AudioDataRequestCallback)>;
  
 -    // Control thread. The device stream opens suspended through the factory.
-+    // Control thread. The device stream opens suspended through the factory, when a client first needs its format.
-     static NonnullRefPtr<PlaybackStreamMixer> create(Core::EventLoop& control_loop, u32 target_latency_ms, DeviceStreamFactory);
-     ~PlaybackStreamMixer();
++    // Control thread. The device stream opens suspended through the factory, when a client first needs its format, and
++    // closes once nothing has played for a while.
+     static NonnullRefPtr<PlaybackStreamMixer> create(Core::EventLoop& control_loop, u32 target_latency_ms, DeviceStreamFactory, AK::Duration audibility_linger = AUDIBILITY_LINGER);
  
-@@ -85,8 +86,10 @@ private:
-         HashMap<MixerClientId, Client> m_clients;
+     // Control thread. A group becomes audible as soon as it is heard, and inaudible once the linger has passed since it
+@@ -126,7 +127,10 @@ private:
+         HashMap<PlaybackGroupId, i64> m_audible_until_ns;
      };
  
--    PlaybackStreamMixer(NonnullRefPtr<MixState>, u32 device_target_latency_ms);
-+    PlaybackStreamMixer(NonnullRefPtr<MixState>, u32 device_target_latency_ms, DeviceStreamFactory);
- 
+-    PlaybackStreamMixer(NonnullRefPtr<MixState>, u32 device_target_latency_ms, AK::Duration audibility_linger);
++    PlaybackStreamMixer(NonnullRefPtr<MixState>, u32 device_target_latency_ms, DeviceStreamFactory, AK::Duration audibility_linger);
++
 +    void open_device_stream();
 +    void close_device_stream_when_idle();
+ 
      void set_device_stream(NonnullRefPtr<PlaybackStream>);
      void set_device_error(Error);
-     void run_device_ready_callbacks();
-@@ -98,7 +101,10 @@ private:
+@@ -142,7 +146,10 @@ private:
  
      NonnullRefPtr<MixState> m_state;
      u32 const m_device_target_latency_ms { 0 };
@@ -274,7 +274,7 @@ index cb4d3e5f..2dc1b140 100644
      Optional<Error> m_device_error;
      Vector<DeviceReadyCallback> m_device_ready_callbacks;
 diff --git a/Services/AudioServer/PulseAudioWrappers.cpp b/Services/AudioServer/PulseAudioWrappers.cpp
-index 60919baf..673f2a01 100644
+index 105aa194d9..e595e15631 100644
 --- a/Services/AudioServer/PulseAudioWrappers.cpp
 +++ b/Services/AudioServer/PulseAudioWrappers.cpp
 @@ -49,7 +49,7 @@ ErrorOr<NonnullRefPtr<PulseAudioContext>> PulseAudioContext::the()
@@ -295,73 +295,3 @@ index 60919baf..673f2a01 100644
      if (stream == nullptr) {
          warnln("Instantiating PulseAudio stream failed with error: {}", pulse_audio_error_to_string(get_last_error()));
          return Error::from_string_literal("Failed to create PulseAudio stream");
-diff --git a/Services/AudioServer/Tabs.cpp b/Services/AudioServer/Tabs.cpp
-index 97b05ff0..9cbfe1b4 100644
---- a/Services/AudioServer/Tabs.cpp
-+++ b/Services/AudioServer/Tabs.cpp
-@@ -71,12 +71,17 @@ static NonnullRefPtr<Audio::PlaybackStream::CreatePromise> create_device_stream(
- 
- Tabs::Tab& Tabs::tab_for(u64 tab_id)
- {
--    return m_tabs.ensure(tab_id, [audio_output = m_audio_output] {
--        auto mixer = Audio::PlaybackStreamMixer::create(Core::EventLoop::current(), DEVICE_TARGET_LATENCY_MS, [audio_output](Audio::OutputState state, u32 target_latency_ms, Audio::PlaybackStream::AudioDataRequestCallback callback) {
-+    return m_tabs.ensure(tab_id, [] { return Tab {}; });
-+}
-+
-+Audio::PlaybackStreamMixer& Tabs::mixer()
-+{
-+    if (!m_mixer) {
-+        m_mixer = Audio::PlaybackStreamMixer::create(Core::EventLoop::current(), DEVICE_TARGET_LATENCY_MS, [audio_output = m_audio_output](Audio::OutputState state, u32 target_latency_ms, Audio::PlaybackStream::AudioDataRequestCallback callback) {
-             return create_device_stream(audio_output, state, target_latency_ms, move(callback));
-         });
--        return Tab { .mixer = move(mixer), .connections = {} };
--    });
-+    }
-+    return *m_mixer;
- }
- 
- Audio::CaptureDevices& Tabs::capture_devices()
-@@ -101,7 +106,7 @@ ErrorOr<IPC::TransportHandle> Tabs::connect_client(u64 tab_id)
-     auto device_enumeration = Audio::ServerConnection::DeviceEnumeration::Platform;
-     if (m_audio_output == Audio::AudioOutput::Null)
-         device_enumeration = Audio::ServerConnection::DeviceEnumeration::None;
--    auto connection = Audio::ServerConnection::construct(move(paired_transports.local), client_id, tab.mixer, device_enumeration, capture_devices(), [tab_id](ByteString const& device_id, Function<void(bool)> on_decided) {
-+    auto connection = Audio::ServerConnection::construct(move(paired_transports.local), client_id, mixer(), device_enumeration, capture_devices(), [tab_id](ByteString const& device_id, Function<void(bool)> on_decided) {
-         Tabs::the().request_capture_permission(tab_id, device_id, move(on_decided));
-     });
-     connection->set_capture_permitted(m_tabs_with_capture_permission.contains(tab_id));
-diff --git a/Services/AudioServer/Tabs.h b/Services/AudioServer/Tabs.h
-index 6b6b4537..f4aabd85 100644
---- a/Services/AudioServer/Tabs.h
-+++ b/Services/AudioServer/Tabs.h
-@@ -23,8 +23,9 @@ namespace AudioServer {
- 
- class ControlConnection;
- 
--// The tabs with connected client processes: each has a mixer, and the Browser's word on whether its pages hold the
--// microphone permission.
-+// The tabs with connected client processes, and the Browser's word on whether their pages hold the microphone
-+// permission. Every tab plays through one mixer, so the sound server sees one stream for the whole browser (as it
-+// does for other browsers) rather than one per tab, each left open while silent.
- class Tabs {
- public:
-     static Tabs& the();
-@@ -43,16 +44,17 @@ public:
- 
- private:
-     struct Tab {
--        NonnullRefPtr<Audio::PlaybackStreamMixer> mixer;
-         HashMap<int, NonnullRefPtr<Audio::ServerConnection>> connections;
-     };
- 
-     Tab& tab_for(u64 tab_id);
-+    Audio::PlaybackStreamMixer& mixer();
-     Audio::CaptureDevices& capture_devices();
-     void connection_died(u64 tab_id, int client_id);
-     void request_capture_permission(u64 tab_id, ByteString const& device_id, Function<void(bool)> on_decided);
- 
-     HashMap<u64, Tab> m_tabs;
-+    RefPtr<Audio::PlaybackStreamMixer> m_mixer;
-     HashTable<u64> m_tabs_with_capture_permission;
-     RefPtr<Audio::CaptureDevices> m_capture_devices;
-     int m_next_client_id { 1 };

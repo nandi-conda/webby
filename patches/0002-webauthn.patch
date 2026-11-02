@@ -1,11 +1,11 @@
 diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
-index 8a34d87891..65f6c165fd 100644
+index 061efeb618..2ff8136d2a 100644
 --- a/Libraries/LibWeb/CMakeLists.txt
 +++ b/Libraries/LibWeb/CMakeLists.txt
-@@ -995,6 +995,11 @@ set(SOURCES
-     WebAssembly/Table.cpp
+@@ -978,6 +978,11 @@ set(SOURCES
+     WebLocks/LockRequest.cpp
+     WebLocks/NavigatorLocks.cpp
      WebAssembly/WebAssembly.cpp
-     WebAssembly/WebAssemblyModule.cpp
 +    WebAuthn/AuthenticatorAssertionResponse.cpp
 +    WebAuthn/AuthenticatorAttestationResponse.cpp
 +    WebAuthn/AuthenticatorResponse.cpp
@@ -59,10 +59,10 @@ index 8487abcf39..a101bcd1e6 100644
      reject_not_implemented_promise(promise, "create"sv);
  }
 diff --git a/Libraries/LibWeb/Forward.h b/Libraries/LibWeb/Forward.h
-index cfedd36d3b..952abf34ff 100644
+index 9f6677c523..0df3e853f1 100644
 --- a/Libraries/LibWeb/Forward.h
 +++ b/Libraries/LibWeb/Forward.h
-@@ -1245,6 +1245,15 @@ class WebAssemblyCache;
+@@ -1192,6 +1192,15 @@ class ViewTransition;
  
  }
  
@@ -79,18 +79,18 @@ index cfedd36d3b..952abf34ff 100644
  
  class AudioBuffer;
 diff --git a/Libraries/LibWeb/Page/Page.cpp b/Libraries/LibWeb/Page/Page.cpp
-index 6975b6a008..a46365d9c0 100644
+index fbef33d4b9..41cb546774 100644
 --- a/Libraries/LibWeb/Page/Page.cpp
 +++ b/Libraries/LibWeb/Page/Page.cpp
-@@ -148,6 +148,7 @@ void Page::visit_edges(JS::Cell::Visitor& visitor)
-     visitor.visit(m_pending_spell_check_requests);
-     visitor.visit(m_spell_checking_settled_callbacks);
+@@ -153,6 +153,7 @@ void Page::visit_edges(JS::Cell::Visitor& visitor)
+     visitor.visit(m_writing_suggestions_settled_callbacks);
+     visitor.visit(m_writing_suggestion_requested_callbacks);
      visitor.visit(m_on_spelling_menu_action_for_testing);
 +    visitor.visit(m_pending_webauthn_requests);
      visitor.visit(m_emulated_position_data);
      visitor.visit(m_emulated_position_data_observers);
      visitor.visit(m_offscreen_canvases_pending_placeholder_commit);
-@@ -1414,6 +1415,20 @@ void Page::notify_spell_check_progress()
+@@ -1563,6 +1564,20 @@ void Page::notify_spell_check_progress()
          callback->function()();
  }
  
@@ -112,10 +112,10 @@ index 6975b6a008..a46365d9c0 100644
  void Page::set_emulated_position_data(Geolocation::EmulatedPositionData data)
  {
 diff --git a/Libraries/LibWeb/Page/Page.h b/Libraries/LibWeb/Page/Page.h
-index b22d81e251..69dadc1774 100644
+index f3f022c45b..f470307065 100644
 --- a/Libraries/LibWeb/Page/Page.h
 +++ b/Libraries/LibWeb/Page/Page.h
-@@ -319,6 +319,10 @@ public:
+@@ -329,6 +329,10 @@ public:
      // For tests: Calls the callback once no document of the page has spellchecking queued or in flight.
      void when_spell_checking_settled(GC::Ref<GC::Function<void()>>);
      void notify_spell_check_progress();
@@ -124,21 +124,21 @@ index b22d81e251..69dadc1774 100644
 +    void request_webauthn(String request, WebAuthnCallback);
 +    void webauthn_response(u64 request_id, String response);
  
-     using GeolocationPositionResult = Variant<Geolocation::CoordinatesData, Geolocation::GeolocationPositionError::ErrorCode>;
-     using GeolocationPositionCallback = GC::Ref<GC::Function<void(GeolocationPositionResult)>>;
-@@ -552,6 +556,8 @@ private:
+     using WritingSuggestionRequest = GC::Ref<GC::Function<void(Optional<WritingSuggestion>)>>;
+     bool writing_suggestions_available() const { return m_writing_suggestions_available; }
+@@ -588,6 +592,8 @@ private:
      HashMap<u64, SpellCheckRequest> m_pending_spell_check_requests;
      u64 m_next_spell_check_request_id { 0 };
      Vector<GC::Ref<GC::Function<void()>>> m_spell_checking_settled_callbacks;
 +    HashMap<u64, WebAuthnCallback> m_pending_webauthn_requests;
 +    u64 m_next_webauthn_request_id { 0 };
  
-     struct PendingGeolocationRequest {
-         GeolocationPositionCallback callback;
-@@ -873,6 +879,7 @@ public:
-     virtual void page_did_insert_clipboard_item(Clipboard::SystemClipboardItem const&, [[maybe_unused]] StringView presentation_style) { }
+     bool m_writing_suggestions_available { false };
+     HashMap<u64, WritingSuggestionRequest> m_pending_writing_suggestion_requests;
+@@ -934,6 +940,7 @@ public:
      virtual void page_did_request_clipboard_entries([[maybe_unused]] u64 request_id) { }
      virtual void page_did_request_spell_check([[maybe_unused]] u64 request_id, [[maybe_unused]] Utf16String const& text) { }
+     virtual void page_did_request_writing_suggestion([[maybe_unused]] u64 request_id, [[maybe_unused]] Utf16String const& text, [[maybe_unused]] u32 caret_offset) { }
 +    virtual void page_did_request_webauthn([[maybe_unused]] u64 request_id, [[maybe_unused]] String const& request) { }
      virtual void page_did_request_primary_paste() { }
      virtual void page_did_complete_paste_action() { }
@@ -1330,12 +1330,12 @@ index 0000000000..f604be5d11
 +
 +}
 diff --git a/Libraries/LibWeb/idl_files.cmake b/Libraries/LibWeb/idl_files.cmake
-index b58ee528b6..03a8168079 100644
+index 3829acc0e2..9f0a30cfdd 100644
 --- a/Libraries/LibWeb/idl_files.cmake
 +++ b/Libraries/LibWeb/idl_files.cmake
-@@ -597,6 +597,10 @@ libweb_js_bindings(WebAssembly/Memory)
- libweb_js_bindings(WebAssembly/Module)
+@@ -633,6 +633,10 @@ libweb_js_bindings(WebAssembly/Module)
  libweb_js_bindings(WebAssembly/Table)
+ libweb_js_bindings(WebAssembly/Tag)
  libweb_js_bindings(WebAssembly/WebAssembly)
 +libweb_js_bindings(WebAuthn/AuthenticatorAssertionResponse)
 +libweb_js_bindings(WebAuthn/AuthenticatorAttestationResponse)
@@ -1345,24 +1345,24 @@ index b58ee528b6..03a8168079 100644
  libweb_js_bindings(WebAudio/AudioParamMap)
  libweb_js_bindings(WebAudio/AudioWorklet)
 diff --git a/Libraries/LibWebView/ViewImplementation.h b/Libraries/LibWebView/ViewImplementation.h
-index 24e574ead9..87af09ebec 100644
+index 3ec918913d..6b221932af 100644
 --- a/Libraries/LibWebView/ViewImplementation.h
 +++ b/Libraries/LibWebView/ViewImplementation.h
-@@ -535,6 +535,9 @@ public:
-     Function<void()> on_exit_fullscreen_window;
+@@ -632,6 +632,9 @@ public:
      Function<void(Color current_color)> on_request_color_picker;
-     Function<void(WebContentPage& requesting_page, u64 request_id)> on_request_geolocation_position;
+     Function<void(Utf16String const& input_type, Utf16String const& value, Utf16String const& minimum, Utf16String const& maximum)> on_request_date_picker;
+     Function<void(WebContentPage& requesting_page, u64 request_id, Web::HTML::CrossProcessId document_id)> on_request_geolocation_position;
 +    // A Web Authentication request (JSON, see LibWeb/WebAuthn/WebAuthn.h). Answer it with
 +    // requesting_page.async_webauthn_response(request_id, reply_json).
 +    Function<void(WebContentPage& requesting_page, u64 request_id, String const& request)> on_request_webauthn;
      Function<void(WebContentPage& requesting_page, u64 request_id)> on_cancel_geolocation_position_request;
-     Function<void(WebContentPage& requesting_page, u64 request_id)> on_start_geolocation_position_watch;
+     Function<void(WebContentPage& requesting_page, u64 request_id, Web::HTML::CrossProcessId document_id)> on_start_geolocation_position_watch;
      Function<void(WebContentPage& requesting_page, u64 request_id)> on_stop_geolocation_position_watch;
 diff --git a/Libraries/LibWebView/WebContentPage.cpp b/Libraries/LibWebView/WebContentPage.cpp
-index 717f59f264..2423772d1b 100644
+index d1ad4e1c9a..2b7cf8e06e 100644
 --- a/Libraries/LibWebView/WebContentPage.cpp
 +++ b/Libraries/LibWebView/WebContentPage.cpp
-@@ -1876,6 +1876,16 @@ void WebContentPage::did_update_indexed_database(String update)
+@@ -2352,6 +2352,16 @@ void WebContentPage::did_update_indexed_database(String update)
          view().notify_indexed_database_changed(parse_json(update, "IndexedDB update"sv));
  }
  
@@ -1380,22 +1380,22 @@ index 717f59f264..2423772d1b 100644
  {
      Vector<Web::Clipboard::SystemClipboardItem> items;
 diff --git a/Libraries/LibWebView/WebContentPage.h b/Libraries/LibWebView/WebContentPage.h
-index c5dbe1d0a7..b1aac0974f 100644
+index 91df2b552a..9b171da404 100644
 --- a/Libraries/LibWebView/WebContentPage.h
 +++ b/Libraries/LibWebView/WebContentPage.h
-@@ -295,6 +295,7 @@ private:
-     virtual void did_update_indexed_database(String update) override;
+@@ -331,6 +331,7 @@ private:
      virtual void did_request_clipboard_entries(u64 request_id) override;
      virtual void did_request_spell_check(u64 request_id, Utf16String text) override;
+     virtual void did_request_writing_suggestion(u64 request_id, Utf16String text, u32 caret_offset) override;
 +    virtual void did_request_webauthn(u64 request_id, String request) override;
      virtual void did_request_set_system_focus(bool has_system_focus) override;
      virtual void did_request_set_system_visibility_state(Web::HTML::VisibilityState visibility_state) override;
      virtual void did_request_navigation_start(Web::HTML::CrossProcessId navigable_id, Web::NavigationTarget target, URL::URL url, Utf16String navigation_id, Optional<Web::HTML::NavigationStartRequest> start_request) override;
 diff --git a/Services/WebContent/ConnectionFromClient.cpp b/Services/WebContent/ConnectionFromClient.cpp
-index 1da8b1c7ff..530968a9f8 100644
+index 745a6bc54b..7c5f3a0754 100644
 --- a/Services/WebContent/ConnectionFromClient.cpp
 +++ b/Services/WebContent/ConnectionFromClient.cpp
-@@ -3443,6 +3443,12 @@ void ConnectionFromClient::did_complete_spelling_menu_action_for_testing(Web::Pa
+@@ -3574,6 +3574,12 @@ void ConnectionFromClient::did_complete_spelling_menu_action_for_testing(Web::Pa
          page->page().did_complete_spelling_menu_action_for_testing(move(menu));
  }
  
@@ -1409,10 +1409,10 @@ index 1da8b1c7ff..530968a9f8 100644
  {
      if (auto page = this->page(page_id); page.has_value())
 diff --git a/Services/WebContent/ConnectionFromClient.h b/Services/WebContent/ConnectionFromClient.h
-index a2e91ca98d..9622b0af9c 100644
+index cc89ca837f..51b6463140 100644
 --- a/Services/WebContent/ConnectionFromClient.h
 +++ b/Services/WebContent/ConnectionFromClient.h
-@@ -281,6 +281,7 @@ private:
+@@ -303,6 +303,7 @@ private:
      virtual void accept_spelling_word(Web::PageId page_id, Utf16String word) override;
      virtual void forget_accepted_spelling_words(Web::PageId page_id) override;
      virtual void did_complete_spelling_menu_action_for_testing(Web::PageId page_id, String menu) override;
@@ -1421,11 +1421,11 @@ index a2e91ca98d..9622b0af9c 100644
      virtual void toggle_media_play_state(Web::PageId page_id) override;
      virtual void toggle_media_mute_state(Web::PageId page_id) override;
 diff --git a/Services/WebContent/PageClient.cpp b/Services/WebContent/PageClient.cpp
-index 22b124c6b9..519ab3ea03 100644
+index 55f251c689..71582e17f6 100644
 --- a/Services/WebContent/PageClient.cpp
 +++ b/Services/WebContent/PageClient.cpp
-@@ -1953,6 +1953,11 @@ void PageClient::page_did_request_spell_check(u64 request_id, Utf16String const&
-     client().async_did_request_spell_check(m_id, request_id, text);
+@@ -2090,6 +2090,11 @@ void PageClient::page_did_request_writing_suggestion(u64 request_id, Utf16String
+     client().async_did_request_writing_suggestion(m_id, request_id, text, caret_offset);
  }
  
 +void PageClient::page_did_request_webauthn(u64 request_id, String const& request)
@@ -1437,34 +1437,34 @@ index 22b124c6b9..519ab3ea03 100644
  {
      client().async_did_request_primary_paste(m_id);
 diff --git a/Services/WebContent/PageClient.h b/Services/WebContent/PageClient.h
-index 4be2578385..90e072a1b0 100644
+index 8360e6c9ed..dff6ce199c 100644
 --- a/Services/WebContent/PageClient.h
 +++ b/Services/WebContent/PageClient.h
-@@ -358,6 +358,7 @@ private:
-     virtual void page_did_insert_clipboard_item(Web::Clipboard::SystemClipboardItem const&, StringView presentation_style) override;
+@@ -387,6 +387,7 @@ private:
      virtual void page_did_request_clipboard_entries(u64 request_id) override;
      virtual void page_did_request_spell_check(u64 request_id, Utf16String const& text) override;
+     virtual void page_did_request_writing_suggestion(u64 request_id, Utf16String const& text, u32 caret_offset) override;
 +    virtual void page_did_request_webauthn(u64 request_id, String const& request) override;
      virtual void page_did_request_primary_paste() override;
      virtual void page_did_complete_paste_action() override;
      virtual void page_did_update_primary_selection(Utf16String const&) override;
 diff --git a/Services/WebContent/WebContentClient.ipc b/Services/WebContent/WebContentClient.ipc
-index f84f45e3b9..7a00b8c338 100644
+index cde41596d2..9b29cda922 100644
 --- a/Services/WebContent/WebContentClient.ipc
 +++ b/Services/WebContent/WebContentClient.ipc
-@@ -242,6 +242,7 @@ endpoint WebContentClient routed by Web::PageId page_id
-     did_insert_clipboard_item(Web::PageId page_id, Web::Clipboard::SystemClipboardItem item, String presentation_style) =|
+@@ -261,6 +261,7 @@ endpoint WebContentClient routed by Web::PageId page_id
      did_request_clipboard_entries(Web::PageId page_id, u64 request_id) =|
      did_request_spell_check(Web::PageId page_id, u64 request_id, Utf16String text) =|
+     did_request_writing_suggestion(Web::PageId page_id, u64 request_id, Utf16String text, u32 caret_offset) =|
 +    did_request_webauthn(Web::PageId page_id, u64 request_id, String request) =|
      did_request_primary_paste(Web::PageId page_id) =|
      did_update_primary_selection(Web::PageId page_id, String text) =|
  
 diff --git a/Services/WebContent/WebContentServer.ipc b/Services/WebContent/WebContentServer.ipc
-index 1d5353ba89..735bb24cac 100644
+index 472b10e3dd..0c8254edfa 100644
 --- a/Services/WebContent/WebContentServer.ipc
 +++ b/Services/WebContent/WebContentServer.ipc
-@@ -289,6 +289,7 @@ endpoint WebContentServer routed by Web::PageId page_id
+@@ -310,6 +310,7 @@ endpoint WebContentServer routed by Web::PageId page_id
      accept_spelling_word(Web::PageId page_id, Utf16String word) =|
      forget_accepted_spelling_words(Web::PageId page_id) =|
      did_complete_spelling_menu_action_for_testing(Web::PageId page_id, String menu) =|

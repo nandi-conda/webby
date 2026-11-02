@@ -1,8 +1,8 @@
 diff --git a/Libraries/LibCore/EventLoopImplementationUnix.cpp b/Libraries/LibCore/EventLoopImplementationUnix.cpp
-index c22ee79d7d..c14f4ab103 100644
+index 3f148d09a7..564156ff78 100644
 --- a/Libraries/LibCore/EventLoopImplementationUnix.cpp
 +++ b/Libraries/LibCore/EventLoopImplementationUnix.cpp
-@@ -591,6 +591,30 @@ void EventLoopManagerUnix::unregister_timer(intptr_t timer_id)
+@@ -586,6 +586,30 @@ void EventLoopManagerUnix::unregister_timer(intptr_t timer_id)
      }
  }
  

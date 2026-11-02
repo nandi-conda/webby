@@ -1,5 +1,5 @@
 diff --git a/Libraries/LibWeb/DOM/DocumentLoading.cpp b/Libraries/LibWeb/DOM/DocumentLoading.cpp
-index 69a8ef55cb..366c02e6fe 100644
+index 50b88d36da..0f6e76e468 100644
 --- a/Libraries/LibWeb/DOM/DocumentLoading.cpp
 +++ b/Libraries/LibWeb/DOM/DocumentLoading.cpp
 @@ -20,6 +20,7 @@
@@ -10,7 +10,7 @@ index 69a8ef55cb..366c02e6fe 100644
  #include <LibWeb/DOM/CustomEvent.h>
  #include <LibWeb/DOM/Document.h>
  #include <LibWeb/DOM/DocumentLoading.h>
-@@ -32,6 +33,7 @@
+@@ -34,6 +35,7 @@
  #include <LibWeb/HTML/Parser/HTMLEncodingDetection.h>
  #include <LibWeb/HTML/Parser/HTMLParser.h>
  #include <LibWeb/HTML/Parser/IncrementalDocumentParser.h>
@@ -18,7 +18,7 @@ index 69a8ef55cb..366c02e6fe 100644
  #include <LibWeb/HTML/Scripting/Environments.h>
  #include <LibWeb/HTML/Window.h>
  #include <LibWeb/HighResolutionTime/TimeOrigin.h>
-@@ -341,6 +343,16 @@ static WebIDL::ExceptionOr<GC::Ref<DOM::Document>> load_media_document(HTML::Nav
+@@ -350,6 +352,16 @@ static WebIDL::ExceptionOr<GC::Ref<DOM::Document>> load_media_document(HTML::Nav
      // 2. Set document's mode to "no-quirks".
      document->set_quirks_mode(DOM::QuirksMode::No);
  
@@ -27,8 +27,8 @@ index 69a8ef55cb..366c02e6fe 100644
 +    //        the very resource we navigated to. Other engines render media documents straight from the response, so
 +    //        drop the CSP list here (the CSP sandbox flags were already applied when the document was created).
 +    {
-+        auto policy_container = document->policy_container()->clone(document->heap());
-+        policy_container->csp_list = ContentSecurityPolicy::PolicyList::create(document->heap(), GC::RootVector<GC::Ref<ContentSecurityPolicy::Policy>> {});
++        auto policy_container = document->policy_container()->clone();
++        policy_container->csp_list = {};
 +        document->set_policy_container(policy_container);
 +    }
 +
