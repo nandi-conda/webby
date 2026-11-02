@@ -1,0 +1,37 @@
+# Authentication
+
+## Authenticate Mo
+
+Run `qa login`, or `qa login --no-browser` when the environment cannot open a
+browser. Login
+saves the API key and server URL in `~/.momentic/auth.json`.
+
+In CI, set `MOMENTIC_API_KEY`. It overrides the saved login. Preserve an
+existing value unless authentication fails or the user asks to replace it.
+
+## Authenticate the application
+
+A Momentic environment groups a `BASE_URL` with reusable non-secret variables
+under a name such as `staging`. `--environment NAME` selects one created under
+**Environments** in the Momentic dashboard, not one from the shell or
+`momentic.config.yaml`. Mo copies its variables into the session at start.
+
+Pass local values and secrets at session start with repeatable `--env-file` or
+`--env-var NAME` options; they override matching environment variables.
+`--env-var` forwards a variable already present in the `qa start` process
+environment; it does not accept `NAME=value`. Put variable names and a
+non-secret account label in the brief. Root Mo supplies authentication to its
+internal sub-agents.
+
+A browser auth-state file uses Playwright `storageState` JSON: cookies and
+`localStorage` by origin. Momentic `AUTH_SAVE` may add `sessionStorage` and a
+top-level `idb` dump. Use `AUTH_SAVE` if the app depends on either.
+
+If the user supplies an auth-state file, upload it and send root Mo the returned
+sandbox path. You cannot message Mo's internal sub-agents directly. Uploading a
+credential file does not add its values to the session environment.
+
+The CLI supplies variables only at start. For an existing session, add an
+authorized secret through Mo's web composer, or restart with that value.
+
+Never expose secrets in a brief, Mo message, URL, command, or commit.
