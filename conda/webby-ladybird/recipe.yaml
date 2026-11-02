@@ -60,8 +60,6 @@ tests:
         - lib/webby-ladybird/lib/libwebby.so
         - lib/webby-ladybird/libexec/WebContent
         - lib/webby-ladybird/libexec/RequestServer
-        # WebAssembly is interpreted (slowly) without it.
-        - lib/webby-ladybird/libexec/cranelift-compiler
 
 about:
   homepage: https://github.com/nandi-conda/webby
