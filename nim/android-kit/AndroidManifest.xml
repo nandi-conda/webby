@@ -42,6 +42,12 @@
                 <data android:scheme="http"/>
                 <data android:scheme="https"/>
             </intent-filter>
+            <!-- "Share" from other apps: the link (or text) they send opens in a new tab (WebbyHost.sharedUrl). -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/plain"/>
+            </intent-filter>
         </activity>
         <activity
             android:name="dev.webby.kit.QrScan"

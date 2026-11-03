@@ -47,9 +47,50 @@ public class WebbyHost extends Host {
         if (!url.isEmpty()) hostEvent("openUrl", url);
     }
 
+    /** The page an intent asks for: a link opened with webby (VIEW), or text another app shared to it (SEND). */
     private static String viewedUrl(Intent intent) {
-        if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction()) || intent.getData() == null) return "";
-        return intent.getData().toString();
+        if (intent == null) return "";
+        if (Intent.ACTION_VIEW.equals(intent.getAction())) return intent.getData() == null ? "" : intent.getData().toString();
+        if (Intent.ACTION_SEND.equals(intent.getAction())) return sharedUrl(intent);
+        return "";
+    }
+
+    private static final java.util.regex.Pattern LINK =
+        java.util.regex.Pattern.compile("(?i)\\bhttps?://[^\\s<>\"]+");
+
+    /** Shared text usually carries the link inside a sentence ("Look at this https://..."), so the first http(s)
+     *  link in it is the page; text with no link is opened like typed URL-bar text (an address or a search). */
+    static String sharedUrl(Intent intent) {
+        CharSequence extra = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+        String text = extra == null ? "" : extra.toString().trim();
+        if (text.isEmpty()) {
+            String subject = intent.getStringExtra(Intent.EXTRA_SUBJECT);
+            text = subject == null ? "" : subject.trim();
+        }
+        java.util.regex.Matcher m = LINK.matcher(text);
+        if (m.find()) return trimLink(m.group());
+        text = text.replaceAll("\\s+", " ");
+        return text.length() > 500 ? text.substring(0, 500) : text;
+    }
+
+    /** Drops sentence punctuation after a link, and a closing bracket only when the link didn't open it
+     *  ("(see https://x.org/a)" vs https://en.wikipedia.org/wiki/Nim_(programming_language)). */
+    private static String trimLink(String url) {
+        while (!url.isEmpty()) {
+            char c = url.charAt(url.length() - 1);
+            char open = c == ')' ? '(' : c == ']' ? '[' : c == '}' ? '{' : 0;
+            boolean drop = ".,;:!?'\"".indexOf(c) >= 0
+                || (open != 0 && count(url, open) < count(url, c));
+            if (!drop) break;
+            url = url.substring(0, url.length() - 1);
+        }
+        return url;
+    }
+
+    private static int count(String s, char c) {
+        int n = 0;
+        for (int i = 0; i < s.length(); i++) if (s.charAt(i) == c) n++;
+        return n;
     }
 
     @Override
