@@ -50,6 +50,7 @@ var
   pendingJump: tuple[tab: Tab, words: string]  ## a source link to scroll to once its tab has loaded the page again
   switchingPanel = false
   renderQueued = false
+  tuckedJob: Job               ## Android: the job whose panel a source link put away so the page shows (see tuckPanel)
 
 proc nowMs(): int64 = (epochTime() * 1000).int64
 
@@ -409,7 +410,7 @@ proc jumpElsewhere(job: Job, words: string) =
     if t != job.tab and not t.closed and summaryKey(t.url) == want:
       let asleep = t.view == nil or t.loading   # a restored tab only starts loading when it's brought forward
       activateTab(t)
-      if panelJob == nil and lookupSummary(summaryKey(t.url))[0]: summarizePage()   # keep the summary beside it
+      if panelJob == nil and tuckedJob == nil and lookupSummary(summaryKey(t.url))[0]: summarizePage()   # keep the summary beside it
       if asleep: pendingJump = (t, words)
       else: t.runJump(words, retries = 10, click = true)
       return
@@ -749,6 +750,7 @@ proc showPanel(job: Job) =
   panelJob = nil
   if sidePanelShowing(): closeSidePanel()
   switchingPanel = false
+  tuckedJob = nil
   panel.redoButton = kit.iconButton("refresh", "Summarize again", proc () =
     let job = panelJob
     let key = apiKey()
@@ -809,6 +811,14 @@ proc hidePanel() =
   closeSidePanel()
   switchingPanel = false
 
+proc tuckPanel() =
+  ## Android: the side panel takes the whole screen on a phone, so a source link puts it away (the job goes on)
+  ## to show the page it scrolls; the Summary button or "Summarize this page" brings it back as it was.
+  let job = panelJob
+  if job == nil: return
+  hidePanel()
+  tuckedJob = job
+
 # ---------------------------------------------------------------------------------------------------------------
 # Entry points
 
@@ -818,6 +828,9 @@ proc summarizePage*() =
   let t = currentTab()
   if t == nil or t.url.len == 0: return
   let job = jobOf(t)
+  if tuckedJob == job and job.open and panelJob == nil and summaryKey(job.url) == summaryKey(t.url):
+    showPanel(job)   # put away by a source link: back as it was, still streaming if it was
+    return
   # The saved page summary wins over a selection here; redo reads the page again and summarizes the selection.
   let k = summaryKey(t.url)
   let (found, saved) = lookupSummary(k)
@@ -910,7 +923,10 @@ proc install*() =
     loadCss(panelCss)
     linkHandler = proc (url: string) =
       if not url.startsWith(anchorPrefix): discard openTab(url)
-      elif panelJob != nil: panelJob.jumpTo(url[anchorPrefix.len .. ^1])
+      elif panelJob != nil:
+        let job = panelJob
+        when defined(android): tuckPanel()
+        job.jumpTo(url[anchorPrefix.len .. ^1])
     discard addToolbarButton("summarize_outlined", "Summarize this page", toggleSummary, "summarize", "Summary")
     addMenuItem("Summarize this page", summarizePage, group = mgPage)
     if not incognito or setSecret == nil:
@@ -920,7 +936,7 @@ proc install*() =
     let wanted = job != nil and job.open
     if panelJob != nil and panelJob.tab != t:
       if wanted: showPanel(job) else: hidePanel()
-    elif panelJob == nil and wanted and not sidePanelShowing():
+    elif panelJob == nil and wanted and not sidePanelShowing() and tuckedJob == nil:
       showPanel(job)
   navigationHooks.add proc (t: Tab) =
     # The page the source link needs has loaded again (or is about to: the hook can come before the new document
@@ -936,6 +952,7 @@ proc install*() =
     if pendingJump.tab == t: pendingJump = (nil, "")
     let job = jobs.getOrDefault(t.messagePrefix)
     if job == nil: return
+    if tuckedJob == job: tuckedJob = nil
     if panelJob == job: closeSidePanel()
     job.close()
     jobs.del t.messagePrefix
