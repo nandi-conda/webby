@@ -813,7 +813,17 @@ proc stepTouch() =
       now - touchDownAt >= initDuration(milliseconds = longPressMs):
     touchLongPressed = true
     let t = currentTab()
-    if t != nil and t.view != nil: touchClick(t, touchStart.x, touchStart.y, 2)
+    if t != nil and t.view != nil:
+      # Features watch for right-clicks through pagePointerHooks (tabs/contextmenu.nim only shows the page's menu
+      # for a report that follows one), so the long press goes past them as a right-button press first.
+      let e = kit.PointerEvent(kind: kit.pkDown, x: touchStart.x, y: touchStart.y, pointer: touchId, button: 3,
+                               buttons: 2, clicks: 1, touch: true)
+      var handled = false
+      for h in pagePointerHooks:
+        if h(t, e):
+          handled = true
+          break
+      if not handled: touchClick(t, touchStart.x, touchStart.y, 2)
   if flinging:
     let dt = (now - flingLast).inMicroseconds.float / 1e6
     if dt >= 0.012:
