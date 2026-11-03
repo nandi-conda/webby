@@ -6,7 +6,7 @@
 
 import src/browser
 import src/features/[about, adblock, atpassport, bookmarks, downloads, find, history, home, omnibox, pagefit, passwords, tabs, site, pwa, summarize, sync]
-when defined(android): import src/features/android
+when defined(android): import src/features/[android, apkupdate]
 else: import src/features/[bugreport, gldrivers, pdf, plasma, update]
 
 bookmarks.install()
@@ -24,7 +24,9 @@ pwa.install()
 summarize.install()
 pagefit.install()
 sync.install()
-when defined(android): android.install()
+when defined(android):
+  android.install()
+  apkupdate.install()
 else:
   gldrivers.install()   # before the engine starts its Compositor
   bugreport.install()

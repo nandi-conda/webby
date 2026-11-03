@@ -13,6 +13,8 @@
     <!-- Sync's QR code scanner (QrScan.java), asked for when it opens. -->
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-feature android:name="android.hardware.camera.any" android:required="false"/>
+    <!-- In-app updates (Updater.java): installs a newer APK from the GitHub releases over this one. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <application
         android:label="Webby"
         android:icon="@mipmap/ic_launcher"

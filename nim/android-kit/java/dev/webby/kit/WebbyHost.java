@@ -63,6 +63,12 @@ public class WebbyHost extends Host {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        Updater.resumed(this);
+    }
+
+    @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
         Site.permissionResult();
@@ -169,6 +175,7 @@ public class WebbyHost extends Host {
                     // the text comes back as hostEvent "qrScanned" ("" when cancelled)
                     startActivityForResult(new Intent(this, QrScan.class), SCAN_QR);
                     return "ok";
+                case "updateInstall": return Updater.install(this, new JSONObject(arg));
                 case "toast":
                     Toast.makeText(this, arg, Toast.LENGTH_SHORT).show();
                     return "ok";
