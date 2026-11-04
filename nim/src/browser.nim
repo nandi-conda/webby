@@ -697,7 +697,7 @@ proc pumpTab(t: Tab, isActive: bool): bool =
     t.stateSerial = ss
     let before = (t.url, t.title, t.loading)
     t.url = str(webby_view_url(t.view))
-    t.title = str(webby_view_title(t.view))
+    t.title = utf8Text(webby_view_title(t.view))
     t.hovered = str(webby_view_hovered_link(t.view))
     t.loading = webby_view_is_loading(t.view) != 0
     t.canBack = webby_view_can_go_back(t.view) != 0

@@ -159,7 +159,9 @@ View::View(Core::AnonymousBuffer theme, Web::DevicePixelSize size)
     };
 
     on_title_change = [this](Utf16String const& title) {
-        m_title_string = ByteString::formatted("{}", title);
+        // Not ByteString::formatted("{}", title): AK's Utf16String formatter copies Latin-1 storage bytes as they
+        // are, so a title like "Random · Space" reached the UI with a bare 0xB7 byte (invalid UTF-8).
+        m_title_string = title.to_byte_string();
         state_changed();
     };
 

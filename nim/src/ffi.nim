@@ -2,6 +2,7 @@
 ## so the binary doesn't link against a particular runtime. Every call must come from the GTK thread.
 
 import std/[dynlib, os]
+from std/unicode import validateUtf8
 
 type View* = pointer
 
@@ -198,3 +199,17 @@ proc hasNativeFind*(): bool =
 proc loadWebby*(prefix: string) = loadWebbyLib(prefix / "lib" / "libwebby.so")
 
 proc str*(p: cstring): string = (if p == nil: "" else: $p)
+
+proc utf8Text*(p: cstring): string =
+  ## Text from the engine that should be UTF-8. Older runtimes handed page titles over as raw
+  ## Latin-1 when every character fit in one byte ("Random · Space" arrived with a bare 0xB7, drawn as tofu),
+  ## so anything that isn't valid UTF-8 is read as Latin-1.
+  result = str(p)
+  if validateUtf8(result) >= 0:
+    var fixed = newStringOfCap(result.len + 8)
+    for c in result:
+      if ord(c) < 0x80: fixed.add c
+      else:
+        fixed.add char(0xC0 or (ord(c) shr 6))
+        fixed.add char(0x80 or (ord(c) and 0x3F))
+    result = fixed
