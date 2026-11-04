@@ -171,8 +171,8 @@ proc layoutPinned() =
   kit.`visible=`(pinnedGrid, n > 0)
 
 # ---------------------------------------------------------------------------------------------------------------
-# Tabs tinted by age: a tab opened a moment ago is warm (orange), and it cools through amber, green, teal and indigo
-# to no tint after a week. Each tab keeps when it was opened in props["created"] (and open_tabs.json), so restored
+# Tabs tinted by age: one hue (orange) that is strongest on a tab opened a moment ago and fades step by step to no
+# tint after a week. Each tab keeps when it was opened in props["created"] (and open_tabs.json), so restored
 # tabs keep their age. Pinned tiles aren't tinted. Turned off with the strip menu's "Color tabs by age" (tabs.json).
 
 const ageSteps = [15 * 60, 3600, 6 * 3600, 24 * 3600, 7 * 24 * 3600]   ## seconds: the end of each tint
@@ -455,21 +455,21 @@ button.webby-pinned-tab.webby-active-tab:hover { background-color: alpha(@theme_
 .webby-badge-6 { background-color: #c2185b; } .webby-badge-7 { background-color: #5f6368; }
 .webby-vertical-tabs { border-right: 1px solid alpha(currentColor, 0.15); }
 .webby-pinned-grid { margin: 2px 4px; }
-button.webby-tab.webby-age-0 { box-shadow: inset 0 2px alpha(#ff6d00, 0.85); }
-button.webby-tab.webby-age-1 { box-shadow: inset 0 2px alpha(#ffab00, 0.75); }
-button.webby-tab.webby-age-2 { box-shadow: inset 0 2px alpha(#7cb342, 0.65); }
-button.webby-tab.webby-age-3 { box-shadow: inset 0 2px alpha(#26a69a, 0.55); }
-button.webby-tab.webby-age-4 { box-shadow: inset 0 2px alpha(#5c6bc0, 0.45); }
-.webby-vertical-tabs button.webby-tab.webby-age-0 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.85); }
-.webby-vertical-tabs button.webby-tab.webby-age-1 { box-shadow: inset 3px 0 alpha(#ffab00, 0.75); }
-.webby-vertical-tabs button.webby-tab.webby-age-2 { box-shadow: inset 3px 0 alpha(#7cb342, 0.65); }
-.webby-vertical-tabs button.webby-tab.webby-age-3 { box-shadow: inset 3px 0 alpha(#26a69a, 0.55); }
-.webby-vertical-tabs button.webby-tab.webby-age-4 { box-shadow: inset 3px 0 alpha(#5c6bc0, 0.45); }
-button.webby-tab.webby-age-0:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.16); }
-button.webby-tab.webby-age-1:not(.webby-active-tab) { background-color: alpha(#ffab00, 0.12); }
-button.webby-tab.webby-age-2:not(.webby-active-tab) { background-color: alpha(#7cb342, 0.09); }
-button.webby-tab.webby-age-3:not(.webby-active-tab) { background-color: alpha(#26a69a, 0.07); }
-button.webby-tab.webby-age-4:not(.webby-active-tab) { background-color: alpha(#5c6bc0, 0.05); }
+button.webby-tab.webby-age-0 { box-shadow: inset 0 2px alpha(#ff6d00, 0.9); }
+button.webby-tab.webby-age-1 { box-shadow: inset 0 2px alpha(#ff6d00, 0.7); }
+button.webby-tab.webby-age-2 { box-shadow: inset 0 2px alpha(#ff6d00, 0.5); }
+button.webby-tab.webby-age-3 { box-shadow: inset 0 2px alpha(#ff6d00, 0.35); }
+button.webby-tab.webby-age-4 { box-shadow: inset 0 2px alpha(#ff6d00, 0.22); }
+.webby-vertical-tabs button.webby-tab.webby-age-0 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.9); }
+.webby-vertical-tabs button.webby-tab.webby-age-1 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.7); }
+.webby-vertical-tabs button.webby-tab.webby-age-2 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.5); }
+.webby-vertical-tabs button.webby-tab.webby-age-3 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.35); }
+.webby-vertical-tabs button.webby-tab.webby-age-4 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.22); }
+button.webby-tab.webby-age-0:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.18); }
+button.webby-tab.webby-age-1:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.13); }
+button.webby-tab.webby-age-2:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.09); }
+button.webby-tab.webby-age-3:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.06); }
+button.webby-tab.webby-age-4:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.035); }
 button.webby-tab.webby-age-5:not(.webby-active-tab) label { opacity: 0.72; }
 .webby-strip-space, .webby-strip-space:hover { background: none; box-shadow: none; border: none; }
 """)
