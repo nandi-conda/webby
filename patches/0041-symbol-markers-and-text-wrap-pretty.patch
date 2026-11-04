@@ -1,5 +1,5 @@
 diff --git a/Libraries/LibWeb/Rust/src/layout/inline_formatting_context.rs b/Libraries/LibWeb/Rust/src/layout/inline_formatting_context.rs
-index 73d51023..94fe3f2e 100644
+index 73d51023..c12c237f 100644
 --- a/Libraries/LibWeb/Rust/src/layout/inline_formatting_context.rs
 +++ b/Libraries/LibWeb/Rust/src/layout/inline_formatting_context.rs
 @@ -1773,7 +1773,8 @@ impl<'context> InlineFormattingContext<'context> {
@@ -82,7 +82,7 @@ index 73d51023..94fe3f2e 100644
          let mut group_items = iterator.duplicate(group, look_ahead_end);
          let item_count = group_items.items().len();
          self.break_items_into_lines(&mut group_items, &mut line_builder, item_count, None, None, None);
-@@ -1970,17 +1985,142 @@ impl<'context> InlineFormattingContext<'context> {
+@@ -1970,17 +1985,141 @@ impl<'context> InlineFormattingContext<'context> {
          while end > first_line_index && lines[end - 1].is_empty() {
              end -= 1;
          }
@@ -108,9 +108,10 @@ index 73d51023..94fe3f2e 100644
 +
 +    // https://drafts.csswg.org/css-text-4/#valdef-text-wrap-style-pretty
 +    // The user agent may among other things attempt to avoid excessively short last lines...
-+    // INTEROP: Like Blink, only the last four lines of a paragraph are adjusted, and lines are never added.
-+    /// For each group of lines between forced breaks, the inline size taken off the available inline size of its last
-+    /// lines, and the first of those lines, so that a short last line takes words from the lines before it.
++    // INTEROP: Like Blink, the fewest words move: only the line before a short last line is broken earlier, so the
++    //          words at its end move onto the last line, and lines are never added.
++    /// For each group of lines between forced breaks, the inline size taken off the available inline size of its line
++    /// before the last, and the index of that line, so that a short last line takes words from it.
 +    fn pretty_reductions(
 +        &self,
 +        iterator: &inline_level_iterator::InlineLevelIterator,
@@ -156,8 +157,8 @@ index 73d51023..94fe3f2e 100644
 +        (reductions, first_lines)
 +    }
 +
-+    /// The smallest inline size taken off the last lines of the items in `group` that moves a word onto a short last
-+    /// line without adding a line, and the first of those lines.
++    /// The smallest inline size taken off the line before the last of the items in `group` that moves a word onto a
++    /// short last line without adding a line, and the index of that line.
 +    fn pretty_reduction_of_group<'builder>(
 +        &'builder self,
 +        iterator: &inline_level_iterator::InlineLevelIterator,
@@ -166,8 +167,6 @@ index 73d51023..94fe3f2e 100644
 +        line_builder_at_group_start: &line_builder::LineBuilder<'builder, 'context>,
 +        previous_groups: (&[Option<CssPixels>], &[usize]),
 +    ) -> (Option<CssPixels>, usize) {
-+        // INTEROP: Blink adjusts the last 4 lines.
-+        const LINES_TO_ADJUST: usize = 4;
 +        // NB: Each try breaks all of the lines of the group again, so long paragraphs are left alone.
 +        const MAXIMUM_LINE_COUNT: usize = 32;
 +        let available_inline_size = self.input.available_space.inline_size.to_px_or_zero();
@@ -199,12 +198,12 @@ index 73d51023..94fe3f2e 100644
 +        if unadjusted.last_line_inline_size * 3 >= available_inline_size {
 +            return (None, 0);
 +        }
-+        let first_line = unadjusted.count.saturating_sub(LINES_TO_ADJUST);
++        let first_line = unadjusted.count - 2;
 +        let changes = |lines: &LinesOfGroup| {
 +            lines.count != unadjusted.count || lines.last_line_inline_size != unadjusted.last_line_inline_size
 +        };
 +        // NB: Bisect down to a pixel for the smallest reduction that changes the last line, up to a quarter of the
-+        //     available inline size, more than which leaves the lines before it too ragged.
++        //     available inline size, more than which leaves the line before it too short.
 +        let mut unchanged = CssPixels::default();
 +        let mut changed = available_inline_size / 4;
 +        if !changes(&find_line_breaks(changed, first_line)) {
@@ -226,7 +225,7 @@ index 73d51023..94fe3f2e 100644
      }
  
      /// The state of this context and its parent that breaking items into lines changes beyond the lines.
-@@ -2358,11 +2498,15 @@ impl<'context> InlineFormattingContext<'context> {
+@@ -2358,11 +2497,15 @@ impl<'context> InlineFormattingContext<'context> {
              && iterator.items()[start_item_index - 1].type_ == inline_level_iterator::ItemType::ForcedBreak;
          iterator.skip_items(start_item_index);
          // NB: Trials to balance the lines move the start of the current line, so balance before the lines start.
@@ -245,7 +244,7 @@ index 73d51023..94fe3f2e 100644
          };
          self.current_line_start.set(fragmentation::LinePosition {
              item_index: start_item_index,
-@@ -2377,6 +2521,7 @@ impl<'context> InlineFormattingContext<'context> {
+@@ -2377,6 +2520,7 @@ impl<'context> InlineFormattingContext<'context> {
              line_builder::LineBuilder::new_after_reused_lines(self)
          };
          line_builder.set_balancing_reductions(balancing_reductions);
@@ -253,7 +252,7 @@ index 73d51023..94fe3f2e 100644
  
          let mut floating_boxes_after_clamp_point = Vec::new();
          let floating_box_count_before_lines = self.parent.floating_box_count();
-@@ -3568,3 +3713,10 @@ pub(crate) fn line_rect(line: &line_box::LineBoxData, content_inline_size: CssPi
+@@ -3568,3 +3712,10 @@ pub(crate) fn line_rect(line: &line_box::LineBoxData, content_inline_size: CssPi
      rect.height = line.physical_vertical_extent();
      rect
  }
