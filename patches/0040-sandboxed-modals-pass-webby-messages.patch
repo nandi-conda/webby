@@ -1,0 +1,21 @@
+diff --git a/Libraries/LibWeb/HTML/Window.cpp b/Libraries/LibWeb/HTML/Window.cpp
+--- a/Libraries/LibWeb/HTML/Window.cpp
++++ b/Libraries/LibWeb/HTML/Window.cpp
+@@ -1617,8 +1617,16 @@
+ Optional<Utf16String> Window::prompt(Optional<Utf16String> const& message, Optional<Utf16String> const& default_)
+ {
+     // 1. If we cannot show simple dialogs for this, then return null.
+-    if (cannot_show_simple_dialogs())
++    if (cannot_show_simple_dialogs()) {
++        // webby: The browser's own page scripts talk to the UI through prompt(). A page served with a CSP sandbox
++        //        without allow-modals (techcrunch.com) cut them all off: the summarizer, passwords, the context menu.
++        //        Hand such a prompt on marked, so the UI only takes its own messages from it and cancels the rest
++        //        without showing anything; the page still gets null, as the spec says.
++        if (has_flag(associated_document().active_sandboxing_flag_set(), SandboxingFlagSet::SandboxedModals)
++            && main_thread_event_loop().termination_nesting_level() == 0)
++            (void)page().did_request_prompt(Utf16String::formatted("\x01webby-sandboxed\x01{}", *message), *default_);
+         return {};
++    }
+ 
+     // FIXME: Make the remaining steps fully spec compliant.
+     auto result = page().did_request_prompt(*message, *default_);

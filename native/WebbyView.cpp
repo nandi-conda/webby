@@ -254,11 +254,21 @@ View::View(Core::AnonymousBuffer theme, Web::DevicePixelSize size)
     // handling.
     on_request_prompt = [this, headless_prompt = move(on_request_prompt)](Utf16String const& message, Utf16String const& default_) {
         auto text = message.to_utf8();
+        // Patch 0040: a page whose CSP sandbox forbids dialogs still hands its prompts on, marked; only our own
+        // messages are taken from those, and the rest are cancelled without showing anything.
+        constexpr auto sandboxed_mark = "\x01webby-sandboxed\x01"sv;
+        bool sandboxed = text.bytes_as_string_view().starts_with(sandboxed_mark);
+        if (sandboxed)
+            text = MUST(String::from_utf8(text.bytes_as_string_view().substring_view(sandboxed_mark.length())));
         if (!m_message_prefix.is_empty() && text.bytes_as_string_view().starts_with(m_message_prefix)) {
             // Don't let a page grow the queue without bound while the UI isn't reading it.
             if (m_messages.size() >= 64)
                 m_messages.take_first();
             m_messages.append(text.bytes_as_string_view().substring_view(m_message_prefix.length()));
+            prompt_closed({});
+            return;
+        }
+        if (sandboxed) {
             prompt_closed({});
             return;
         }
