@@ -1,0 +1,69 @@
+diff --git a/Libraries/LibCompositing/Rust/src/display_list/damage.rs b/Libraries/LibCompositing/Rust/src/display_list/damage.rs
+index 0a7a4428..1b36ba1b 100644
+--- a/Libraries/LibCompositing/Rust/src/display_list/damage.rs
++++ b/Libraries/LibCompositing/Rust/src/display_list/damage.rs
+@@ -119,6 +119,10 @@ fn static_mask_contents(tape: Tape<'_>, effect_count: usize) -> Vec<Option<Stati
+                 | DisplayListCommandType::DrawEllipse
+                 | DisplayListCommandType::DrawLine
+                 | DisplayListCommandType::DrawRect => true,
++                // A decoded image frame and a nested list (an SVG image, like a `mask-image: url(...svg)` icon) are
++                // immutable under their ids, which the comparison checks, as it does outside masks.
++                DisplayListCommandType::DrawScaledDecodedImageFrame
++                | DisplayListCommandType::PaintNestedDisplayList => true,
+                 _ => false,
+             }) {
+                 *slot = Some(StaticMaskContent {
+@@ -840,6 +844,9 @@ fn intersect_like_gfx_int_rect(rect: IntRect, other: IntRect) -> IntRect {
+     IntRect::new(left, top, right - left, bottom - top)
+ }
+ 
++// How far outside the viewport damage is still kept, in device pixels.
++const OFFSCREEN_DAMAGE_MARGIN: i32 = 128;
++
+ struct DamageAccumulator {
+     damage_rect: Option<IntRect>,
+     changed_unbounded_command: bool,
+@@ -942,7 +949,21 @@ impl DamageAccumulator {
+         if transformed_rect.is_empty() {
+             return;
+         }
+-        let command_damage = enclosing_int_rect(transformed_rect);
++        // Only damage on or near the viewport matters. Uniting unclipped rects let a change on screen and one far below
++        // it add up to a rect covering the whole viewport, so every frame of an animation below the fold re-rasterized
++        // the whole page. The margin keeps changes a backdrop filter at the viewport's edge can still read.
++        let command_damage = intersect_like_gfx_int_rect(
++            enclosing_int_rect(transformed_rect),
++            self.viewport_rect.inflated_edges(
++                OFFSCREEN_DAMAGE_MARGIN,
++                OFFSCREEN_DAMAGE_MARGIN,
++                OFFSCREEN_DAMAGE_MARGIN,
++                OFFSCREEN_DAMAGE_MARGIN,
++            ),
++        );
++        if command_damage.is_empty() {
++            return;
++        }
+         self.damage_rect = Some(match self.damage_rect {
+             Some(damage_rect) => damage_rect.united(command_damage),
+             None => command_damage,
+@@ -2714,6 +2735,20 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn changes_far_outside_the_viewport_do_not_widen_damage_inside_it() {
++        let tree = identity_tree();
++        // One change near the top of the 100x100 viewport and one far below it.
++        let mut old_display_list = fill_command_bytes(IntRect::new(10, 10, 5, 5), RED);
++        old_display_list.extend_from_slice(&fill_command_bytes(IntRect::new(60, 5000, 20, 20), RED));
++        let mut new_display_list = fill_command_bytes(IntRect::new(10, 10, 5, 5), BLUE);
++        new_display_list.extend_from_slice(&fill_command_bytes(IntRect::new(60, 5000, 20, 20), BLUE));
++        assert_eq!(
++            damage(&old_display_list, &tree, &new_display_list, &tree),
++            Some(IntRect::new(9, 9, 7, 7))
++        );
++    }
++
+     #[test]
+     fn adding_an_inline_clip_to_a_draw_damages_the_draw() {
+         let tree = identity_tree();
