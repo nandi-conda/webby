@@ -170,6 +170,38 @@ proc layoutPinned() =
   while pinnedGrid.children.len > rows: kit.remove(pinnedGrid, pinnedGrid.children[^1])   # empty by now
   kit.`visible=`(pinnedGrid, n > 0)
 
+# ---------------------------------------------------------------------------------------------------------------
+# Tabs tinted by age: a tab opened a moment ago is warm (orange), and it cools through amber, green, teal and indigo
+# to no tint after a week. Each tab keeps when it was opened in props["created"] (and open_tabs.json), so restored
+# tabs keep their age. Pinned tiles aren't tinted. Turned off with the strip menu's "Color tabs by age" (tabs.json).
+
+const ageSteps = [15 * 60, 3600, 6 * 3600, 24 * 3600, 7 * 24 * 3600]   ## seconds: the end of each tint
+var ageColors = true
+
+proc createdAt*(t: Tab): int =
+  try: parseInt(t.props.getOrDefault("created", "0")) except ValueError: 0
+
+proc ageStep(t: Tab, now: int): int =
+  ## 0 (newest) .. ageSteps.len (a week or more, no tint); -1 for no tint at all.
+  let c = t.createdAt
+  if not ageColors or t.pinned or c <= 0: return -1
+  result = ageSteps.len
+  for i, s in ageSteps:
+    if now - c < s: return i
+
+proc styleAge(t: Tab, now = int(epochTime())) =
+  let step = ageStep(t, now)
+  for i in 0 .. ageSteps.len: kit.setClass(t.button, "webby-age-" & $i, i == step)
+
+proc styleAges() =
+  let now = int(epochTime())
+  for t in tabs: styleAge(t, now)
+
+proc setAgeColors*(on: bool) =
+  ageColors = on
+  writeAgeColors(on)
+  styleAges()
+
 proc styleTab(t: Tab) =
   kit.`visible=`(t.closeButton, not t.pinned)
   kit.setClass(t.button, "webby-pinned-tab", t.pinned)
@@ -177,6 +209,7 @@ proc styleTab(t: Tab) =
   # whole row is something to hover and click.
   discard kit.sized(t.button, 0)
   kit.`iconSize=`(t.icon, if t.pinned: 16 else: 14)
+  styleAge(t)
   updateTabButton(t)   # and updateBadge, through tabButtonHooks
   layoutPinned()
 
@@ -196,7 +229,7 @@ proc saveOpenTabsNow() =
   # Closing the last tab quits; what was saved before it stays for the next start.
   if not keepsTabs() or restoring or tabs.len == 0: return
   var list: seq[DeviceTab]
-  for t in tabs: list.add DeviceTab(title: t.title, url: t.url)
+  for t in tabs: list.add DeviceTab(title: t.title, url: t.url, created: t.createdAt)
   writeOpenTabs(list, activeIndex, pinnedCount())
 
 proc saveOpenTabsSoon() =
@@ -340,6 +373,7 @@ proc fillTabMenu*(t: Tab, items: var seq[kit.MenuItem]) =
   addRecentlyClosed(items)
   items.add kit.menuSeparator()
   items.add kit.checkItem("Vertical tabs", vertical, proc () = setVertical(not vertical))
+  items.add kit.checkItem("Color tabs by age", ageColors, proc () = setAgeColors(not ageColors))
 
 # ---------------------------------------------------------------------------------------------------------------
 
@@ -356,10 +390,12 @@ proc startTabs(urls: seq[string]): bool =
   for i, d in saved.tabs:
     if urls.len == 0 and i == saved.active:
       front.pinned = i < saved.pinned
+      if d.created > 0: front.props["created"] = $d.created
       styleTab(front)
       continue
     let t = openUnloadedTab(d.url, d.title, index = i)
     t.pinned = i < saved.pinned
+    if d.created > 0: t.props["created"] = $d.created
     styleTab(t)
   for u in urls[min(1, urls.len) .. ^1]: discard openTab(u, focus = false)
   activateTab(front)
@@ -372,6 +408,8 @@ proc install*() =
   initialTabsHooks.add startTabs
   tabCreatedHooks.add proc (t: Tab) =
     makeDraggable(t)
+    if "created" notin t.props: t.props["created"] = $int(epochTime())
+    styleAge(t)
     if t != currentTab(): t.props["hiddenSince"] = $epochTime()
   tabClosedHooks.add proc (t: Tab) =
     if lastActive == t: lastActive = nil
@@ -417,6 +455,22 @@ button.webby-pinned-tab.webby-active-tab:hover { background-color: alpha(@theme_
 .webby-badge-6 { background-color: #c2185b; } .webby-badge-7 { background-color: #5f6368; }
 .webby-vertical-tabs { border-right: 1px solid alpha(currentColor, 0.15); }
 .webby-pinned-grid { margin: 2px 4px; }
+button.webby-tab.webby-age-0 { box-shadow: inset 0 2px alpha(#ff6d00, 0.85); }
+button.webby-tab.webby-age-1 { box-shadow: inset 0 2px alpha(#ffab00, 0.75); }
+button.webby-tab.webby-age-2 { box-shadow: inset 0 2px alpha(#7cb342, 0.65); }
+button.webby-tab.webby-age-3 { box-shadow: inset 0 2px alpha(#26a69a, 0.55); }
+button.webby-tab.webby-age-4 { box-shadow: inset 0 2px alpha(#5c6bc0, 0.45); }
+.webby-vertical-tabs button.webby-tab.webby-age-0 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.85); }
+.webby-vertical-tabs button.webby-tab.webby-age-1 { box-shadow: inset 3px 0 alpha(#ffab00, 0.75); }
+.webby-vertical-tabs button.webby-tab.webby-age-2 { box-shadow: inset 3px 0 alpha(#7cb342, 0.65); }
+.webby-vertical-tabs button.webby-tab.webby-age-3 { box-shadow: inset 3px 0 alpha(#26a69a, 0.55); }
+.webby-vertical-tabs button.webby-tab.webby-age-4 { box-shadow: inset 3px 0 alpha(#5c6bc0, 0.45); }
+button.webby-tab.webby-age-0:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.16); }
+button.webby-tab.webby-age-1:not(.webby-active-tab) { background-color: alpha(#ffab00, 0.12); }
+button.webby-tab.webby-age-2:not(.webby-active-tab) { background-color: alpha(#7cb342, 0.09); }
+button.webby-tab.webby-age-3:not(.webby-active-tab) { background-color: alpha(#26a69a, 0.07); }
+button.webby-tab.webby-age-4:not(.webby-active-tab) { background-color: alpha(#5c6bc0, 0.05); }
+button.webby-tab.webby-age-5:not(.webby-active-tab) label { opacity: 0.72; }
 .webby-strip-space, .webby-strip-space:hover { background: none; box-shadow: none; border: none; }
 """)
     # The strip's empty space: a right-click opens the strip's menu, a double click a new tab.
@@ -428,6 +482,7 @@ button.webby-pinned-tab.webby-active-tab:hover { background-color: alpha(@theme_
     kit.`onDrop=`(tabStripSpace, proc (data: string, x, y: float) =
       let d = draggedTab(data)
       if d != nil: dropTab(d, tabs.len))
+    ageColors = readAgeColors()
     if readVerticalTabs(): setVertical(true, save = false)
     addMenuHook(mgHistory, proc (items: var seq[kit.MenuItem]) =   # rebuilt each time the menu opens
       addRecentlyClosed(items)
@@ -436,3 +491,4 @@ button.webby-pinned-tab.webby-active-tab:hover { background-color: alpha(@theme_
   addShortcut(modCtrl or modShift, 0x74, reopenClosedTab)                     # Ctrl+Shift+T
   addShortcut(modCtrl or modShift, 0x6e, proc () = openIncognitoWindow())     # Ctrl+Shift+N
   discard every(60_000, discardIdleTabs)
+  discard every(60_000, styleAges)

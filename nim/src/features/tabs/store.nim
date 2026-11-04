@@ -11,6 +11,7 @@ import ../../base
 type
   DeviceTab* = object
     title*, url*: string
+    created*: int        ## when the tab was opened (seconds since the epoch), 0 if unknown; open_tabs.json only
 
   SavedSession* = ref object
     id*, name*: string
@@ -33,13 +34,15 @@ proc nowSeconds*(): int = int(epochTime())
 
 proc isSessionUrl*(url: string): bool = url.len > 0 and url != "about:blank"
 
-proc toJson*(t: DeviceTab): JsonNode = %*{"title": t.title, "url": t.url}
+proc toJson*(t: DeviceTab): JsonNode =
+  result = %*{"title": t.title, "url": t.url}
+  if t.created > 0: result["created"] = %t.created
 
 proc deviceTabFromJson*(j: JsonNode): (bool, DeviceTab) =
   if j == nil or j.kind != JObject: return
   let url = j{"url"}.getStr
   if url.len == 0: return
-  (true, DeviceTab(title: j{"title"}.getStr, url: url))
+  (true, DeviceTab(title: j{"title"}.getStr, url: url, created: j{"created"}.getInt))
 
 proc toJson*(s: SavedSession): JsonNode =
   result = %*{"id": s.id, "name": s.name, "savedAt": s.savedAt, "active": s.active, "tabs": newJArray(),
@@ -330,10 +333,24 @@ proc layoutFile*(): string =
   let o = getEnv("WEBBY_TABS_FILE")
   if o.len > 0: o else: profileFile("tabs.json")
 
-proc readVerticalTabs*(): bool =
-  let j = readJsonFile(layoutFile())
-  j != nil and j.kind == JObject and j{"vertical"}.getBool
+proc readLayout(): JsonNode =
+  result = readJsonFile(layoutFile())
+  if result == nil or result.kind != JObject: result = newJObject()
 
-proc writeVerticalTabs*(vertical: bool) =
-  try: writeJsonFile(layoutFile(), %*{"version": 1, "vertical": vertical})
+proc writeLayout(key: string, value: bool) =
+  let j = readLayout()
+  j["version"] = %1
+  j[key] = %value
+  try: writeJsonFile(layoutFile(), j)
   except CatchableError as e: stderr.writeLine "webby: could not save ", layoutFile(), ": ", e.msg
+
+proc readVerticalTabs*(): bool = readLayout(){"vertical"}.getBool
+
+proc writeVerticalTabs*(vertical: bool) = writeLayout("vertical", vertical)
+
+proc readAgeColors*(): bool =
+  ## Whether tabs are tinted by how long ago they were opened (on unless turned off).
+  let v = readLayout(){"ageColors"}
+  v == nil or v.kind != JBool or v.getBool
+
+proc writeAgeColors*(on: bool) = writeLayout("ageColors", on)
