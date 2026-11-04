@@ -1,17 +1,29 @@
 diff --git a/Libraries/LibCompositing/Rust/src/display_list/damage.rs b/Libraries/LibCompositing/Rust/src/display_list/damage.rs
-index 0a7a4428..c8954740 100644
+index 0a7a4428..2d2d163c 100644
 --- a/Libraries/LibCompositing/Rust/src/display_list/damage.rs
 +++ b/Libraries/LibCompositing/Rust/src/display_list/damage.rs
-@@ -119,6 +119,8 @@ fn static_mask_contents(tape: Tape<'_>, effect_count: usize) -> Vec<Option<Stati
+@@ -119,6 +119,10 @@ fn static_mask_contents(tape: Tape<'_>, effect_count: usize) -> Vec<Option<Stati
                  | DisplayListCommandType::DrawEllipse
                  | DisplayListCommandType::DrawLine
                  | DisplayListCommandType::DrawRect => true,
 +                // A decoded image frame is immutable under its id, which the comparison checks.
 +                DisplayListCommandType::DrawScaledDecodedImageFrame => true,
++                // So is a nested list (an SVG image) under its id.
++                DisplayListCommandType::PaintNestedDisplayList => true,
                  _ => false,
              }) {
                  *slot = Some(StaticMaskContent {
-@@ -840,6 +842,14 @@ fn intersect_like_gfx_int_rect(rect: IntRect, other: IntRect) -> IntRect {
+@@ -126,6 +130,9 @@ fn static_mask_contents(tape: Tape<'_>, effect_count: usize) -> Vec<Option<Stati
+                     commands: nested,
+                 });
+             }
++            else if webby_damage_log() {
++                eprintln!("webby-damage mask-not-static {:?}", nested.iter().map(|n| n.header.command_type).collect::<Vec<_>>());
++            }
+         });
+     }
+     masks
+@@ -840,6 +847,14 @@ fn intersect_like_gfx_int_rect(rect: IntRect, other: IntRect) -> IntRect {
      IntRect::new(left, top, right - left, bottom - top)
  }
  
@@ -26,7 +38,7 @@ index 0a7a4428..c8954740 100644
  struct DamageAccumulator {
      damage_rect: Option<IntRect>,
      changed_unbounded_command: bool,
-@@ -872,7 +882,12 @@ impl DamageAccumulator {
+@@ -872,7 +887,12 @@ impl DamageAccumulator {
          if rect.is_empty() {
              return;
          }
@@ -39,7 +51,7 @@ index 0a7a4428..c8954740 100644
      }
  
      // Damage for content drawn within `rect` in `context` that changed, wherever the filters above
-@@ -942,7 +957,15 @@ impl DamageAccumulator {
+@@ -942,7 +962,15 @@ impl DamageAccumulator {
          if transformed_rect.is_empty() {
              return;
          }
@@ -56,7 +68,7 @@ index 0a7a4428..c8954740 100644
          self.damage_rect = Some(match self.damage_rect {
              Some(damage_rect) => damage_rect.united(command_damage),
              None => command_damage,
-@@ -1042,6 +1065,7 @@ impl DamageAccumulator {
+@@ -1042,6 +1070,7 @@ impl DamageAccumulator {
          old_command: &CommandReference<'_>,
          new_command: &CommandReference<'_>,
      ) {
@@ -64,7 +76,7 @@ index 0a7a4428..c8954740 100644
          if !old_command.header.has_bounding_rect || !new_command.header.has_bounding_rect {
              // Metadata draws nothing, except that the compositor paints some scrollbars from theirs.
              if old_command.header.command_type == DisplayListCommandType::CompositorScrollbar
-@@ -1076,6 +1100,7 @@ impl DamageAccumulator {
+@@ -1076,6 +1105,7 @@ impl DamageAccumulator {
          old_command: &CommandReference<'_>,
          new_command: &CommandReference<'_>,
      ) {
@@ -72,7 +84,7 @@ index 0a7a4428..c8954740 100644
          if old_command.header.inline_clip_count == 0 && new_command.header.inline_clip_count == 0 {
              return;
          }
-@@ -1101,6 +1126,7 @@ impl DamageAccumulator {
+@@ -1101,6 +1131,7 @@ impl DamageAccumulator {
          old_command: &CommandReference<'_>,
          new_command: &CommandReference<'_>,
      ) {
@@ -80,7 +92,7 @@ index 0a7a4428..c8954740 100644
          if old_command.header.command_type != DisplayListCommandType::PaintScrollBar
              || new_command.header.command_type != DisplayListCommandType::PaintScrollBar
          {
-@@ -1260,6 +1286,7 @@ impl DamageAccumulator {
+@@ -1260,6 +1291,7 @@ impl DamageAccumulator {
              if let Some(skipped) = skipped_old_commands
                  && skipped_new_commands.is_none_or(|skipped_new| skipped <= skipped_new)
              {
@@ -88,7 +100,7 @@ index 0a7a4428..c8954740 100644
                  for _ in 0..skipped {
                      self.add_old_command_damage(chains, &old_commands[old_index]);
                      old_index += 1;
-@@ -1267,6 +1294,7 @@ impl DamageAccumulator {
+@@ -1267,6 +1299,7 @@ impl DamageAccumulator {
                  continue;
              }
              if let Some(skipped) = skipped_new_commands {
@@ -96,7 +108,7 @@ index 0a7a4428..c8954740 100644
                  for _ in 0..skipped {
                      self.add_new_command_damage(chains, &new_commands[new_index]);
                      new_index += 1;
-@@ -1274,11 +1302,13 @@ impl DamageAccumulator {
+@@ -1274,11 +1307,13 @@ impl DamageAccumulator {
                  continue;
              }
  
@@ -110,7 +122,7 @@ index 0a7a4428..c8954740 100644
          while old_index < old_end && !self.covers_viewport() {
              self.add_old_command_damage(chains, &old_commands[old_index]);
              old_index += 1;
-@@ -1633,6 +1663,7 @@ pub fn compute_display_list_damage(
+@@ -1633,6 +1668,7 @@ pub fn compute_display_list_damage(
              if !live_content_changes.includes(live_content_record.content) {
                  continue;
              }
@@ -118,7 +130,7 @@ index 0a7a4428..c8954740 100644
              let offset = live_content_record.record.record_offset as usize;
              let header = read_header(&new_frame.command_bytes[offset..]);
              let payload_start = offset + HEADER_SIZE;
-@@ -1647,7 +1678,13 @@ pub fn compute_display_list_damage(
+@@ -1647,7 +1683,13 @@ pub fn compute_display_list_damage(
          }
      }
  
@@ -132,3 +144,24 @@ index 0a7a4428..c8954740 100644
  
      if damage.changed_unbounded_command {
          return None;
+@@ -2714,6 +2756,20 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn changes_outside_the_viewport_do_not_widen_damage_inside_it() {
++        let tree = identity_tree();
++        // One change near the top of the 100x100 viewport and one far below it.
++        let mut old_display_list = fill_command_bytes(IntRect::new(10, 10, 5, 5), RED);
++        old_display_list.extend_from_slice(&fill_command_bytes(IntRect::new(60, 5000, 20, 20), RED));
++        let mut new_display_list = fill_command_bytes(IntRect::new(10, 10, 5, 5), BLUE);
++        new_display_list.extend_from_slice(&fill_command_bytes(IntRect::new(60, 5000, 20, 20), BLUE));
++        assert_eq!(
++            damage(&old_display_list, &tree, &new_display_list, &tree),
++            Some(IntRect::new(9, 9, 7, 7))
++        );
++    }
++
+     #[test]
+     fn adding_an_inline_clip_to_a_draw_damages_the_draw() {
+         let tree = identity_tree();
