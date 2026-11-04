@@ -1,0 +1,495 @@
+diff --git a/Libraries/LibWeb/Rust/src/layout/inline_formatting_context.rs b/Libraries/LibWeb/Rust/src/layout/inline_formatting_context.rs
+index 73d51023..94fe3f2e 100644
+--- a/Libraries/LibWeb/Rust/src/layout/inline_formatting_context.rs
++++ b/Libraries/LibWeb/Rust/src/layout/inline_formatting_context.rs
+@@ -1773,7 +1773,8 @@ impl<'context> InlineFormattingContext<'context> {
+         }
+     }
+ 
+-    /// Whether text-wrap-style: balance balances the lines of this context. Lines are only balanced while finding where
++    /// Whether text-wrap-style: balance balances the lines of this context, or text-wrap-style: pretty moves words onto
++    /// a short last line of it. Lines are only balanced while finding where
+     /// they break leaves the rest of the layout alone, so not with block-level boxes among them, and not when they are
+     /// clamped or fragmented.
+     fn balances_lines(
+@@ -1782,7 +1783,10 @@ impl<'context> InlineFormattingContext<'context> {
+         fragmentation: Option<fragmentation::LineRootFragmentation>,
+     ) -> bool {
+         let style = self.style(self.containing_block);
+-        if style.text_wrap_style() != text_wrap_style::BALANCE || style.text_wrap_mode() != text_wrap_mode::WRAP {
++        let wrap_style = style.text_wrap_style();
++        if (wrap_style != text_wrap_style::BALANCE && wrap_style != text_wrap_style::PRETTY)
++            || style.text_wrap_mode() != text_wrap_mode::WRAP
++        {
+             return false;
+         }
+         if self.parent.has_line_clamp()
+@@ -1913,14 +1917,16 @@ impl<'context> InlineFormattingContext<'context> {
+             return None;
+         }
+         let find_line_breaks = |reduction| {
+-            self.find_line_breaks_of_group(
++            let lines = self.find_line_breaks_of_group(
+                 iterator,
+                 group.clone(),
+                 look_ahead_end,
+                 line_builder_at_group_start,
+-                reductions_of_previous_groups,
++                (reductions_of_previous_groups, &[]),
+                 reduction,
+-            )
++                0,
++            );
++            (lines.count, lines.inline_size)
+         };
+         let (line_count, inline_size_of_lines) = find_line_breaks(CssPixels::default());
+         if line_count <= 1 || line_count > MAXIMUM_LINE_COUNT {
+@@ -1941,17 +1947,20 @@ impl<'context> InlineFormattingContext<'context> {
+         (reduction > CssPixels::default()).then_some(reduction)
+     }
+ 
+-    /// The number of lines of the items in `group`, and the sum of their inline sizes, when `line_builder_at_group_start`
+-    /// breaks them into lines reduced by `reduction`. The lines and floats of the context are left as they were.
++    /// The number of lines of the items in `group`, the sum of their inline sizes and the inline size of the last one,
++    /// when `line_builder_at_group_start` breaks them into lines, those from `first_reduced_line` on reduced by
++    /// `reduction`. The lines and floats of the context are left as they were.
++    #[allow(clippy::too_many_arguments)]
+     fn find_line_breaks_of_group<'builder>(
+         &'builder self,
+         iterator: &inline_level_iterator::InlineLevelIterator,
+         group: std::ops::Range<usize>,
+         look_ahead_end: usize,
+         line_builder_at_group_start: &line_builder::LineBuilder<'builder, 'context>,
+-        reductions_of_previous_groups: &[Option<CssPixels>],
++        (reductions_of_previous_groups, first_reduced_lines_of_previous_groups): (&[Option<CssPixels>], &[usize]),
+         reduction: CssPixels,
+-    ) -> (usize, CssPixels) {
++        first_reduced_line: usize,
++    ) -> LinesOfGroup {
+         let state = self.state_before_finding_line_breaks();
+         // NB: The lines of the group start with the current line, and breaking it can change the line before it.
+         let first_line_index = self.line_data().line_boxes.len() - 1;
+@@ -1961,6 +1970,12 @@ impl<'context> InlineFormattingContext<'context> {
+         let mut reductions = reductions_of_previous_groups.to_vec();
+         reductions.push(Some(reduction));
+         line_builder.set_balancing_reductions(reductions);
++        if !first_reduced_lines_of_previous_groups.is_empty() || first_reduced_line > 0 {
++            let mut first_reduced_lines = first_reduced_lines_of_previous_groups.to_vec();
++            first_reduced_lines.resize(reductions_of_previous_groups.len(), 0);
++            first_reduced_lines.push(first_reduced_line);
++            line_builder.set_reduction_first_lines(first_reduced_lines);
++        }
+         let mut group_items = iterator.duplicate(group, look_ahead_end);
+         let item_count = group_items.items().len();
+         self.break_items_into_lines(&mut group_items, &mut line_builder, item_count, None, None, None);
+@@ -1970,17 +1985,142 @@ impl<'context> InlineFormattingContext<'context> {
+         while end > first_line_index && lines[end - 1].is_empty() {
+             end -= 1;
+         }
++        let mut last_line_inline_size = CssPixels::default();
+         let inline_size_of_lines = lines[first_line_index..end]
+             .iter_mut()
+             .fold(CssPixels::default(), |sum, line| {
+                 line.trim_trailing_whitespace();
++                last_line_inline_size = line.inline_length;
+                 sum + line.inline_length
+             });
+         lines.truncate(first_changed_line_index);
+         lines.extend(lines_before_breaking);
+         drop(data);
+         self.restore_state_after_finding_line_breaks(state);
+-        (end - first_line_index, inline_size_of_lines)
++        LinesOfGroup {
++            count: end - first_line_index,
++            inline_size: inline_size_of_lines,
++            last_line_inline_size,
++        }
++    }
++
++    // https://drafts.csswg.org/css-text-4/#valdef-text-wrap-style-pretty
++    // The user agent may among other things attempt to avoid excessively short last lines...
++    // INTEROP: Like Blink, only the last four lines of a paragraph are adjusted, and lines are never added.
++    /// For each group of lines between forced breaks, the inline size taken off the available inline size of its last
++    /// lines, and the first of those lines, so that a short last line takes words from the lines before it.
++    fn pretty_reductions(
++        &self,
++        iterator: &inline_level_iterator::InlineLevelIterator,
++    ) -> (Vec<Option<CssPixels>>, Vec<usize>) {
++        let items = iterator.items();
++        let group_ends: Vec<usize> = items
++            .iter()
++            .enumerate()
++            .filter(|(_, item)| item.type_ == inline_level_iterator::ItemType::ForcedBreak)
++            .map(|(index, _)| index)
++            .chain(std::iter::once(items.len()))
++            .collect();
++        let state = self.state_before_finding_line_breaks();
++        let mut line_builder = line_builder::LineBuilder::new_for_finding_balanced_line_breaks(self);
++        let mut reductions = Vec::new();
++        let mut first_lines = Vec::new();
++        let mut group_start = 0;
++        for (group_index, &group_end) in group_ends.iter().enumerate() {
++            let look_ahead_end = group_ends
++                .get(group_index + 1)
++                .map_or(items.len(), |&next_group_end| (next_group_end + 1).min(items.len()));
++            let (reduction, first_line) = self.pretty_reduction_of_group(
++                iterator,
++                group_start..group_end,
++                look_ahead_end,
++                &line_builder,
++                (&reductions, &first_lines),
++            );
++            reductions.push(reduction);
++            first_lines.push(first_line);
++            if group_end == items.len() {
++                break;
++            }
++            line_builder.set_balancing_reductions(reductions.clone());
++            line_builder.set_reduction_first_lines(first_lines.clone());
++            let mut group_items = iterator.duplicate(group_start..group_end + 1, look_ahead_end);
++            let item_count = group_items.items().len();
++            self.break_items_into_lines(&mut group_items, &mut line_builder, item_count, None, None, None);
++            group_start = group_end + 1;
++        }
++        self.line_data_mut().line_boxes.clear();
++        self.restore_state_after_finding_line_breaks(state);
++        (reductions, first_lines)
++    }
++
++    /// The smallest inline size taken off the last lines of the items in `group` that moves a word onto a short last
++    /// line without adding a line, and the first of those lines.
++    fn pretty_reduction_of_group<'builder>(
++        &'builder self,
++        iterator: &inline_level_iterator::InlineLevelIterator,
++        group: std::ops::Range<usize>,
++        look_ahead_end: usize,
++        line_builder_at_group_start: &line_builder::LineBuilder<'builder, 'context>,
++        previous_groups: (&[Option<CssPixels>], &[usize]),
++    ) -> (Option<CssPixels>, usize) {
++        // INTEROP: Blink adjusts the last 4 lines.
++        const LINES_TO_ADJUST: usize = 4;
++        // NB: Each try breaks all of the lines of the group again, so long paragraphs are left alone.
++        const MAXIMUM_LINE_COUNT: usize = 32;
++        let available_inline_size = self.input.available_space.inline_size.to_px_or_zero();
++        let content_inline_size = iterator.items()[group.clone()]
++            .iter()
++            .fold(CssPixels::default(), |sum, item| sum + item.border_box_inline_size());
++        // NB: Content that fits on one line has no last line to adjust, and long paragraphs are left alone.
++        if content_inline_size <= available_inline_size
++            || content_inline_size > available_inline_size * (MAXIMUM_LINE_COUNT * 2)
++        {
++            return (None, 0);
++        }
++        let find_line_breaks = |reduction, first_line| {
++            self.find_line_breaks_of_group(
++                iterator,
++                group.clone(),
++                look_ahead_end,
++                line_builder_at_group_start,
++                previous_groups,
++                reduction,
++                first_line,
++            )
++        };
++        let unadjusted = find_line_breaks(CssPixels::default(), 0);
++        if unadjusted.count <= 1 || unadjusted.count > MAXIMUM_LINE_COUNT {
++            return (None, 0);
++        }
++        // A last line that holds a third of the available inline size is not short.
++        if unadjusted.last_line_inline_size * 3 >= available_inline_size {
++            return (None, 0);
++        }
++        let first_line = unadjusted.count.saturating_sub(LINES_TO_ADJUST);
++        let changes = |lines: &LinesOfGroup| {
++            lines.count != unadjusted.count || lines.last_line_inline_size != unadjusted.last_line_inline_size
++        };
++        // NB: Bisect down to a pixel for the smallest reduction that changes the last line, up to a quarter of the
++        //     available inline size, more than which leaves the lines before it too ragged.
++        let mut unchanged = CssPixels::default();
++        let mut changed = available_inline_size / 4;
++        if !changes(&find_line_breaks(changed, first_line)) {
++            return (None, 0);
++        }
++        while changed - unchanged > CssPixels::from_integer(1) {
++            let candidate = unchanged + (changed - unchanged) / 2;
++            if changes(&find_line_breaks(candidate, first_line)) {
++                changed = candidate;
++            } else {
++                unchanged = candidate;
++            }
++        }
++        let adjusted = find_line_breaks(changed, first_line);
++        if adjusted.count != unadjusted.count || adjusted.last_line_inline_size <= unadjusted.last_line_inline_size {
++            return (None, 0);
++        }
++        (Some(changed), first_line)
+     }
+ 
+     /// The state of this context and its parent that breaking items into lines changes beyond the lines.
+@@ -2358,11 +2498,15 @@ impl<'context> InlineFormattingContext<'context> {
+             && iterator.items()[start_item_index - 1].type_ == inline_level_iterator::ItemType::ForcedBreak;
+         iterator.skip_items(start_item_index);
+         // NB: Trials to balance the lines move the start of the current line, so balance before the lines start.
+-        let balancing_reductions = if balances_lines {
++        let (balancing_reductions, reduction_first_lines) = if balances_lines {
+             self.lay_out_floats_ahead_of_lines(&iterator);
+-            self.balancing_reductions(&iterator)
++            if self.style(self.containing_block).text_wrap_style() == text_wrap_style::PRETTY {
++                self.pretty_reductions(&iterator)
++            } else {
++                (self.balancing_reductions(&iterator), Vec::new())
++            }
+         } else {
+-            Vec::new()
++            (Vec::new(), Vec::new())
+         };
+         self.current_line_start.set(fragmentation::LinePosition {
+             item_index: start_item_index,
+@@ -2377,6 +2521,7 @@ impl<'context> InlineFormattingContext<'context> {
+             line_builder::LineBuilder::new_after_reused_lines(self)
+         };
+         line_builder.set_balancing_reductions(balancing_reductions);
++        line_builder.set_reduction_first_lines(reduction_first_lines);
+ 
+         let mut floating_boxes_after_clamp_point = Vec::new();
+         let floating_box_count_before_lines = self.parent.floating_box_count();
+@@ -3568,3 +3713,10 @@ pub(crate) fn line_rect(line: &line_box::LineBoxData, content_inline_size: CssPi
+     rect.height = line.physical_vertical_extent();
+     rect
+ }
++
++/// The lines that finding where the lines of a group break makes.
++struct LinesOfGroup {
++    count: usize,
++    inline_size: CssPixels,
++    last_line_inline_size: CssPixels,
++}
+diff --git a/Libraries/LibWeb/Rust/src/layout/line_builder.rs b/Libraries/LibWeb/Rust/src/layout/line_builder.rs
+index 2f5eafad..a4ac7ec7 100644
+--- a/Libraries/LibWeb/Rust/src/layout/line_builder.rs
++++ b/Libraries/LibWeb/Rust/src/layout/line_builder.rs
+@@ -67,6 +67,11 @@ pub(crate) struct LineBuilder<'builder, 'context> {
+     /// The inline size that text-wrap-style: balance takes off the available inline size of each line of each group
+     /// between forced breaks, for the lines to break at.
+     balancing_reductions: Vec<Option<CssPixels>>,
++    /// For each group, the first line of the group (counted from the group's first line) that its reduction applies
++    /// to. text-wrap-style: pretty reduces only the last lines of a group; balance reduces all of them.
++    reduction_first_lines: Vec<usize>,
++    /// The index of the first line of the current group between forced breaks.
++    group_first_line: Option<usize>,
+     forced_break_count: usize,
+     /// Whether this builder only finds where lines break, to balance them, and leaves the boxes on the lines unplaced.
+     only_finds_line_breaks: bool,
+@@ -111,6 +116,10 @@ impl<'builder, 'context> LineBuilder<'builder, 'context> {
+         self.balancing_reductions = balancing_reductions;
+     }
+ 
++    pub(crate) fn set_reduction_first_lines(&mut self, reduction_first_lines: Vec<usize>) {
++        self.reduction_first_lines = reduction_first_lines;
++    }
++
+     pub(crate) fn new_for_continuation(
+         context: &'builder inline_formatting_context::InlineFormattingContext<'context>,
+         after_forced_break: bool,
+@@ -136,6 +145,8 @@ impl<'builder, 'context> LineBuilder<'builder, 'context> {
+             context,
+             available_inline_size_for_current_line: AvailableSize::Indefinite,
+             balancing_reductions: Vec::new(),
++            reduction_first_lines: Vec::new(),
++            group_first_line: None,
+             forced_break_count: 0,
+             only_finds_line_breaks: false,
+             current_block_offset: CssPixels::default(),
+@@ -277,6 +288,9 @@ impl<'builder, 'context> LineBuilder<'builder, 'context> {
+         }
+         self.recalculate_available_space();
+         let line_index = self.ensure_last_line_index();
++        if self.group_first_line.is_none() || (forced == ForcedBreak::Yes && first_in_sequence) {
++            self.group_first_line = Some(line_index);
++        }
+         self.line_mut(line_index).original_available_inline_size = self.available_inline_size_for_current_line;
+         self.max_block_size_on_current_line = CssPixels::default();
+         self.last_line_needs_update = true;
+@@ -341,11 +355,21 @@ impl<'builder, 'context> LineBuilder<'builder, 'context> {
+     /// The inline size the current line breaks at. Balancing breaks lines before they fill the available inline size,
+     /// but they still align within it.
+     fn inline_size_to_break_current_line_at(&self) -> AvailableSize {
++        let first_reduced_line = self
++            .reduction_first_lines
++            .get(self.forced_break_count)
++            .copied()
++            .unwrap_or_default();
++        let line_in_group = self
++            .line_count()
++            .saturating_sub(1)
++            .saturating_sub(self.group_first_line.unwrap_or_default());
+         let balancing_reduction = self
+             .balancing_reductions
+             .get(self.forced_break_count)
+             .copied()
+-            .flatten();
++            .flatten()
++            .filter(|_| line_in_group >= first_reduced_line);
+         match (self.available_inline_size_for_current_line, balancing_reduction) {
+             (AvailableSize::Definite(available), Some(reduction)) => AvailableSize::Definite(available - reduction),
+             (available, _) => available,
+diff --git a/Libraries/LibWeb/Rust/src/painting/record/paint/text.rs b/Libraries/LibWeb/Rust/src/painting/record/paint/text.rs
+index 42e775e1..00796e4e 100644
+--- a/Libraries/LibWeb/Rust/src/painting/record/paint/text.rs
++++ b/Libraries/LibWeb/Rust/src/painting/record/paint/text.rs
+@@ -665,6 +665,12 @@ fn paint_text_fragment<O: Observer>(
+     let converter = recorder.converter;
+     let scale = recorder.inputs.device_pixels_per_css_pixel;
+     let fragment_absolute_rect = text_fragment::absolute_rect(recorder.source, fragment);
++    if span.start_code_unit == 0
++        && let Some(marker) = symbol_marker_shape(recorder.source, block, fragment, fragment_absolute_rect)
++    {
++        paint_symbol_marker(&mut recorder.recorder, &marker, scale as f32, Color(span.text_color));
++        return;
++    }
+     let fragment_device_rect = converter.enclosing_device_rect(fragment_absolute_rect);
+     let font_id = recorder.register_font(&run.font);
+     let GlyphRunEmission {
+@@ -735,6 +741,142 @@ fn paint_text_fragment<O: Observer>(
+     }
+ }
+ 
++#[derive(Clone, Copy, PartialEq)]
++enum SymbolMarkerKind {
++    Disc,
++    Circle,
++    Square,
++}
++
++/// Where a disc, circle or square list marker is drawn, in CSS pixels.
++struct SymbolMarkerShape {
++    kind: SymbolMarkerKind,
++    x: f32,
++    y: f32,
++    size: f32,
++}
++
++// INTEROP: Blink and Gecko draw the disc, circle and square markers as shapes sized from the ascent of the marker's
++//          font, not as its U+2022, U+25E6 and U+25AA glyphs, which many fonts draw much smaller. Like Blink
++//          (ListMarker::RelativeSymbolMarkerRect, InlineMarginsForOutside), the shape is two thirds of the ascent wide
++//          plus one, halved, and an outside marker's shape starts 7px plus two thirds of the ascent before the list
++//          item's content.
++/// The shape to draw in place of the text of `fragment`, when it is the text of a disc, circle or square list marker.
++fn symbol_marker_shape(
++    source: &crate::painting::paint_read::PaintSource<'_>,
++    block: NodeSlotId,
++    fragment: &FragmentRecord,
++    fragment_absolute_rect: CssPixelRect,
++) -> Option<SymbolMarkerShape> {
++    if source.node_kind_if_live(block) != Some(crate::layout::node_data::NodeKind::ListItemMarkerBox)
++        || !text_fragment::is_horizontal(fragment)
++    {
++        return None;
++    }
++    let text = source.rendered_text(fragment.layout_node)?;
++    let end = fragment
++        .start
++        .saturating_add(fragment.length_in_code_units)
++        .min(text.text.len());
++    let units = &text.text[fragment.start.min(end)..end];
++    let kind = match units {
++        [0x2022] | [0x2022, 0x20] => SymbolMarkerKind::Disc,
++        [0x25E6] | [0x25E6, 0x20] => SymbolMarkerKind::Circle,
++        [0x25AA] | [0x25AA, 0x20] => SymbolMarkerKind::Square,
++        _ => return None,
++    };
++    // NB: Blink rounds the ascent and works in whole pixels.
++    let ascent = text_fragment::first_available_font(source, fragment)?
++        .facts()
++        .ascent
++        .round();
++    if ascent <= 0.0 {
++        return None;
++    }
++    let two_thirds_of_ascent = (ascent * 2.0 / 3.0).floor();
++    let size = ((two_thirds_of_ascent + 1.0) / 2.0).floor();
++    // The marker box sits against the list item's content for an outside marker, and starts the line for an inside
++    // one.
++    const MARKER_PADDING: f32 = 7.0;
++    let marker_box = crate::painting::paintable_geometry::absolute_border_box_rect(source, block);
++    let is_inside = source.node_flags_if_live(block) & NodeFlag::ListMarkerIsInside as u32 != 0;
++    let is_rtl = fragment.direction == crate::css::css_enums::direction::RTL;
++    let x = match (is_inside, is_rtl) {
++        (false, false) => marker_box.right().to_float() - two_thirds_of_ascent - MARKER_PADDING,
++        (false, true) => marker_box.x.to_float() + two_thirds_of_ascent + MARKER_PADDING - size,
++        (true, false) => fragment_absolute_rect.x.to_float() + 1.0,
++        (true, true) => fragment_absolute_rect.right().to_float() - 1.0 - size,
++    };
++    let baseline = fragment_absolute_rect.y.to_float() + fragment.baseline.to_float();
++    let y = baseline - ascent + (3.0 * (ascent - two_thirds_of_ascent) / 2.0).floor();
++    Some(SymbolMarkerShape { kind, x, y, size })
++}
++
++fn paint_symbol_marker(
++    recorder: &mut crate::painting::display_list::recorder::DisplayListRecorder,
++    marker: &SymbolMarkerShape,
++    scale: f32,
++    color: Color,
++) {
++    use crate::painting::display_list::recorder::{FillPathParams, PaintStyleOrColor};
++    use libgfx_rust::path::Path;
++    use libgfx_rust::{ShouldAntiAlias, WindingRule};
++    let (x, y, size) = (marker.x * scale, marker.y * scale, marker.size * scale);
++    let mut path = Path::new();
++    let append_circle = |path: &mut Path, radius: f32| {
++        let (center_x, center_y) = (x + size / 2.0, y + size / 2.0);
++        path.move_to(FloatPoint {
++            x: center_x - radius,
++            y: center_y,
++        });
++        path.arc_to(
++            FloatPoint {
++                x: center_x + radius,
++                y: center_y,
++            },
++            radius,
++            false,
++            true,
++        );
++        path.arc_to(
++            FloatPoint {
++                x: center_x - radius,
++                y: center_y,
++            },
++            radius,
++            false,
++            true,
++        );
++        path.close();
++    };
++    match marker.kind {
++        SymbolMarkerKind::Disc => append_circle(&mut path, size / 2.0),
++        SymbolMarkerKind::Circle => {
++            // A one pixel stroke centered on the edge of the shape.
++            append_circle(&mut path, size / 2.0 + scale / 2.0);
++            append_circle(&mut path, (size / 2.0 - scale / 2.0).max(0.0));
++        }
++        SymbolMarkerKind::Square => {
++            path.move_to(FloatPoint { x, y });
++            path.line_to(FloatPoint { x: x + size, y });
++            path.line_to(FloatPoint {
++                x: x + size,
++                y: y + size,
++            });
++            path.line_to(FloatPoint { x, y: y + size });
++            path.close();
++        }
++    }
++    recorder.fill_path(FillPathParams {
++        force_dark_role: ForceDarkRole::Foreground,
++        path: &path,
++        opacity: 1.0,
++        paint_style_or_color: PaintStyleOrColor::Color(color),
++        winding_rule: WindingRule::EvenOdd,
++        should_anti_alias: ShouldAntiAlias::Yes,
++    });
++}
++
+ // Paints the caret when it sits in a fragment owned by `owner`; the block itself
+ // (owner == None) also handles blank lines and empty editable elements.
+ pub(crate) fn paint_cursor<O: Observer>(

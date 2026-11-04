@@ -71,6 +71,20 @@ jobs:
             /build/ccache
             /build/ladybird/Build/caches/vcpkg-binary-cache
           key: runtime-${{ github.sha }}
+      # A build-only run keeps the packed runtime as a workflow artifact for a day, to test a patch before releasing it.
+      - name: Pack for testing
+        if: ${{ !inputs.publish }}
+        run: |
+          export PATH="/usr/lib/llvm-21/bin:$PATH"
+          scripts/pack_prebuilt.sh /build/ladybird/Build/release out
+      - name: Upload test runtime
+        if: ${{ !inputs.publish }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: webby-prebuilt-test
+          path: out/webby-prebuilt-linux-x64.tar.zst
+          compression-level: 0
+          retention-days: 1
       - name: Pack and publish
         if: inputs.publish
         env:
