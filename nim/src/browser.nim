@@ -770,7 +770,7 @@ proc pumpTab(t: Tab, isActive: bool): bool =
 # Touch: a tap clicks, a drag scrolls (sent as precise wheel events, at most one per 16 ms), a quick lift flings,
 # and a long press is a right-click (the page's context menu). In canvas pixels.
 
-type TouchSample = tuple[at: MonoTime, x, y: float]
+type TouchSample = tuple[t, x, y: float]  ## t: seconds, the event's own time when the platform gives one
 
 var
   touchId = -1                 ## the finger being followed, -1 for none
@@ -781,11 +781,87 @@ var
   touchScrollAt: tuple[x, y: float]
   touchDX, touchDY = 0.0       ## scrolling not sent yet
   touchSentAt: MonoTime
-  flingVX, flingVY = 0.0
-  flingLast: MonoTime
+  flingStart: MonoTime
+  flingDirX, flingDirY = 0.0   ## unit vector the page moves in
+  flingDistance, flingDuration, flingDone = 0.0  ## canvas pixels, seconds, pixels already scrolled
   flinging = false
 
 const longPressMs = 500
+
+# Flings follow Android's own scroller curve (android.widget.OverScroller, which Chrome on Android uses too through
+# ui::Scroller): how far and how long a fling runs grows slowly with its speed, so a gentle flick glides a little
+# way and only a hard one travels far. A plain exponential slowdown went much further on everyday flicks.
+const
+  splineSamples = 100
+  inflexion = 0.35
+  startTension = 0.5
+  endTension = 1.0
+  scrollFriction = 0.015                       ## ViewConfiguration.getScrollFriction()
+  decelerationRate = ln(0.78) / ln(0.9)        ## 2.358...
+  minFlingDp = 50.0                            ## ViewConfiguration minimum / maximum fling velocity, dp per second
+  maxFlingDp = 8000.0
+
+proc makeSpline(): array[splineSamples + 1, float] =
+  let p1 = startTension * inflexion
+  let p2 = 1.0 - endTension * (1.0 - inflexion)
+  var xMin = 0.0
+  for i in 0 ..< splineSamples:
+    let alpha = i / splineSamples
+    var xMax = 1.0
+    var x, coef: float
+    while true:
+      x = xMin + (xMax - xMin) / 2
+      coef = 3 * x * (1 - x)
+      let tx = coef * ((1 - x) * p1 + x * p2) + x * x * x
+      if abs(tx - alpha) < 1e-5: break
+      if tx > alpha: xMax = x else: xMin = x
+    result[i] = coef * ((1 - x) * startTension + x) + x * x * x
+  result[splineSamples] = 1.0
+
+let flingSpline = makeSpline()
+
+proc splinePosition(f: float): float =
+  ## How much of the fling's distance is covered when `f` (0..1) of its time has passed.
+  let f = clamp(f, 0.0, 1.0)
+  let i = min(int(f * splineSamples), splineSamples - 1)
+  let t0 = i / splineSamples
+  flingSpline[i] + (f - t0) * splineSamples * (flingSpline[i + 1] - flingSpline[i])
+
+proc startFling(vx, vy: float) =
+  ## vx, vy: the page's speed in canvas pixels per second.
+  let speed = min(hypot(vx, vy), maxFlingDp * viewRatio)
+  if speed < minFlingDp * viewRatio: return
+  # 160 dpi per unit of density; the deceleration of earth's gravity in pixels per second squared, as Android has it.
+  let physical = 9.80665 * 39.37 * 160 * viewRatio * 0.84
+  let l = ln(inflexion * speed / (scrollFriction * physical))
+  flingDuration = exp(l / (decelerationRate - 1))
+  flingDistance = scrollFriction * physical * exp(decelerationRate / (decelerationRate - 1) * l)
+  let v = hypot(vx, vy)
+  flingDirX = vx / v
+  flingDirY = vy / v
+  flingDone = 0
+  flingStart = getMonoTime()
+  flinging = true
+
+proc touchVelocity(): tuple[vx, vy: float] =
+  ## The finger's speed when it lifted, from a least-squares fit of its last 100 ms (as Android's VelocityTracker
+  ## does), so one jittery sample doesn't throw the fling. Zero when it had stopped before lifting.
+  if touchSamples.len < 2: return
+  let last = touchSamples[^1]
+  var n, st, stt, sx, sy, stx, sty = 0.0
+  for s in touchSamples:
+    let t = s.t - last.t
+    if t < -0.1: continue
+    n += 1
+    st += t
+    stt += t * t
+    sx += s.x
+    sy += s.y
+    stx += t * s.x
+    sty += t * s.y
+  let d = n * stt - st * st
+  if n < 2 or d <= 1e-9: return
+  result = ((n * stx - st * sx) / d, (n * sty - st * sy) / d)
 
 proc touchSlop(): float = 8.0 * viewRatio
 
@@ -825,19 +901,18 @@ proc stepTouch() =
           break
       if not handled: touchClick(t, touchStart.x, touchStart.y, 2)
   if flinging:
-    let dt = (now - flingLast).inMicroseconds.float / 1e6
-    if dt >= 0.012:
-      flingLast = now
-      let decay = pow(0.95, dt / 0.016)
-      flingVX *= decay
-      flingVY *= decay
-      if hypot(flingVX, flingVY) < 60 * viewRatio: flinging = false
-      else:
-        touchDX += flingVX * dt
-        touchDY += flingVY * dt
+    let f = (now - flingStart).inMicroseconds.float / 1e6 / flingDuration
+    let at = flingDistance * splinePosition(f)
+    touchDX += flingDirX * (at - flingDone)
+    touchDY += flingDirY * (at - flingDone)
+    flingDone = at
+    if f >= 1: flinging = false
   sendTouchScroll()
 
 proc touchActive(): bool = touchId >= 0 or flinging or touchDX != 0 or touchDY != 0
+
+proc touchTime(e: kit.PointerEvent): float =
+  if e.time > 0: e.time else: getMonoTime().ticks.float / 1e9
 
 proc pageTouch(t: Tab, e: kit.PointerEvent) =
   let (x, y) = (e.x, e.y)
@@ -852,11 +927,12 @@ proc pageTouch(t: Tab, e: kit.PointerEvent) =
     touchDownAt = now
     touchScrolling = false
     touchLongPressed = false
-    touchSamples = @[(now, x, y)]
+    touchSamples = @[(touchTime(e), x, y)]
   of kit.pkMove:
     if e.pointer != touchId or touchLongPressed: return
-    touchSamples.add (now, x, y)
-    while touchSamples.len > 2 and now - touchSamples[0].at > initDuration(milliseconds = 100): touchSamples.delete(0)
+    let te = touchTime(e)
+    touchSamples.add (te, x, y)
+    while touchSamples.len > 2 and te - touchSamples[0].t > 0.1: touchSamples.delete(0)
     if not touchScrolling and hypot(x - touchStart.x, y - touchStart.y) < touchSlop(): return
     touchScrolling = true
     touchScrollAt = (x, y)
@@ -869,17 +945,11 @@ proc pageTouch(t: Tab, e: kit.PointerEvent) =
     if touchLongPressed: return
     if touchScrolling:
       sendTouchScroll(force = true)
-      let s0 = touchSamples[0]
-      let dt = (now - s0.at).inMicroseconds.float / 1e6
-      if dt > 0.005:
-        let vx = (x - s0.x) / dt
-        let vy = (y - s0.y) / dt
-        if hypot(vx, vy) > 200 * viewRatio:
-          # The page moves with the finger, so it scrolls against the finger's direction.
-          flingVX = -vx
-          flingVY = -vy
-          flingLast = now
-          flinging = true
+      # A finger that rested before lifting (40 ms, Android's "pointer stopped" time) doesn't fling.
+      if touchTime(e) - touchSamples[^1].t < 0.04:
+        let (vx, vy) = touchVelocity()
+        # The page moves with the finger, so it scrolls against the finger's direction.
+        startFling(-vx, -vy)
     else:
       touchClick(t, touchStart.x, touchStart.y, 1)
   of kit.pkCancel, kit.pkLeave:

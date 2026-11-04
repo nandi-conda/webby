@@ -60,15 +60,18 @@ final class CanvasView extends SurfaceView {
             downX = ev.getX();
             downY = ev.getY();
         }
+        // Pointer events carry the touch's own time (uptime ms) as their text: batched (historical) points arrive
+        // together, so the time they are received says little about how fast the finger moved.
         if (kind == Native.POINTER_MOVE) {
             for (int h = 0; h < ev.getHistorySize(); h++)
                 for (int i = 0; i < ev.getPointerCount(); i++)
-                    Native.event(id, kind, "", ev.getHistoricalX(i, h), ev.getHistoricalY(i, h), ev.getPointerId(i));
+                    Native.event(id, kind, Long.toString(ev.getHistoricalEventTime(h)), ev.getHistoricalX(i, h),
+                                 ev.getHistoricalY(i, h), ev.getPointerId(i));
             for (int i = 0; i < ev.getPointerCount(); i++)
-                Native.event(id, kind, "", ev.getX(i), ev.getY(i), ev.getPointerId(i));
+                Native.event(id, kind, Long.toString(ev.getEventTime()), ev.getX(i), ev.getY(i), ev.getPointerId(i));
         } else {
             int i = ev.getActionIndex();
-            Native.event(id, kind, "", ev.getX(i), ev.getY(i), ev.getPointerId(i));
+            Native.event(id, kind, Long.toString(ev.getEventTime()), ev.getX(i), ev.getY(i), ev.getPointerId(i));
         }
         // Tapping the field that already has the focus again brings back a keyboard the user put away.
         boolean tap = ev.getActionMasked() == MotionEvent.ACTION_UP && ev.getEventTime() - ev.getDownTime() < 500

@@ -336,8 +336,11 @@ proc nk_event(id, kind: cint, text: cstring, x, y: cfloat, pointer: cint) {.expo
     elif w.onFocusChange != nil: w.onFocusChange(x != 0)
   of evPointerDown .. evPointerDown + 3:
     if w.onPointer != nil:
+      var ms = 0.0
+      try: ms = parseFloat($text)
+      except ValueError: discard
       w.onPointer(w, PointerEvent(kind: PointerKind(kind - evPointerDown), x: x, y: y, pointer: pointer,
-                                  touch: true))
+                                  touch: true, time: ms / 1000))
   else: discard
 
 proc nk_surface(id, width, height, isAttached: cint) {.exportc, cdecl.} =

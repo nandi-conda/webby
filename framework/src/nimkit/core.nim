@@ -24,6 +24,7 @@ type
     mods*: int           ## modAlt, modCtrl, modShift, modSuper
     clicks*: int         ## pkDown: 1, 2 for a double click, 3 for a triple...
     touch*: bool         ## a finger on a touch screen rather than the mouse
+    time*: float         ## when it happened, in seconds on the platform's own clock; 0 if the backend doesn't say
 
   WheelEvent* = object
     x*, y*: float        ## in the canvas's pixels
