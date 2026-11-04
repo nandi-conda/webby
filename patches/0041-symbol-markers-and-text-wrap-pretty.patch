@@ -1,5 +1,5 @@
 diff --git a/Libraries/LibWeb/Rust/src/layout/inline_formatting_context.rs b/Libraries/LibWeb/Rust/src/layout/inline_formatting_context.rs
-index 73d51023..c12c237f 100644
+index 73d51023..2035e904 100644
 --- a/Libraries/LibWeb/Rust/src/layout/inline_formatting_context.rs
 +++ b/Libraries/LibWeb/Rust/src/layout/inline_formatting_context.rs
 @@ -1773,7 +1773,8 @@ impl<'context> InlineFormattingContext<'context> {
@@ -82,7 +82,7 @@ index 73d51023..c12c237f 100644
          let mut group_items = iterator.duplicate(group, look_ahead_end);
          let item_count = group_items.items().len();
          self.break_items_into_lines(&mut group_items, &mut line_builder, item_count, None, None, None);
-@@ -1970,17 +1985,141 @@ impl<'context> InlineFormattingContext<'context> {
+@@ -1970,17 +1985,142 @@ impl<'context> InlineFormattingContext<'context> {
          while end > first_line_index && lines[end - 1].is_empty() {
              end -= 1;
          }
@@ -194,8 +194,9 @@ index 73d51023..c12c237f 100644
 +        if unadjusted.count <= 1 || unadjusted.count > MAXIMUM_LINE_COUNT {
 +            return (None, 0);
 +        }
-+        // A last line that holds a third of the available inline size is not short.
-+        if unadjusted.last_line_inline_size * 3 >= available_inline_size {
++        // INTEROP: A last line that holds a sixth of the available inline size is not short. Chrome leaves a last
++        //          line of a quarter alone, and moves a word onto one of a twentieth.
++        if unadjusted.last_line_inline_size * 6 >= available_inline_size {
 +            return (None, 0);
 +        }
 +        let first_line = unadjusted.count - 2;
@@ -225,7 +226,7 @@ index 73d51023..c12c237f 100644
      }
  
      /// The state of this context and its parent that breaking items into lines changes beyond the lines.
-@@ -2358,11 +2497,15 @@ impl<'context> InlineFormattingContext<'context> {
+@@ -2358,11 +2498,15 @@ impl<'context> InlineFormattingContext<'context> {
              && iterator.items()[start_item_index - 1].type_ == inline_level_iterator::ItemType::ForcedBreak;
          iterator.skip_items(start_item_index);
          // NB: Trials to balance the lines move the start of the current line, so balance before the lines start.
@@ -244,7 +245,7 @@ index 73d51023..c12c237f 100644
          };
          self.current_line_start.set(fragmentation::LinePosition {
              item_index: start_item_index,
-@@ -2377,6 +2520,7 @@ impl<'context> InlineFormattingContext<'context> {
+@@ -2377,6 +2521,7 @@ impl<'context> InlineFormattingContext<'context> {
              line_builder::LineBuilder::new_after_reused_lines(self)
          };
          line_builder.set_balancing_reductions(balancing_reductions);
@@ -252,7 +253,7 @@ index 73d51023..c12c237f 100644
  
          let mut floating_boxes_after_clamp_point = Vec::new();
          let floating_box_count_before_lines = self.parent.floating_box_count();
-@@ -3568,3 +3712,10 @@ pub(crate) fn line_rect(line: &line_box::LineBoxData, content_inline_size: CssPi
+@@ -3568,3 +3713,10 @@ pub(crate) fn line_rect(line: &line_box::LineBoxData, content_inline_size: CssPi
      rect.height = line.physical_vertical_extent();
      rect
  }
