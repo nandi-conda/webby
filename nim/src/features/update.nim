@@ -17,6 +17,7 @@ from ../ffi import ladybirdPrefix
 from about import buildInfo
 from nimkit/core as kit import nil
 import nimkit/services
+import updatebar
 
 const
   # -d:webbyUpdateApi=... tests against a local server (a JSON file with "name" and "assets": [{"name", "url"}]).
@@ -70,6 +71,8 @@ proc fetch(url: string, headers: seq[(string, string)], onDone: proc (r: Respons
     else: onDone(r),
     headers = headers)
 
+proc restart()
+
 proc download(version, fileAsset, zsyncAsset: string) =
   let appImage = getEnv("APPIMAGE")
   let zsync2 = getAppDir() / "zsync2" / "bin" / "zsync2"
@@ -88,14 +91,24 @@ proc download(version, fileAsset, zsyncAsset: string) =
     return
   state = downloading
   newVersion = version
-  if manualCheck: kit.toast("Downloading Webby " & version & "…")
+  let downloadingText = "Downloading Webby " & version
+  updatebar.show(downloadingText & "…", reopen = true)
+  # zsync2's progress ("\r####------ 43.2%") goes to this file, which the bar reads twice a second.
+  let progressLog = part & ".log"
+  var poll: Timer
+  proc stopPolling() =
+    cancel(poll)
+    try: removeFile(progressLog) except CatchableError: discard
   proc failed(why: string) =
     log("webby: could not download " & version & ": " & why)
     state = idle
+    stopPolling()
+    updatebar.hide()
     for f in [part, zsyncFile]:
       try: removeFile(f) except CatchableError: discard
     if manualCheck: kit.toast("Could not download Webby " & version)
   proc finished(ok: bool) =
+    stopPolling()
     try: removeFile(zsyncFile) except CatchableError: discard
     if not ok or not fileExists(part): (failed("zsync2 failed"); return)
     try:
@@ -104,11 +117,13 @@ proc download(version, fileAsset, zsyncAsset: string) =
       moveFile(part, appImage)
     except CatchableError as e:
       state = idle
+      updatebar.hide()
       kit.toast("Could not update Webby: " & e.msg)
       return
     state = ready
     log("webby: updated " & appImage & " to " & version)
-    kit.toast("Webby " & version & " is ready. It starts next time, or now with ⋮ > Help > Restart to update.")
+    updatebar.show("Webby " & version & " is ready. It starts next time you open Webby.", buttonText = "Restart",
+      onButton = restart, reopen = true)
   let octets = @[("Accept", "application/octet-stream")]
   # The .zsync (block checksums of the new file), then the file's own signed address, for zsync2's block GETs.
   # (zsync2 can't send the Accept header the API wants, and finding the address itself it asks with HEAD, which
@@ -121,8 +136,15 @@ proc download(version, fileAsset, zsyncAsset: string) =
       let location = r.header("location")
       let fileUrl = if r.status in 300 .. 399 and location.len > 0: location else: fileAsset
       if r.status >= 400 or r.status == 0: (failed("file: " & $r.status & " " & r.error); return)
-      if not spawn(@[zsync2, "-q", "-i", appImage, "-o", part, "-u", fileUrl, zsyncFile], finished):
-        failed("could not start zsync2"),
+      # Not -q, so it prints its progress; sh sends that to the log.
+      let args = @["/bin/sh", "-c", "log=$1; shift; exec \"$@\" >\"$log\" 2>&1", "sh", progressLog,
+                   zsync2, "-i", appImage, "-o", part, "-u", fileUrl, zsyncFile]
+      if not spawn(args, finished):
+        failed("could not start zsync2")
+        return
+      poll = every(500, proc () =
+        let fraction = try: lastPercent(readFile(progressLog)) except CatchableError: -1.0
+        if state == downloading and fraction >= 0: updatebar.show(downloadingText, fraction)),
       headers = octets & @[("Range", "bytes=0-0")]))
 
 proc check(manual = false) =

@@ -13,6 +13,7 @@ import ../browser
 from about import buildInfo
 from nimkit/core as kit import nil
 import nimkit/services
+import updatebar
 
 const
   releasesApi {.strdefine: "webbyAndroidReleasesApi".} =
@@ -49,7 +50,7 @@ proc startUpdate() =
   of "ok", "busy":
     state = downloading
     percent = -1
-    kit.toast("Downloading Webby " & latest & "…")
+    updatebar.show("Downloading Webby " & latest & "…", 0.0, reopen = true)
   of "permission": discard   # update.permission says what to do; it carries on from onResume
   else: kit.toast("Could not start the update")
 
@@ -108,12 +109,18 @@ proc onHostEvent(name, data: string) =
   case name
   of "update.progress":
     percent = (try: parseInt(data) except ValueError: -1)
+    if percent >= 0 and state != installing:
+      state = downloading   # also after update.permission, when it carries on from onResume
+      updatebar.show("Downloading Webby " & latest, percent / 100)
   of "update.permission":
     kit.toast("Allow Webby to install apps, then come back to finish the update")
+    updatebar.show("Waiting for permission to install Webby " & latest, reopen = true)
   of "update.installing":
     state = installing
+    updatebar.show("Installing Webby " & latest & "…")
   of "update.failed":
     state = if latest.len > 0: available else: idle
+    updatebar.hide()
     kit.toast("Could not update Webby: " & data)
   else: discard
 
