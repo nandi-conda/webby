@@ -43,7 +43,6 @@ type
     quoteBar, quoteLabel: kit.Widget   ## above the question box: the panel text the next question is about
     overlay, askPill: kit.Widget       ## the scroller, and "Ask AI about this" over text selected in it
     pillText: string                   ## what the pill asks about
-    webToggle: kit.Widget              ## "Web": questions may search the web (DeepSeek only)
 
 var
   jobs: Table[string, Job]     ## by the tab's messagePrefix
@@ -73,22 +72,12 @@ proc storeSecret(name, value: string, sync: bool) =
 proc provider(): Provider = chosenProvider(secret)
 proc apiKey(): string = secret(provider().info.keySecret)
 
-# Web search for questions, on DeepSeek's Search API with the DeepSeek key. When DeepSeek answers it gets a
-# web_search tool and decides when to search (a question that asks for a search makes it search). With another
-# provider (whose tool calling is untested) Webby searches itself, only for questions that ask for a search, and
-# puts the results in the question. On unless the panel's "Web" toggle is off (kept per profile).
+# Web search for questions, on DeepSeek's Search API, whenever a DeepSeek key is saved; nothing to switch on. When
+# DeepSeek answers it gets a web_search tool and decides when to search (a question that asks for a search makes
+# it search). With another provider (whose tool calling is untested) DeepSeek decides first, in a short request
+# (prompts.searchDecisionRequest), whether the question needs a search and what to search for; Webby runs it and
+# puts the results in the question.
 const maxSearchRounds = 3   ## rounds of tool calls before the model has to answer
-var webSearchOn = true
-
-proc webSearchFile(): string = profileFile("summary_web_search.json")
-
-proc webSearchAvailable(): bool = secret(deepSeekKeySecret).len > 0
-
-proc setWebSearch(on: bool) =
-  webSearchOn = on
-  if not incognito:
-    try: writeJsonFile(webSearchFile(), %*{"on": on})
-    except CatchableError: discard
 
 
 proc render()
@@ -371,10 +360,9 @@ proc ask(job: Job, key, text: string, provider: Provider) =
       else: questionRequest(job.hasPage, job.page, job.title, job.url, job.text, context, entry.message, provider)
     let explicit = asksForSearch(entry.question)
     let deepSeekKey = secret(deepSeekKeySecret)
-    let searchKey = if webSearchOn: deepSeekKey else: ""
+    let searchKey = deepSeekKey
     if explicit and searchKey.len == 0:
-      entry.notice = if deepSeekKey.len == 0: "Web search needs a DeepSeek API key (⋮ > Summarize settings…)."
-                     else: "Web search is off (the Web button by the question box)."
+      entry.notice = "Web search needs a DeepSeek API key (⋮ > Summarize settings…)."
     let tools = searchKey.len > 0 and provider == Provider.deepSeek
     if tools:
       request = withWebSearch(request)
@@ -436,9 +424,8 @@ proc ask(job: Job, key, text: string, provider: Provider) =
     stream = proc () =
       job.chat = streamChat(provider, key, request, onPiece, onDone,
         onTools = if tools: onTools else: nil)
-    if searchKey.len > 0 and explicit and not tools:
-      # Another provider: search for what the question asks about and hand it the results with the question.
-      let query = searchTermsFor(entry.question, entry.quote, job.selected, job.title)
+    proc search(query: string) =
+      ## Another provider: Webby searches and hands it the results with the question.
       entry.searching = query
       entry.searches.add query
       changed(job)
@@ -449,6 +436,19 @@ proc ask(job: Job, key, text: string, provider: Provider) =
         if error.len > 0: entry.notice = error
         else: withSearchResults(request, query, searchResultsText(results))
         stream(), question = entry.question)
+    if searchKey.len > 0 and not tools:
+      # DeepSeek decides whether the question needs the web (and the query); a failed decision just answers.
+      var reply = ""
+      let about = if entry.quote.len > 0: entry.quote elif job.asking: job.selected else: ""
+      job.chat = streamChat(Provider.deepSeek, searchKey,
+        searchDecisionRequest(entry.question, about, job.title, job.url, job.text),
+        proc (piece: string) = (reply.add piece),
+        proc (error: string) =
+          if generation != job.generation: return
+          job.chat = nil
+          var (wanted, query) = parseSearchDecision(reply)
+          if explicit and query.len == 0: query = searchTermsFor(entry.question, entry.quote, job.selected, job.title)
+          if (wanted or explicit) and query.len > 0: search(query) else: stream())
     else: stream()
   if job.asking:
     if job.reading: job.afterRead.add send   # the page's text comes first, for context
@@ -768,9 +768,6 @@ proc render() =
   kit.`enabled=`(panel.entry, canAsk)
   kit.`enabled=`(panel.sendButton, canAsk and not job.answering)
   kit.`visible=`(panel.quoteBar, job.quote.len > 0)
-  if panel.webToggle != nil:
-    kit.`visible=`(panel.webToggle, webSearchAvailable())
-    kit.`checked=`(panel.webToggle, webSearchOn)
   kit.`text=`(panel.quoteLabel, shortQuote(job.quote))
   kit.`placeholder=`(panel.entry, if job.quote.len > 0: "Ask about the quoted text"
     elif job.asking: "Ask about the selection" else: "Ask about this page")
@@ -885,9 +882,7 @@ proc showPanel(job: Job) =
   panel.entry = kit.entry(if job.asking: "Ask about the selection" else: "Ask about this page")
   panel.entry.onSubmit = proc (t: string) = askFromEntry()
   panel.sendButton = kit.iconButton("send", "Ask", askFromEntry)
-  panel.webToggle = kit.toggle("Web", webSearchOn, proc (on: bool) = setWebSearch(on))
-  kit.`tooltip=`(panel.webToggle, "Let DeepSeek search the web when a question needs it")
-  let askRow = kit.addClass(kit.row(kit.expand(panel.entry), panel.webToggle, panel.sendButton), "webby-summary-ask")
+  let askRow = kit.addClass(kit.row(kit.expand(panel.entry), panel.sendButton), "webby-summary-ask")
   askRow.spacing = 4
   # markdownCss font sizes
   panel.root = kit.addClass(kit.column(bar, kit.separator(), kit.expand(panel.overlay), kit.separator(),
@@ -1007,8 +1002,6 @@ proc install*() =
   windowHooks.add proc () =
     let saved = readJsonFile(zoomFile())
     if saved != nil and saved.kind == JObject: textZoom = clamp(saved{"zoom"}.getFloat(1.0), 0.6, 2.5)
-    let web = readJsonFile(webSearchFile())
-    if web != nil and web.kind == JObject: webSearchOn = web{"on"}.getBool(true)
     applyTextZoom()
     # Ctrl+plus/minus/0 size the summary text while the panel has focus or the pointer; elsewhere the keys go on as before.
     proc zoomKey(mods: int, key: uint32, factor: float) =

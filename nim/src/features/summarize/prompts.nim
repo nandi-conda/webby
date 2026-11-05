@@ -166,8 +166,9 @@ proc selectionQuestionRequest*(selected: string, hasPage: bool, page: PageText, 
 const webSearchToolName* = "web_search"
 
 const webSearchRule = " You can search the web with the web_search tool. Use it when the question needs what the " &
-  "page doesn't have: recent events, other sources, checking a claim, background on a name or term. Don't search " &
-  "for what the page already answers. Search queries are short keyword queries (at most 128 characters), in " &
+  "page doesn't have: recent events, other sources, checking a claim, background on a name or term. When the page " &
+  "doesn't answer the question, search instead of answering from memory, and never say you can't search the web. " &
+  "Don't search for what the page already answers. Search queries are short keyword queries (at most 128 characters), in " &
   "the language most likely to find good sources. When a point comes from a web result, end it with a link to " &
   "that result written [site name](url), using the result's own url; such links are allowed even where other " &
   "links are not."
@@ -222,3 +223,36 @@ proc withSearchResults*(request: JsonNode, query, results: string) =
   last["content"] = %("Web search results for \"" & query & "\" (" & now().format("yyyy-MM-dd") & "):\n\n" &
     results & "\n---\n\nUse these results where they help, and end each point that comes from one with a link " &
     "to it written [site name](url). The question:\n\n" & last{"content"}.getStr)
+
+const searchDecisionPrompt = "You decide whether a question a user asks about a web page they are reading needs a " &
+  "web search. Search when the answer needs what the page itself is unlikely to say: recent or current events, " &
+  "facts to check, other sources or opinions, background on a person, project, product or term the page only " &
+  "names, or when the user asks for a search. Don't search for questions about the page's own content (explain, " &
+  "summarize, define something the page explains). Reply with JSON only: {\"search\": true or false, \"query\": " &
+  "\"a short keyword search query, at most 128 characters, or empty\"}."
+
+proc searchDecisionRequest*(question, about, title, url, summary: string): JsonNode =
+  ## The short DeepSeek request that decides whether `question` needs a web search (see parseSearchDecision).
+  ## `about` is the quoted or selected text the question is about, `summary` the page's summary (both cut short).
+  proc cut(s: string, n: int): string =
+    result = s.splitWhitespace.join(" ")
+    if result.len > n:
+      var i = n
+      while i > 0 and (result[i].ord and 0xC0) == 0x80: dec i
+      result = result[0 ..< i] & "…"
+  var context = "The page: \"" & title & "\" (" & url & ")\n"
+  if summary.strip.len > 0: context.add "Its summary: " & cut(summary, 1500) & "\n"
+  if about.strip.len > 0: context.add "The question is about this text: " & cut(about, 1000) & "\n"
+  context.add "Today is " & now().format("yyyy-MM-dd") & ".\n\nThe question: " & question
+  withProvider(%*{"model": "deepseek-flash", "stream": true, "temperature": 0, "max_tokens": 80, "messages": [
+    {"role": "system", "content": searchDecisionPrompt}, {"role": "user", "content": context}]}, deepSeek)
+
+proc parseSearchDecision*(reply: string): tuple[search: bool, query: string] =
+  ## The decision in a searchDecisionRequest reply: (false, "") when it can't be read.
+  let a = reply.find('{')
+  let b = reply.rfind('}')
+  if a < 0 or b <= a: return
+  let j = try: parseJson(reply[a .. b]) except CatchableError: nil
+  if j == nil or j.kind != JObject: return
+  result.query = j{"query"}.getStr.strip
+  result.search = j{"search"}.getBool and result.query.len > 0
