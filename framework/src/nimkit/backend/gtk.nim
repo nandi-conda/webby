@@ -955,6 +955,13 @@ var
   toastWindow, toastLabel: GtkWidget
   toastTimer: cuint
 
+backend.currentMods = proc (): int =
+  let ev = gtk_get_current_event()
+  if ev == nil: return 0
+  var state: uint32
+  if gdk_event_get_state(ev, addr state) != 0: result = mods(state)
+  gdk_event_free(ev)
+
 backend.toast = proc (text: string) =
   let top = toplevel()
   if top == nil: return

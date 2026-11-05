@@ -30,6 +30,7 @@ var
   webby_view_go_forward*: proc (v: View) {.cdecl, gcsafe.}
   webby_view_reload*: proc (v: View) {.cdecl, gcsafe.}
   webby_view_stop*: proc (v: View) {.cdecl, gcsafe.}
+  webby_view_reload_bypass_cache*: proc (v: View) {.cdecl, gcsafe.}  ## optional: runtimes since 2026.11.5.1
   webby_view_resize*: proc (v: View, w, h: cint, ratio: cdouble) {.cdecl, gcsafe.}
   webby_view_set_focus*: proc (v: View, on: cint) {.cdecl, gcsafe.}
   webby_view_run_javascript*: proc (v: View, source: cstring) {.cdecl, gcsafe.}
@@ -191,6 +192,11 @@ proc loadWebbyLib*(path: string) =
   optional webby_downloads_resume
   optional webby_downloads_clear
   optional webby_clipboard_set_image
+  optional webby_view_reload_bypass_cache
+
+proc webbyHardReload*(v: View) =
+  ## Reload without the HTTP cache; an older runtime without it reloads normally.
+  if webby_view_reload_bypass_cache != nil: webby_view_reload_bypass_cache(v) else: webby_view_reload(v)
 
 proc hasNativeFind*(): bool =
   ## Whether the runtime finds in page itself (webby_view_find); else features/find runs a page script.

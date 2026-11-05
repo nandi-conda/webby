@@ -20,6 +20,7 @@
 #include <LibRequests/RequestControlClient.h>
 #include <LibURL/Parser.h>
 #include <LibWebView/Application.h>
+#include <LibWebView/CanonicalTraversable.h>
 #include <LibWebView/Menu.h>
 #include <LibWebView/RequestServerManager.h>
 #include <LibWebView/Utilities.h>
@@ -296,6 +297,11 @@ int webby_view_close_requested(WebbyView* handle)
 void webby_view_reload(WebbyView* handle)
 {
     handle->view->reload();
+}
+
+void webby_view_reload_bypass_cache(WebbyView* handle)
+{
+    handle->view->reload(WebView::BypassCache::Yes);
 }
 
 void webby_view_stop(WebbyView* handle)

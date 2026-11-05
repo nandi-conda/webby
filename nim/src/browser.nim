@@ -273,7 +273,7 @@ proc refreshChrome*() =
   kit.`enabled=`(backButton, t.canBack)
   kit.`enabled=`(forwardButton, t.canForward)
   kit.`iconName=`(reloadButton, if t.loading: "close" else: "refresh")
-  kit.`tooltip=`(reloadButton, if t.loading: "Stop" else: "Reload (Ctrl+R)")
+  kit.`tooltip=`(reloadButton, if t.loading: "Stop" else: "Reload (Ctrl+R), Shift+click to skip the cache")
   kit.`text=`(statusBubble, t.hovered)
   kit.`visible=`(statusBubble, t.hovered.len > 0)
   # Ladybird's cursor numbers, as CSS names.
@@ -1347,10 +1347,19 @@ proc focusPage*() = kit.focus(page)
 
 proc goBack*() = (let t = currentTab(); if t != nil: webby_view_go_back(t.view); wake())
 proc goForward*() = (let t = currentTab(); if t != nil: webby_view_go_forward(t.view); wake())
+proc hardReload*() =
+  ## Reload without the cache (Ctrl+Shift+R, Shift+F5, Shift+click on Reload).
+  let t = currentTab()
+  if t == nil or t.view == nil: return
+  webbyHardReload(t.view)
+  wake()
+
 proc reloadOrStop*() =
   let t = currentTab()
   if t == nil: return
-  if t.loading: webby_view_stop(t.view) else: webby_view_reload(t.view)
+  if t.loading: webby_view_stop(t.view)
+  elif (kit.currentMods() and kit.modShift) != 0: webbyHardReload(t.view)
+  else: webby_view_reload(t.view)
   wake()
 
 proc shortcutKey(e: kit.KeyEvent): uint32 =
@@ -1399,6 +1408,8 @@ proc defaultShortcuts() =
   addShortcut(0, 0xffc6, focusUrl)                                               # F6
   addShortcut(modCtrl, 0x72, proc () = (let t = currentTab(); if t != nil: webby_view_reload(t.view); wake()))
   addShortcut(0, 0xffc2, proc () = (let t = currentTab(); if t != nil: webby_view_reload(t.view); wake()))  # F5
+  addShortcut(modCtrl or modShift, 0x72, hardReload)                             # Ctrl+Shift+R
+  addShortcut(modShift, 0xffc2, hardReload)                                      # Shift+F5
   addShortcut(modCtrl, 0xff09, proc () = (if tabs.len > 0: activateTab((activeIndex + 1) mod tabs.len)))
   addShortcut(modCtrl or modShift, 0xfe20,
     proc () = (if tabs.len > 0: activateTab((activeIndex + tabs.len - 1) mod tabs.len)))
@@ -1470,7 +1481,7 @@ proc buildWindow() =
 
   backButton = kit.iconButton("arrow_back", "Back (Alt+Left)", goBack)
   forwardButton = kit.iconButton("arrow_forward", "Forward (Alt+Right)", goForward)
-  reloadButton = kit.iconButton("refresh", "Reload (Ctrl+R)", reloadOrStop)
+  reloadButton = kit.iconButton("refresh", "Reload (Ctrl+R), Shift+click to skip the cache", reloadOrStop)
   moreButton = kit.iconButton("more_vert", "More (Alt+F)", proc () = kit.popupMenu(moreMenuItems(), moreButton))
   urlField = kit.entry("Search or enter address")
   urlField.onSubmit = onUrlSubmit
@@ -1486,6 +1497,7 @@ proc buildWindow() =
     kit.`visible=`(forwardButton, false)
     kit.`visible=`(toolbarEndRow, false)
     addMenuItem("Forward", goForward)
+  addMenuItem("Hard reload", hardReload, "Ctrl+Shift+R", mgPage)   # skips the cache; Android's only way to it
 
   barSlot = kit.column()
   barSlot.spacing = 0

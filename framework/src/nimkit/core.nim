@@ -129,6 +129,7 @@ type
     hidePopover*: proc (p: Popover)
     chooseFiles*: proc (r: FileRequest, onDone: proc (paths: seq[string]))
     toast*: proc (text: string)
+    currentMods*: proc (): int       ## modifiers held during the event being handled (a click)
     textField*: proc (c: Canvas, f: TextField)
 
   TextField* = object
@@ -657,6 +658,10 @@ proc popupMenu*(items: seq[MenuItem], anchor: Widget = nil, x = -1.0, y = -1.0) 
   ## Shows a pop-up menu: under `anchor` if given (at `x`, `y` in its pixels if those are >= 0, e.g. a canvas's
   ## right-click), else at the pointer. The chosen item's action runs after the menu closes.
   if backend.popup != nil: backend.popup(items, anchor, x, y)
+
+proc currentMods*(): int =
+  ## The modifier keys (modShift, ...) held for the event being handled, e.g. Shift on a button click; 0 if unknown.
+  if backend.currentMods != nil: backend.currentMods() else: 0
 
 proc showDialog*(d: Dialog) =
   if backend.showDialog != nil and not d.shown:

@@ -44,6 +44,8 @@ WEBBY_API void webby_view_load(WebbyView*, char const* url_or_search);
 WEBBY_API void webby_view_go_back(WebbyView*);
 WEBBY_API void webby_view_go_forward(WebbyView*);
 WEBBY_API void webby_view_reload(WebbyView*);
+// Reloads without the HTTP cache (Ctrl+Shift+R): the page and everything it loads come from the network again.
+WEBBY_API void webby_view_reload_bypass_cache(WebbyView*);
 WEBBY_API void webby_view_stop(WebbyView*);
 WEBBY_API void webby_view_resize(WebbyView*, int width, int height, double device_pixel_ratio);
 WEBBY_API void webby_view_set_focus(WebbyView*, int focused);
