@@ -172,17 +172,17 @@ proc layoutPinned() =
 
 # ---------------------------------------------------------------------------------------------------------------
 # Tabs tinted by age: one hue (orange) that is strongest on a tab opened a moment ago and fades step by step to no
-# tint after a week. Each tab keeps when it was opened in props["created"] (and open_tabs.json), so restored
+# tint after 12 hours. Each tab keeps when it was opened in props["created"] (and open_tabs.json), so restored
 # tabs keep their age. Pinned tiles aren't tinted. Turned off with the strip menu's "Color tabs by age" (tabs.json).
 
-const ageSteps = [15 * 60, 3600, 6 * 3600, 24 * 3600, 7 * 24 * 3600]   ## seconds: the end of each tint
+const ageSteps = [5 * 60, 20 * 60, 3600, 3 * 3600, 12 * 3600]   ## seconds: the end of each tint
 var ageColors = true
 
 proc createdAt*(t: Tab): int =
   try: parseInt(t.props.getOrDefault("created", "0")) except ValueError: 0
 
 proc ageStep(t: Tab, now: int): int =
-  ## 0 (newest) .. ageSteps.len (a week or more, no tint); -1 for no tint at all.
+  ## 0 (newest) .. ageSteps.len (12 hours or more, no tint); -1 for no tint at all.
   let c = t.createdAt
   if not ageColors or t.pinned or c <= 0: return -1
   result = ageSteps.len
@@ -455,21 +455,21 @@ button.webby-pinned-tab.webby-active-tab:hover { background-color: alpha(@theme_
 .webby-badge-6 { background-color: #c2185b; } .webby-badge-7 { background-color: #5f6368; }
 .webby-vertical-tabs { border-right: 1px solid alpha(currentColor, 0.15); }
 .webby-pinned-grid { margin: 2px 4px; }
-button.webby-tab.webby-age-0 { box-shadow: inset 0 2px alpha(#ff6d00, 0.9); }
-button.webby-tab.webby-age-1 { box-shadow: inset 0 2px alpha(#ff6d00, 0.7); }
-button.webby-tab.webby-age-2 { box-shadow: inset 0 2px alpha(#ff6d00, 0.5); }
-button.webby-tab.webby-age-3 { box-shadow: inset 0 2px alpha(#ff6d00, 0.35); }
-button.webby-tab.webby-age-4 { box-shadow: inset 0 2px alpha(#ff6d00, 0.22); }
-.webby-vertical-tabs button.webby-tab.webby-age-0 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.9); }
-.webby-vertical-tabs button.webby-tab.webby-age-1 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.7); }
-.webby-vertical-tabs button.webby-tab.webby-age-2 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.5); }
-.webby-vertical-tabs button.webby-tab.webby-age-3 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.35); }
-.webby-vertical-tabs button.webby-tab.webby-age-4 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.22); }
-button.webby-tab.webby-age-0:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.18); }
-button.webby-tab.webby-age-1:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.13); }
-button.webby-tab.webby-age-2:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.09); }
-button.webby-tab.webby-age-3:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.06); }
-button.webby-tab.webby-age-4:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.035); }
+button.webby-tab.webby-age-0 { box-shadow: inset 0 2px alpha(#ff6d00, 1.0); }
+button.webby-tab.webby-age-1 { box-shadow: inset 0 2px alpha(#ff6d00, 0.6); }
+button.webby-tab.webby-age-2 { box-shadow: inset 0 2px alpha(#ff6d00, 0.35); }
+button.webby-tab.webby-age-3 { box-shadow: inset 0 2px alpha(#ff6d00, 0.2); }
+button.webby-tab.webby-age-4 { box-shadow: inset 0 2px alpha(#ff6d00, 0.1); }
+.webby-vertical-tabs button.webby-tab.webby-age-0 { box-shadow: inset 3px 0 alpha(#ff6d00, 1.0); }
+.webby-vertical-tabs button.webby-tab.webby-age-1 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.6); }
+.webby-vertical-tabs button.webby-tab.webby-age-2 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.35); }
+.webby-vertical-tabs button.webby-tab.webby-age-3 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.2); }
+.webby-vertical-tabs button.webby-tab.webby-age-4 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.1); }
+button.webby-tab.webby-age-0:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.28); }
+button.webby-tab.webby-age-1:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.15); }
+button.webby-tab.webby-age-2:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.08); }
+button.webby-tab.webby-age-3:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.04); }
+button.webby-tab.webby-age-4:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.018); }
 button.webby-tab.webby-age-5:not(.webby-active-tab) label { opacity: 0.72; }
 .webby-strip-space, .webby-strip-space:hover { background: none; box-shadow: none; border: none; }
 """)
