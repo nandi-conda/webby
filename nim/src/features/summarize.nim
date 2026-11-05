@@ -16,6 +16,7 @@ type
     running: bool
     searches: seq[string]      ## web searches made for the answer (shown above it; not saved)
     searching: string          ## the web search running now, or ""
+    notice: string             ## why a search asked for didn't happen, or ""
 
   Job = ref object
     ## One tab's summary: the page it is for, the text so far, and whether it is still coming.
@@ -72,15 +73,16 @@ proc storeSecret(name, value: string, sync: bool) =
 proc provider(): Provider = chosenProvider(secret)
 proc apiKey(): string = secret(provider().info.keySecret)
 
-# Web search for questions: the model gets a web_search tool, run on DeepSeek's Search API with the DeepSeek key.
-# Only offered when DeepSeek answers (the other providers' tool calling is untested). On unless the panel's "Web"
-# toggle is off (kept per profile).
+# Web search for questions, on DeepSeek's Search API with the DeepSeek key. When DeepSeek answers it gets a
+# web_search tool and decides when to search (a question that asks for a search makes it search). With another
+# provider (whose tool calling is untested) Webby searches itself, only for questions that ask for a search, and
+# puts the results in the question. On unless the panel's "Web" toggle is off (kept per profile).
 const maxSearchRounds = 3   ## rounds of tool calls before the model has to answer
 var webSearchOn = true
 
 proc webSearchFile(): string = profileFile("summary_web_search.json")
 
-proc webSearchAvailable(): bool = provider() == Provider.deepSeek and secret(deepSeekKeySecret).len > 0
+proc webSearchAvailable(): bool = secret(deepSeekKeySecret).len > 0
 
 proc setWebSearch(on: bool) =
   webSearchOn = on
@@ -367,8 +369,16 @@ proc ask(job: Job, key, text: string, provider: Provider) =
       if job.asking: selectionQuestionRequest(job.selected, job.hasPage, job.page, job.title, job.url, context,
         entry.message, provider)
       else: questionRequest(job.hasPage, job.page, job.title, job.url, job.text, context, entry.message, provider)
-    let searchKey = if webSearchOn and provider == Provider.deepSeek: secret(deepSeekKeySecret) else: ""
-    if searchKey.len > 0: request = withWebSearch(request)
+    let explicit = asksForSearch(entry.question)
+    let deepSeekKey = secret(deepSeekKeySecret)
+    let searchKey = if webSearchOn: deepSeekKey else: ""
+    if explicit and searchKey.len == 0:
+      entry.notice = if deepSeekKey.len == 0: "Web search needs a DeepSeek API key (⋮ > Summarize settings…)."
+                     else: "Web search is off (the Web button by the question box)."
+    let tools = searchKey.len > 0 and provider == Provider.deepSeek
+    if tools:
+      request = withWebSearch(request)
+      if explicit: request["tool_choice"] = %"required"   # asked to search: search first
     var rounds = 0
     var stream: proc ()
     proc onPiece(piece: string) =
@@ -390,6 +400,7 @@ proc ask(job: Job, key, text: string, provider: Provider) =
       if generation != job.generation: return
       job.chat = nil
       inc rounds
+      request["tool_choice"] = %(if rounds >= maxSearchRounds: "none" else: "auto")
       let said = entry.answer   # what it wrote before the calls ("Let me look that up"): not part of the answer
       entry.answer = ""
       var toolCalls = newJArray()
@@ -402,7 +413,6 @@ proc ask(job: Job, key, text: string, provider: Provider) =
         if generation != job.generation: return
         if i >= calls.len:
           entry.searching = ""
-          if rounds >= maxSearchRounds: request["tool_choice"] = %"none"
           stream()
           return
         let call = calls[i]
@@ -425,8 +435,21 @@ proc ask(job: Job, key, text: string, provider: Provider) =
       next()
     stream = proc () =
       job.chat = streamChat(provider, key, request, onPiece, onDone,
-        onTools = if searchKey.len > 0: onTools else: nil)
-    stream()
+        onTools = if tools: onTools else: nil)
+    if searchKey.len > 0 and explicit and not tools:
+      # Another provider: search for what the question asks about and hand it the results with the question.
+      let query = searchTermsFor(entry.question, entry.quote, job.selected, job.title)
+      entry.searching = query
+      entry.searches.add query
+      changed(job)
+      job.chat = searchWeb(searchKey, query, proc (results: seq[SearchResult], error: string) =
+        if generation != job.generation: return
+        job.chat = nil
+        entry.searching = ""
+        if error.len > 0: entry.notice = error
+        else: withSearchResults(request, query, searchResultsText(results))
+        stream(), question = entry.question)
+    else: stream()
   if job.asking:
     if job.reading: job.afterRead.add send   # the page's text comes first, for context
     else: send()
@@ -791,6 +814,7 @@ proc render() =
     for i, q in qa.searches:
       if i == qa.searches.high and qa.searching.len > 0: add(note("Searching the web for “" & q & "”…", small = true), 6)
       else: add(note("Searched the web for “" & q & "”", small = true), 6)
+    if qa.notice.len > 0: add(note(qa.notice, small = true), 6)
     if qa.answer.strip.len > 0: add(markdownView(qa.answer.strip), 8)
     elif qa.running and qa.searching.len == 0: add(note("Thinking…"), 8)
     if qa.error.len > 0: add(kit.addClass(kit.label(qa.error), "error"), 8)

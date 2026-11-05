@@ -22,7 +22,7 @@ type
 
 const providers*: array[Provider, ProviderInfo] = [
   deepSeek: ProviderInfo(id: "deepseek", name: "DeepSeek", keySecret: deepSeekKeySecret,
-    endpoint: "https://api.deepseek.com/chat/completions", model: "deepseek-chat", site: "platform.deepseek.com",
+    endpoint: "https://api.deepseek.com/chat/completions", model: "deepseek-flash", site: "platform.deepseek.com",
     status: "status.deepseek.com"),
   # platform.xiaomimimo.com: pay-as-you-go keys (sk-...) on api.xiaomimimo.com, sent in an `api-key` header. The V2.6
   # models think first by default; requests turn that off so the answer starts at once.
@@ -113,7 +113,7 @@ proc withProvider(body: JsonNode, provider: Provider): JsonNode =
   case provider
   of mimo: body["thinking"] = %*{"type": "disabled"}
   of meta: body["reasoning_effort"] = %"minimal"
-  of deepSeek: discard
+  of deepSeek: body["thinking"] = %*{"type": "disabled"}   # answer at once; tool calls then need no reasoning_content
   body
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -192,3 +192,33 @@ proc searchQuery*(arguments: string): string =
   ## The query from a web_search call's JSON arguments ("" when there is none).
   let j = try: parseJson(arguments) except CatchableError: nil
   if j != nil and j.kind == JObject: j{"query"}.getStr.strip else: ""
+
+const searchWords = ["websearch", "web search", "search", "look up", "lookup", "look it up", "google",
+  "internet", "on the web", "latest news"]
+
+proc asksForSearch*(question: string): bool =
+  ## Whether `question` asks for a web search ("search the web for…", "look it up", "websearch").
+  let q = " " & question.toLowerAscii & " "
+  for w in searchWords:
+    if w in q: return true
+
+proc searchTermsFor*(question, quote, selected, title: string): string =
+  ## A search query for `question` when Webby searches itself: the question without the words asking for a search;
+  ## when little is left, what it is about (the quoted text, the selection or the page's title).
+  var q = " " & question.toLowerAscii & " "
+  for w in searchWords: q = q.replace(w, " ")
+  for w in [" the ", " web ", " for ", " about ", " this ", " please ", " can you ", " what ", " is ", " it "]:
+    q = q.replace(w, " ")
+  q = q.splitWhitespace.join(" ").strip(chars = {' ', '?', '.', '!', ','})
+  let about = (if quote.strip.len > 0: quote elif selected.strip.len > 0: selected else: title).splitWhitespace.join(" ")
+  result = if q.len >= 4: q else: about
+  if result.len == 0: result = question.strip
+
+proc withSearchResults*(request: JsonNode, query, results: string) =
+  ## Puts web search results for `query` in front of the question (the last message) of `request`.
+  let messages = request{"messages"}
+  if messages == nil or messages.kind != JArray or messages.len == 0: return
+  let last = messages[messages.len - 1]
+  last["content"] = %("Web search results for \"" & query & "\" (" & now().format("yyyy-MM-dd") & "):\n\n" &
+    results & "\n---\n\nUse these results where they help, and end each point that comes from one with a link " &
+    "to it written [site name](url). The question:\n\n" & last{"content"}.getStr)
