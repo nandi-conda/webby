@@ -4,6 +4,11 @@
 ## libwebby.so can't load the runtime's newer libcrypto. WEBBY_DEEPSEEK_ENDPOINT overrides the endpoint of
 ## either provider (tests use a local fake server; http:// works too). On Android the bytes come from Java's HttpURLConnection instead
 ## (base.httpStream); the parsing and the messages are the same.
+##
+## Web search: chat requests may carry a `web_search` function tool (prompts.withWebSearch). When the reply ends in
+## tool calls, `onTools` gets them instead of `onDone`; searchWeb runs each query on DeepSeek's Search API
+## (POST /v1/tools/search, the DeepSeek key as Bearer) and the caller sends the results back in a new request.
+## WEBBY_DEEPSEEK_SEARCH_ENDPOINT overrides its endpoint.
 
 import std/[json, monotimes, os, strutils, times]
 import prompts
@@ -43,11 +48,21 @@ type
 
   BodyMode = enum bodyUntilClose, bodyLength, bodyChunked
 
+  ToolCall* = object
+    ## A function call the model asked for, put together from the streamed pieces.
+    id*, name*, arguments*: string
+
+  SearchResult* = object
+    title*, url*, snippet*, summary*, site*, date*: string
+
   Chat* = ref object
     ## One streaming request. `onPiece` gets each piece of the reply; `onDone` gets "" or an error message, once.
     onPiece*: proc (piece: string)
     onDone*: proc (error: string)
     onQueued*: proc ()          ## called on DeepSeek's first ": keep-alive" line before any piece
+    onTools*: proc (calls: seq[ToolCall])   ## the reply ended asking for these tool calls (then no onDone)
+    onBody: proc (body: string) ## plain requests (not streamed): the whole body of a 200 answer
+    toolCalls*: seq[ToolCall]
     queued*: bool               ## DeepSeek holds the request in its queue and hasn't sent a piece yet
     gotPiece: bool
     lastPiece: MonoTime         ## when the last piece came (or the request was sent)
@@ -142,6 +157,21 @@ proc handleEvents(c: Chat) =
     try:
       let choices = parseJson(data){"choices"}
       if choices == nil or choices.kind != JArray or choices.len == 0: continue
+      # Tool calls come in pieces: the first piece of each (by index) has its id and name, the arguments follow.
+      let calls = choices[0]{"delta", "tool_calls"}
+      if calls != nil and calls.kind == JArray:
+        for call in calls:
+          let i = call{"index"}.getInt(c.toolCalls.len)
+          if i < 0 or i > 16: continue
+          while c.toolCalls.len <= i: c.toolCalls.add ToolCall()
+          if call{"id"}.getStr.len > 0: c.toolCalls[i].id = call{"id"}.getStr
+          let f = call{"function"}
+          if f != nil and f.kind == JObject:
+            if f{"name"}.getStr.len > 0: c.toolCalls[i].name = f{"name"}.getStr
+            c.toolCalls[i].arguments.add f{"arguments"}.getStr
+        c.gotPiece = true
+        c.queued = false
+        c.lastPiece = getMonoTime()
       let content = choices[0]{"delta", "content"}
       if content != nil and content.kind == JString and content.getStr.len > 0:
         c.gotPiece = true
@@ -151,7 +181,7 @@ proc handleEvents(c: Chat) =
     except CatchableError: discard
 
 proc addBody(c: Chat, data: string) =
-  if c.status == 200:
+  if c.status == 200 and c.onBody == nil:
     c.events.add data
     c.handleEvents()
   else: c.body.add data
@@ -209,27 +239,38 @@ proc ended(c: Chat) =
   ## The response is complete (or the server closed the connection).
   if not c.gotHeaders: c.finish("Couldn't reach " & c.provider.name & " (the connection closed).")
   elif c.status != 200: c.finish(describeFailure(c.provider, c.status, c.body))
+  elif c.onBody != nil:
+    let cb = c.onBody
+    c.onBody = nil
+    let body = c.body
+    let onDone = c.onDone
+    c.onDone = nil
+    c.finish("")
+    cb(body)
+    if onDone != nil: onDone("")
   else:
     if not c.done: c.events.add "\n"
     c.handleEvents()
-    c.finish("")
+    if c.finished: return
+    var calls: seq[ToolCall]
+    for t in c.toolCalls:
+      if t.name.len > 0: calls.add t
+    if calls.len > 0 and c.onTools != nil:
+      let cb = c.onTools
+      c.onDone = nil
+      c.finish("")
+      cb(calls)
+    else: c.finish("")
 
 when defined(android):
-  proc streamChat*(provider: Provider, apiKey: string, body: JsonNode, onPiece: proc (piece: string),
-                   onDone: proc (error: string), onQueued: proc () = nil): Chat =
-    ## Posts a chat completions `body` (with "stream": true) to `provider` and streams the reply. Java times the
-    ## connection out after 15 s and the reply after 60 s without data.
-    let e = getEnv("WEBBY_DEEPSEEK_ENDPOINT")
-    let c = Chat(onPiece: onPiece, onDone: onDone, onQueued: onQueued, started: getMonoTime(),
-      lastData: getMonoTime(), lastPiece: getMonoTime(), provider: provider)
-    result = c
+  proc send(c: Chat, endpoint: string, key: (string, string), payload, accept: string) =
+    ## Java times the connection out after 15 s and the reply after 60 s without data.
     if base.httpStream == nil:
-      c.finish("Couldn't reach " & provider.name & " (no network here).")
+      c.finish("Couldn't reach " & c.provider.name & " (no network here).")
       return
     chats.add c
-    c.stream = base.httpStream("POST", (if e.len > 0: e else: provider.info.endpoint),
-      @[keyHeader(provider, apiKey), ("Content-Type", "application/json"), ("Accept", "text/event-stream"),
-        ("User-Agent", "webby")], $body,
+    c.stream = base.httpStream("POST", endpoint,
+      @[key, ("Content-Type", "application/json"), ("Accept", accept), ("User-Agent", "webby")], payload,
       proc (status: int) =
         c.gotHeaders = true
         c.status = status,
@@ -323,29 +364,80 @@ else:
     tickSource = 0
     0
 
-  proc streamChat*(provider: Provider, apiKey: string, body: JsonNode, onPiece: proc (piece: string),
-                   onDone: proc (error: string), onQueued: proc () = nil): Chat =
-    ## Posts a chat completions `body` (with "stream": true) to `provider` and streams the reply.
-    let e = getEnv("WEBBY_DEEPSEEK_ENDPOINT")
-    let u = parseUri(if e.len > 0: e else: provider.info.endpoint)
+  proc send(c: Chat, endpoint: string, key: (string, string), payload, accept: string) =
+    let u = parseUri(endpoint)
     let tls = u.scheme != "http"
     let port = if u.port.len > 0: u.port elif tls: "443" else: "80"
     let host = if ':' in u.hostname: "[" & u.hostname & "]" else: u.hostname
-    let payload = $body
     var path = if u.path.len > 0: u.path else: "/"
     if u.query.len > 0: path.add "?" & u.query
-    result = Chat(onPiece: onPiece, onDone: onDone, onQueued: onQueued, client: g_socket_client_new(),
-      cancellable: g_cancellable_new(), started: getMonoTime(), lastData: getMonoTime(), lastPiece: getMonoTime(),
-      provider: provider)
-    let (keyName, keyValue) = keyHeader(provider, apiKey)
-    result.request = "POST " & path & " HTTP/1.1\r\n" &
+    c.client = g_socket_client_new()
+    c.cancellable = g_cancellable_new()
+    c.request = "POST " & path & " HTTP/1.1\r\n" &
       "Host: " & host & (if u.port.len > 0: ":" & u.port else: "") & "\r\n" &
-      keyName & ": " & keyValue & "\r\n" &
-      "Content-Type: application/json\r\nAccept: text/event-stream\r\nUser-Agent: webby\r\nConnection: close\r\n" &
+      key[0] & ": " & key[1] & "\r\n" &
+      "Content-Type: application/json\r\nAccept: " & accept & "\r\nUser-Agent: webby\r\nConnection: close\r\n" &
       "Content-Length: " & $payload.len & "\r\n\r\n" & payload
-    g_socket_client_set_tls(result.client, tls.gboolean)
-    chats.add result
-    GC_ref(result)
-    g_socket_client_connect_to_host_async(result.client, cstring(host & ":" & port), 0, result.cancellable,
-      onConnected, cast[pointer](result))
+    g_socket_client_set_tls(c.client, tls.gboolean)
+    chats.add c
+    GC_ref(c)
+    g_socket_client_connect_to_host_async(c.client, cstring(host & ":" & port), 0, c.cancellable,
+      onConnected, cast[pointer](c))
     if tickSource == 0: tickSource = g_timeout_add(1000, tick, nil)
+
+proc streamChat*(provider: Provider, apiKey: string, body: JsonNode, onPiece: proc (piece: string),
+                 onDone: proc (error: string), onQueued: proc () = nil,
+                 onTools: proc (calls: seq[ToolCall]) = nil): Chat =
+  ## Posts a chat completions `body` (with "stream": true) to `provider` and streams the reply. A reply that ends
+  ## asking for tool calls goes to `onTools` (when given) instead of `onDone`.
+  let e = getEnv("WEBBY_DEEPSEEK_ENDPOINT")
+  result = Chat(onPiece: onPiece, onDone: onDone, onQueued: onQueued, onTools: onTools, started: getMonoTime(),
+    lastData: getMonoTime(), lastPiece: getMonoTime(), provider: provider)
+  result.send(if e.len > 0: e else: provider.info.endpoint, keyHeader(provider, apiKey), $body, "text/event-stream")
+
+const searchEndpoint* = "https://api.deepseek.com/v1/tools/search"
+const maxSearchQuery* = 128   ## characters the Search API takes in a query
+
+proc clip*(s: string, chars: int): string =
+  ## `s` cut to at most `chars` characters (UTF-8 code points).
+  var n = 0
+  var i = 0
+  while i < s.len:
+    if (s[i].ord and 0xC0) != 0x80:
+      if n == chars: return s[0 ..< i]
+      inc n
+    inc i
+  s
+
+proc parseSearchResults*(body: string): seq[SearchResult] =
+  let j = try: parseJson(body) except CatchableError: nil
+  if j == nil or j.kind != JObject or j{"results"} == nil or j{"results"}.kind != JArray: return
+  for r in j{"results"}:
+    if r.kind != JObject or r{"url"}.getStr.len == 0: continue
+    result.add SearchResult(title: r{"title"}.getStr, url: r{"url"}.getStr, snippet: r{"snippet"}.getStr,
+      summary: r{"summary"}.getStr, site: r{"site_name"}.getStr, date: r{"date"}.getStr)
+
+proc searchWeb*(apiKey, query: string, onDone: proc (results: seq[SearchResult], error: string),
+                question = "", count = 6): Chat =
+  ## Searches the web with DeepSeek's Search API (`apiKey` is the DeepSeek key). `question` is the user's own
+  ## question, which helps it read the query. `onDone` runs once, with the results or an error.
+  let e = getEnv("WEBBY_DEEPSEEK_SEARCH_ENDPOINT")
+  var body = %*{"query": clip(query.strip, maxSearchQuery), "count": count}
+  if question.strip.len > 0: body["ori_question"] = %clip(question.strip, maxSearchQuery)
+  var results: seq[SearchResult]
+  let c = Chat(started: getMonoTime(), lastData: getMonoTime(), lastPiece: getMonoTime(), provider: Provider.deepSeek)
+  c.onBody = proc (body: string) = results = parseSearchResults(body)
+  c.onDone = proc (error: string) =
+    onDone(results, if error.len > 0: "Web search failed: " & error else: "")
+  result = c
+  c.send(if e.len > 0: e else: searchEndpoint, keyHeader(Provider.deepSeek, apiKey), $body, "application/json")
+
+proc searchResultsText*(results: seq[SearchResult]): string =
+  ## The web_search tool's answer for the model.
+  if results.len == 0: return "No results."
+  for i, r in results:
+    result.add $(i + 1) & ". " & r.title & "\n   url: " & r.url & "\n"
+    if r.site.len > 0: result.add "   site: " & r.site & "\n"
+    if r.date.len >= 10: result.add "   date: " & r.date[0 ..< 10] & "\n"
+    let text = if r.summary.len > 0: r.summary else: r.snippet
+    result.add "   " & text.splitWhitespace.join(" ") & "\n\n"

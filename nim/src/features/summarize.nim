@@ -14,6 +14,8 @@ type
     question, answer, error: string
     quote: string              ## the panel text it asks about (see Job.quote), or ""
     running: bool
+    searches: seq[string]      ## web searches made for the answer (shown above it; not saved)
+    searching: string          ## the web search running now, or ""
 
   Job = ref object
     ## One tab's summary: the page it is for, the text so far, and whether it is still coming.
@@ -40,6 +42,7 @@ type
     quoteBar, quoteLabel: kit.Widget   ## above the question box: the panel text the next question is about
     overlay, askPill: kit.Widget       ## the scroller, and "Ask AI about this" over text selected in it
     pillText: string                   ## what the pill asks about
+    webToggle: kit.Widget              ## "Web": questions may search the web (DeepSeek only)
 
 var
   jobs: Table[string, Job]     ## by the tab's messagePrefix
@@ -68,6 +71,22 @@ proc storeSecret(name, value: string, sync: bool) =
 
 proc provider(): Provider = chosenProvider(secret)
 proc apiKey(): string = secret(provider().info.keySecret)
+
+# Web search for questions: the model gets a web_search tool, run on DeepSeek's Search API with the DeepSeek key.
+# Only offered when DeepSeek answers (the other providers' tool calling is untested). On unless the panel's "Web"
+# toggle is off (kept per profile).
+const maxSearchRounds = 3   ## rounds of tool calls before the model has to answer
+var webSearchOn = true
+
+proc webSearchFile(): string = profileFile("summary_web_search.json")
+
+proc webSearchAvailable(): bool = provider() == Provider.deepSeek and secret(deepSeekKeySecret).len > 0
+
+proc setWebSearch(on: bool) =
+  webSearchOn = on
+  if not incognito:
+    try: writeJsonFile(webSearchFile(), %*{"on": on})
+    except CatchableError: discard
 
 
 proc render()
@@ -344,24 +363,70 @@ proc ask(job: Job, key, text: string, provider: Provider) =
     if generation != job.generation: return
     var context: seq[tuple[question, answer: string]]
     for qa in earlier: context.add (qa.message, qa.answer)
-    let request =
+    var request =
       if job.asking: selectionQuestionRequest(job.selected, job.hasPage, job.page, job.title, job.url, context,
         entry.message, provider)
       else: questionRequest(job.hasPage, job.page, job.title, job.url, job.text, context, entry.message, provider)
-    job.chat = streamChat(provider, key, request,
-      proc (piece: string) =
+    let searchKey = if webSearchOn and provider == Provider.deepSeek: secret(deepSeekKeySecret) else: ""
+    if searchKey.len > 0: request = withWebSearch(request)
+    var rounds = 0
+    var stream: proc ()
+    proc onPiece(piece: string) =
+      if generation != job.generation: return
+      entry.answer.add piece
+      changed(job)
+    proc onDone(error: string) =
+      if generation != job.generation: return
+      job.chat = nil
+      entry.running = false
+      entry.searching = ""
+      entry.error = if error.len > 0: error
+                    elif entry.answer.strip.len == 0: provider.name & " sent back an empty answer."
+                    else: ""
+      if entry.error.len == 0: job.save()
+      changed(job)
+    proc onTools(calls: seq[ToolCall]) =
+      ## The model wants web searches: run them one after another, hand back the results, and ask again.
+      if generation != job.generation: return
+      job.chat = nil
+      inc rounds
+      let said = entry.answer   # what it wrote before the calls ("Let me look that up"): not part of the answer
+      entry.answer = ""
+      var toolCalls = newJArray()
+      for c in calls:
+        toolCalls.add %*{"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.arguments}}
+      request["messages"].add %*{"role": "assistant", "content": said, "tool_calls": toolCalls}
+      var i = 0
+      var next: proc ()
+      next = proc () =
         if generation != job.generation: return
-        entry.answer.add piece
-        changed(job),
-      proc (error: string) =
-        if generation != job.generation: return
-        job.chat = nil
-        entry.running = false
-        entry.error = if error.len > 0: error
-                      elif entry.answer.strip.len == 0: provider.name & " sent back an empty answer."
-                      else: ""
-        if entry.error.len == 0: job.save()
-        changed(job))
+        if i >= calls.len:
+          entry.searching = ""
+          if rounds >= maxSearchRounds: request["tool_choice"] = %"none"
+          stream()
+          return
+        let call = calls[i]
+        inc i
+        let query = searchQuery(call.arguments)
+        proc answer(content: string) =
+          request["messages"].add %*{"role": "tool", "tool_call_id": call.id, "content": content}
+        if call.name != webSearchToolName or query.len == 0:
+          answer("Error: unknown tool or empty query.")
+          next()
+          return
+        entry.searching = query
+        entry.searches.add query
+        changed(job)
+        job.chat = searchWeb(searchKey, query, proc (results: seq[SearchResult], error: string) =
+          if generation != job.generation: return
+          job.chat = nil
+          answer(if error.len > 0: error else: searchResultsText(results))
+          next(), question = entry.question)
+      next()
+    stream = proc () =
+      job.chat = streamChat(provider, key, request, onPiece, onDone,
+        onTools = if searchKey.len > 0: onTools else: nil)
+    stream()
   if job.asking:
     if job.reading: job.afterRead.add send   # the page's text comes first, for context
     else: send()
@@ -680,6 +745,9 @@ proc render() =
   kit.`enabled=`(panel.entry, canAsk)
   kit.`enabled=`(panel.sendButton, canAsk and not job.answering)
   kit.`visible=`(panel.quoteBar, job.quote.len > 0)
+  if panel.webToggle != nil:
+    kit.`visible=`(panel.webToggle, webSearchAvailable())
+    kit.`checked=`(panel.webToggle, webSearchOn)
   kit.`text=`(panel.quoteLabel, shortQuote(job.quote))
   kit.`placeholder=`(panel.entry, if job.quote.len > 0: "Ask about the quoted text"
     elif job.asking: "Ask about the selection" else: "Ask about this page")
@@ -720,8 +788,11 @@ proc render() =
       kit.add(box, quote)
     kit.add(box, question)
     add(box, 16)
+    for i, q in qa.searches:
+      if i == qa.searches.high and qa.searching.len > 0: add(note("Searching the web for “" & q & "”…", small = true), 6)
+      else: add(note("Searched the web for “" & q & "”", small = true), 6)
     if qa.answer.strip.len > 0: add(markdownView(qa.answer.strip), 8)
-    elif qa.running: add(note("Thinking…"), 8)
+    elif qa.running and qa.searching.len == 0: add(note("Thinking…"), 8)
     if qa.error.len > 0: add(kit.addClass(kit.label(qa.error), "error"), 8)
   watchSelections(panel.content)
 
@@ -790,7 +861,9 @@ proc showPanel(job: Job) =
   panel.entry = kit.entry(if job.asking: "Ask about the selection" else: "Ask about this page")
   panel.entry.onSubmit = proc (t: string) = askFromEntry()
   panel.sendButton = kit.iconButton("send", "Ask", askFromEntry)
-  let askRow = kit.addClass(kit.row(kit.expand(panel.entry), panel.sendButton), "webby-summary-ask")
+  panel.webToggle = kit.toggle("Web", webSearchOn, proc (on: bool) = setWebSearch(on))
+  kit.`tooltip=`(panel.webToggle, "Let DeepSeek search the web when a question needs it")
+  let askRow = kit.addClass(kit.row(kit.expand(panel.entry), panel.webToggle, panel.sendButton), "webby-summary-ask")
   askRow.spacing = 4
   # markdownCss font sizes
   panel.root = kit.addClass(kit.column(bar, kit.separator(), kit.expand(panel.overlay), kit.separator(),
@@ -910,6 +983,8 @@ proc install*() =
   windowHooks.add proc () =
     let saved = readJsonFile(zoomFile())
     if saved != nil and saved.kind == JObject: textZoom = clamp(saved{"zoom"}.getFloat(1.0), 0.6, 2.5)
+    let web = readJsonFile(webSearchFile())
+    if web != nil and web.kind == JObject: webSearchOn = web{"on"}.getBool(true)
     applyTextZoom()
     # Ctrl+plus/minus/0 size the summary text while the panel has focus or the pointer; elsewhere the keys go on as before.
     proc zoomKey(mods: int, key: uint32, factor: float) =

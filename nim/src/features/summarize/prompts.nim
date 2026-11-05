@@ -1,7 +1,7 @@
 ## What Summarize sends, on the desktop and Android: the page-text and jump-to-text page scripts, the prompts, and
 ## the chat completions requests.
 
-import std/[json, strutils]
+import std/[json, strutils, times]
 
 const
   deepSeekKeySecret* = "deepseek-api-key"   ## the key's name among the vault's secrets (synced unless unticked)
@@ -158,3 +158,37 @@ proc selectionQuestionRequest*(selected: string, hasPage: bool, page: PageText, 
     messages.add %*{"role": "assistant", "content": qa.answer}
   messages.add %*{"role": "user", "content": question}
   withProvider(%*{"model": "deepseek-chat", "stream": true, "temperature": 0.3, "messages": messages}, provider)
+
+# ---------------------------------------------------------------------------------------------------------------
+# Web search: the model may call a `web_search` function; Webby runs it on DeepSeek's Search API (deepseek.searchWeb)
+# and sends the results back as the tool's answer.
+
+const webSearchToolName* = "web_search"
+
+const webSearchRule = " You can search the web with the web_search tool. Use it when the question needs what the " &
+  "page doesn't have: recent events, other sources, checking a claim, background on a name or term. Don't search " &
+  "for what the page already answers. Search queries are short keyword queries (at most 128 characters), in " &
+  "the language most likely to find good sources. When a point comes from a web result, end it with a link to " &
+  "that result written [site name](url), using the result's own url; such links are allowed even where other " &
+  "links are not."
+
+proc withWebSearch*(request: JsonNode): JsonNode =
+  ## `request` (a chat completions request) with the web_search tool offered and the system prompt telling the
+  ## model how to use it.
+  result = request
+  let messages = result{"messages"}
+  if messages != nil and messages.kind == JArray and messages.len > 0 and messages[0]{"role"}.getStr == "system":
+    messages[0]["content"] = %(messages[0]{"content"}.getStr & webSearchRule &
+      " Today is " & now().format("yyyy-MM-dd") & ".")
+  result["tools"] = %*[{"type": "function", "function": {
+    "name": webSearchToolName,
+    "description": "Search the web. Returns the best results with title, url, site, date and a summary of each.",
+    "parameters": {"type": "object", "properties": {
+      "query": {"type": "string", "description": "The search query: a few keywords, at most 128 characters. " &
+        "Supports site:, -site:, \"exact phrase\", lang:en, after:2025-01-01 and before: operators."}},
+      "required": ["query"]}}}]
+
+proc searchQuery*(arguments: string): string =
+  ## The query from a web_search call's JSON arguments ("" when there is none).
+  let j = try: parseJson(arguments) except CatchableError: nil
+  if j != nil and j.kind == JObject: j{"query"}.getStr.strip else: ""
