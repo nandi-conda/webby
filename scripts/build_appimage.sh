@@ -59,6 +59,7 @@ cp -a "$envdir" "$app/usr"
 usr="$app/usr"
 # Only webby's own records: ⋮ > About reads webby-ladybird's version from them.
 find "$usr/conda-meta" -type f ! -name 'webby-*.json' -delete
+chmod -R a+rX "$usr/conda-meta"  # pixi writes these 0600; other users of the AppImage must read them
 rm -rf "$usr"/include "$usr"/share/{doc,man,info,gtk-doc,gir-1.0,tessdata,bash-completion,zsh} \
   "$usr"/lib/python3* "$usr"/lib/{tcl,tk,itcl,tdbc}* "$usr"/lib/pkgconfig "$usr"/share/pkgconfig "$usr"/lib/cmake \
   "$usr"/etc/conda "$usr"/bin/python* "$usr"/bin/pydoc* "$usr"/bin/idle* "$usr"/bin/2to3*
