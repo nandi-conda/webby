@@ -16,7 +16,13 @@ version="${1:?usage: build_appimage.sh VERSION [OUT_DIR]}"
 out="$(mkdir -p "${2:-dist}" && cd "${2:-dist}" && pwd)"
 here="$(cd "$(dirname "$0")/.." && pwd)"
 channel="${CHANNEL:-nandi-testing}"
-update_info="gh-releases-zsync|nandi-conda|webby|appimage|webby-x86_64.AppImage.zsync"
+# UPDATE_INFO overrides where the AppImage updates from (the forge build points it at the forge release).
+update_info="${UPDATE_INFO:-gh-releases-zsync|nandi-conda|webby|appimage|webby-x86_64.AppImage.zsync}"
+# LOCAL_CHANNEL: a local conda channel (rattler-build output dir) searched before the prefix.dev one, so the
+# forge job can pack a webby it just built instead of a published one (conda-forge then covers any dependency
+# the mirror job hasn't copied to the channel yet).
+local_channel="${LOCAL_CHANNEL:+\"$LOCAL_CHANNEL\", }"
+extra_channel="${LOCAL_CHANNEL:+, \"conda-forge\"}"
 work="${WORK_DIR:-$(mktemp -d)}"
 tools="$work/tools"
 mkdir -p "$tools"
@@ -34,7 +40,7 @@ mkdir -p "$work/env"
 cat > "$work/env/pixi.toml" <<EOF
 [workspace]
 name = "webby-appimage"
-channels = ["https://prefix.dev/$channel"]
+channels = [${local_channel}"https://prefix.dev/$channel"${extra_channel}]
 platforms = ["linux-64"]
 
 [system-requirements]
