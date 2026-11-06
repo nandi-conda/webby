@@ -1,0 +1,29 @@
+# CI for webby on the fileapi forge (https://fileapi.fastapicloud.dev/forge/nandi.uk/webby), the mirror of
+# github.com/nandi-conda/webby. GitHub stays canonical; jobs here run on Depot (DEPOT_TOKEN + DEPOT_PROJECT_ID
+# user secrets).
+
+# Commits to GitHub's main come in by themselves: the server checks GitHub every minute and fast-forwards the
+# forge's main, which runs the jobs below like a push. No token: the GitHub repo is public.
+[upstream]
+url = "https://github.com/nandi-conda/webby.git"
+branches = ["main"]
+interval = 60
+
+# The AppImage, like publish.yml's `appimage` job on GitHub: waits for this commit's webby conda package on
+# prefix.dev/nandi-testing (GitHub publishes it), packs it with scripts/build_appimage.sh, checks it starts under
+# Xvfb on Ubuntu 22.04 and puts webby-x86_64.AppImage + .zsync on the forge's rolling `appimage` release.
+# See scripts/forge_appimage.py. "Run now" on the Deploys tab packs the newest webby if the release lacks it.
+[[job]]
+name = "appimage"
+branches = ["main"]
+timeout = 3600
+image = "ubuntu:22.04"
+run = """
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq --no-install-recommends ca-certificates curl python3 python3-pip xvfb xauth procps file \
+  desktop-file-utils > /dev/null
+pip3 install -q zstandard
+curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.56.0 bash > /dev/null
+python3 -u scripts/forge_appimage.py
+"""
