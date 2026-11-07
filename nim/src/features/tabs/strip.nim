@@ -171,8 +171,8 @@ proc layoutPinned() =
   kit.`visible=`(pinnedGrid, n > 0)
 
 # ---------------------------------------------------------------------------------------------------------------
-# Tabs tinted by age: one hue (orange) that is strongest on a tab opened a moment ago and fades step by step to no
-# tint after 12 hours. Each tab keeps when it was opened in props["created"] (and open_tabs.json), so restored
+# Tabs marked by age: a small orange dot that is strongest on a tab opened a moment ago and fades step by step to
+# nothing after 12 hours. Each tab keeps when it was opened in props["created"] (and open_tabs.json), so restored
 # tabs keep their age. Pinned tiles aren't tinted. Turned off with the strip menu's "Color tabs by age" (tabs.json).
 
 const ageSteps = [5 * 60, 20 * 60, 3600, 3 * 3600, 12 * 3600]   ## seconds: the end of each tint
@@ -189,9 +189,22 @@ proc ageStep(t: Tab, now: int): int =
   for i, s in ageSteps:
     if now - c < s: return i
 
+var ageDots: Table[Tab, kit.Widget]   ## the small dot beside each tab's title
+
 proc styleAge(t: Tab, now = int(epochTime())) =
+  ## A young tab gets a small orange dot before its close button, fainter at each step; none from 12 hours on.
   let step = ageStep(t, now)
-  for i in 0 .. ageSteps.len: kit.setClass(t.button, "webby-age-" & $i, i == step)
+  var d = ageDots.getOrDefault(t)
+  if step < 0 or step >= ageSteps.len:
+    if d != nil: kit.`visible=`(d, false)
+    return
+  if d == nil:
+    d = kit.label("●")
+    kit.addClass(d, "webby-age-dot")
+    kit.insert(t.button, d, max(0, t.button.children.find(t.closeButton)))
+    ageDots[t] = d
+  for i in 0 ..< ageSteps.len: kit.setClass(d, "webby-age-" & $i, i == step)
+  kit.`visible=`(d, true)
 
 proc styleAges() =
   let now = int(epochTime())
@@ -414,6 +427,7 @@ proc install*() =
   tabClosedHooks.add proc (t: Tab) =
     if lastActive == t: lastActive = nil
     badges.del(t)
+    ageDots.del(t)
     dragIds.del(t)
     if isSessionUrl(t.url):
       closedTabs.add DeviceTab(title: tabTitle(t.title, t.url), url: t.url)
@@ -438,7 +452,7 @@ proc install*() =
   tabMenuHooks.add fillTabMenu
   windowHooks.add proc () =
     loadCss("""
-.webby-vertical-tabs button.webby-tab { border-radius: 6px; margin: 1px 4px; }
+.webby-vertical-tabs button.webby-tab { border-radius: 6px; margin: 0 6px; padding: 5px 6px 5px 8px; }
 button.webby-pinned-tab { padding: 6px 13px; border-radius: 8px; margin: 0;
   border: 1px solid transparent; background-image: none; box-shadow: none; outline: none; }
 .webby-vertical-tabs button.webby-pinned-tab { padding: 9px 12px; margin: 0; }
@@ -453,24 +467,12 @@ button.webby-pinned-tab.webby-active-tab:hover { background-color: alpha(@theme_
 .webby-badge-2 { background-color: #137333; } .webby-badge-3 { background-color: #1967d2; }
 .webby-badge-4 { background-color: #8430ce; } .webby-badge-5 { background-color: #007b83; }
 .webby-badge-6 { background-color: #c2185b; } .webby-badge-7 { background-color: #5f6368; }
-.webby-vertical-tabs { border-right: 1px solid alpha(currentColor, 0.15); }
+.webby-vertical-tabs { border-right: 1px solid alpha(currentColor, 0.08); padding-top: 2px; }
 .webby-pinned-grid { margin: 2px 4px; }
-button.webby-tab.webby-age-0 { box-shadow: inset 0 2px alpha(#ff6d00, 1.0); }
-button.webby-tab.webby-age-1 { box-shadow: inset 0 2px alpha(#ff6d00, 0.6); }
-button.webby-tab.webby-age-2 { box-shadow: inset 0 2px alpha(#ff6d00, 0.35); }
-button.webby-tab.webby-age-3 { box-shadow: inset 0 2px alpha(#ff6d00, 0.2); }
-button.webby-tab.webby-age-4 { box-shadow: inset 0 2px alpha(#ff6d00, 0.1); }
-.webby-vertical-tabs button.webby-tab.webby-age-0 { box-shadow: inset 3px 0 alpha(#ff6d00, 1.0); }
-.webby-vertical-tabs button.webby-tab.webby-age-1 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.6); }
-.webby-vertical-tabs button.webby-tab.webby-age-2 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.35); }
-.webby-vertical-tabs button.webby-tab.webby-age-3 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.2); }
-.webby-vertical-tabs button.webby-tab.webby-age-4 { box-shadow: inset 3px 0 alpha(#ff6d00, 0.1); }
-button.webby-tab.webby-age-0:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.28); }
-button.webby-tab.webby-age-1:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.15); }
-button.webby-tab.webby-age-2:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.08); }
-button.webby-tab.webby-age-3:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.04); }
-button.webby-tab.webby-age-4:not(.webby-active-tab) { background-color: alpha(#ff6d00, 0.018); }
-button.webby-tab.webby-age-5:not(.webby-active-tab) label { opacity: 0.72; }
+button.webby-pinned-tab label, button.webby-pinned-tab.webby-active-tab label { opacity: 1; }
+button.webby-tab label.webby-age-dot { color: #ff6d00; font-size: 7px; margin: 0 3px; opacity: 1; }
+button.webby-tab label.webby-age-dot.webby-age-1 { opacity: 0.7; } button.webby-tab label.webby-age-dot.webby-age-2 { opacity: 0.45; }
+button.webby-tab label.webby-age-dot.webby-age-3 { opacity: 0.28; } button.webby-tab label.webby-age-dot.webby-age-4 { opacity: 0.15; }
 .webby-strip-space, .webby-strip-space:hover { background: none; box-shadow: none; border: none; }
 """)
     # The strip's empty space: a right-click opens the strip's menu, a double click a new tab.
