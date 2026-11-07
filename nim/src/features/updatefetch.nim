@@ -22,5 +22,5 @@ proc getRetrying*(url: string, headers: seq[(string, string)], onDone: proc (r: 
 proc failureText*(r: Response): string =
   ## For the "Could not check for updates" toast.
   if r.error.len > 0: r.error
-  elif r.status in 500 .. 599: "GitHub answered " & $r.status & ", try again in a few minutes"
+  elif r.status in 500 .. 599: "the server answered " & $r.status & ", try again in a few minutes"
   else: $r.status

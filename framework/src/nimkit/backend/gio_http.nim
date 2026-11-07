@@ -42,6 +42,13 @@ type
     raw: string
     timer: cuint
     extended: bool
+    # Streaming (gioStream): the body goes to onData as it comes instead of into `raw`.
+    stream: bool
+    onHeaders: proc (r: Response): bool
+    onData: proc (data: string)
+    head: Response
+    headDone: bool
+    left: int64          ## body bytes still to come (-1: until the connection closes)
 
 proc errorText(e: pointer): string =
   if e == nil: return "unknown error"
@@ -97,6 +104,48 @@ proc parse(q: Request): (bool, Response) =
 
 proc readMore(q: Request)
 
+proc onTimeout(data: pointer): gboolean {.cdecl.}
+
+proc streamed(q: Request, s: string) =
+  ## A streaming request's next bytes: the head once it is all there (onHeaders may stop it), then the body.
+  # An idle limit instead of a total one: a big download can take many minutes.
+  if q.timer != 0: discard g_source_remove(q.timer)
+  q.extended = true
+  q.timer = g_timeout_add(30_000, onTimeout, cast[pointer](q))
+  var body = s
+  if not q.headDone:
+    q.raw.add s
+    let e = q.raw.find("\r\n\r\n")
+    if e < 0:
+      q.readMore()
+      return
+    let lines = q.raw[0 ..< e].split("\r\n")
+    let parts = lines[0].split(' ', 2)
+    q.head.status = if parts.len >= 2: (try: parseInt(parts[1]) except ValueError: 0) else: 0
+    q.head.reason = if parts.len >= 3: parts[2] else: ""
+    for h in lines[1 .. ^1]:
+      let colon = h.find(':')
+      if colon > 0: q.head.headers.add (h[0 ..< colon].strip.toLowerAscii, h[colon + 1 .. ^1].strip)
+    q.headDone = true
+    body = q.raw[e + 4 .. ^1]
+    q.raw = ""
+    if "chunked" in q.head.header("transfer-encoding").toLowerAscii:
+      q.fail("Can't download from " & q.host & " (chunked answer).")
+      return
+    let length = q.head.header("content-length")
+    q.left = if length.len > 0: (try: parseBiggestInt(length) except ValueError: -1) else: -1
+    if q.onHeaders != nil and not q.onHeaders(q.head):
+      q.finish(q.head)
+      return
+  if body.len > 0:
+    if q.left >= 0:
+      if body.len > q.left: body.setLen(int(q.left))
+      q.left -= body.len
+    q.onData(body)
+    if q.finished: return
+  if q.left == 0: q.finish(q.head)
+  else: q.readMore()
+
 proc onRead(source, res, data: pointer) {.cdecl.} =
   let q = cast[Request](data)
   defer: GC_unref(q)
@@ -107,6 +156,10 @@ proc onRead(source, res, data: pointer) {.cdecl.} =
     return
   if n < 0:
     q.fail("Can't reach " & q.host & " (" & errorText(err) & ").")
+    return
+  if n == 0 and q.stream:
+    if q.headDone and q.left <= 0: q.finish(q.head)
+    else: q.fail("Can't reach " & q.host & " (the connection closed).")
     return
   if n == 0:
     # Closed: whatever came is the response.
@@ -119,6 +172,9 @@ proc onRead(source, res, data: pointer) {.cdecl.} =
     return
   var s = newString(n)
   copyMem(addr s[0], addr q.readBuf[0], n)
+  if q.stream:
+    q.streamed(s)
+    return
   q.raw.add s
   let (complete, r) = q.parse()
   if complete: q.finish(r) else: q.readMore()
@@ -169,9 +225,8 @@ proc onTimeout(data: pointer): gboolean {.cdecl.} =
   else: q.fail(q.host & " took too long to answer.")
   0
 
-proc gioRequest*(meth, url: string, headers: seq[(string, string)], body: string,
-              onDone: proc (r: Response)) =
-  ## Sends one request; `onDone` runs once, on the GTK thread. 15 s to connect, 45 s in all.
+proc start(meth, url: string, headers: seq[(string, string)], body: string, onDone: proc (r: Response),
+           onHeaders: proc (r: Response): bool = nil, onData: proc (data: string) = nil) =
   var u: Uri
   try: u = parseUri(url)
   except CatchableError:
@@ -185,7 +240,8 @@ proc gioRequest*(meth, url: string, headers: seq[(string, string)], body: string
   let host = if ':' in u.hostname: "[" & u.hostname & "]" else: u.hostname
   var path = if u.path.len > 0: u.path else: "/"
   if u.query.len > 0: path.add "?" & u.query
-  let q = Request(host: u.hostname, onDone: onDone, client: g_socket_client_new(), cancellable: g_cancellable_new())
+  let q = Request(host: u.hostname, onDone: onDone, client: g_socket_client_new(), cancellable: g_cancellable_new(),
+                  stream: onData != nil, onHeaders: onHeaders, onData: onData)
   q.request = meth & " " & path & " HTTP/1.1\r\nHost: " & host & (if u.port.len > 0: ":" & u.port else: "") &
     "\r\nUser-Agent: " & (if userAgent.len > 0: userAgent else: appName) & "\r\nConnection: close\r\n"
   for (k, v) in headers: q.request.add k & ": " & v & "\r\n"
@@ -198,6 +254,19 @@ proc gioRequest*(meth, url: string, headers: seq[(string, string)], body: string
   GC_ref(q)
   g_socket_client_connect_to_host_async(q.client, cstring(host & ":" & port), 0, q.cancellable, onConnected,
     cast[pointer](q))
+
+proc gioRequest*(meth, url: string, headers: seq[(string, string)], body: string,
+              onDone: proc (r: Response)) =
+  ## Sends one request; `onDone` runs once, on the GTK thread. 15 s to connect, 45 s in all.
+  start(meth, url, headers, body, onDone)
+
+proc gioStream*(url: string, headers: seq[(string, string)], onHeaders: proc (r: Response): bool,
+                onData: proc (data: string), onDone: proc (r: Response)) =
+  ## A GET whose body is handed to `onData` piece by piece as it arrives (for downloads too big to hold): first
+  ## `onHeaders` with the status and headers (return false to stop there), then `onData`, then `onDone` once
+  ## with the status and headers (`error` set if it broke off). 15 s to connect, then at most 30 s without data.
+  ## No redirects, and no chunked answers.
+  start("GET", url, headers, "", onDone, onHeaders, onData)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Timers

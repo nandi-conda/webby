@@ -1,9 +1,9 @@
 ## Updates for the AppImage: when webby runs from webby-x86_64.AppImage ($APPIMAGE, set by the AppImage runtime),
-## it looks at the rolling `appimage` GitHub release (scripts/build_appimage.sh, .github/workflows/publish.yml)
-## half a minute after it starts and every 6 hours. A newer version is downloaded with zsync2 (bundled in the
-## AppImage), which fetches only the blocks that changed and uses the current file for the rest, then it replaces
-## the AppImage file. The files are fetched by their release asset ids (the API's asset URLs): right after a
-## publish, github.com's /releases/download/ address can still redirect to the file it replaced. This webby keeps running from its own mount; the new one starts next time, or now through
+## it looks at the rolling `appimage` release on the fileapi forge (nandi.uk/webby, built by .forge/jobs.toml with
+## scripts/forge_appimage.py) half a minute after it starts and every 6 hours. A newer version is downloaded with
+## zsync2 (bundled in the AppImage), which fetches only the blocks that changed and uses the current file for the
+## rest, when the forge answers byte ranges; otherwise the whole file is downloaded. Then it replaces the AppImage
+## file. This webby keeps running from its own mount; the new one starts next time, or now through
 ## ⋮ > Help > Restart to update. ⋮ > Help > Check for updates asks at once.
 ##
 ## Conda installs update with `pixi global update webby` (or `pixi install` in a checkout) instead. That replaces the
@@ -18,12 +18,15 @@ from about import buildInfo
 from nimkit/core as kit import nil
 import nimkit/services
 import updatebar, updatefetch
+from nimkit/backend/gio_http import gioStream
 
 const
-  # -d:webbyUpdateApi=... tests against a local server (a JSON file with "name" and "assets": [{"name", "url"}]).
-  releaseApi {.strdefine: "webbyUpdateApi".} = "https://api.github.com/repos/nandi-conda/webby/releases/tags/appimage"
+  # -d:webbyUpdateApi=... tests against a local server (a JSON file with "name" and
+  # "assets": [{"name", "download_url"}]).
+  releaseApi {.strdefine: "webbyUpdateApi".} =
+    "https://fileapi.fastapicloud.dev/api/forge/repos/nandi.uk/webby/releases/appimage"
   fileName = "webby-x86_64.AppImage"
-  releasePage = "https://github.com/nandi-conda/webby/releases/tag/appimage"
+  releasePage = "https://fileapi.fastapicloud.dev/forge/nandi.uk/webby/-/releases"
   checkEveryMs = 6 * 60 * 60 * 1000
 
 type State = enum idle, checking, downloading, ready
@@ -60,16 +63,6 @@ proc spawn(args: seq[string], onExit: proc (ok: bool)): bool =
       g_spawn_close_pid(pid)
       let hook = exitHook
       shielded("update", proc () = hook(status == 0)), nil)
-
-proc fetch(url: string, headers: seq[(string, string)], onDone: proc (r: Response), follow = 3) =
-  ## A GET that follows redirects (up to `follow`); asset downloads redirect to a signed address.
-  request("GET", url, proc (r: Response) =
-    let location = r.header("location")
-    if r.status in 300 .. 399 and location.len > 0 and follow > 0:
-      # The signed address must not get the API's headers.
-      fetch(location, @[], onDone, follow - 1)
-    else: onDone(r),
-    headers = headers)
 
 proc restart()
 
@@ -124,28 +117,52 @@ proc download(version, fileAsset, zsyncAsset: string) =
     log("webby: updated " & appImage & " to " & version)
     updatebar.show("Webby " & version & " is ready. It starts next time you open Webby.", buttonText = "Restart",
       onButton = restart, reopen = true)
-  let octets = @[("Accept", "application/octet-stream")]
-  # The .zsync (block checksums of the new file), then the file's own signed address, for zsync2's block GETs.
-  # (zsync2 can't send the Accept header the API wants, and finding the address itself it asks with HEAD, which
-  # GitHub answers with an address signed for HEAD only.)
-  fetch(zsyncAsset, octets, proc (r: Response) =
+  proc zsync(fileUrl: string) =
+    # Not -q, so it prints its progress; sh sends that to the log.
+    let args = @["/bin/sh", "-c", "log=$1; shift; exec \"$@\" >\"$log\" 2>&1", "sh", progressLog,
+                 zsync2, "-i", appImage, "-o", part, "-u", fileUrl, zsyncFile]
+    if not spawn(args, finished):
+      failed("could not start zsync2")
+      return
+    poll = every(500, proc () =
+      let fraction = try: lastPercent(readFile(progressLog)) except CatchableError: -1.0
+      if state == downloading and fraction >= 0: updatebar.show(downloadingText, fraction))
+  proc whole(fileUrl: string) =
+    ## The forge doesn't answer byte ranges (zsync2 needs them): the whole file, straight to `part`.
+    var f: File
+    if not open(f, part, fmWrite): (failed("can't write " & part); return)
+    var size, got = 0'i64
+    var shown = -1
+    gioStream(fileUrl, @[], proc (r: Response): bool =
+      size = (try: parseBiggestInt(r.header("content-length")) except ValueError: 0)
+      r.status == 200,
+    proc (data: string) =
+      try: f.write(data)
+      except IOError: discard
+      got += data.len
+      if size > 0:
+        let permille = int(got * 1000 div size)
+        if permille != shown:
+          shown = permille
+          updatebar.show(downloadingText, permille / 1000),
+    proc (r: Response) =
+      f.close()
+      if r.status != 200 or r.error.len > 0 or (size > 0 and got != size):
+        failed("file: " & $r.status & " " & r.error & " (" & $got & " of " & $size & " bytes)")
+      else: finished(true))
+  # The .zsync (block checksums of the new file), then whether the file's address answers a byte range.
+  getRetrying(zsyncAsset, @[], proc (r: Response) =
     if r.status != 200: (failed("zsync file: " & $r.status & " " & r.error); return)
     try: writeFile(zsyncFile, r.body)
     except CatchableError as e: (failed(e.msg); return)
-    request("GET", fileAsset, proc (r: Response) =
-      let location = r.header("location")
-      let fileUrl = if r.status in 300 .. 399 and location.len > 0: location else: fileAsset
-      if r.status >= 400 or r.status == 0: (failed("file: " & $r.status & " " & r.error); return)
-      # Not -q, so it prints its progress; sh sends that to the log.
-      let args = @["/bin/sh", "-c", "log=$1; shift; exec \"$@\" >\"$log\" 2>&1", "sh", progressLog,
-                   zsync2, "-i", appImage, "-o", part, "-u", fileUrl, zsyncFile]
-      if not spawn(args, finished):
-        failed("could not start zsync2")
-        return
-      poll = every(500, proc () =
-        let fraction = try: lastPercent(readFile(progressLog)) except CatchableError: -1.0
-        if state == downloading and fraction >= 0: updatebar.show(downloadingText, fraction)),
-      headers = octets & @[("Range", "bytes=0-0")]))
+    var ranges = false
+    gioStream(fileAsset, @[("Range", "bytes=0-0")], proc (r: Response): bool =
+      ranges = r.status == 206
+      false,
+    proc (data: string) = discard,
+    proc (r: Response) =
+      if r.status == 0: (failed("file: " & r.error); return)
+      if ranges: zsync(fileAsset) else: whole(fileAsset)))
 
 proc check(manual = false) =
   if state in {checking, downloading}: return
@@ -155,7 +172,7 @@ proc check(manual = false) =
   manualCheck = manual
   state = checking
   let current = buildInfo().version
-  getRetrying(releaseApi, @[("Accept", "application/vnd.github+json")], proc (r: Response) =
+  getRetrying(releaseApi, @[], proc (r: Response) =
     state = idle
     if r.status != 200:
       log("webby: update check failed: " & $r.status & " " & r.error)
@@ -168,8 +185,8 @@ proc check(manual = false) =
       for word in release{"name"}.getStr.splitWhitespace:
         if word.len > 0 and word[0] in Digits: latest = word
       for a in release{"assets"}.getElems:
-        if a{"name"}.getStr == fileName: fileAsset = a{"url"}.getStr
-        elif a{"name"}.getStr == fileName & ".zsync": zsyncAsset = a{"url"}.getStr
+        if a{"name"}.getStr == fileName: fileAsset = a{"download_url"}.getStr
+        elif a{"name"}.getStr == fileName & ".zsync": zsyncAsset = a{"download_url"}.getStr
     except CatchableError: discard
     log("webby: update check: latest " & latest & ", this is " & current)
     if latest.len == 0 or fileAsset.len == 0 or zsyncAsset.len == 0 or not newer(latest, current):
