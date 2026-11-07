@@ -133,9 +133,7 @@ proc sessionGroup(s: SavedSession): kit.Widget =
 
 proc fillPanel(box: kit.Widget) =
   let actions = kit.addClass(kit.row(
-    kit.iconButton("add", "Save open tabs as session", proc () = saveOpenTabs(), 16),
-    kit.iconButton("move_to_inbox_outlined", "Close all tabs and save as session",
-      proc () = saveOpenTabs(closeAll = true), 16)), "webby-panel-actions")
+    kit.iconButton("add", "Save open tabs as session", proc () = saveOpenTabs(), 16)), "webby-panel-actions")
   actions.spacing = 2
   let list = sessions()
   if list.len > 0:
@@ -164,8 +162,8 @@ proc fillPanel(box: kit.Widget) =
     kit.add(box, strip)
   let body = kit.addClass(kit.column(), "webby-panel-body")
   if list.len == 0:
-    kit.add(body, dimLabel("No saved sessions. Save your open tabs with the + above, with \"Close all " &
-      "tabs and save as session\". Closing the window saves its tabs here too."))
+    kit.add(body, dimLabel("No saved sessions. Save your open tabs with the + above, or with \"Close all " &
+      "tabs and save as session\" on the toolbar. Closing the window saves its tabs here too."))
   else:
     var total = 0
     for s in list: total += s.tabs.len
@@ -221,4 +219,6 @@ proc install*() =
 .webby-panel-body { padding: 8px; }
 .webby-error { color: #e5484d; padding: 4px 8px; }
 """)
+    discard addToolbarButton("move_to_inbox_outlined", "Close all tabs and save as session",
+      proc () = saveOpenTabs(closeAll = true))
     discard addToolbarButton("layers_outlined", "Sessions", toggleSessionsPanel, "layers", "Sessions")
