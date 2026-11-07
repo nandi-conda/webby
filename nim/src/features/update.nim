@@ -17,7 +17,7 @@ from ../ffi import ladybirdPrefix
 from about import buildInfo
 from nimkit/core as kit import nil
 import nimkit/services
-import updatebar
+import updatebar, updatefetch
 
 const
   # -d:webbyUpdateApi=... tests against a local server (a JSON file with "name" and "assets": [{"name", "url"}]).
@@ -155,11 +155,11 @@ proc check(manual = false) =
   manualCheck = manual
   state = checking
   let current = buildInfo().version
-  request("GET", releaseApi, proc (r: Response) =
+  getRetrying(releaseApi, @[("Accept", "application/vnd.github+json")], proc (r: Response) =
     state = idle
     if r.status != 200:
       log("webby: update check failed: " & $r.status & " " & r.error)
-      if manualCheck: kit.toast("Could not check for updates (" & (if r.error.len > 0: r.error else: $r.status) & ")")
+      if manualCheck: kit.toast("Could not check for updates (" & failureText(r) & ")")
       return
     var latest, fileAsset, zsyncAsset = ""
     try:
@@ -175,8 +175,7 @@ proc check(manual = false) =
     if latest.len == 0 or fileAsset.len == 0 or zsyncAsset.len == 0 or not newer(latest, current):
       if manualCheck: kit.toast("Webby is up to date (" & current & ")")
       return
-    download(latest, fileAsset, zsyncAsset),
-    headers = @[("Accept", "application/vnd.github+json")])
+    download(latest, fileAsset, zsyncAsset))
 
 proc restart() =
   ## Quits (the quit hooks save the tabs, which the new one opens), then starts the AppImage again.

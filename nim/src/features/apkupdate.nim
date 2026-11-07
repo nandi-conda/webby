@@ -13,11 +13,11 @@ import ../browser
 from about import buildInfo
 from nimkit/core as kit import nil
 import nimkit/services
-import updatebar
+import updatebar, updatefetch
 
 const
   releasesApi {.strdefine: "webbyAndroidReleasesApi".} =
-    "https://api.github.com/repos/nandi-conda/webby/releases?per_page=50"
+    "https://api.github.com/repos/nandi-conda/webby/releases?per_page=20"
   tagPrefix = "webby-nim-android-"
   apkName = "webby-nim-android-arm64.apk"
   checkEveryMs = 6 * 60 * 60 * 1000
@@ -70,11 +70,11 @@ proc check(manual = false) =
   manualCheck = manual
   state = checking
   let current = buildInfo().version
-  request("GET", releasesApi, proc (r: Response) =
+  getRetrying(releasesApi, @[("Accept", "application/vnd.github+json")], proc (r: Response) =
     state = idle
     if r.status != 200:
       log("webby: update check failed: " & $r.status & " " & r.error)
-      if manualCheck: kit.toast("Could not check for updates (" & (if r.error.len > 0: r.error else: $r.status) & ")")
+      if manualCheck: kit.toast("Could not check for updates (" & failureText(r) & ")")
       return
     var version, apk, sha = ""
     var size = 0
@@ -102,8 +102,7 @@ proc check(manual = false) =
     apkSize = size
     state = available
     if manualCheck: offer()
-    elif load(dismissedKey) != version: offer(),
-    headers = @[("Accept", "application/vnd.github+json")])
+    elif load(dismissedKey) != version: offer())
 
 proc onHostEvent(name, data: string) =
   case name
