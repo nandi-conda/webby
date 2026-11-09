@@ -1,0 +1,69 @@
+diff --git a/Libraries/LibSandbox/Seccomp.cpp b/Libraries/LibSandbox/Seccomp.cpp
+index df326aee15..d1b59cca2e 100644
+--- a/Libraries/LibSandbox/Seccomp.cpp
++++ b/Libraries/LibSandbox/Seccomp.cpp
+@@ -1785,6 +1785,39 @@ void SeccompPolicy::allow_memory_protection_keys()
+ #endif
+ }
+ 
++void SeccompPolicy::refuse_process_creation()
++{
++    // webby: Fail an attempt to start a process with EPERM instead of killing the process. The NVIDIA EGL driver
++    //        (libnvidia-glsi) posix_spawn()s a helper the first time a display is initialized, which in the Compositor
++    //        happens for the first WebGL context, long after the sandbox is in place. posix_spawn() reports the error and
++    //        the driver carries on without its helper. Thread clones are allowed earlier in the filter (allow_threads()),
++    //        so only clones that would make a new process reach this.
++#ifdef __NR_clone
++    append(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_clone, 0, 1));
++    append(SECCOMP_ERRNO(EPERM));
++#endif
++#ifdef __NR_clone3
++    append(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_clone3, 0, 1));
++    append(SECCOMP_ERRNO(ENOSYS));
++#endif
++#ifdef __NR_fork
++    append(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_fork, 0, 1));
++    append(SECCOMP_ERRNO(EPERM));
++#endif
++#ifdef __NR_vfork
++    append(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_vfork, 0, 1));
++    append(SECCOMP_ERRNO(EPERM));
++#endif
++#ifdef __NR_execve
++    append(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_execve, 0, 1));
++    append(SECCOMP_ERRNO(EPERM));
++#endif
++#ifdef __NR_execveat
++    append(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_execveat, 0, 1));
++    append(SECCOMP_ERRNO(EPERM));
++#endif
++}
++
+ void SeccompPolicy::allow_threads()
+ {
+ #ifdef __NR_clone
+diff --git a/Libraries/LibSandbox/Seccomp.h b/Libraries/LibSandbox/Seccomp.h
+index 3cb6c101ea..84868f312a 100644
+--- a/Libraries/LibSandbox/Seccomp.h
++++ b/Libraries/LibSandbox/Seccomp.h
+@@ -24,6 +24,7 @@ public:
+     void allow_filesystem_writes();
+     void allow_file_descriptor_operations();
+     void allow_process_creation();
++    void refuse_process_creation();
+     void allow_ipc();
+     void allow_socket_pairs();
+     void broker_unix_socket_connections();
+diff --git a/Services/Compositor/SandboxLinux.cpp b/Services/Compositor/SandboxLinux.cpp
+index 1c71f4635f..a651bef6e5 100644
+--- a/Services/Compositor/SandboxLinux.cpp
++++ b/Services/Compositor/SandboxLinux.cpp
+@@ -39,6 +39,8 @@ ErrorOr<void> apply_sandbox(StringView, StringView, StringView)
+     // Some GPU drivers allocate writable executable code heaps lazily after
+     // context creation, including while handling WebGL commands.
+     policy.allow_writable_executable_memory_mappings();
++    // webby: The NVIDIA EGL driver tries to spawn a helper when WebGL first initializes it; refuse that, don't crash.
++    policy.refuse_process_creation();
+     TRY(policy.install());
+ 
+     return {};
