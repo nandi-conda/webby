@@ -3,7 +3,7 @@
 ## toolbar's bookmarks button) browses, searches, edits, reorders, imports and exports them. Items drag to reorder
 ## on the bar and in the manager. The address bar gets matching bookmarks.
 
-import std/strutils
+import std/[strutils, times]
 import ../browser
 from nimkit/core as kit import nil
 import bookmarks/store
@@ -53,12 +53,18 @@ proc labeled(box: kit.Widget, label: string, w: kit.Widget) =
   r.spacing = 10
   kit.add(box, r)
 
-proc editBookmark*(node: Bookmark, justAdded = false) =
-  ## Edits `node`'s name, address and folder, or removes it.
+var
+  starEditor: kit.Popover     ## the star's bookmark bubble while it shows
+  starEditorClosedAt: float   ## when the user last closed it (a click outside, Esc)
+  starEditorSave: proc ()     ## keeps the bubble's edits
+
+proc editBookmark*(node: Bookmark, justAdded = false, anchor: kit.Widget = nil) =
+  ## Edits `node`'s name, address and folder, or removes it: in a bubble under `anchor` (the star) if given, as
+  ## Chrome does, else in a dialog.
   let heading = if node.isFolder: "Edit folder" elif justAdded: "Bookmark added" else: "Edit bookmark"
   let box = kit.column()
   box.spacing = 8
-  discard kit.sized(box, 420)
+  discard kit.sized(box, if anchor != nil: 360 else: 420)
   let title = kit.entry(text = node.title)
   labeled(box, "Name", title)
   var url: kit.Widget
@@ -81,6 +87,45 @@ proc editBookmark*(node: Bookmark, justAdded = false) =
       names.add path(f)
     combo = kit.dropdown(names, choices.find(parent))
     labeled(box, "Folder", combo)
+  proc save() =
+    if find(node.id) == nil: return   # removed meanwhile
+    let i = if combo != nil: kit.selected(combo) else: -1
+    update(node, title = kit.text(title).strip, setTitle = true,
+      url = if url != nil: kit.text(url).strip else: "",
+      parent = if i in 0 ..< choices.len: choices[i] else: nil)
+
+  if anchor != nil and anchor.realized:
+    # The star's bubble: Remove / Done; a click outside it (the star again included) or Esc closes it and keeps
+    # the edits, as Chrome's does.
+    if starEditor != nil: kit.hidePopover(starEditor)
+    let content = kit.column()
+    content.spacing = 10
+    kit.add(content, kit.addClass(kit.label(heading), "bold"))
+    kit.add(content, box)
+    let actions = kit.row(kit.spacer())
+    actions.spacing = 6
+    var p: kit.Popover
+    if not node.isRoot:
+      kit.add(actions, kit.addClass(kit.button("Remove", proc () =
+        kit.hidePopover(p)
+        remove(node)), "destructive"))
+    kit.add(actions, kit.addClass(kit.button("Done", proc () =
+      kit.hidePopover(p)
+      save()), "suggested"))
+    kit.add(content, actions)
+    p = kit.popover(anchor, content, modal = true, onClose = proc () =
+      starEditorClosedAt = epochTime()
+      save())
+    starEditor = p
+    starEditorSave = save
+    for e in [title, url]:
+      if e != nil: e.onSubmit = proc (t: string) =
+        kit.hidePopover(p)
+        save()
+    kit.showPopover(p)
+    kit.focus(title)
+    return
+
   var buttons: seq[string]
   var removeAt, cancelAt = -1
   if not node.isRoot:
@@ -94,22 +139,27 @@ proc editBookmark*(node: Bookmark, justAdded = false) =
   var d: kit.Dialog
   d = kit.dialog(heading, box, buttons, destructive = removeAt, onResult = proc (r: int) =
     if r == removeAt and r >= 0: remove(node)
-    elif r == doneAt:
-      let i = if combo != nil: kit.selected(combo) else: -1
-      update(node, title = kit.text(title).strip, setTitle = true,
-        url = if url != nil: kit.text(url).strip else: "",
-        parent = if i in 0 ..< choices.len: choices[i] else: nil))
+    elif r == doneAt: save())
   for e in [title, url]:
     if e != nil: e.onSubmit = proc (t: string) = kit.dialogResult(d, doneAt)
   kit.focus(title)
 
 proc bookmarkPage*() =
-  ## Bookmarks the page (or opens its existing bookmark) and shows the editor, as the star and Ctrl+D do.
+  ## Bookmarks the page (or opens its existing bookmark) and shows the editor under the star, as the star and
+  ## Ctrl+D do. With the editor already open, closes it instead (keeping its edits), so the star toggles it.
+  if starEditor != nil and starEditor.shown:
+    kit.hidePopover(starEditor)
+    starEditorClosedAt = epochTime()
+    if starEditorSave != nil: starEditorSave()
+    return
+  # A click on the star while the bubble shows first closes it (a click outside); that click mustn't reopen it.
+  if epochTime() - starEditorClosedAt < 0.3: return
   let t = currentTab()
   if incognito or t == nil or t.url.len == 0: return
   let existing = bookmarkFor(t.url)
   let node = if existing != nil: existing else: add(if t.title.len > 0: t.title else: t.url, t.url)
-  editBookmark(node, justAdded = existing == nil)
+  let anchor = if starButton != nil and starButton.realized: starButton else: nil
+  editBookmark(node, justAdded = existing == nil, anchor)
 
 proc newFolderIn(parent: Bookmark) =
   kit.prompt("New folder", "Name", "New folder", proc (ok: bool, name: string) =
