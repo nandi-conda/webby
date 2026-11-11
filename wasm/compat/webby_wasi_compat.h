@@ -1,6 +1,7 @@
 /* Included before every source of webby's wasm build (cmake/wasi.cmake): POSIX pieces wasm32-wasip1 lacks that
- * Ladybird and its dependencies name. Sockets that need a host (bind, listen, socket, connect) fail with ENOTSUP;
- * there is one time zone (UTC); threads are wasi-libc's stubs. */
+ * Ladybird and its dependencies name. TCP and UDP sockets and name lookup go through wasi:sockets (webby_wasi_net.c);
+ * local (AF_UNIX) sockets, listen and socketpair fail with ENOTSUP; there is one time zone (UTC); threads are
+ * wasi-libc's stubs. */
 #pragma once
 #ifdef __wasi__
 #include <stddef.h>
@@ -32,6 +33,18 @@ extern "C" {
 #ifndef SOCK_CLOEXEC
 #    define SOCK_CLOEXEC 0
 #endif
+#ifndef SOL_IP
+#    define SOL_IP 0
+#endif
+/* wasi-libc's poll.h has only the normal-data bits; sockets (webby_wasi_net.c) have no priority data. (poll.h is
+ * not included here: CMake's check_function_exists declares poll itself.) */
+#ifndef POLLPRI
+#    define POLLPRI 0x0004
+#endif
+#ifndef POLLRDBAND
+#    define POLLRDBAND 0x0008
+#    define POLLWRBAND 0x0010
+#endif
 
 int socket(int domain, int type, int protocol);
 int bind(int fd, const struct sockaddr *addr, socklen_t len);
@@ -59,7 +72,7 @@ typedef struct {
 } siginfo_t;
 #endif
 
-/* Socket pieces wasip1 hides behind wasip2 guards; all of these fail at run time (no host sockets yet). */
+/* Socket pieces wasip1 hides behind wasip2 guards (webby_wasi_net.c handles the ones sockets use). */
 #ifndef SO_REUSEADDR
 #    define SO_REUSEADDR 2
 #    define SO_ERROR 4

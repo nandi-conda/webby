@@ -8,11 +8,11 @@ latha:gui host. Not usable yet.
 | --- | --- |
 | `pixi.toml` | the toolchain: qt2wasm (wasi-sdk 27, Qt for WASI), CMake, Ninja, Rust |
 | `cmake/wasi.cmake` | CMake toolchain for wasm32-wasip1 with wasi-libc's emulation libraries and `compat/` |
-| `compat/` | `netdb.h` and the POSIX pieces wasi-libc lacks (socket calls fail with ENOTSUP, one time zone) |
+| `compat/` | `netdb.h` and the POSIX pieces wasi-libc lacks (one time zone), and TCP/UDP sockets over wasi:sockets (`webby_wasi_net.c`) |
 | `deps/` | scripts that build Ladybird's dependencies for WASI into a sysroot (`WEBBY_WASI_SYSROOT`) |
 | `patches/` | Ladybird changes for a WASI build, on top of `../LADYBIRD_COMMIT` and `../patches/` |
-| `tests/` | small wasm programs that check a dependency works (`tests/skia-rect.sh`) |
-| `tools/wasi-run.py` | runs a wasm32-wasip1 program with PyPI wasmtime (`LIBJS_TARGET_RUNNER` for the layout generator) |
+| `tests/` | small wasm programs that check a dependency works (`tests/skia-rect.sh`, `tests/net.sh`) |
+| `tools/wasi-run.py` | runs a wasm32-wasip1 program with PyPI wasmtime (`LIBJS_TARGET_RUNNER` for the layout generator); programs with sockets as components in the wasmtime CLI |
 | `ci/` | the forge jobs `wasm-deps` and `wasm-engine` (see [Forge CI](#forge-ci)) |
 | `build-engine.sh` | configures and builds Ladybird for wasm32-wasip1 (target `js` for now) |
 
@@ -107,6 +107,48 @@ programs linking it add `-lsetjmp` (skia.pc and the unofficial-skia CMake config
 wasm exceptions (`tools/wasi-run.py` turns them on). `compat/` has single-threaded POSIX semaphores for SkSemaphore.
 `tests/skia-rect.sh` draws a rect, a path-op shape and FreeType text into an SkBitmap and writes a PNG under wasmtime.
 
+## Networking
+
+The module does its own networking: curl, OpenSSL and (later) RequestServer run inside it, and the host only gives it
+sockets, through the standard **wasi:sockets 0.2** interfaces (TCP, UDP, `ip-name-lookup`) with `wasi:io` streams and
+pollables. There is no webby-specific host import. `compat/webby_wasi_net.c` turns them into BSD sockets for the
+wasip1 libc:
+
+- `socket`, `connect` (blocking, or non-blocking with `EINPROGRESS` and `SO_ERROR`), `bind`, `send`/`recv`
+  (`MSG_PEEK`, `MSG_DONTWAIT`), `sendto`/`recvfrom` (UDP), `shutdown`, `getsockname`/`getpeername`,
+  `getsockopt`/`setsockopt` (`SO_ERROR`, `SO_TYPE`, `SO_KEEPALIVE`; the rest are accepted and ignored),
+  `fcntl`/`ioctl` (`O_NONBLOCK`, `FIONBIO`, `FIONREAD`), and `getaddrinfo` (numeric addresses, `localhost`, and
+  names through the host's resolver), `getnameinfo` (numeric only). No `listen`/`accept` and no `AF_UNIX`.
+- A socket is a descriptor from `WEBBY_NET_FD_BASE` (0x100000) up, so it works with `read`, `write`, `close` and,
+  the part an event loop needs, `poll` (and `select`, which wasi-libc builds on `poll`). Those libc functions are
+  wrapped with `wasm-ld --wrap` (`cmake/wasi.cmake`; `$WEBBY_WASI_SYSROOT/lib/webby_wasi_compat.ldflags` has the
+  flags for other builds). `compat/webby_wasi_net_wrap.c` routes socket descriptors and passes everything else to
+  libc. `poll` over sockets alone waits on their pollables with one `wasi:io/poll.poll`; mixed with wasip1
+  descriptors (stdin, files) it checks those every 10 ms.
+- The bindings are the ones wasi-sdk ships for wasip2 (`wasi/wasip2.h`; `wasip2.o` and `wasip2_component_type.o`
+  are copied out of its wasip2 libc into `libwebby_wasi_compat.a`). The wrappers only reach the sockets code after a
+  `socket()`, so a program that never makes one keeps no wasi:sockets imports and stays a plain wasip1 module.
+- `WEBBY_NET_TRACE=1` prints every socket call and its result on stderr.
+
+A program that uses sockets imports `wasi:sockets/*@0.2.0` next to `wasi_snapshot_preview1`, so it runs as a component:
+`wasm-tools component new prog.wasm --adapt wasi_snapshot_preview1=wasi_snapshot_preview1.command.wasm` (wit-component
+merges our 0.2.0 imports with the adapter's 0.2.6). `tools/wasi-run.py` does that on the fly (cached in
+`~/.cache/webby-wasm`) and runs the component in the wasmtime CLI with
+`-S inherit-network=y,allow-ip-name-lookup=y,tcp=y,udp=y`. wasmtime-py cannot: wasmtime-wasi leaves TCP and UDP off
+unless the embedder calls `allow_tcp`/`allow_udp`, which its C API does not expose. The CLI is the `wasmtime`
+package on nandi-testing (36.0.0, like the adapter) or `WASMTIME`; `WASM_TOOLS` and `WEBBY_WASI_ADAPTER` point at the
+other two tools (the adapter is downloaded from wasmtime's release otherwise; the nandi-testing
+`wasi-preview1-adapter` package is the reactor adapter, which has no `wasi:cli/run`).
+
+For latha-gui (wasmtime-wasi 50, `p2::add_to_linker_sync`, which already links wasi:sockets) the host side is its
+`WasiCtxBuilder`: `.inherit_network().allow_ip_name_lookup(true).allow_tcp(true).allow_udp(true)`.
+
+curl (`deps/curl.sh`, 8.23.0 as Ladybird pins it) builds with OpenSSL, the synchronous resolver, no socketpair (so no
+`curl_multi_wakeup`), and without HTTP/2, HTTP/3, brotli or zstd for now. `tests/net.sh OUT` checks `tests/net-fetch.c`
+against a local HTTP server (300 KB body), a local UDP echo, a refused port and an unresolvable name, and with
+`CURL=curl.wasm` fetches https://example.com/ with certificate checks (`--dir /etc/ssl`): 200, verify result 0. A
+623 KB Wikipedia page comes in at about 2.8 MB/s under wasmtime.
+
 ## Building what exists
 
 ```sh
@@ -115,6 +157,7 @@ export WASI_SDK_PREFIX=$PWD/.pixi/envs/default/opt/wasi-sdk WEBBY_WASI_SYSROOT=$
 pixi run compat/build.sh
 pixi run deps/icu.sh <icu>/icu4c/source build/icu "$WEBBY_WASI_SYSROOT"
 pixi run deps/openssl.sh <openssl> build/openssl "$WEBBY_WASI_SYSROOT"
+pixi run deps/curl.sh <curl> build/curl   # after OpenSSL
 pixi run deps/libpsl.sh <libpsl> build/psl "$WEBBY_WASI_SYSROOT"
 pixi run deps/cmake-dep.sh <src> build/<name> [cmake args]   # fast_float, zmij, simdutf, libtommath, mimalloc
 pixi run deps/libweb-deps.sh <src dir> build   # checkouts of zlib, libpng, ... sqlite in <src dir>
@@ -128,6 +171,7 @@ pip install wasmtime   # for tools/wasi-run.py
 export LIBJS_TARGET_RUNNER="python $PWD/tools/wasi-run.py"
 pixi run ./build-engine.sh <ladybird with ../patches and patches/ applied> build/ladybird js
 python tools/wasi-run.py build/ladybird/bin/js -c 'print(6 * 7)'
+CURL=build/curl/src/curl pixi run tests/net.sh build/net-test   # sockets; needs wasmtime + wasm-tools
 ```
 
 Sources come from git (the versions Ladybird's vcpkg.json pins); GitHub release archives are not needed.

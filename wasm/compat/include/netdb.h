@@ -1,5 +1,5 @@
-/* netdb.h for wasm32-wasip1, which has none: the types and constants Ladybird's LibCore uses. Name lookups fail with
- * EAI_FAIL until the module gets networking from its host (webby_wasi_compat.c). */
+/* netdb.h for wasm32-wasip1, which has none: the types and constants Ladybird's LibCore uses. getaddrinfo asks the
+ * host's resolver through wasi:sockets/ip-name-lookup (webby_wasi_net.c). */
 #pragma once
 #include <sys/socket.h>
 #include <netinet/in.h>

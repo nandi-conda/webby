@@ -2,14 +2,14 @@
 # Every WASI dependency of the engine, from sources.txt, into WEBBY_WASI_SYSROOT, in order. The forge's wasm-deps job
 # (ci/deps.Dockerfile) runs it one stage per layer; by hand, run it with no stage for all of them.
 # usage: all.sh SRC_DIR WORK_DIR [stage...]
-#   stages: fetch compat icu openssl libpsl cmake-deps header-deps libweb-deps media-deps skia binaryen
+#   stages: fetch compat icu openssl curl libpsl cmake-deps header-deps libweb-deps media-deps skia binaryen
 # env: WASI_SDK_PREFIX, WEBBY_WASI_SYSROOT. SRC_DIR and WORK_DIR may be kept between runs (checkouts are reused,
 # builds are incremental); the sysroot is only ever added to.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$1" "$2"; S=$(realpath "$1"); W=$(realpath "$2"); shift 2
 P=${WEBBY_WASI_SYSROOT:?}; : "${WASI_SDK_PREFIX:?}"; mkdir -p "$P"
-stages=("$@"); [ ${#stages[@]} -gt 0 ] || stages=(fetch compat icu openssl libpsl cmake-deps header-deps libweb-deps \
+stages=("$@"); [ ${#stages[@]} -gt 0 ] || stages=(fetch compat icu openssl curl libpsl cmake-deps header-deps libweb-deps \
   media-deps skia binaryen)
 
 ref_of() { awk -v n="$1" '$1 == n { print $3 }' "$here/sources.txt"; }
@@ -43,6 +43,7 @@ run_stage() {
     compat) "$here/../compat/build.sh" ;;
     icu) "$here/icu.sh" "$S/icu/icu4c/source" "$W/icu" "$P" ;;
     openssl) "$here/openssl.sh" "$S/openssl" "$W/openssl" "$P" ;;
+    curl) "$here/curl.sh" "$S/curl" "$W/curl" ;;
     libpsl) "$here/libpsl.sh" "$S/libpsl" "$W/psl" "$P" ;;
     cmake-deps)
       "$here/cmake-dep.sh" "$S/fast_float" "$W/fast_float" -DFASTFLOAT_TEST=OFF -DFASTFLOAT_BENCHMARKS=OFF

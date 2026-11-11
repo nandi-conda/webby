@@ -4,11 +4,16 @@
 include("$ENV{WASI_SDK_PREFIX}/share/cmake/wasi-sdk-p1.cmake")
 set(_emu "-D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_GETPID")
 set(_libs "-lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated-mman -lwasi-emulated-getpid")
-# compat/ (installed into the sysroot by compat/build.sh): netdb.h and the POSIX pieces wasi-libc lacks, included
-# before every source and linked into every program.
+# compat/ (installed into the sysroot by compat/build.sh): netdb.h, sockets and the POSIX pieces wasi-libc lacks,
+# included before every source and linked into every program.
 if(DEFINED ENV{WEBBY_WASI_SYSROOT} AND EXISTS "$ENV{WEBBY_WASI_SYSROOT}/include/webby_wasi_compat.h")
     string(APPEND _emu " -isystem $ENV{WEBBY_WASI_SYSROOT}/include -include $ENV{WEBBY_WASI_SYSROOT}/include/webby_wasi_compat.h")
     string(APPEND _libs " -L$ENV{WEBBY_WASI_SYSROOT}/lib -lwebby_wasi_compat")
+    # Sockets (compat/webby_wasi_net.c, over wasi:sockets) are descriptors too: libc's descriptor calls go through
+    # compat/webby_wasi_net_wrap.c first. Same list as WEBBY_NET_WRAPPED and compat/build.sh.
+    foreach(_f close read write readv writev send recv shutdown poll fcntl ioctl getsockopt)
+        string(APPEND _libs " -Wl,--wrap=${_f}")
+    endforeach()
 endif()
 # setjmp/longjmp (libpng's and libjpeg's error handling) use the exception-handling proposal with exnref, which
 # wasmtime runs with wasm_exceptions on (tools/wasi-run.py); libsetjmp is wasi-libc's runtime for it.
