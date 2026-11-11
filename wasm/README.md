@@ -140,14 +140,19 @@ package on nandi-testing (36.0.0, like the adapter) or `WASMTIME`; `WASM_TOOLS` 
 other two tools (the adapter is downloaded from wasmtime's release otherwise; the nandi-testing
 `wasi-preview1-adapter` package is the reactor adapter, which has no `wasi:cli/run`).
 
-For latha-gui (wasmtime-wasi 50, `p2::add_to_linker_sync`, which already links wasi:sockets) the host side is its
-`WasiCtxBuilder`: `.inherit_network().allow_ip_name_lookup(true).allow_tcp(true).allow_udp(true)`.
+latha-gui 0.3.1 (qt2wasm f287504) and its `latha-run` turn all of that on in their `WasiCtxBuilder`
+(`.inherit_network().allow_ip_name_lookup(true).allow_tcp(true).allow_udp(true)`; `LATHA_GUI_NETWORK=0` turns it
+off). They take the component, not the wasip1 module.
 
-curl (`deps/curl.sh`, 8.23.0 as Ladybird pins it) builds with OpenSSL, the synchronous resolver, no socketpair (so no
-`curl_multi_wakeup`), and without HTTP/2, HTTP/3, brotli or zstd for now. `tests/net.sh OUT` checks `tests/net-fetch.c`
-against a local HTTP server (300 KB body), a local UDP echo, a refused port and an unresolvable name, and with
-`CURL=curl.wasm` fetches https://example.com/ with certificate checks (`--dir /etc/ssl`): 200, verify result 0. A
-623 KB Wikipedia page comes in at about 2.8 MB/s under wasmtime.
+curl (`deps/curl.sh`, 8.23.0 as Ladybird pins it) builds with what Ladybird's vcpkg.json asks of it: OpenSSL, HTTP/2
+(nghttp2 1.70.0), HTTP/3 (ngtcp2 1.16.0 + nghttp3 1.11.0, with ngtcp2's `ngtcp2_crypto_ossl` on OpenSSL's QUIC TLS
+API), brotli, zstd, zlib and WebSockets; `deps/net-deps.sh` builds zstd and the nghttp/ngtcp libraries first (zlib and
+brotli come from `deps/libweb-deps.sh`). It uses the synchronous resolver and no socketpair (so no
+`curl_multi_wakeup`). `tests/net.sh OUT` checks `tests/net-fetch.c` against a local HTTP server (300 KB body), a local
+UDP echo, a refused port and an unresolvable name, and with `CURL=curl.wasm` fetches https://example.com/ with
+certificate checks (`--dir /etc/ssl`) over HTTP/1.1 and HTTP/2 (200, verify result 0), and https://localhost from a
+local HTTP/3 server (`tests/h3-server.py`, PyPI aioquic): QUIC over UDP, 72000 bytes. A 623 KB Wikipedia page comes in
+at about 2.8 MB/s under wasmtime.
 
 ## Building what exists
 
@@ -157,11 +162,12 @@ export WASI_SDK_PREFIX=$PWD/.pixi/envs/default/opt/wasi-sdk WEBBY_WASI_SYSROOT=$
 pixi run compat/build.sh
 pixi run deps/icu.sh <icu>/icu4c/source build/icu "$WEBBY_WASI_SYSROOT"
 pixi run deps/openssl.sh <openssl> build/openssl "$WEBBY_WASI_SYSROOT"
-pixi run deps/curl.sh <curl> build/curl   # after OpenSSL
 pixi run deps/libpsl.sh <libpsl> build/psl "$WEBBY_WASI_SYSROOT"
 pixi run deps/cmake-dep.sh <src> build/<name> [cmake args]   # fast_float, zmij, simdutf, libtommath, mimalloc
 pixi run deps/libweb-deps.sh <src dir> build   # checkouts of zlib, libpng, ... sqlite in <src dir>
 pixi run deps/media-deps.sh <src dir> build    # dav1d, libavif, ffmpeg; needs meson
+pixi run deps/net-deps.sh <src dir> build/net  # zstd, nghttp2, nghttp3, ngtcp2 (after OpenSSL)
+pixi run deps/curl.sh <curl> build/curl        # after those and libweb-deps (zlib, brotli)
 deps/binaryen.sh build/binaryen "$WEBBY_WASI_SYSROOT"   # host wasm-opt, before configuring Ladybird
 git clone https://skia.googlesource.com/skia <skia> && git -C <skia> checkout e7c90ecca9444fe09598f1630ab7cee2c0ee027a
 pixi run deps/skia.sh <skia> build/skia "$WEBBY_WASI_SYSROOT"   # fetches gn + FreeType/libpng/zlib by git

@@ -3,7 +3,8 @@
 #  1. tests/net-fetch.c against a local HTTP server (TCP, 300 KB body), a local UDP echo server, a refused port and a
 #     name that does not resolve;
 #  2. with CURL=path/to/curl.wasm (deps/curl.sh), curl + OpenSSL fetching an HTTPS URL (default https://example.com/,
-#     NET_URL to change; needs outbound HTTPS) with certificate checks.
+#     NET_URL to change; needs outbound HTTPS) with certificate checks, over HTTP/1.1 and HTTP/2, and HTTP/3 (QUIC over
+#     UDP) from a local aioquic server (tests/h3-server.py; skipped without `pip install aioquic`).
 # usage: net.sh OUT_DIR      env: WASI_SDK_PREFIX, WEBBY_WASI_SYSROOT, and what tools/wasi-run.py needs for components
 #        (WASMTIME or wasmtime on PATH, WASM_TOOLS or wasm-tools on PATH)
 set -euo pipefail
@@ -47,5 +48,19 @@ if [ -n "${CURL:-}" ]; then
     t_curl() { run "${dirs[@]}" curl.wasm -sS --noproxy '*' -o page.html -w '%{http_code} %{ssl_verify_result} %{size_download}\n' "$url" | tee curl.out | grep -q '^200 0 '; }
     check "curl+openssl: $url" t_curl
     echo "     status, certificate check, bytes: $(cat curl.out 2>/dev/null)"
+    t_h2() { run "${dirs[@]}" curl.wasm -sS --noproxy '*' --http2 --compressed -o page2.html -w '%{http_version} %{http_code}\n' "$url" | grep -q '^2 200$'; }
+    check "curl http/2: $url" t_h2
+    if python3 -c 'import aioquic' 2> /dev/null; then
+        openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout h3-key.pem -out h3-cert.pem \
+            -days 1 -subj /CN=localhost -addext subjectAltName=DNS:localhost 2> /dev/null
+        python3 "$here/tests/h3-server.py" 18443 h3-cert.pem h3-key.pem 60 > h3.log 2>&1 &
+        h3=$!
+        sleep 1
+        t_h3() { run curl.wasm -sS --noproxy '*' --http3-only --cacert h3-cert.pem -o page3.txt -w '%{http_version} %{http_code} %{size_download} %{ssl_verify_result}\n' https://localhost:18443/ | grep -q '^3 200 72000 0$'; }
+        check "curl http/3 (QUIC, local aioquic)" t_h3
+        kill $h3 2> /dev/null || true
+    else
+        echo "skip curl http/3 (pip install aioquic)"
+    fi
 fi
 exit $fails

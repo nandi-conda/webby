@@ -2,14 +2,14 @@
 # Every WASI dependency of the engine, from sources.txt, into WEBBY_WASI_SYSROOT, in order. The forge's wasm-deps job
 # (ci/deps.Dockerfile) runs it one stage per layer; by hand, run it with no stage for all of them.
 # usage: all.sh SRC_DIR WORK_DIR [stage...]
-#   stages: fetch compat icu openssl curl libpsl cmake-deps header-deps libweb-deps media-deps skia binaryen
+#   stages: fetch compat icu openssl libpsl cmake-deps header-deps libweb-deps net-deps curl media-deps skia binaryen
 # env: WASI_SDK_PREFIX, WEBBY_WASI_SYSROOT. SRC_DIR and WORK_DIR may be kept between runs (checkouts are reused,
 # builds are incremental); the sysroot is only ever added to.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$1" "$2"; S=$(realpath "$1"); W=$(realpath "$2"); shift 2
 P=${WEBBY_WASI_SYSROOT:?}; : "${WASI_SDK_PREFIX:?}"; mkdir -p "$P"
-stages=("$@"); [ ${#stages[@]} -gt 0 ] || stages=(fetch compat icu openssl curl libpsl cmake-deps header-deps libweb-deps \
+stages=("$@"); [ ${#stages[@]} -gt 0 ] || stages=(fetch compat icu openssl libpsl cmake-deps header-deps libweb-deps net-deps curl \
   media-deps skia binaryen)
 
 ref_of() { awk -v n="$1" '$1 == n { print $3 }' "$here/sources.txt"; }
@@ -26,7 +26,11 @@ fetch() {
   else
     git -c advice.detachedHead=false clone -q --depth 1 --branch "$ref" "$url" "$dir"
   fi
-  if [ "$name" = libpsl ]; then git -C "$dir" submodule -q update --init --depth 1 list; fi
+  case $name in
+    libpsl) git -C "$dir" submodule -q update --init --depth 1 list ;;
+    nghttp2 | ngtcp2) git -C "$dir" submodule -q update --init --depth 1 third-party/urlparse ;;
+    nghttp3) git -C "$dir" submodule -q update --init --depth 1 lib/sfparse ;;
+  esac
   echo "$ref" > "$dir/.git/webby-ref"
   echo "fetched $name $ref"
 }
@@ -43,7 +47,6 @@ run_stage() {
     compat) "$here/../compat/build.sh" ;;
     icu) "$here/icu.sh" "$S/icu/icu4c/source" "$W/icu" "$P" ;;
     openssl) "$here/openssl.sh" "$S/openssl" "$W/openssl" "$P" ;;
-    curl) "$here/curl.sh" "$S/curl" "$W/curl" ;;
     libpsl) "$here/libpsl.sh" "$S/libpsl" "$W/psl" "$P" ;;
     cmake-deps)
       "$here/cmake-dep.sh" "$S/fast_float" "$W/fast_float" -DFASTFLOAT_TEST=OFF -DFASTFLOAT_BENCHMARKS=OFF
@@ -57,6 +60,8 @@ run_stage() {
       "$here/cmake-dep.sh" "$S/simdjson" "$W/simdjson" -DSIMDJSON_DEVELOPER_MODE=OFF -DSIMDJSON_ENABLE_THREADS=OFF ;;
     header-deps) "$here/header-deps.sh" "$W/header-deps" ;;
     libweb-deps) clean_checkout libpng; "$here/libweb-deps.sh" "$S" "$W/libweb" ;;
+    net-deps) "$here/net-deps.sh" "$S" "$W/net" ;;
+    curl) "$here/curl.sh" "$S/curl" "$W/curl" ;;
     # meson setup refuses a configured build directory, so the media libraries start over each time (a few minutes).
     media-deps) rm -rf "$W/media"; "$here/media-deps.sh" "$S" "$W/media" ;;
     skia) "$here/skia.sh" "$S/skia" "$W/skia" "$P" ;;
