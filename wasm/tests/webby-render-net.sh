@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # webby-render loading a page over the network (patches/0010): a page on a local HTTP server whose style sheet, image
 # and fetch() all come through RequestServer, rendered to a PNG and checked pixel by pixel. First with RequestServer in
-# the same module (tools/wasi-run.py), then with RequestServer.wasm in a latha:proc child instance (latha-run). With
+# the same module, then with RequestServer.wasm in a latha:proc child instance (latha-run). With
 # HTTPS=1 (or URL=...) it also renders a real https page (default https://example.com/) both ways.
 #   tests/webby-render-net.sh BUILD_DIR LADYBIRD_SRC OUT_DIR
 #     BUILD_DIR/bin has webby-render, webby-render-latha and RequestServer; LADYBIRD_SRC has Base/res
@@ -45,26 +45,20 @@ check() {
 https=${URL:-}; if [ -z "$https" ] && [ "${HTTPS:-0}" = 1 ]; then https=https://example.com/; fi
 ca=/etc/ssl/certs/ca-certificates.crt
 
-echo "== RequestServer in the same module"
-(cd "$out" && WASI_RUN_DIRS="/usr/share/fonts,$res=/res,$out,/etc/ssl" XDG_DATA_DIRS=/usr/share \
-  python3 "$here/../tools/wasi-run.py" "$bin/webby-render" --theme /res/themes/Default.ini -o "$out/one.png" "$url")
-check "$out/one.png"
-if [ -n "$https" ]; then
-  (cd "$out" && WASI_RUN_DIRS="/usr/share/fonts,$res=/res,$out,/etc/ssl" XDG_DATA_DIRS=/usr/share \
-    python3 "$here/../tools/wasi-run.py" "$bin/webby-render" --theme /res/themes/Default.ini -C "$ca" -o "$out/https-one.png" "$https")
-  [ "$(stat -c %s "$out/https-one.png")" -gt 5000 ]
-fi
-
-echo "== RequestServer.wasm in a child instance"
-for p in RequestServer webby-render-latha; do
+# Both run under latha-run: its wasmtime has wasm exceptions (setjmp/longjmp) and sockets on, and runs latha:proc
+# children. (wasmtime 36's CLI rejects the exception instructions; wasmtime-py has no TCP for components.)
+for p in RequestServer webby-render webby-render-latha; do
   "${WASM_TOOLS:-wasm-tools}" component new "$bin/$p" --adapt "wasi_snapshot_preview1=${WEBBY_WASI_ADAPTER:?}" -o "$out/$p.wasm"
 done
-latha() { (cd "$out" && XDG_DATA_DIRS=/usr/share "${LATHA_RUN:-latha-run}" --dir /usr/share/fonts --dir "$res::/res" --dir /etc/ssl \
-  webby-render-latha.wasm --spawn RequestServer.wasm --theme /res/themes/Default.ini "$@"); }
-latha -o two.png "$url"
-check "$out/two.png"
-if [ -n "$https" ]; then
-  latha -C "$ca" -o https-two.png "$https"
-  [ "$(stat -c %s "$out/https-two.png")" -gt 5000 ]
-fi
+latha() { (cd "$out" && XDG_DATA_DIRS=/usr/share "${LATHA_RUN:-latha-run}" --dir /usr/share/fonts --dir "$res::/res" --dir /etc/ssl "$@"); }
+for mode in one two; do
+  if [ $mode = one ]; then echo "== RequestServer in the same module"; run=(webby-render.wasm)
+  else echo "== RequestServer.wasm in a child instance"; run=(webby-render-latha.wasm --spawn RequestServer.wasm); fi
+  latha "${run[@]}" --theme /res/themes/Default.ini -o $mode.png "$url"
+  check "$out/$mode.png"
+  if [ -n "$https" ]; then
+    latha "${run[@]}" --theme /res/themes/Default.ini -C "$ca" -o https-$mode.png "$https"
+    [ "$(stat -c %s "$out/https-$mode.png")" -gt 5000 ]
+  fi
+done
 echo "webby-render-net: ok"

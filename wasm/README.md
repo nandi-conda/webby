@@ -307,14 +307,18 @@ load inside LibWeb. RequestServer runs in the same module over an in-memory sock
   made directly as before (no navigation), with the final URL's origin, and the encoding from Content-Type, a BOM or
   `<meta charset>`. `-C` names the CA bundle, `--timeout` (60 s) paints what there is when a page never finishes.
 - Images are decoded in the module with LibGfx's decoders (an in-process `ImageCodecPlugin`; every frame up front).
-- webby-render uses sockets now, so it runs as a component (tools/wasi-run.py makes one and runs it in the wasmtime CLI).
+- webby-render uses sockets now, so it runs as a component (`wasm-tools component new --adapt` with the preview1
+  command adapter). Run it with latha-run or tools/wasi-run.py with `WASMTIME` set to a wasmtime 40 CLI; nandi-testing's
+  wasmtime 36 rejects the exception instructions, and wasmtime-py alone gives components no TCP (fine for files).
 
 `tests/webby-render-net.sh BUILD LADYBIRD OUT` serves a page from a local HTTP server whose background is in a style
 sheet, whose red square is a PNG and whose green bar only appears once a `fetch()` has read a text file, and checks those
-pixels both ways; `HTTPS=1` also renders https://example.com/ both ways. The wasm-engine job runs it.
+pixels both ways under latha-run; `HTTPS=1` also renders https://example.com/ both ways. The wasm-engine job runs it.
 
-    WASI_RUN_DIRS=/usr/share/fonts,$PWD/Base/res=/res,/etc/ssl XDG_DATA_DIRS=/usr/share python tools/wasi-run.py \
-      build/bin/webby-render --theme /res/themes/Default.ini -C /etc/ssl/certs/ca-certificates.crt -o out.png https://example.com/
+    wasm-tools component new build/bin/webby-render --adapt wasi_snapshot_preview1=wasi_snapshot_preview1.command.wasm \
+      -o webby-render.wasm
+    latha-run --dir /usr/share/fonts --dir $PWD/Base/res::/res --dir /etc/ssl webby-render.wasm \
+      --theme /res/themes/Default.ini -C /etc/ssl/certs/ca-certificates.crt -o out.png https://example.com/
 
 ## The Qt UI
 
