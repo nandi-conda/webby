@@ -1,0 +1,256 @@
+diff --git a/Libraries/LibCore/AnonymousBuffer.cpp b/Libraries/LibCore/AnonymousBuffer.cpp
+index 5a62a342..4f2d7a25 100644
+--- a/Libraries/LibCore/AnonymousBuffer.cpp
++++ b/Libraries/LibCore/AnonymousBuffer.cpp
+@@ -20,6 +20,11 @@ namespace Core {
+ 
+ ErrorOr<AnonymousBuffer> AnonymousBuffer::create_with_size(size_t size)
+ {
++#if defined(AK_OS_WASI)
++    // A WASI module is one process with no shared memory objects (anon_create has nothing to make), and nothing
++    // outside it to share the buffer with: back it with private anonymous memory and no fd.
++    return create_from_anon_fd(-1, size);
++#endif
+     auto fd = TRY(Core::System::anon_create(size, O_CLOEXEC, Core::System::AllowSealing::Yes));
+     return create_from_anon_fd(fd, size);
+ }
+@@ -138,10 +143,16 @@ ErrorOr<NonnullRefPtr<AnonymousBufferImpl>> AnonymousBufferImpl::create(int fd,
+     void* data = nullptr;
+     // POSIX mmap rejects a zero length with EINVAL, so leave m_data null for zero-size buffers.
+     if (size > 0) {
+-        data = mmap(nullptr, round_up_to_power_of_two(size, PAGE_SIZE), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++#if defined(AK_OS_WASI)
++        if (fd == -1)
++            data = mmap(nullptr, round_up_to_power_of_two(size, PAGE_SIZE), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++        else
++#endif
++            data = mmap(nullptr, round_up_to_power_of_two(size, PAGE_SIZE), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+         if (data == MAP_FAILED) {
+             auto error = Error::from_errno(errno);
+-            close(fd);
++            if (fd != -1)
++                close(fd);
+             return error;
+         }
+     }
+diff --git a/Libraries/LibJS/Rust/src/gc/heap.rs b/Libraries/LibJS/Rust/src/gc/heap.rs
+index e5b18153..fdd20787 100644
+--- a/Libraries/LibJS/Rust/src/gc/heap.rs
++++ b/Libraries/LibJS/Rust/src/gc/heap.rs
+@@ -12,6 +12,10 @@ use std::collections::HashMap;
+ 
+ use super::capi::{self, GCAllocator, GCGatherRootsCallback, GCHeap, GCLayout};
+ use super::class::{BLOCK_CLASS_OFFSET, BLOCK_CLASS_TAIL_TAG, BLOCK_SIZE, CellTypeInfo, Class, GcCell, MIN_CELL_SIZE};
++
++/// The room a cell of a shared allocator keeps after its bytes for its class: a word, but at least 8 bytes, so that on
++/// 32-bit targets (wasm32) the cells after it stay 8-byte aligned.
++const CLASS_TAIL_SIZE: usize = if size_of::<&'static Class>() > 8 { size_of::<&'static Class>() } else { 8 };
+ use super::class_id::{CLASS_COUNT, ClassId};
+ use super::defer_gc::DeferGc;
+ use super::weak::WEAK_IMPL_POINTER_OFFSET;
+@@ -283,7 +287,7 @@ impl Heap {
+         unsafe {
+             self.allocate_with(
+                 allocator.allocator,
+-                size_of::<T>() + size_of::<&'static Class>(),
++                size_of::<T>() + CLASS_TAIL_SIZE,
+                 AllocationKind::Cell,
+                 build,
+                 initialize_tail,
+@@ -562,7 +566,7 @@ impl Heap {
+             class.is_derived_at_run_time()
+                 && class.is_subclass_of(allocating_class)
+                 && class.type_info.cell_size == allocating_class.type_info.cell_size
+-                && allocating_class.type_info.alignment as usize <= size_of::<&'static Class>(),
++                && allocating_class.type_info.alignment as usize <= CLASS_TAIL_SIZE,
+             "{} cannot share the allocator of {}",
+             class.name,
+             allocating_class.name
+@@ -573,7 +577,7 @@ impl Heap {
+             .entry(core::ptr::from_ref(allocating_class) as usize)
+             .or_insert_with(|| {
+                 let type_info = Box::new(CellTypeInfo {
+-                    cell_size: allocating_class.type_info.cell_size + size_of::<&'static Class>() as u32,
++                    cell_size: allocating_class.type_info.cell_size + CLASS_TAIL_SIZE as u32,
+                     ..allocating_class.type_info
+                 });
+                 // SAFETY: The box keeps the type info alive for as long as the allocator.
+diff --git a/Libraries/LibWeb/Rust/src/stage_thread.rs b/Libraries/LibWeb/Rust/src/stage_thread.rs
+index 6a5b2323..8da3b3dd 100644
+--- a/Libraries/LibWeb/Rust/src/stage_thread.rs
++++ b/Libraries/LibWeb/Rust/src/stage_thread.rs
+@@ -69,6 +69,10 @@ struct Shared {
+     handed: AtomicPtr<JobHeader>,
+     /// What names the thread to ThreadSanitizer, which sees the ordering the hand-off gives only through it.
+     tsan_key: AtomicBool,
++    /// On a target without threads (wasm32-wasip1), there is no stage thread: the thread that hands a job runs the jobs
++    /// handed so far itself, in order, and this says it is doing so, which is when it counts as the stage thread.
++    #[cfg(target_os = "wasi")]
++    draining: AtomicBool,
+ }
+ 
+ impl Shared {
+@@ -116,11 +120,25 @@ const STAGE_THREAD_STACK_SIZE: usize = 64 * 1024 * 1024;
+ 
+ impl StageThread {
+     /// Spawns a thread named `name`, which lives as long as the process.
++    #[cfg_attr(target_os = "wasi", allow(unreachable_code))]
+     pub(crate) fn spawn(name: &str) -> Self {
+         let shared: &'static Shared = Box::leak(Box::new(Shared {
+             handed: AtomicPtr::new(std::ptr::null_mut()),
+             tsan_key: AtomicBool::new(false),
++            #[cfg(target_os = "wasi")]
++            draining: AtomicBool::new(false),
+         }));
++        #[cfg(target_os = "wasi")]
++        {
++            let _ = name;
++            if let Some(setup) = THREAD_SETUP.get() {
++                setup();
++            }
++            return Self {
++                thread: std::thread::current(),
++                shared,
++            };
++        }
+         let spawned = std::thread::Builder::new()
+             .name(name.into())
+             .stack_size(STAGE_THREAD_STACK_SIZE)
+@@ -151,8 +169,13 @@ impl StageThread {
+     }
+ 
+     /// Whether the calling thread is this one.
++    #[cfg_attr(target_os = "wasi", allow(unreachable_code))]
+     pub(crate) fn is_current(&self) -> bool {
+-        std::thread::current().id() == self.thread.id()
++        #[cfg(target_os = "wasi")]
++        return self.shared.draining.load(Ordering::Relaxed);
++        {
++            std::thread::current().id() == self.thread.id()
++        }
+     }
+ 
+     /// Runs `job` on this thread, or right here on this thread itself, and returns what it answers. The calling thread
+@@ -214,6 +237,7 @@ impl StageThread {
+     }
+ 
+     /// Hands the job `header` heads to this thread, which runs it after the jobs handed to it before.
++    #[cfg_attr(target_os = "wasi", allow(unreachable_code))]
+     fn hand(&self, header: NonNull<JobHeader>) {
+         tsan::release(&self.shared.tsan_key);
+         let before = self
+@@ -224,6 +248,26 @@ impl StageThread {
+                 unsafe { header.as_ref() }.next.set(NonNull::new(before));
+                 header.as_ptr()
+             });
++        #[cfg(target_os = "wasi")]
++        {
++            let _ = before;
++            // A job handed from a job that runs here runs once that job is done, by the loop below.
++            if self.shared.draining.swap(true, Ordering::Relaxed) {
++                return;
++            }
++            while let Some(last) = NonNull::new(self.shared.handed.swap(std::ptr::null_mut(), Ordering::Acquire)) {
++                let mut next = Some(in_handed_order(last));
++                while let Some(job) = next {
++                    // SAFETY: As on a stage thread: the job stays live until it is run, and its link is read first.
++                    unsafe {
++                        next = job.as_ref().next.get();
++                        (job.as_ref().run)(job, self.shared);
++                    }
++                }
++            }
++            self.shared.draining.store(false, Ordering::Relaxed);
++            return;
++        }
+         // The thread takes every job handed to it at once, so the one that handed the first job it has not taken yet
+         // wakes it for all of them.
+         if before.is_null() {
+diff --git a/Utilities/webby-render.cpp b/Utilities/webby-render.cpp
+index 5657cc3f..ecb493a8 100644
+--- a/Utilities/webby-render.cpp
++++ b/Utilities/webby-render.cpp
+@@ -34,6 +34,8 @@
+ #include <LibWeb/Painting/DocumentPaintState.h>
+ #include <LibWeb/Platform/EventLoopPlugin.h>
+ #include <LibWeb/Platform/FontPlugin.h>
++#include <stdio.h>
++#include <unistd.h>
+ 
+ namespace {
+ 
+@@ -68,6 +70,8 @@ public:
+     virtual void request_frame() override { }
+     virtual void request_file(Web::FileRequest) override { }
+     virtual bool is_headless() const override { return true; }
++    // One process holds every navigable, so one id namespace covers them.
++    virtual Web::HTML::CrossProcessId allocate_cross_process_id() override { return m_cross_process_ids.allocate(); }
+ 
+ private:
+     HeadlessPageClient(Gfx::IntSize viewport, NonnullRefPtr<Gfx::PaletteImpl> palette_impl)
+@@ -86,6 +90,7 @@ private:
+     Gfx::IntSize m_viewport;
+     NonnullRefPtr<Gfx::PaletteImpl> m_palette_impl;
+     Queue<Web::QueuedInputEvent> m_input_event_queue;
++    Web::HTML::CrossProcessIdAllocator m_cross_process_ids { .namespace_id = 1 };
+ };
+ 
+ GC_DEFINE_ALLOCATOR(HeadlessPageClient);
+@@ -139,13 +144,18 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+     Web::ResourceLoader::initialize(heap);
+     Web::Platform::FontPlugin::install(*new Web::Platform::FontPlugin(false));
+ 
+-    auto absolute_path = TRY(FileSystem::absolute_path(input_path));
++    auto step = [](StringView what, auto result) {
++        if (result.is_error())
++            warnln("webby-render: {}: {}", what, result.error());
++        return result;
++    };
++    auto absolute_path = TRY(step("resolving the input path"sv, FileSystem::absolute_path(input_path)));
+     auto url = URL::create_with_file_scheme(absolute_path).release_value();
+-    auto file = TRY(Core::File::open(input_path, Core::File::OpenMode::Read));
+-    auto html = TRY(file->read_until_eof());
++    auto file = TRY(step("opening the input"sv, Core::File::open(input_path, Core::File::OpenMode::Read)));
++    auto html = TRY(step("reading the input"sv, file->read_until_eof()));
+ 
+     Gfx::IntSize viewport { width, height };
+-    auto theme = TRY(Gfx::load_system_theme(ByteString { theme_path }));
++    auto theme = TRY(step("loading the theme"sv, Gfx::load_system_theme(ByteString { theme_path })));
+     auto page_client = HeadlessPageClient::create(viewport, Gfx::PaletteImpl::create_with_anonymous_buffer(theme));
+     auto page = Web::Page::create(*page_client);
+     page_client->set_page(*page);
+@@ -156,6 +166,7 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+     // The document a navigation would have made, made directly: its bytes are parsed here, in this process, and it
+     // takes the place of the initial about:blank document, as SVGDecodedImageData's documents do.
+     auto document = Web::DOM::Document::create(*page, window, url);
++    document->set_id(page_client->allocate_cross_process_id());
+     document->set_document_type(Web::DOM::Document::Type::HTML);
+     document->set_content_type("text/html"_utf16_fly_string);
+     document->set_browsing_context(navigable.active_browsing_context());
+@@ -167,6 +178,7 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+     auto observer = Web::DOM::DocumentObserver::create(*document);
+     observer->set_document_completely_loaded([&] { loaded = true; });
+ 
++    document->set_ready_to_run_scripts();
+     auto parser = Web::HTML::HTMLParser::create_from_byte_string(*document, StringView { html }, Web::HTML::ParserScriptingMode::Normal, "UTF-8"sv);
+     parser->run(url);
+ 
+@@ -178,10 +190,13 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+         event_loop.spin_until([&] { return waited; });
+     }
+ 
+-    auto bitmap = TRY(paint(*document, viewport));
+-    auto png = TRY(Gfx::PNGWriter::encode(*bitmap));
+-    auto output = TRY(Core::File::open(output_path, Core::File::OpenMode::Write));
+-    TRY(output->write_until_depleted(png));
++    auto bitmap = TRY(step("painting"sv, paint(*document, viewport)));
++    auto png = TRY(step("encoding the PNG"sv, Gfx::PNGWriter::encode(*bitmap)));
++    auto output = TRY(step("opening the output"sv, Core::File::open(output_path, Core::File::OpenMode::Write)));
++    TRY(step("writing the output"sv, output->write_until_depleted(png)));
+     outln("{}: {}x{} -> {}", input_path, width, height, output_path);
+-    return 0;
++    // NB: The engine's global destructors are not written to run in a process that exits on its own (they trap in
++    //     wasm), and a native WebContent never runs them either: leave without them.
++    fflush(stdout);
++    _exit(0);
+ }

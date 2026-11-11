@@ -82,6 +82,24 @@ display list, and rasterizes it on the CPU with the Compositor's Skia player sou
 `Build/caches/HSTSPreload/`. Fonts come from `$XDG_DATA_DIRS/fonts`, so preopen a host font dir with
 `WASI_RUN_DIRS=/usr/share/fonts` (a comma list of `host[=guest]` dirs that tools/wasi-run.py preopens).
 
+`patches/0009-webby-render-runs.patch` (on top of 0008) gets webby-render to run end to end. It renders a page with
+gradients, a transform, dashed borders, web fonts from the host and a script, matching a native render:
+
+- `AnonymousBuffer` (the palette and other shared buffers) is private anonymous memory with no fd on WASI.
+- LibJS's GC pads the class pointer that shared runtime-class allocators keep after a cell to 8 bytes on 32-bit,
+  which keeps cells 8-byte aligned.
+- LibWeb's style/layout and paint stage threads run inline on WASI. Handing a job to a stage runs the queued jobs
+  on the calling thread, in order, and `is_current()` is true while it does.
+- webby-render gives its page and document cross-process ids, marks the document ready to run scripts, and leaves
+  with `_exit` (the engine's global destructors trap).
+- compat's `realpath` resolves lexically. wasi-libc's readlink-per-component walk fails above a nested preopen.
+
+Run it from the Ladybird checkout like this (about a minute, mostly wasmtime compiling the 188 MB module):
+
+    XDG_DATA_DIRS=/usr/share WASI_RUN_DIRS=/usr/share/fonts,$PWD/Base/res=/res,/path/to/page \
+      python tools/wasi-run.py build/bin/webby-render --theme /res/themes/Default.ini -o /path/to/page/out.png \
+      /path/to/page/index.html
+
 What it took beyond the patches:
 
 - GC roots in wasm locals. After every link, `cmake/wasi.cmake` runs binaryen's `wasm-opt --spill-pointers

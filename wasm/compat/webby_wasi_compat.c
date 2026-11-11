@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
@@ -291,3 +292,44 @@ int sem_timedwait(sem_t* restrict s, const struct timespec* restrict t)
 int sem_getvalue(sem_t* restrict s, int* restrict value) { *value = s->__val[0]; return 0; }
 
 char *secure_getenv(const char *name) { return getenv(name); }
+
+// wasi-libc's realpath walks the path through readlink() one component at a time, and readlink() of a directory
+// above a preopen (say /usr when only /usr/share/fonts is preopened) fails with ENOENT, so no path under a nested
+// preopen resolves. WASI paths cannot leave a preopen through a symlink anyway, so resolve lexically: make the path
+// absolute, drop "." and empty components, fold "..", then check that the result exists.
+char *realpath(const char *restrict path, char *restrict resolved)
+{
+    if (!path) { errno = EINVAL; return NULL; }
+    if (!*path) { errno = ENOENT; return NULL; }
+    char buf[PATH_MAX];
+    size_t len = 0;
+    if (path[0] != '/') {
+        if (!getcwd(buf, sizeof buf)) return NULL;
+        len = strlen(buf);
+        if (len == 1) len = 0; // "/"
+    }
+    for (const char *p = path; *p;) {
+        while (*p == '/') p++;
+        const char *end = p;
+        while (*end && *end != '/') end++;
+        size_t n = (size_t)(end - p);
+        if (n == 0 || (n == 1 && p[0] == '.')) {
+        } else if (n == 2 && p[0] == '.' && p[1] == '.') {
+            while (len > 0 && buf[len - 1] != '/') len--;
+            if (len > 0) len--;
+        } else {
+            if (len + 1 + n >= sizeof buf) { errno = ENAMETOOLONG; return NULL; }
+            buf[len++] = '/';
+            memcpy(buf + len, p, n);
+            len += n;
+        }
+        p = end;
+    }
+    if (len == 0) buf[len++] = '/';
+    buf[len] = 0;
+    struct stat st;
+    if (stat(buf, &st) != 0) return NULL;
+    if (!resolved) return strdup(buf);
+    memcpy(resolved, buf, len + 1);
+    return resolved;
+}
