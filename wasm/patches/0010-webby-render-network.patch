@@ -1,5 +1,5 @@
 diff --git a/Utilities/CMakeLists.txt b/Utilities/CMakeLists.txt
-index 99385abe..46f91fda 100644
+index 99385abe..c6885c3a 100644
 --- a/Utilities/CMakeLists.txt
 +++ b/Utilities/CMakeLists.txt
 @@ -4,22 +4,27 @@ if (WASI)
@@ -39,7 +39,7 @@ index 99385abe..46f91fda 100644
 +                ${compositor_dir}/SkiaBackendContext.cpp
 +                ${compositor_dir}/SkiaUtils.cpp
 +                ${compositor_dir}/VideoFrameSkia.cpp
-+                LIBS LibWeb LibCompositing LibGfx LibMedia LibFileSystem LibURL LibMain skia requestserverservice LibRequests)
++                LIBS LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibFileSystem LibURL LibMain skia requestserverservice LibRequests)
 +            target_include_directories(${render_utility} PRIVATE ${LADYBIRD_SOURCE_DIR}/Services ${CMAKE_BINARY_DIR}/Services)
 +        endforeach()
 +        target_link_options(webby-render-latha PRIVATE ${WEBBY_WASI_LATHA_LINK_OPTIONS})
