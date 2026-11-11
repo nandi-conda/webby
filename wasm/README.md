@@ -235,6 +235,28 @@ Not yet: shared memory (`Core::AnonymousBuffer`, which bitmaps between WebConten
 either), files passed to another instance (only channel endpoints can move), and spawning Ladybird's helpers from
 LibWebView (`Core::Process` on WASI).
 
+## Pages over the network
+
+`patches/0010-webby-render-network.patch` connects LibWeb to RequestServer in webby-render, so it renders an http(s)
+URL as well as a file. It is wired the way WebContent is: a `RequestControlClient`, `connect_new_client()`, and the
+`Requests::RequestClient` that comes back is the client of `Web::ResourceLoader` for every site. The document itself,
+its style sheets, scripts, images, fonts and the page's own `fetch()`es all go through it; file: and data: URLs still
+load inside LibWeb. RequestServer runs in the same module over an in-memory socketpair (`webby-render`), or as
+`RequestServer.wasm` in a latha:proc child instance (`webby-render-latha --spawn RequestServer.wasm`).
+
+- The document is fetched straight from RequestServer, redirects followed in webby-render, and parsed into a document
+  made directly as before (no navigation), with the final URL's origin, and the encoding from Content-Type, a BOM or
+  `<meta charset>`. `-C` names the CA bundle, `--timeout` (60 s) paints what there is when a page never finishes.
+- Images are decoded in the module with LibGfx's decoders (an in-process `ImageCodecPlugin`; every frame up front).
+- webby-render uses sockets now, so it runs as a component (tools/wasi-run.py makes one and runs it in the wasmtime CLI).
+
+`tests/webby-render-net.sh BUILD LADYBIRD OUT` serves a page from a local HTTP server whose background is in a style
+sheet, whose red square is a PNG and whose green bar only appears once a `fetch()` has read a text file, and checks those
+pixels both ways; `HTTPS=1` also renders https://example.com/ both ways. The wasm-engine job runs it.
+
+    WASI_RUN_DIRS=/usr/share/fonts,$PWD/Base/res=/res,/etc/ssl XDG_DATA_DIRS=/usr/share python tools/wasi-run.py \
+      build/bin/webby-render --theme /res/themes/Default.ini -C /etc/ssl/certs/ca-certificates.crt -o out.png https://example.com/
+
 ## Building what exists
 
 ```sh

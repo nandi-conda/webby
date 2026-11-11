@@ -2,6 +2,7 @@
 # on ENABLE_GUI_TARGETS (LibWeb, patches/0006).
 js
 webby-render
+webby-render-latha
 requestserver-fetch
 requestserver-ipc
 requestserver-ipc-latha

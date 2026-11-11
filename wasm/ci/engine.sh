@@ -65,6 +65,21 @@ if [[ " $targets " == *" js "* ]]; then
   [ "$got" = 42 ] || fail "js.wasm smoke test printed: $got"
   echo "js.wasm prints $got"
 fi
+# Programs that use sockets (webby-render links RequestServer) run as components: wasm-tools makes them, the wasmtime
+# CLI runs them with TCP (tools/wasi-run.py), latha-run runs latha:proc children. nandi-testing's packages, cached.
+if [[ " $targets " == *" webby-render "* ]]; then
+  tools=$C/tools-env
+  if [ ! -x "$tools/bin/latha-run" ]; then
+    (cd /tmp && curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj bin/micromamba) \
+      && /tmp/bin/micromamba create -y -q -r /tmp/mamba -p "$tools" -c https://prefix.dev/nandi-testing -c conda-forge \
+         wasmtime wasm-tools latha-gui > /dev/null || fail "installing wasmtime, wasm-tools and latha-run failed"
+  fi
+  adapter=$C/wasi_snapshot_preview1.command.wasm
+  [ -s "$adapter" ] || curl -fsSL -o "$adapter" \
+    https://github.com/bytecodealliance/wasmtime/releases/download/v36.0.0/wasi_snapshot_preview1.command.wasm \
+    || fail "downloading the preview1 command adapter failed"
+  export WASMTIME=$tools/bin/wasmtime WASM_TOOLS=$tools/bin/wasm-tools LATHA_RUN=$tools/bin/latha-run WEBBY_WASI_ADAPTER=$adapter
+fi
 if [[ " $targets " == *" webby-render "* ]]; then
   # tests/webby-render-test.html (gradients, transforms, text, a script) to a PNG, as the wasm-port thread runs it.
   page=$(mktemp -d); cp "$w/wasm/tests/webby-render-test.html" "$page/index.html"
@@ -78,6 +93,16 @@ if [[ " $targets " == *" webby-render "* ]]; then
   fi
   cp "$page/out.png" "$out/webby-render-test.png"
   echo "webby-render drew a $(stat -c %s "$out/webby-render-test.png")-byte PNG"
+fi
+if [[ " $targets " == *" webby-render-latha "* ]]; then
+  # A page over HTTP through RequestServer (in the module, then RequestServer.wasm in a latha:proc child) and
+  # https://example.com/ both ways (tests/webby-render-net.sh).
+  net=$(mktemp -d)
+  HTTPS=1 timeout 1200 bash "$w/wasm/tests/webby-render-net.sh" "$build" "$lb" "$net" > "$out/webby-render-net.log" 2>&1
+  rc=$?
+  for f in one.png two.png https-one.png https-two.png; do [ -f "$net/$f" ] && cp "$net/$f" "$out/webby-render-net-$f"; done
+  if [ $rc != 0 ]; then tail -60 "$out/webby-render-net.log" >> "$out/build.log"; fail "webby-render network test failed (exit $rc)"; fi
+  echo "webby-render loaded pages over the network"
 fi
 (cd "$out" && sha256sum ./*.wasm > SHA256SUMS)
 status ok

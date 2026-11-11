@@ -1,0 +1,429 @@
+diff --git a/Utilities/CMakeLists.txt b/Utilities/CMakeLists.txt
+index 99385abe..46f91fda 100644
+--- a/Utilities/CMakeLists.txt
++++ b/Utilities/CMakeLists.txt
+@@ -4,22 +4,27 @@ if (WASI)
+     if (ENABLE_GUI_TARGETS)
+         # HTML to PNG in one module: LibWeb, and the Compositor's CPU Skia raster of a display list linked in beside it.
+         set(compositor_dir ${LADYBIRD_SOURCE_DIR}/Services/Compositor)
+-        ladybird_utility(webby-render SOURCES webby-render.cpp
+-            ${compositor_dir}/Canvas2DCommandPlayer.cpp
+-            ${compositor_dir}/ColorSpaceSkia.cpp
+-            ${compositor_dir}/DisplayListPlayer.cpp
+-            ${compositor_dir}/DisplayListPlayerSkia.cpp
+-            ${compositor_dir}/DisplayListRasterCache.cpp
+-            ${compositor_dir}/FontSkia.cpp
+-            ${compositor_dir}/PainterSkia.cpp
+-            ${compositor_dir}/PaintingSurface.cpp
+-            ${compositor_dir}/RasterizeDisplayList.cpp
+-            ${compositor_dir}/ScrollbarController.cpp
+-            ${compositor_dir}/SkiaBackendContext.cpp
+-            ${compositor_dir}/SkiaUtils.cpp
+-            ${compositor_dir}/VideoFrameSkia.cpp
+-            LIBS LibWeb LibCompositing LibGfx LibMedia LibFileSystem LibURL LibMain skia)
+-        target_include_directories(webby-render PRIVATE ${LADYBIRD_SOURCE_DIR}/Services ${CMAKE_BINARY_DIR}/Services)
++        # Its network requests go to RequestServer over IPC, in this module or (webby-render-latha, --spawn) in a child
++        # instance that latha:proc starts.
++        foreach(render_utility webby-render webby-render-latha)
++            ladybird_utility(${render_utility} SOURCES webby-render.cpp
++                ${compositor_dir}/Canvas2DCommandPlayer.cpp
++                ${compositor_dir}/ColorSpaceSkia.cpp
++                ${compositor_dir}/DisplayListPlayer.cpp
++                ${compositor_dir}/DisplayListPlayerSkia.cpp
++                ${compositor_dir}/DisplayListRasterCache.cpp
++                ${compositor_dir}/FontSkia.cpp
++                ${compositor_dir}/PainterSkia.cpp
++                ${compositor_dir}/PaintingSurface.cpp
++                ${compositor_dir}/RasterizeDisplayList.cpp
++                ${compositor_dir}/ScrollbarController.cpp
++                ${compositor_dir}/SkiaBackendContext.cpp
++                ${compositor_dir}/SkiaUtils.cpp
++                ${compositor_dir}/VideoFrameSkia.cpp
++                LIBS LibWeb LibCompositing LibGfx LibMedia LibFileSystem LibURL LibMain skia requestserverservice LibRequests)
++            target_include_directories(${render_utility} PRIVATE ${LADYBIRD_SOURCE_DIR}/Services ${CMAKE_BINARY_DIR}/Services)
++        endforeach()
++        target_link_options(webby-render-latha PRIVATE ${WEBBY_WASI_LATHA_LINK_OPTIONS})
+         # RequestServer's resolver and curl multi handle on the LibCore event loop, minus IPC (requestserver-fetch.cpp).
+         ladybird_utility(requestserver-fetch SOURCES requestserver-fetch.cpp LIBS requestserverservice LibMain LibURL)
+         target_include_directories(requestserver-fetch PRIVATE ${LADYBIRD_SOURCE_DIR}/Services)
+diff --git a/Utilities/webby-render.cpp b/Utilities/webby-render.cpp
+index ecb493a8..78c49fb0 100644
+--- a/Utilities/webby-render.cpp
++++ b/Utilities/webby-render.cpp
+@@ -4,9 +4,14 @@
+  * SPDX-License-Identifier: BSD-2-Clause
+  */
+ 
+-// webby-render: lays out and paints one HTML file into a PNG, all inside one process, with no WebContent, Compositor,
+-// RequestServer or ImageDecoder. This is what the WebAssembly build of webby runs: the page lives in this module's
+-// LibWeb, and its display list is rasterized on the CPU by the Compositor's Skia player linked in beside it.
++// webby-render: lays out and paints one page into a PNG, with no WebContent, Compositor or ImageDecoder process. This
++// is what the WebAssembly build of webby runs: the page lives in this module's LibWeb, images are decoded in place, and
++// its display list is rasterized on the CPU by the Compositor's Skia player linked in beside it.
++//
++// The page is a file or an http(s) URL. Everything LibWeb fetches over the network (the document itself, style sheets,
++// scripts, images, fonts) goes through Requests::RequestClient to a RequestServer, as it does in WebContent: by
++// default RequestServer runs in this same module over a socketpair in its memory (LibIPC's thread-less WASI transport),
++// and with --spawn PATH it is RequestServer.wasm in a child instance that latha:proc starts (webby-render-latha).
+ 
+ #include <AK/LexicalPath.h>
+ #include <Compositor/RasterizeDisplayList.h>
+@@ -17,10 +22,18 @@
+ #include <LibCore/Timer.h>
+ #include <LibFileSystem/FileSystem.h>
+ #include <LibGfx/Bitmap.h>
++#include <LibGfx/ImageFormats/ImageDecoder.h>
+ #include <LibGfx/ImageFormats/PNGWriter.h>
+ #include <LibGfx/Palette.h>
+ #include <LibGfx/SystemTheme.h>
++#include <LibHTTP/Cache/DiskCache.h>
++#include <LibHTTP/HeaderList.h>
++#include <LibIPC/ConnectionFromClient.h>
++#include <LibIPC/Transport.h>
+ #include <LibMain/Main.h>
++#include <LibRequests/Request.h>
++#include <LibRequests/RequestClient.h>
++#include <LibRequests/RequestControlClient.h>
+ #include <LibURL/Parser.h>
+ #include <LibWeb/Bindings/MainThreadVM.h>
+ #include <LibWeb/DOM/Document.h>
+@@ -34,11 +47,220 @@
+ #include <LibWeb/Painting/DocumentPaintState.h>
+ #include <LibWeb/Platform/EventLoopPlugin.h>
+ #include <LibWeb/Platform/FontPlugin.h>
++#include <LibWeb/Platform/ImageCodecPlugin.h>
++#include <LibWebCommon/Loader/UserAgent.h>
++#include <LibWebCommon/MimeSniff/MimeType.h>
++#include <RequestServer/CURL.h>
++#include <RequestServer/ConnectionFromClient.h>
++#include <RequestServer/ControlConnectionFromClient.h>
++#include <RequestServer/ResourceSubstitutionMap.h>
++#include <errno.h>
++#include <webby_wasi_local.h>
+ #include <stdio.h>
+ #include <unistd.h>
+ 
++namespace RequestServer {
++
++// Defined by RequestServer's main.cpp, which is not part of this program.
++OwnPtr<ResourceSubstitutionMap> g_resource_substitution_map;
++
++}
++
+ namespace {
+ 
++// Images are decoded here, in this module, with LibGfx's decoders: there is no ImageDecoder process to send them to.
++// Every frame of an animation is decoded up front, so LibWeb never asks for more (session id 0).
++class InProcessImageCodecPlugin final : public Web::Platform::ImageCodecPlugin {
++public:
++    virtual ~InProcessImageCodecPlugin() override = default;
++
++    virtual NonnullRefPtr<Core::Promise<Web::Platform::DecodedImage>> decode_image(ReadonlyBytes bytes, Function<ErrorOr<void>(Web::Platform::DecodedImage&)> on_resolved, Function<void(Error&)> on_rejected) override
++    {
++        auto promise = Core::Promise<Web::Platform::DecodedImage>::construct();
++        if (on_resolved)
++            promise->on_resolution = move(on_resolved);
++        if (on_rejected)
++            promise->on_rejection = move(on_rejected);
++
++        // Settled on a later turn of the event loop, as an answer from ImageDecoder would be.
++        auto copy = ByteBuffer::copy(bytes);
++        if (copy.is_error()) {
++            promise->reject(copy.release_error());
++            return promise;
++        }
++        Core::deferred_invoke([promise, data = copy.release_value()] {
++            auto decoded = decode(data);
++            if (decoded.is_error())
++                promise->reject(decoded.release_error());
++            else
++                promise->resolve(decoded.release_value());
++        });
++        return promise;
++    }
++
++    virtual ErrorOr<Web::Platform::DecodedFirstFrame> decode_first_frame_synchronously(ReadonlyBytes bytes) override
++    {
++        auto decoder = TRY(create_decoder(bytes));
++        auto frame = TRY(decoder->frame(0));
++        frame.image->set_alpha_type_destructive(Gfx::AlphaType::Premultiplied);
++        return Web::Platform::DecodedFirstFrame { *frame.image, color_space_of(*decoder) };
++    }
++
++    virtual void request_animation_frames(i64, u32, u32) override { }
++    virtual void stop_animation_decode(i64) override { }
++
++private:
++    static ErrorOr<NonnullRefPtr<Gfx::ImageDecoder>> create_decoder(ReadonlyBytes bytes)
++    {
++        auto decoder = TRY(Gfx::ImageDecoder::try_create_for_raw_bytes(bytes));
++        if (!decoder || decoder->frame_count() == 0)
++            return Error::from_string_literal("No image decoder for this data");
++        return decoder.release_nonnull();
++    }
++
++    static Gfx::ColorSpace color_space_of(Gfx::ImageDecoder& decoder)
++    {
++        auto color_space = decoder.color_space();
++        return color_space.is_error() ? Gfx::ColorSpace {} : color_space.release_value();
++    }
++
++    static ErrorOr<Web::Platform::DecodedImage> decode(ReadonlyBytes bytes)
++    {
++        auto decoder = TRY(create_decoder(bytes));
++        Web::Platform::DecodedImage result;
++        result.is_animated = decoder->is_animated();
++        result.loop_count = decoder->loop_count();
++        result.color_space = color_space_of(*decoder);
++        for (size_t i = 0; i < decoder->frame_count(); ++i) {
++            auto frame = decoder->frame(i);
++            if (frame.is_error())
++                break;
++            auto descriptor = frame.release_value();
++            descriptor.image->set_alpha_type_destructive(Gfx::AlphaType::Premultiplied);
++            result.all_durations.append(descriptor.duration);
++            result.frames.append({ descriptor.image, static_cast<size_t>(descriptor.duration) });
++        }
++        if (result.frames.is_empty())
++            return Error::from_string_literal("Could not decode image");
++        result.frame_count = result.frames.size();
++        return result;
++    }
++};
++
++// RequestServer, reached the way WebContent reaches it: a control connection, then connect_new_client() over it for
++// the RequestClient that LibWeb's ResourceLoader uses.
++struct RequestServerConnection {
++    // RequestServer's side, when it runs in this module.
++    RequestServer::ConnectionFromClient::ConnectionMap connections;
++    RequestServer::ConnectionFromClient::RequestTransferLeaseMap request_transfer_leases;
++    Optional<HTTP::DiskCache> disk_cache;
++    RefPtr<RequestServer::ControlConnectionFromClient> server;
++
++    RefPtr<Requests::RequestControlClient> control;
++    RefPtr<Requests::RequestClient> client;
++};
++
++ErrorOr<NonnullOwnPtr<RequestServerConnection>> connect_to_request_server(StringView spawn_path, StringView certificate)
++{
++    auto connection = make<RequestServerConnection>();
++    NonnullOwnPtr<IPC::Transport> control_transport = TRY([&]() -> ErrorOr<NonnullOwnPtr<IPC::Transport>> {
++        if (!spawn_path.is_empty()) {
++            Vector<ByteString> child_arguments { "RequestServer", "--disable-sandbox", "--http-disk-cache-mode=disabled" };
++            if (!certificate.is_empty())
++                child_arguments.append(ByteString::formatted("--certificate={}", certificate));
++            Vector<char*> argv;
++            for (auto& argument : child_arguments)
++                argv.append(const_cast<char*>(argument.characters()));
++            argv.append(nullptr);
++            auto path = ByteString { spawn_path };
++            u32 pid = 0;
++            int fd = -1;
++            if (webby_local_spawn(path.characters(), argv.data(), &pid, &fd) < 0)
++                return Error::from_syscall("webby_local_spawn"sv, errno);
++            warnln("webby-render: RequestServer is process {}", pid);
++            return TRY(IPC::Transport::adopt_fd(fd));
++        }
++
++        if (!certificate.is_empty())
++            RequestServer::set_default_certificate_path(certificate);
++        TRY(RequestServer::initialize_libcurl());
++        auto [local, remote_handle] = TRY(IPC::Transport::create_paired());
++        connection->server = IPC::new_client_connection<RequestServer::ControlConnectionFromClient>(
++            TRY(remote_handle.create_transport()), connection->connections, connection->request_transfer_leases, connection->disk_cache);
++        return move(local);
++    }());
++
++    connection->control = adopt_ref(*new Requests::RequestControlClient(move(control_transport)));
++    connection->control->on_request_server_died = [] {
++        warnln("webby-render: RequestServer went away");
++        Core::EventLoop::current().quit(3);
++    };
++
++    // A synchronous request: the answer only comes once RequestServer's side has run.
++    auto response = connection->control->send_sync_but_allow_failure<Messages::RequestServerControl::ConnectNewClient>(RequestServer::IsPrivate::No, RequestServer::SiteBinding::Unrestricted);
++    if (!response || response->client_id() < 0)
++        return Error::from_string_literal("RequestServer's connect_new_client failed");
++    auto client_id = response->client_id();
++    connection->client = TRY(try_make_ref_counted<Requests::RequestClient>(TRY(response->take_handle().create_transport()), client_id));
++    return connection;
++}
++
++struct FetchedDocument {
++    URL::URL url;
++    ByteBuffer body;
++    Optional<ByteString> content_type;
++};
++
++// The document itself, fetched straight from RequestServer (redirects followed here, as Fetch would) rather than by a
++// navigation: like a file, its bytes are then parsed into a document made directly.
++ErrorOr<FetchedDocument> fetch_document(Core::EventLoop& event_loop, Requests::RequestClient& client, URL::URL url)
++{
++    for (int redirects = 0; redirects <= 20; ++redirects) {
++        auto headers = HTTP::HeaderList::create();
++        headers->append(HTTP::Header::isomorphic_encode("User-Agent"sv, Web::default_user_agent));
++        headers->append(HTTP::Header::isomorphic_encode("Accept"sv, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"sv));
++        headers->append(HTTP::Header::isomorphic_encode("Accept-Language"sv, "en-US,en;q=0.9"sv));
++        auto request = client.start_request("GET"sv, url, *headers);
++        if (!request)
++            return Error::from_string_literal("RequestServer did not start the request");
++
++        bool done = false;
++        Optional<Requests::NetworkError> error;
++        Optional<u32> status;
++        RefPtr<HTTP::HeaderList> response_headers;
++        ByteBuffer body;
++        request->set_buffered_request_finished_callback(
++            [&](u64, Requests::RequestTimingInfo const&, Optional<Requests::NetworkError> const& network_error,
++                NonnullRefPtr<HTTP::HeaderList> headers, Optional<u32> response_code, Optional<String>, Optional<Core::ImmutableBytes>,
++                Optional<u64>, Requests::CacheState, Core::ImmutableBytes payload) {
++                error = network_error;
++                status = response_code;
++                response_headers = move(headers);
++                body = MUST(ByteBuffer::copy(payload.bytes()));
++                done = true;
++            });
++        event_loop.spin_until([&] { return done; });
++
++        if (error.has_value())
++            return Error::from_string_view(Requests::network_error_to_string(*error));
++        if (!status.has_value())
++            return Error::from_string_literal("No HTTP status");
++        warnln("webby-render: {} {} ({} bytes)", url, *status, body.size());
++        if (*status >= 300 && *status < 400 && *status != 304) {
++            auto location = response_headers->get("Location"sv);
++            if (!location.has_value())
++                return Error::from_string_literal("A redirect without a Location");
++            auto next = URL::Parser::basic_parse(*location, url);
++            if (!next.has_value())
++                return Error::from_string_literal("A redirect to something that is not a URL");
++            url = next.release_value();
++            continue;
++        }
++        return FetchedDocument { move(url), move(body), response_headers->get("Content-Type"sv) };
++    }
++    return Error::from_string_literal("Too many redirects");
++}
++
+ class HeadlessPageClient final : public Web::PageClient {
+     GC_CELL(HeadlessPageClient, Web::PageClient);
+     GC_DECLARE_ALLOCATOR(HeadlessPageClient);
+@@ -119,40 +341,67 @@ ErrorOr<NonnullRefPtr<Gfx::Bitmap>> paint(Web::DOM::Document& document, Gfx::Int
+ 
+ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+ {
+-    StringView input_path;
++    StringView input;
+     StringView output_path = "out.png"sv;
+     int width = 800;
+     int height = 600;
+     int wait_ms = 0;
++    int timeout_ms = 60000;
+     StringView theme_path = "Base/res/themes/Default.ini"sv;
++    StringView spawn_path;
++    StringView certificate;
+ 
+     Core::ArgsParser args_parser;
+-    args_parser.set_general_help("Render an HTML file to a PNG, in one process.");
++    args_parser.set_general_help("Render a page (an HTML file or an http(s) URL) to a PNG.");
+     args_parser.add_option(output_path, "PNG to write (default out.png)", "output", 'o', "path");
+     args_parser.add_option(width, "Viewport width in CSS pixels (default 800)", "width", 'w', "pixels");
+     args_parser.add_option(height, "Viewport height in CSS pixels (default 600)", "height", 'h', "pixels");
+     args_parser.add_option(wait_ms, "Run the event loop this long after loading, for timers and late resources", "wait", 0, "ms");
++    args_parser.add_option(timeout_ms, "Paint anyway when the page has not finished loading after this long (default 60000)", "timeout", 0, "ms");
+     args_parser.add_option(theme_path, "System theme for the palette (default Base/res/themes/Default.ini)", "theme", 0, "path");
+-    args_parser.add_positional_argument(input_path, "HTML file to render", "file");
++    args_parser.add_option(spawn_path, "Run RequestServer as this wasm program in a child instance (latha:proc, webby-render-latha)", "spawn", 0, "path");
++    args_parser.add_option(certificate, "CA bundle for HTTPS", "certificate", 'C', "file");
++    args_parser.add_positional_argument(input, "HTML file or URL to render", "page");
+     args_parser.parse(arguments);
+ 
+     Core::EventLoop event_loop;
+     Web::Platform::EventLoopPlugin::install(*new Web::Platform::EventLoopPlugin);
+     Web::Bindings::initialize_main_thread_vm(Web::HTML::AgentType::SimilarOriginWindow);
+     auto& heap = Web::Bindings::main_thread_vm().heap();
+-    // file: and data: URLs load inside this process; nothing here makes network requests yet.
+     Web::ResourceLoader::initialize(heap);
+     Web::Platform::FontPlugin::install(*new Web::Platform::FontPlugin(false));
++    Web::Platform::ImageCodecPlugin::install(*new InProcessImageCodecPlugin);
+ 
+     auto step = [](StringView what, auto result) {
+         if (result.is_error())
+             warnln("webby-render: {}: {}", what, result.error());
+         return result;
+     };
+-    auto absolute_path = TRY(step("resolving the input path"sv, FileSystem::absolute_path(input_path)));
+-    auto url = URL::create_with_file_scheme(absolute_path).release_value();
+-    auto file = TRY(step("opening the input"sv, Core::File::open(input_path, Core::File::OpenMode::Read)));
+-    auto html = TRY(step("reading the input"sv, file->read_until_eof()));
++
++    // file: and data: URLs load inside LibWeb; everything else goes to RequestServer.
++    auto request_server = TRY(step("connecting to RequestServer"sv, connect_to_request_server(spawn_path, certificate)));
++    Web::ResourceLoader::the().set_client({}, *request_server->client);
++
++    URL::URL url;
++    ByteBuffer html;
++    Optional<Web::MimeSniff::MimeType> mime_type;
++    if (input.starts_with("http://"sv) || input.starts_with("https://"sv)) {
++        auto requested = URL::Parser::basic_parse(input);
++        if (!requested.has_value()) {
++            warnln("webby-render: {} is not a URL", input);
++            return 2;
++        }
++        auto fetched = TRY(step("fetching the page"sv, fetch_document(event_loop, *request_server->client, requested.release_value())));
++        url = move(fetched.url);
++        html = move(fetched.body);
++        if (fetched.content_type.has_value())
++            mime_type = Web::MimeSniff::MimeType::parse(*fetched.content_type);
++    } else {
++        auto absolute_path = TRY(step("resolving the input path"sv, FileSystem::absolute_path(input)));
++        url = URL::create_with_file_scheme(absolute_path).release_value();
++        auto file = TRY(step("opening the input"sv, Core::File::open(input, Core::File::OpenMode::Read)));
++        html = TRY(step("reading the input"sv, file->read_until_eof()));
++    }
+ 
+     Gfx::IntSize viewport { width, height };
+     auto theme = TRY(step("loading the theme"sv, Gfx::load_system_theme(ByteString { theme_path })));
+@@ -164,9 +413,11 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+     auto& window = *navigable.active_window();
+ 
+     // The document a navigation would have made, made directly: its bytes are parsed here, in this process, and it
+-    // takes the place of the initial about:blank document, as SVGDecodedImageData's documents do.
++    // takes the place of the initial about:blank document, as SVGDecodedImageData's documents do. Its origin is its
++    // URL's, so the page's own fetches (and its scripts' fetch()es) are same-origin where they would be in a browser.
+     auto document = Web::DOM::Document::create(*page, window, url);
+     document->set_id(page_client->allocate_cross_process_id());
++    document->set_origin(url.origin());
+     document->set_document_type(Web::DOM::Document::Type::HTML);
+     document->set_content_type("text/html"_utf16_fly_string);
+     document->set_browsing_context(navigable.active_browsing_context());
+@@ -178,11 +429,18 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+     auto observer = Web::DOM::DocumentObserver::create(*document);
+     observer->set_document_completely_loaded([&] { loaded = true; });
+ 
++    bool timed_out = false;
++    auto load_timer = Core::Timer::create_single_shot(AK::Duration::from_milliseconds(timeout_ms), [&] { timed_out = true; });
++    load_timer->start();
++
+     document->set_ready_to_run_scripts();
+-    auto parser = Web::HTML::HTMLParser::create_from_byte_string(*document, StringView { html }, Web::HTML::ParserScriptingMode::Normal, "UTF-8"sv);
++    // The encoding comes from Content-Type's charset, a BOM or a <meta charset>, as for a navigation.
++    auto parser = Web::HTML::HTMLParser::create_with_uncertain_encoding(*document, html, mime_type);
+     parser->run(url);
+ 
+-    event_loop.spin_until([&] { return loaded; });
++    event_loop.spin_until([&] { return loaded || timed_out; });
++    if (!loaded)
++        warnln("webby-render: the page had not finished loading after {} ms; painting what there is", timeout_ms);
+     if (wait_ms > 0) {
+         bool waited = false;
+         auto timer = Core::Timer::create_single_shot(AK::Duration::from_milliseconds(wait_ms), [&] { waited = true; });
+@@ -194,7 +452,7 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+     auto png = TRY(step("encoding the PNG"sv, Gfx::PNGWriter::encode(*bitmap)));
+     auto output = TRY(step("opening the output"sv, Core::File::open(output_path, Core::File::OpenMode::Write)));
+     TRY(step("writing the output"sv, output->write_until_depleted(png)));
+-    outln("{}: {}x{} -> {}", input_path, width, height, output_path);
++    outln("{}: {}x{} -> {}", input, width, height, output_path);
+     // NB: The engine's global destructors are not written to run in a process that exits on its own (they trap in
+     //     wasm), and a native WebContent never runs them either: leave without them.
+     fflush(stdout);
