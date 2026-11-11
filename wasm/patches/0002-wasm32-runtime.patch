@@ -1,0 +1,2004 @@
+diff --git a/AK/Random.cpp b/AK/Random.cpp
+index 40774910..5c8cf00d 100644
+--- a/AK/Random.cpp
++++ b/AK/Random.cpp
+@@ -14,6 +14,11 @@
+ #    include <sys/random.h>
+ #endif
+ 
++#if defined(AK_OS_WASI)
++#    include <errno.h>
++#    include <unistd.h>
++#endif
++
+ #if defined(AK_OS_WINDOWS)
+ #    include <AK/Windows.h>
+ #endif
+@@ -40,6 +45,16 @@ static inline ErrorOr<void> csprng(void* const buf, size_t size)
+             out += ret;
+         }
+     }
++#elif defined(AK_OS_WASI)
++    // WASI's random_get, 256 bytes at most per call.
++    unsigned char* out = (unsigned char*)buf;
++    while (size > 0u) {
++        size_t chunk = size < 256u ? size : 256u;
++        if (getentropy(out, chunk) != 0) [[unlikely]]
++            return Error::from_errno(errno);
++        size -= chunk;
++        out += chunk;
++    }
+ #elif defined(AK_OS_WINDOWS)
+     // Documented to always return TRUE
+     g_system.ProcessPrng((PBYTE)buf, size);
+diff --git a/AK/StackInfo.cpp b/AK/StackInfo.cpp
+index ff868b22..6d327917 100644
+--- a/AK/StackInfo.cpp
++++ b/AK/StackInfo.cpp
+@@ -112,6 +112,12 @@ StackInfo::StackInfo()
+ 
+     m_base = static_cast<FlatPtr>(low_limit);
+     m_size = static_cast<size_t>(high_limit - low_limit);
++#elif defined(AK_OS_WASI)
++    // wasm-ld puts the shadow stack (the C stack in linear memory) between these two symbols.
++    extern unsigned char __stack_low;
++    extern unsigned char __stack_high;
++    m_base = reinterpret_cast<FlatPtr>(&__stack_low);
++    m_size = reinterpret_cast<FlatPtr>(&__stack_high) - m_base;
+ #else
+ #    pragma message "StackInfo not supported on this platform! Recursion checks and stack scans may not work properly"
+     m_size = (size_t)~0;
+diff --git a/AK/StackUnwinder.h b/AK/StackUnwinder.h
+index 647e3b02..23a9c656 100644
+--- a/AK/StackUnwinder.h
++++ b/AK/StackUnwinder.h
+@@ -36,9 +36,14 @@ void unwind_stack_from_frame_pointer(FlatPtr frame_pointer, CallableAs<Optional<
+     static constexpr ptrdiff_t FRAME_POINTER_RETURN_ADDRESS_OFFSET = -8;
+     static constexpr ptrdiff_t FRAME_POINTER_PREVIOUS_FRAME_POINTER_OFFSET = -16;
+ #else
++    // No frame records to walk (WebAssembly keeps return addresses out of memory).
++    (void)frame_pointer;
++    (void)read_memory;
++    (void)on_stack_frame;
+     return;
+ #endif
+ 
++#if ARCH(AARCH64) || ARCH(X86_64) || ARCH(RISCV64)
+     FlatPtr current_frame_pointer = frame_pointer;
+ 
+     while (current_frame_pointer != 0) {
+@@ -62,6 +67,7 @@ void unwind_stack_from_frame_pointer(FlatPtr frame_pointer, CallableAs<Optional<
+ 
+         current_frame_pointer = maybe_previous_frame_pointer.value();
+     }
++#endif
+ }
+ 
+ }
+diff --git a/AK/Time.cpp b/AK/Time.cpp
+index ece2f7e4..1fd7014c 100644
+--- a/AK/Time.cpp
++++ b/AK/Time.cpp
+@@ -471,7 +471,13 @@ MonotonicTime MonotonicTime::now()
+ 
+ MonotonicTime MonotonicTime::now_coarse()
+ {
+-    return MonotonicTime { now_time_from_clock(CLOCK_MONOTONIC_COARSE) };
++    return MonotonicTime { now_time_from_clock(
++#if defined(AK_OS_WASI)
++        CLOCK_MONOTONIC
++#else
++        CLOCK_MONOTONIC_COARSE
++#endif
++        ) };
+ }
+ 
+ UnixDateTime UnixDateTime::from_iso8601_week(u32 week_year, u32 week)
+@@ -513,7 +519,13 @@ UnixDateTime UnixDateTime::now()
+ 
+ UnixDateTime UnixDateTime::now_coarse()
+ {
+-    return UnixDateTime { now_time_from_clock(CLOCK_REALTIME_COARSE) };
++    return UnixDateTime { now_time_from_clock(
++#if defined(AK_OS_WASI)
++        CLOCK_REALTIME
++#else
++        CLOCK_REALTIME_COARSE
++#endif
++        ) };
+ }
+ 
+ ErrorOr<void> UnixDateTime::to_string_impl(StringBuilder& builder, StringView format, LocalTime local_time) const
+diff --git a/AK/Types.h b/AK/Types.h
+index 546c853e..a2bbac15 100644
+--- a/AK/Types.h
++++ b/AK/Types.h
+@@ -83,7 +83,7 @@ struct SoftFloat16 {
+         __UINT32_TYPE__ mantissa = f & 0x7fffff;
+         if (exponent == 0xff)
+             return sign | 0x7c00 | (mantissa ? 0x200 | (mantissa >> 13) : 0);
+-        __INT32_TYPE__ e = __INT32_TYPE__(exponent) - 127 + 15;
++        __INT32_TYPE__ e = static_cast<__INT32_TYPE__>(exponent) - 127 + 15;
+         if (e >= 0x1f)
+             return sign | 0x7c00;
+         if (e <= 0) {
+@@ -98,7 +98,7 @@ struct SoftFloat16 {
+                 ++half;
+             return sign | half;
+         }
+-        __UINT32_TYPE__ half = (__UINT32_TYPE__(e) << 10) | (mantissa >> 13);
++        __UINT32_TYPE__ half = (static_cast<__UINT32_TYPE__>(e) << 10) | (mantissa >> 13);
+         __UINT32_TYPE__ rest = mantissa & 0x1fff;
+         if (rest > 0x1000 || (rest == 0x1000 && (half & 1)))
+             ++half; // may carry into the exponent, up to infinity, which is right
+diff --git a/Libraries/LibCore/DirectoryEntry.cpp b/Libraries/LibCore/DirectoryEntry.cpp
+index bae5dec3..f50b26c4 100644
+--- a/Libraries/LibCore/DirectoryEntry.cpp
++++ b/Libraries/LibCore/DirectoryEntry.cpp
+@@ -57,7 +57,7 @@ static DirectoryEntry::Type directory_entry_type_from_posix(int dt_constant)
+     case DT_SOCK:
+         return DirectoryEntry::Type::Socket;
+ #    endif
+-#    if !defined AK_OS_OPENBSD && !defined AK_OS_WINDOWS
++#    if !defined AK_OS_OPENBSD && !defined AK_OS_WINDOWS && !defined AK_OS_WASI
+     case DT_WHT:
+         return DirectoryEntry::Type::Whiteout;
+ #    endif
+diff --git a/Libraries/LibCore/SocketAddress.cpp b/Libraries/LibCore/SocketAddress.cpp
+index 3321700b..aa8eca86 100644
+--- a/Libraries/LibCore/SocketAddress.cpp
++++ b/Libraries/LibCore/SocketAddress.cpp
+@@ -81,12 +81,17 @@ ByteString SocketAddress::to_byte_string() const
+ Optional<sockaddr_un> SocketAddress::to_sockaddr_un() const
+ {
+     VERIFY(type() == Type::Local);
++#if defined(AK_OS_WASI)
++    // WASI's sockaddr_un has no path: there are no local sockets.
++    return {};
++#else
+     sockaddr_un address;
+     address.sun_family = AF_LOCAL;
+     bool fits = m_local_address.copy_characters_to_buffer(address.sun_path, sizeof(address.sun_path));
+     if (!fits)
+         return {};
+     return address;
++#endif
+ }
+ 
+ sockaddr_in6 SocketAddress::to_sockaddr_in6() const
+diff --git a/Libraries/LibCore/System.cpp b/Libraries/LibCore/System.cpp
+index cf26ab66..9226b4d5 100644
+--- a/Libraries/LibCore/System.cpp
++++ b/Libraries/LibCore/System.cpp
+@@ -162,7 +162,13 @@ static int mmap_anonymous_fd([[maybe_unused]] MemoryTag tag)
+ 
+ ErrorOr<void*> reserve_address_space(size_t size, MemoryTag tag)
+ {
+-#ifdef AK_OS_MACOS
++#if defined(AK_OS_WASI)
++    // NB: wasm32 linear memory cannot be reserved without being committed. Callers that support WASI take their
++    //     ranges from the allocator, so commit_memory() and decommit_memory() only have to zero them.
++    (void)size;
++    (void)tag;
++    return Error::from_errno(ENOTSUP);
++#elif defined(AK_OS_MACOS)
+     // On macOS, reserving address space that may later become accessible costs time in proportion to its size, while
+     // a reservation that can never become accessible costs nothing. Committing memory maps over the reservation, which
+     // replaces its protections, so the reservation itself never needs to become accessible.
+@@ -195,6 +201,11 @@ ErrorOr<void*> allocate_anonymous_memory(size_t size, MemoryTag tag)
+ 
+ ErrorOr<void> commit_memory(void* address, size_t size, MemoryTag tag)
+ {
++#if defined(AK_OS_WASI)
++    (void)tag;
++    __builtin_memset(address, 0, size);
++    return {};
++#endif
+     auto* ptr = ::mmap(address, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, mmap_anonymous_fd(tag), 0);
+     if (ptr == MAP_FAILED)
+         return Error::from_syscall("mmap"sv, errno);
+@@ -205,6 +216,10 @@ ErrorOr<void> protect_memory_readonly(void* address, size_t size)
+ {
+     if (size == 0)
+         return {};
++#if defined(AK_OS_WASI)
++    (void)address;
++    return {};
++#endif
+     if (::mprotect(address, size, PROT_READ) < 0)
+         return Error::from_syscall("mprotect"sv, errno);
+     return {};
+@@ -214,6 +229,11 @@ ErrorOr<void> decommit_memory(void* address, size_t size, MemoryTag tag)
+ {
+     if (size == 0)
+         return {};
++#if defined(AK_OS_WASI)
++    (void)tag;
++    __builtin_memset(address, 0, size);
++    return {};
++#endif
+ 
+     int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED;
+ #ifdef MAP_NORESERVE
+@@ -228,6 +248,12 @@ ErrorOr<void> decommit_memory(void* address, size_t size, MemoryTag tag)
+ 
+ ErrorOr<void> map_shared_memory_fixed(void* address, size_t size, int fd)
+ {
++#if defined(AK_OS_WASI)
++    (void)address;
++    (void)size;
++    (void)fd;
++    return Error::from_errno(ENOTSUP);
++#endif
+     auto* ptr = ::mmap(address, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
+     if (ptr == MAP_FAILED)
+         return Error::from_syscall("mmap"sv, errno);
+diff --git a/Libraries/LibCrypto/BigInt/TommathForward.h b/Libraries/LibCrypto/BigInt/TommathForward.h
+index 33def098..97023a50 100644
+--- a/Libraries/LibCrypto/BigInt/TommathForward.h
++++ b/Libraries/LibCrypto/BigInt/TommathForward.h
+@@ -10,7 +10,7 @@
+ #include <stdint.h>
+ 
+ extern "C" {
+-#if defined(AK_OS_WINDOWS)
++#if defined(AK_OS_WINDOWS) || defined(AK_OS_WASI)
+ typedef uint32_t mp_digit;
+ #else
+ typedef uint64_t mp_digit;
+diff --git a/Libraries/LibGC/BlockAllocator.cpp b/Libraries/LibGC/BlockAllocator.cpp
+index 9cb4ed4d..0dc60258 100644
+--- a/Libraries/LibGC/BlockAllocator.cpp
++++ b/Libraries/LibGC/BlockAllocator.cpp
+@@ -56,6 +56,32 @@ class HeapRegion {
+ public:
+     static constexpr size_t size = HEAP_REGION_SIZE;
+ 
++#if defined(AK_OS_WASI)
++    // NB: Linear memory cannot be reserved without being committed, and the region is the low part of it, so chunks
++    //     come from the allocator wherever it has room. The module never grows its memory past the region.
++    HeapRegion()
++    {
++        publish_base(0);
++    }
++
++    void* allocate_chunk()
++    {
++        auto* chunk = static_cast<u8*>(aligned_alloc(CHUNK_SIZE, CHUNK_SIZE));
++        VERIFY(chunk);
++        auto chunk_end = reinterpret_cast<FlatPtr>(chunk) + CHUNK_SIZE;
++        VERIFY(chunk_end <= size);
++        __builtin_memset(chunk, 0, CHUNK_SIZE);
++        if (chunk_end > m_committed_end)
++            m_committed_end = chunk_end;
++        return chunk;
++    }
++
++    void prepare_chunk() { }
++
++    FlatPtr start() const { return 0; }
++    FlatPtr end() const { return size; }
++    FlatPtr committed_end() { return m_committed_end; }
++#else
+     HeapRegion()
+     {
+         static_assert(sizeof(FlatPtr) >= sizeof(u64));
+@@ -138,6 +164,7 @@ public:
+         MutexLocker locker(m_mutex);
+         return start() + m_next_chunk_offset;
+     }
++#endif
+ 
+ private:
+     static void request_prepared_chunk();
+@@ -160,6 +187,9 @@ private:
+ 
+     static constinit inline HeapRegionBaseCopyRegistration* s_base_copies { nullptr };
+ 
++#if defined(AK_OS_WASI)
++    FlatPtr m_committed_end { 0 };
++#else
+     // The guards at either end of the region are never committed.
+     static constexpr size_t FIRST_CHUNK_OFFSET = HEAP_REGION_LOW_GUARD_SIZE;
+     static constexpr size_t LAST_CHUNK_OFFSET = size - HEAP_REGION_HIGH_GUARD_SIZE - CHUNK_SIZE;
+@@ -179,6 +209,7 @@ private:
+     size_t m_next_chunk_offset { FIRST_CHUNK_OFFSET };
+     // A committed chunk whose pages are faulted in already, which the next allocate_chunk() takes.
+     u8* m_prepared_chunk { nullptr };
++#endif
+ };
+ 
+ static HeapRegion& heap_region()
+@@ -285,6 +316,10 @@ DecommitWorker& DecommitWorker::the()
+ 
+ DecommitWorker::DecommitWorker()
+ {
++#if defined(AK_OS_WASI)
++    // NB: There are no threads. Freed blocks stay in m_freshly_freed and are reused from there without any madvise().
++    return;
++#endif
+     m_thread = Threading::Thread::construct("DecommitWorker"sv, [this] {
+         run();
+         return static_cast<intptr_t>(0);
+@@ -296,6 +331,10 @@ DecommitWorker::DecommitWorker()
+ 
+ void DecommitWorker::register_pending(BlockAllocator& a)
+ {
++#if defined(AK_OS_WASI)
++    (void)a;
++    return;
++#endif
+     MutexLocker locker(m_mutex);
+     m_pending.append(&a);
+ }
+@@ -308,6 +347,9 @@ void DecommitWorker::deregister(BlockAllocator& a)
+ 
+ void DecommitWorker::kick()
+ {
++#if defined(AK_OS_WASI)
++    return;
++#endif
+     {
+         MutexLocker locker(m_mutex);
+         m_kicked = true;
+diff --git a/Libraries/LibGC/Cell.h b/Libraries/LibGC/Cell.h
+index eff84d96..a021377b 100644
+--- a/Libraries/LibGC/Cell.h
++++ b/Libraries/LibGC/Cell.h
+@@ -313,6 +313,11 @@ private:
+ 
+     void set_cell_kind(CellKind kind) { m_cell_kind = kind; }
+ 
++#if defined(AK_OS_WASI)
++    // NB: The first word of a cell header is 8 bytes on every target, as the Rust LibJS runtime lays out its cells
++    //     (see LibJS/Rust/src/layout/cell.rs). On wasm32 the vtable pointer only takes half of it.
++    [[maybe_unused]] u32 m_rest_of_the_first_word { 0 };
++#endif
+     bool m_mark { false };
+     State m_state { State::Live };
+     CellKind m_cell_kind { CellKind::Other };
+@@ -342,7 +347,11 @@ public:
+ private:
+     friend struct CAPI;
+ 
++#if defined(AK_OS_WASI)
++    [[maybe_unused]] u64 m_word_owned_by_the_foreign_implementation;
++#else
+     [[maybe_unused]] void const* m_word_owned_by_the_foreign_implementation;
++#endif
+     bool m_mark;
+     Cell::State m_state;
+     CellKind m_cell_kind;
+diff --git a/Libraries/LibGC/CompressedPointer.h b/Libraries/LibGC/CompressedPointer.h
+index 32112f5c..edd62f1c 100644
+--- a/Libraries/LibGC/CompressedPointer.h
++++ b/Libraries/LibGC/CompressedPointer.h
+@@ -15,8 +15,14 @@ namespace GC {
+ 
+ // A compressed cell pointer is the cell's offset into the heap region in units of the 8-byte cell alignment. A u32 then
+ // covers the whole region, so decoding never leaves it whatever the 32 bits are. Null compresses to 0.
++#if defined(AK_OS_WASI)
++// On wasm32 an address is 32 bits, so the compressed pointer is the address itself.
++static constexpr u32 COMPRESSED_POINTER_SHIFT = 0;
++static_assert(sizeof(FlatPtr) == sizeof(u32));
++#else
+ static constexpr u32 COMPRESSED_POINTER_SHIFT = 3;
+ static_assert((static_cast<u64>(1) << (32 + COMPRESSED_POINTER_SHIFT)) == HEAP_REGION_SIZE);
++#endif
+ 
+ // Every compressed pointer below this decodes into the low guard, so it is never a cell.
+ static constexpr u32 MIN_COMPRESSED_CELL_POINTER = HEAP_REGION_LOW_GUARD_SIZE >> COMPRESSED_POINTER_SHIFT;
+@@ -40,7 +46,9 @@ ALWAYS_INLINE FlatPtr decompress_nonnull(u32 compressed, FlatPtr heap_region_bas
+ {
+     auto address = heap_region_base + (static_cast<FlatPtr>(compressed) << COMPRESSED_POINTER_SHIFT);
+     // NB: The assembly is empty. It only has the compiler put the compressed pointer and the address in registers here.
++#if !defined(AK_OS_WASI)
+     asm("" : "+r"(address) : "r"(compressed));
++#endif
+     return address;
+ }
+ 
+diff --git a/Libraries/LibGC/Heap.cpp b/Libraries/LibGC/Heap.cpp
+index 2d77b6d1..13f6ef57 100644
+--- a/Libraries/LibGC/Heap.cpp
++++ b/Libraries/LibGC/Heap.cpp
+@@ -36,7 +36,9 @@
+ #include <LibGC/NanBoxedValue.h>
+ #include <LibGC/Root.h>
+ #include <LibGC/Weak.h>
+-#include <setjmp.h>
++#if !defined(AK_OS_WASI)
++#    include <setjmp.h>
++#endif
+ 
+ #ifdef HAS_ADDRESS_SANITIZER
+ #    include <sanitizer/asan_interface.h>
+@@ -475,6 +477,13 @@ static ALWAYS_INLINE void add_possible_compressed_pointer(PossiblePointers& poss
+ 
+ static void add_possible_value(PossiblePointers& possible_pointers, FlatPtr data, HeapRoot origin, PossiblePointerBounds const& bounds)
+ {
++#if defined(AK_OS_WASI)
++    // NB: The heap region base is 0 and the compressed pointer shift 0, so a raw pointer, a compressed pointer and the
++    //     low word of a NaN-boxed cell all hold the cell's address itself.
++    if (data < bounds.heap_region_start || data >= bounds.cells_end)
++        return;
++    possible_pointers.pointers.set(data, move(origin));
++#else
+     // A compiler may keep only a compressed cell pointer alive across a collection, in a register or in a spill slot that
+     // shares a word with other data, so either half of a word may be one.
+     add_possible_compressed_pointer(possible_pointers, static_cast<u32>(data), origin, bounds);
+@@ -491,6 +500,7 @@ static void add_possible_value(PossiblePointers& possible_pointers, FlatPtr data
+     if (possible_pointer < bounds.heap_region_start || possible_pointer >= bounds.cells_end)
+         return;
+     possible_pointers.pointers.set(possible_pointer, move(origin));
++#endif
+ }
+ 
+ // Adds the possible values in the captures of a GC::Function. Its captures start 8-byte aligned, but may end with a
+@@ -685,9 +695,17 @@ private:
+ 
+ NO_SANITIZE_ADDRESS AK::JsonObject Heap::dump_graph()
+ {
++#if defined(AK_OS_WASI)
++    // NB: WebAssembly has no registers to capture. Pointers a function keeps in its wasm locals are invisible to the
++    //     conservative scan, so webby's wasm build runs binaryen's --spill-pointers, which keeps every live pointer
++    //     on the shadow stack in linear memory as well, where the stack scan finds it.
++    FlatPtr registers[1] { 0 };
++    ReadonlySpan<FlatPtr> captured_registers { registers, 1 };
++#else
+     jmp_buf registers;
+     setjmp(registers);
+     ReadonlySpan<FlatPtr> captured_registers { reinterpret_cast<FlatPtr const*>(registers), sizeof(jmp_buf) / (sizeof(FlatPtr)) };
++#endif
+     return build_graph(captured_registers);
+ }
+ 
+@@ -784,9 +802,17 @@ bool heap_access_is_forbidden_on_this_thread()
+ NO_SANITIZE_ADDRESS void Heap::collect_garbage(CollectionType collection_type, bool print_report)
+ {
+     VERIFY(!heap_access_is_forbidden_on_this_thread());
++#if defined(AK_OS_WASI)
++    // NB: WebAssembly has no registers to capture. Pointers a function keeps in its wasm locals are invisible to the
++    //     conservative scan, so webby's wasm build runs binaryen's --spill-pointers, which keeps every live pointer
++    //     on the shadow stack in linear memory as well, where the stack scan finds it.
++    FlatPtr registers[1] { 0 };
++    ReadonlySpan<FlatPtr> captured_registers { registers, 1 };
++#else
+     jmp_buf registers;
+     setjmp(registers);
+     ReadonlySpan<FlatPtr> captured_registers { reinterpret_cast<FlatPtr const*>(registers), sizeof(jmp_buf) / (sizeof(FlatPtr)) };
++#endif
+     run_collection(captured_registers, collection_type, print_report);
+ }
+ 
+diff --git a/Libraries/LibGC/HeapRegion.h b/Libraries/LibGC/HeapRegion.h
+index 85191682..c68932f0 100644
+--- a/Libraries/LibGC/HeapRegion.h
++++ b/Libraries/LibGC/HeapRegion.h
+@@ -14,6 +14,17 @@
+ 
+ namespace GC {
+ 
++#if defined(AK_OS_WASI)
++// wasm32 has a 32-bit address space and no way to reserve address space without committing it. The heap region is the
++// low 2 GiB of linear memory, which the module is linked to never grow past, so its base is 0, a cell's compressed
++// pointer is its address, and HeapRegion takes its chunks from the allocator instead of from a reservation. There are
++// no guards: the low end of memory holds the data and the shadow stack, and the scanner checks the live block set.
++static constexpr size_t HEAP_REGION_SIZE = 2ull * GiB;
++static_assert(is_power_of_two(HEAP_REGION_SIZE));
++static constexpr size_t HEAP_REGION_OFFSET_MASK = HEAP_REGION_SIZE - 1;
++static constexpr size_t HEAP_REGION_LOW_GUARD_SIZE = 0;
++static constexpr size_t HEAP_REGION_HIGH_GUARD_SIZE = 0;
++#else
+ // 32 GiB is what a 32-bit cell offset in units of the 8-byte cell alignment can address. It is the same on every target,
+ // and small enough for the second region-sized reservation used to align its base to fit in the user address space of
+ // Sv39 RISC-V, 39-bit AArch64, and the application ranges of the sanitizers.
+@@ -30,6 +41,7 @@ static constexpr size_t HEAP_REGION_LOW_GUARD_SIZE = 4ull * GiB;
+ // The top of the region is reserved but never committed either. Decoding any offset lands inside the region, and this
+ // keeps a field access through the decoded address from reaching memory past the end of the reservation.
+ static constexpr size_t HEAP_REGION_HIGH_GUARD_SIZE = 2ull * MiB;
++#endif
+ 
+ }
+ 
+diff --git a/Libraries/LibGC/NanBoxedValue.h b/Libraries/LibGC/NanBoxedValue.h
+index 288af55d..684dddf4 100644
+--- a/Libraries/LibGC/NanBoxedValue.h
++++ b/Libraries/LibGC/NanBoxedValue.h
+@@ -14,7 +14,9 @@
+ namespace GC {
+ 
+ static_assert(sizeof(double) == 8);
++#if !defined(AK_OS_WASI)
+ static_assert(sizeof(void*) == sizeof(u64));
++#endif
+ // To make our Value representation compact we can use the fact that IEEE
+ // doubles have a lot (2^52 - 2) of NaN bit patterns. The canonical form being
+ // just 0x7FF8000000000000 i.e. sign = 0 exponent is all ones and the top most
+@@ -68,7 +70,7 @@ public:
+ 
+     static FlatPtr extract_pointer_bits(u64 encoded)
+     {
+-        return heap_region_base() + (encoded & HEAP_REGION_OFFSET_MASK);
++        return heap_region_base() + static_cast<FlatPtr>(encoded & HEAP_REGION_OFFSET_MASK);
+     }
+ 
+     template<typename PointerType>
+diff --git a/Libraries/LibGC/PrimitiveStorage.cpp b/Libraries/LibGC/PrimitiveStorage.cpp
+index 142a4a29..57728666 100644
+--- a/Libraries/LibGC/PrimitiveStorage.cpp
++++ b/Libraries/LibGC/PrimitiveStorage.cpp
+@@ -65,9 +65,17 @@ size_t PrimitiveStorage::Allocator::page_size()
+ 
+ ErrorOr<void> PrimitiveStorage::Allocator::ensure_cage()
+ {
+-    if (m_cage_base)
++    if (has_cage())
+         return {};
+ 
++#if defined(AK_OS_WASI)
++    // NB: wasm32 linear memory cannot be reserved without being committed, so the cage is the low part of linear
++    //     memory itself: its base is 0, an offset is an address, and ranges come from the allocator.
++    m_cage_base = nullptr;
++    m_cage_size = PrimitiveStorage::default_cage_size;
++    js_primitive_storage_cage_base = 0;
++    return {};
++#else
+     if constexpr (sizeof(FlatPtr) < sizeof(u64))
+         return Error::from_errno(ENOMEM);
+ 
+@@ -84,6 +92,7 @@ ErrorOr<void> PrimitiveStorage::Allocator::ensure_cage()
+     m_cage_base = static_cast<u8*>(mapping);
+     js_primitive_storage_cage_base = bit_cast<FlatPtr>(m_cage_base);
+     return {};
++#endif
+ }
+ 
+ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::allocate(size_t size, size_t capacity, ZeroFillNewBytes zero_fill_new_bytes, size_t guard_size, bool force_large)
+@@ -203,6 +212,10 @@ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::ad
+ {
+     VERIFY(size > 0);
+     TRY(ensure_cage());
++#if defined(AK_OS_WASI)
++    (void)fd;
++    return Error::from_errno(ENOTSUP);
++#endif
+ 
+     auto reservation_size = round_up_to_page(size);
+     auto offset = TRY(allocate_cage_range(reservation_size));
+@@ -226,10 +239,23 @@ ErrorOr<PrimitiveStorage::Allocator::Allocation> PrimitiveStorage::Allocator::ad
+ 
+ ErrorOr<size_t> PrimitiveStorage::Allocator::allocate_cage_range(size_t reservation_size)
+ {
+-    VERIFY(m_cage_base);
++    VERIFY(has_cage());
+     reservation_size = round_up_to_page(reservation_size);
+     if (reservation_size == 0)
+         return m_next_offset;
++#if defined(AK_OS_WASI)
++    // NB: The memory is accessible as soon as it is allocated, and committed memory is expected to read as zero.
++    auto* range = aligned_alloc(page_size(), reservation_size);
++    if (!range)
++        return Error::from_errno(ENOMEM);
++    auto address = bit_cast<FlatPtr>(range);
++    if (address + reservation_size > m_cage_size) {
++        ::free(range);
++        return Error::from_errno(ENOMEM);
++    }
++    __builtin_memset(range, 0, reservation_size);
++    return static_cast<size_t>(address);
++#endif
+ 
+     for (size_t i = 0; i < m_free_ranges.size(); ++i) {
+         auto range = m_free_ranges[i];
+@@ -276,7 +302,9 @@ ErrorOr<void> PrimitiveStorage::Allocator::commit_large_storage(Allocation& allo
+ 
+     auto new_committed_size = round_up_to_page(new_size);
+     if (new_committed_size > allocation.committed_size) {
++#if !defined(AK_OS_WASI)
+         TRY(Core::System::commit_memory(m_cage_base + allocation.offset + allocation.committed_size, new_committed_size - allocation.committed_size, Core::System::MemoryTag::GarbageCollector));
++#endif
+         allocation.committed_size = new_committed_size;
+     }
+ 
+@@ -288,6 +316,11 @@ void PrimitiveStorage::Allocator::decommit_large_storage(Allocation const& alloc
+     VERIFY(!allocation.small_allocation.has_value());
+     if (allocation.committed_size == 0)
+         return;
++#if defined(AK_OS_WASI)
++    // NB: A range that is used again must read as zero, as freshly committed memory does.
++    __builtin_memset(m_cage_base + allocation.offset, 0, allocation.committed_size);
++    return;
++#endif
+     MUST(Core::System::decommit_memory(m_cage_base + allocation.offset, allocation.committed_size, Core::System::MemoryTag::GarbageCollector));
+ }
+ 
+@@ -333,6 +366,10 @@ void PrimitiveStorage::Allocator::release_cage_range(size_t offset, size_t size)
+     size = round_up_to_page(size);
+     if (size == 0)
+         return;
++#if defined(AK_OS_WASI)
++    ::free(bit_cast<void*>(static_cast<FlatPtr>(offset)));
++    return;
++#endif
+ 
+     if (offset <= m_next_offset && size == m_next_offset - offset) {
+         m_next_offset = offset;
+@@ -391,7 +428,7 @@ void PrimitiveStorage::Allocator::reclaim_free_ranges_at_top()
+ 
+ bool PrimitiveStorage::Allocator::contains(void const* address, size_t size) const
+ {
+-    if (!m_cage_base || !address)
++    if (!has_cage() || !address)
+         return false;
+     auto address_value = bit_cast<FlatPtr>(address);
+     auto base = bit_cast<FlatPtr>(m_cage_base);
+@@ -407,7 +444,7 @@ bool PrimitiveStorage::Allocator::contains(Allocation const& allocation, void co
+         return false;
+     auto address_value = bit_cast<FlatPtr>(address);
+     auto base = bit_cast<FlatPtr>(m_cage_base);
+-    if (!m_cage_base || address_value < base)
++    if (!has_cage() || address_value < base)
+         return false;
+     auto offset = address_value - base;
+     if (offset < allocation.offset)
+@@ -418,7 +455,7 @@ bool PrimitiveStorage::Allocator::contains(Allocation const& allocation, void co
+ 
+ u8* PrimitiveStorage::Allocator::data(Allocation const& allocation, size_t byte_offset) const
+ {
+-    VERIFY(m_cage_base);
++    VERIFY(has_cage());
+     VERIFY(allocation.offset != invalid_offset);
+     return m_cage_base + PrimitiveStorage::mask_offset(allocation.offset + byte_offset);
+ }
+diff --git a/Libraries/LibGC/PrimitiveStorage.h b/Libraries/LibGC/PrimitiveStorage.h
+index 8fe5d5b3..1438392e 100644
+--- a/Libraries/LibGC/PrimitiveStorage.h
++++ b/Libraries/LibGC/PrimitiveStorage.h
+@@ -31,7 +31,10 @@ public:
+         Yes,
+     };
+ 
+-#if AK_IS_ARCH_AARCH64() && !defined(AK_OS_MACOS)
++#if defined(AK_OS_WASI)
++    // The low 2 GiB of wasm32 linear memory, like the GC heap region. Keep in sync with LibJS/Rust/build.rs.
++    static constexpr size_t default_cage_size = 2ull * GiB;
++#elif AK_IS_ARCH_AARCH64() && !defined(AK_OS_MACOS)
+     // Some AArch64 systems (e.g. Android phones) provide only 39 bits of user virtual address space, where a 4 TiB
+     // reservation cannot succeed. Keep in sync with LibJS/Rust/build.rs.
+     static constexpr size_t default_cage_size = 64ull * GiB;
+@@ -43,8 +46,13 @@ public:
+     // NB: JIT code accesses typed array elements at a masked offset plus a
+     //     zero-extended 32-bit index scaled by at most 8, which this keeps in
+     //     inaccessible memory past the cage.
++#if defined(AK_OS_WASI)
++    // NB: There is no JIT on wasm32.
++    static constexpr size_t cage_guard_size = 0;
++#else
+     static constexpr size_t cage_guard_size = 32ull * GiB;
+     static_assert(cage_guard_size >= (1ull << 32) * 8, "JIT typed array accesses reach a 32-bit index times 8 bytes past a masked offset");
++#endif
+     static constexpr size_t invalid_offset = NumericLimits<size_t>::max();
+ 
+     static PrimitiveStorage& the();
+@@ -116,6 +124,7 @@ private:
+         bool contains(Allocation const&, void const* address, size_t size = 1) const;
+         u8* data(Allocation const&, size_t byte_offset = 0) const;
+ 
++        bool has_cage() const { return m_cage_size != 0; }
+         u8* cage_base() { return m_cage_base; }
+         u8 const* cage_base() const { return m_cage_base; }
+         size_t cage_size() const { return m_cage_size; }
+diff --git a/Libraries/LibJS/Rust/build.rs b/Libraries/LibJS/Rust/build.rs
+index 9b235478..44e8422b 100644
+--- a/Libraries/LibJS/Rust/build.rs
++++ b/Libraries/LibJS/Rust/build.rs
+@@ -48,6 +48,9 @@ mod ops;
+ #[path = "generate/runtime_functions.rs"]
+ mod runtime_functions;
+ 
++#[path = "generate/target_layout.rs"]
++mod target_layout;
++
+ #[path = "generate/write_if_changed.rs"]
+ mod write_if_changed;
+ 
+@@ -58,7 +61,8 @@ const GIB: u64 = 1024 * 1024 * KIB;
+ const TIB: u64 = 1024 * GIB;
+ 
+ struct Target {
+-    architecture: flapc::Architecture,
++    /// None for wasm32, which flapc has no native backend for.
++    architecture: Option<flapc::Architecture>,
+     object_format: flapc::ObjectFormat,
+     is_apple: bool,
+ }
+@@ -69,10 +73,11 @@ fn target() -> Target {
+     let pointer_width = env::var("CARGO_CFG_TARGET_POINTER_WIDTH").expect("CARGO_CFG_TARGET_POINTER_WIDTH");
+     let endian = env::var("CARGO_CFG_TARGET_ENDIAN").expect("CARGO_CFG_TARGET_ENDIAN");
+     assert!(
+-        pointer_width == "64" && endian == "little",
+-        "the interpreter supports 64-bit little-endian targets only"
++        (pointer_width == "64" || architecture == "wasm32") && endian == "little",
++        "the interpreter supports 64-bit little-endian targets and wasm32 only"
+     );
+-    // The layout is computed on the build machine, so it has to lay out types the way the target does.
++    // The layout is computed on the build machine, so it has to lay out types the way the target does, except for
++    // targets with another pointer width, whose layout layout_for_target() computes on the target.
+     const {
+         assert!(
+             cfg!(target_pointer_width = "64") && cfg!(target_endian = "little"),
+@@ -81,8 +86,9 @@ fn target() -> Target {
+     }
+ 
+     let architecture = match architecture.as_str() {
+-        "x86_64" => flapc::Architecture::X86_64,
+-        "aarch64" => flapc::Architecture::Aarch64,
++        "x86_64" => Some(flapc::Architecture::X86_64),
++        "aarch64" => Some(flapc::Architecture::Aarch64),
++        "wasm32" => None,
+         other => panic!("the interpreter does not support {other}"),
+     };
+     let is_apple = os == "macos" || os == "ios";
+@@ -99,7 +105,13 @@ fn target() -> Target {
+ }
+ 
+ /// Mirrors GC::HEAP_REGION_SIZE in Libraries/LibGC/HeapRegion.h.
+-const HEAP_REGION_SIZE: u64 = 32 * GIB;
++fn heap_region_size() -> u64 {
++    if target_is_wasm32() { 2 * GIB } else { 32 * GIB }
++}
++
++fn target_is_wasm32() -> bool {
++    env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|architecture| architecture == "wasm32")
++}
+ 
+ /// The 64-bit FNV-1a hash of `bytes`, which stays the same from build to build, unlike std's hashers.
+ fn fnv1a_64(bytes: &[u8]) -> u64 {
+@@ -110,7 +122,10 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
+ 
+ fn primitive_storage_cage_size(target: &Target) -> u64 {
+     let os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS");
+-    if matches!(target.architecture, flapc::Architecture::Aarch64) && os != "macos" {
++    if target.architecture.is_none() {
++        // wasm32: the low 2 GiB of linear memory, like the heap region.
++        2 * GIB
++    } else if matches!(target.architecture, Some(flapc::Architecture::Aarch64)) && os != "macos" {
+         64 * GIB
+     } else {
+         4 * TIB
+@@ -150,7 +165,7 @@ fn main() {
+     let target = target();
+     let address_sanitizer = env::var_os("CARGO_FEATURE_ADDRESS_SANITIZER").is_some();
+     let configuration = layout_table::LayoutConfiguration {
+-        heap_region_offset_mask: HEAP_REGION_SIZE - 1,
++        heap_region_offset_mask: heap_region_size() - 1,
+         // Mirrors GC::PrimitiveStorage::default_cage_size.
+         primitive_storage_cage_offset_mask: primitive_storage_cage_size(&target) - 1,
+         // Instrumented frames need more room before the stack is considered exhausted.
+@@ -169,12 +184,33 @@ fn main() {
+         configuration.vm_stack_space_limit
+     );
+ 
+-    let layout = layout_table::generate(&configuration);
+-    let generated = fixture::parse(&layout.text);
+-    let fixture_text = fs::read_to_string(&layout_fixture).expect("read the interpreter layout fixture");
+-    if let Err(problems) = fixture::check_against_fixture(&generated, &fixture::parse(&fixture_text)) {
+-        panic!("the Rust interpreter layout does not match the one the interpreter expects:\n{problems}");
+-    }
++    let (layout, layout_header_static_assertions) = if target_layout::needed() {
++        // NB: The fixture holds the 64-bit layout. The crate's static assertions still check every offset.
++        let target = target_layout::compute(
++            &manifest_directory,
++            &output_directory,
++            [
++                configuration.heap_region_offset_mask,
++                configuration.primitive_storage_cage_offset_mask,
++                configuration.vm_stack_space_limit,
++            ],
++        );
++        (
++            layout_table::LayoutWriter {
++                text: target.layout,
++                static_assertions: target.layout_static_assertions,
++            },
++            target.layout_header_static_assertions,
++        )
++    } else {
++        let layout = layout_table::generate(&configuration);
++        let generated = fixture::parse(&layout.text);
++        let fixture_text = fs::read_to_string(&layout_fixture).expect("read the interpreter layout fixture");
++        if let Err(problems) = fixture::check_against_fixture(&generated, &fixture::parse(&fixture_text)) {
++            panic!("the Rust interpreter layout does not match the one the interpreter expects:\n{problems}");
++        }
++        (layout, layout_header::generate().static_assertions)
++    };
+     write_if_changed(&output_directory.join("layout.conf"), &layout.text);
+     write_if_changed(
+         &output_directory.join("layout_static_assertions.rs"),
+@@ -183,7 +219,7 @@ fn main() {
+ 
+     write_if_changed(
+         &output_directory.join("layout_header_static_assertions.rs"),
+-        &layout_header::generate().static_assertions,
++        &layout_header_static_assertions,
+     );
+ 
+     let interpreter_source_text = fs::read_to_string(&interpreter_source).expect("read interpreter.flap");
+@@ -224,7 +260,7 @@ fn main() {
+                 None => functions.push(function),
+             }
+         }
+-        if profiling && !jit {
++        if (profiling && !jit) || target.architecture.is_none() {
+             continue;
+         }
+         let assembly = compiler
+@@ -266,6 +302,10 @@ fn main() {
+             assembly_path
+         })
+         .collect::<Vec<_>>();
++    if target.architecture.is_none() {
++        println!("cargo:warning=flapc has no backend for this target yet, so the interpreter is not built");
++        return;
++    }
+     assemble_interpreter(&target, &assembly_paths);
+ }
+ 
+@@ -311,10 +351,11 @@ fn add_jit_only_slow_paths(
+ fn interpreter_compiler(target: &Target, profiling: bool) -> flapc::Compiler {
+     flapc::Compiler::new(flapc::CompileOptions {
+         target: flapc::Target {
+-            architecture: target.architecture,
++            // NB: Without a native backend, flapc only lists the runtime functions, which do not depend on it.
++            architecture: target.architecture.unwrap_or(flapc::Architecture::X86_64),
+             object_format: target.object_format,
+         },
+-        has_jscvt: target.is_apple && matches!(target.architecture, flapc::Architecture::Aarch64),
++        has_jscvt: target.is_apple && matches!(target.architecture, Some(flapc::Architecture::Aarch64)),
+         has_lzcnt: false,
+         has_bmi1: false,
+         enable_assertions: true,
+@@ -366,7 +407,7 @@ fn assemble_interpreter(target: &Target, assembly_paths: &[PathBuf]) {
+         env::set_current_dir(output_directory)
+             .unwrap_or_else(|error| panic!("enter {}: {error}", output_directory.display()));
+     }
+-    if matches!(target.architecture, flapc::Architecture::X86_64) {
++    if matches!(target.architecture, Some(flapc::Architecture::X86_64)) {
+         build.flag_if_supported("-malign-branch-boundary=32");
+         build.flag_if_supported("-malign-branch=fused,jcc");
+     }
+diff --git a/Libraries/LibJS/Rust/embedding_headers/build.rs b/Libraries/LibJS/Rust/embedding_headers/build.rs
+index 8aa439ec..b931c263 100644
+--- a/Libraries/LibJS/Rust/embedding_headers/build.rs
++++ b/Libraries/LibJS/Rust/embedding_headers/build.rs
+@@ -35,6 +35,9 @@ mod c_type_spelling;
+ #[path = "../generate/layout_header.rs"]
+ mod layout_header;
+ 
++#[path = "../generate/target_layout.rs"]
++mod target_layout;
++
+ #[path = "../generate/write_if_changed.rs"]
+ mod write_if_changed;
+ 
+@@ -53,5 +56,11 @@ fn main() {
+         &runtime_directory.join("src/embedding/mod.rs"),
+         &header_directory.join("ABI.h"),
+     );
+-    write_if_changed::write_if_changed(&header_directory.join("Layout.h"), &layout_header::generate().text);
++    // NB: The layout header does not depend on the arguments of the layout generator.
++    let layout_header = if target_layout::needed() {
++        target_layout::compute(&runtime_directory, &output_directory, [0, 0, 0]).layout_header
++    } else {
++        layout_header::generate().text
++    };
++    write_if_changed::write_if_changed(&header_directory.join("Layout.h"), &layout_header);
+ }
+diff --git a/Libraries/LibJS/Rust/generate/layout_forward.rs b/Libraries/LibJS/Rust/generate/layout_forward.rs
+index 8577647a..36058607 100644
+--- a/Libraries/LibJS/Rust/generate/layout_forward.rs
++++ b/Libraries/LibJS/Rust/generate/layout_forward.rs
+@@ -53,6 +53,13 @@ pub struct Utf16StringDataHeader {
+ 
+ /// The build script never decodes compressed pointers. The crate's tests decode them against this base, which is
+ /// aligned like LibGC aligns the real one, and where nothing is mapped.
++#[cfg(target_pointer_width = "64")]
+ pub fn heap_region_base() -> usize {
+     0x7a00_0000_0000
+ }
++
++/// On 32-bit targets the region is the low part of memory, at base 0, as LibGC places it.
++#[cfg(target_pointer_width = "32")]
++pub fn heap_region_base() -> usize {
++    0
++}
+diff --git a/Libraries/LibJS/Rust/generate/layout_main.rs b/Libraries/LibJS/Rust/generate/layout_main.rs
+new file mode 100644
+index 00000000..0959e856
+--- /dev/null
++++ b/Libraries/LibJS/Rust/generate/layout_main.rs
+@@ -0,0 +1,61 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++//! The layout table as a program of its own. build.rs computes the layout with the build machine's type layouts,
++//! which only match the target's where both have the same pointer width. For any other target, build.rs compiles this
++//! for the target and runs it there, under the runner that LIBJS_TARGET_RUNNER names, to get the target's layout.
++//!
++//! Usage: layout_main HEAP_REGION_OFFSET_MASK PRIMITIVE_STORAGE_CAGE_OFFSET_MASK VM_STACK_SPACE_LIMIT
++//! Prints the layout file, its static assertions, the embedding layout header and its static assertions, each after a
++//! line `@@ <name>` (see generate/target_layout.rs).
++
++#[allow(dead_code)]
++#[path = "../src/layout/mod.rs"]
++mod layout;
++
++#[path = "layout_forward.rs"]
++mod layout_forward;
++
++#[allow(dead_code)]
++#[path = "../src/gc/class_id.rs"]
++mod class_id;
++
++#[path = "c_type_spelling.rs"]
++mod c_type_spelling;
++
++#[path = "layout_table.rs"]
++mod layout_table;
++
++#[allow(dead_code)]
++#[path = "layout_header.rs"]
++mod layout_header;
++
++fn section(name: &str, text: &str) {
++    println!("@@ {name}");
++    print!("{text}");
++    if !text.ends_with('\n') {
++        println!();
++    }
++}
++
++fn main() {
++    let arguments: Vec<u64> = std::env::args()
++        .skip(1)
++        .map(|argument| argument.parse().expect("a number"))
++        .collect();
++    assert_eq!(arguments.len(), 3, "usage: layout_main HEAP_MASK CAGE_MASK STACK_LIMIT");
++    let configuration = layout_table::LayoutConfiguration {
++        heap_region_offset_mask: arguments[0],
++        primitive_storage_cage_offset_mask: arguments[1],
++        vm_stack_space_limit: arguments[2],
++    };
++    let layout = layout_table::generate(&configuration);
++    section("layout", &layout.text);
++    section("layout_static_assertions", &layout.static_assertions);
++    let header = layout_header::generate();
++    section("layout_header", &header.text);
++    section("layout_header_static_assertions", &header.static_assertions);
++}
+diff --git a/Libraries/LibJS/Rust/generate/layout_table.rs b/Libraries/LibJS/Rust/generate/layout_table.rs
+index 7d6dee68..92911b33 100644
+--- a/Libraries/LibJS/Rust/generate/layout_table.rs
++++ b/Libraries/LibJS/Rust/generate/layout_table.rs
+@@ -124,6 +124,16 @@ fn size_of_field<T, F>(_: fn(&T) -> &F) -> usize {
+     size_of::<F>()
+ }
+ 
++/// Checks a field the interpreter treats as `expected` bytes wide. On 32-bit targets a pointer-sized field it treats
++/// as 8 bytes wide is 4 bytes wide, which the layout file then records as NAME_WIDTH.
++fn check_width(w: &mut LayoutWriter, name: &str, width: usize, expected: usize) {
++    let narrowed = expected == 8 && width == size_of::<usize>() && size_of::<usize>() == 4;
++    assert!(width == expected || narrowed, "size of {name}: {width} instead of {expected}");
++    if narrowed {
++        w.constant(&format!("{name}_WIDTH"), width);
++    }
++}
++
+ macro_rules! offset {
+     ($writer:expr, $name:literal, $type:path, $($field:tt)+) => {{
+         let offset = core::mem::offset_of!($type, $($field)+);
+@@ -145,23 +155,27 @@ macro_rules! size {
+ /// Emits a field the interpreter accesses, checking that its Rust type has the size the interpreter accesses it with.
+ macro_rules! field {
+     ($writer:expr, $name:literal, $field:literal, $flap_type:literal, $type:path, $member:ident, $size:expr, $storage:literal, $representation:literal) => {{
+-        assert_eq!(
+-            size_of_field(|object: &$type| &object.$member),
+-            $size,
+-            "size of {}",
+-            $field
+-        );
++        let width = size_of_field(|object: &$type| &object.$member);
++        // NB: On 32-bit targets a pointer-sized field the interpreter treats as 8 bytes wide is 4 bytes wide. The
++        //     interpreter reads and writes such a field at its width from the layout file, zero-extending it.
++        let narrowed = $size == 8 && width == size_of::<usize>() && size_of::<usize>() == 4;
++        assert!(width == $size || narrowed, "size of {}: {} instead of {}", $field, width, $size);
+         offset!($writer, $name, $type, $member);
++        if narrowed {
++            $writer.constant(concat!($name, "_WIDTH"), width);
++        }
+         $writer.field($field, $flap_type, $name, $storage, $representation);
+     }};
+     ($writer:expr, $name:literal, $field:literal, $flap_type:literal, $type:path, $member:ident, $size:expr, $storage:literal, $representation:literal, $pair:literal) => {{
+-        assert_eq!(
+-            size_of_field(|object: &$type| &object.$member),
+-            $size,
+-            "size of {}",
+-            $field
+-        );
++        let width = size_of_field(|object: &$type| &object.$member);
++        // NB: On 32-bit targets a pointer-sized field the interpreter treats as 8 bytes wide is 4 bytes wide. The
++        //     interpreter reads and writes such a field at its width from the layout file, zero-extending it.
++        let narrowed = $size == 8 && width == size_of::<usize>() && size_of::<usize>() == 4;
++        assert!(width == $size || narrowed, "size of {}: {} instead of {}", $field, width, $size);
+         offset!($writer, $name, $type, $member);
++        if narrowed {
++            $writer.constant(concat!($name, "_WIDTH"), width);
++        }
+         $writer.paired_field($field, $flap_type, $name, $storage, $representation, $pair);
+     }};
+ }
+@@ -172,6 +186,10 @@ pub fn generate(configuration: &LayoutConfiguration) -> LayoutWriter {
+     let value_size = size_of::<Value>();
+ 
+     w.line("# Generated by the libjs_rust build script -- DO NOT EDIT");
++    if size_of::<usize>() != 8 {
++        // NB: Only written for targets whose pointers are not 8 bytes, so the 64-bit layout file stays as it was.
++        w.constant("POINTER_SIZE", size_of::<usize>());
++    }
+ 
+     w.section("Object layout");
+     field!(w, "OBJECT_SHAPE", "Object.shape", "Shape", Object, shape, 4, "nonnull", "compressed");
+@@ -282,7 +300,7 @@ pub fn generate(configuration: &LayoutConfiguration) -> LayoutWriter {
+     w.constant("ARITH_FEEDBACK_INT32_AND_OTHER", arith_feedback::INT32 | arith_feedback::OTHER);
+     offset!(w, "CALL_FEEDBACK_TARGET", CallFeedback, target);
+     offset!(w, "CALL_FEEDBACK_FLAGS", CallFeedback, flags);
+-    assert_eq!(size_of_field(|feedback: &CallFeedback| &feedback.target), 8);
++    check_width(&mut w, "CALL_FEEDBACK_TARGET", size_of_field(|feedback: &CallFeedback| &feedback.target), 8);
+     assert_eq!(size_of_field(|feedback: &CallFeedback| &feedback.flags), 1);
+     w.line(&format!(
+         "field CallFeedback.target u64 CALL_FEEDBACK_TARGET nullable scalar stride {}",
+@@ -470,7 +488,7 @@ pub fn generate(configuration: &LayoutConfiguration) -> LayoutWriter {
+ 
+     w.section("RawNativeFunction layout");
+     field!(w, "RAW_NATIVE_FUNCTION_NATIVE_FUNCTION_INDEX", "RawNativeFunction.native_function_index", "u32", NativeFunction, raw_native_function_index, 4, "nullable", "scalar");
+-    assert_eq!(size_of_field(|entry: &NativeFunctionTableEntry| &entry.function), 8);
++    check_width(&mut w, "NATIVE_FUNCTION_TABLE_ENTRY_FUNCTION", size_of_field(|entry: &NativeFunctionTableEntry| &entry.function), 8);
+     assert_eq!(size_of_field(|entry: &NativeFunctionTableEntry| &entry.function_type), 4);
+     offset!(w, "NATIVE_FUNCTION_TABLE_ENTRY_FUNCTION", NativeFunctionTableEntry, function);
+     offset!(w, "NATIVE_FUNCTION_TABLE_ENTRY_TYPE", NativeFunctionTableEntry, function_type);
+@@ -511,7 +529,7 @@ pub fn generate(configuration: &LayoutConfiguration) -> LayoutWriter {
+     w.section("PrimitiveString layout");
+     field!(w, "PRIMITIVE_STRING_DEFERRED_KIND_AND_FLAGS", "PrimitiveString.deferred_kind_and_flags", "u8", PrimitiveString, deferred_kind_and_flags, 1, "nullable", "scalar");
+     field!(w, "PRIMITIVE_STRING_LENGTH_IN_UTF16_CODE_UNITS", "PrimitiveString.length_in_utf16_code_units", "u32", PrimitiveString, length_in_utf16_code_units, 4, "nullable", "scalar");
+-    assert_eq!(size_of_field(|string: &PrimitiveString| &string.utf16_string), 8);
++    check_width(&mut w, "PRIMITIVE_STRING_UTF16_STRING", size_of_field(|string: &PrimitiveString| &string.utf16_string), 8);
+     let utf16_string_offset = offset!(w, "PRIMITIVE_STRING_UTF16_STRING", PrimitiveString, utf16_string);
+     w.line("field PrimitiveString.utf16_data Utf16StringData PRIMITIVE_STRING_UTF16_STRING nullable scalar");
+     w.constant("PRIMITIVE_STRING_DEFERRED_KIND_NONE", DeferredKind::None as u8);
+diff --git a/Libraries/LibJS/Rust/generate/target_layout.rs b/Libraries/LibJS/Rust/generate/target_layout.rs
+new file mode 100644
+index 00000000..387f5ec5
+--- /dev/null
++++ b/Libraries/LibJS/Rust/generate/target_layout.rs
+@@ -0,0 +1,103 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++//! The layouts of a target whose pointer width differs from the build machine's, where computing them with the build
++//! machine's type layouts would be wrong. Compiles generate/layout_main.rs for the target and runs it there, under the
++//! command that LIBJS_TARGET_RUNNER names (wasmtime by default).
++
++use std::env;
++use std::fs;
++use std::path::Path;
++use std::process::Command;
++
++// NB: Each build script that includes this reads only some of the layouts.
++#[allow(dead_code)]
++pub struct TargetLayout {
++    pub layout: String,
++    pub layout_static_assertions: String,
++    pub layout_header: String,
++    pub layout_header_static_assertions: String,
++}
++
++/// Whether the layouts have to be computed on the target.
++pub fn needed() -> bool {
++    env::var("CARGO_CFG_TARGET_POINTER_WIDTH").is_ok_and(|width| width != "64")
++}
++
++/// `runtime_directory` is that of the libjs_rust crate. The arguments are those of layout_main.
++pub fn compute(runtime_directory: &Path, output_directory: &Path, arguments: [u64; 3]) -> TargetLayout {
++    println!("cargo:rerun-if-env-changed=LIBJS_TARGET_RUNNER");
++    let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
++    let target_triple = env::var("TARGET").expect("TARGET");
++    let directory = output_directory.join("layout_for_target");
++    fs::create_dir_all(&directory).expect("create the layout generator directory");
++
++    let run = |command: &mut Command, what: &str| {
++        let status = command.status().unwrap_or_else(|error| panic!("{what}: {error}"));
++        assert!(status.success(), "{what} failed: {status}");
++    };
++    let abi_library = directory.join("liblibjs_abi.rlib");
++    run(
++        Command::new(&rustc)
++            .args(["--edition", "2024", "--crate-type", "rlib", "--crate-name", "libjs_abi", "-O", "--target"])
++            .arg(&target_triple)
++            .arg(runtime_directory.join("../ABI/src/lib.rs"))
++            .arg("-o")
++            .arg(&abi_library),
++        "compile libjs_abi for the target",
++    );
++    let generator = directory.join(if target_triple.starts_with("wasm") { "layout_main.wasm" } else { "layout_main" });
++    run(
++        Command::new(&rustc)
++            .args(["--edition", "2024", "-O", "--target"])
++            .arg(&target_triple)
++            .arg("--extern")
++            .arg(format!("libjs_abi={}", abi_library.display()))
++            .arg(runtime_directory.join("generate/layout_main.rs"))
++            .arg("-o")
++            .arg(&generator),
++        "compile the layout generator for the target",
++    );
++
++    let runner = env::var("LIBJS_TARGET_RUNNER").unwrap_or_else(|_| "wasmtime".to_string());
++    let mut runner_words = runner.split_whitespace();
++    let mut command = Command::new(runner_words.next().expect("LIBJS_TARGET_RUNNER names a command"));
++    command
++        .args(runner_words)
++        .arg(&generator)
++        .args(arguments.iter().map(u64::to_string));
++    let output = command
++        .output()
++        .unwrap_or_else(|error| panic!("run the layout generator with {runner} (set LIBJS_TARGET_RUNNER): {error}"));
++    assert!(
++        output.status.success(),
++        "the layout generator failed: {}",
++        String::from_utf8_lossy(&output.stderr)
++    );
++    let output = String::from_utf8(output.stdout).expect("the layouts are UTF-8");
++
++    let mut sections: Vec<(String, String)> = Vec::new();
++    for line in output.split_inclusive('\n') {
++        if let Some(name) = line.strip_prefix("@@ ") {
++            sections.push((name.trim().to_string(), String::new()));
++        } else {
++            sections.last_mut().expect("the output starts with a section").1.push_str(line);
++        }
++    }
++    let mut take = |name: &str| {
++        let index = sections
++            .iter()
++            .position(|(section, _)| section == name)
++            .unwrap_or_else(|| panic!("the layout generator wrote no {name}"));
++        sections.remove(index).1
++    };
++    TargetLayout {
++        layout: take("layout"),
++        layout_static_assertions: take("layout_static_assertions"),
++        layout_header: take("layout_header"),
++        layout_header_static_assertions: take("layout_header_static_assertions"),
++    }
++}
+diff --git a/Libraries/LibJS/Rust/src/bytecode/executable.rs b/Libraries/LibJS/Rust/src/bytecode/executable.rs
+index 4441a81c..8f8ed9dd 100644
+--- a/Libraries/LibJS/Rust/src/bytecode/executable.rs
++++ b/Libraries/LibJS/Rust/src/bytecode/executable.rs
+@@ -938,7 +938,7 @@ const _: () = {
+     assert!(offset_of!(KeyedPropertyLookupCacheEntry, property_name) == offset_of!(Layout, property_name));
+ };
+ // NB: The interpreter compares the name of an entry with the identity of a string, a word.
+-const _: () = assert!(size_of::<Option<Utf16FlyString>>() == size_of::<u64>());
++const _: () = assert!(size_of::<Option<Utf16FlyString>>() == size_of::<usize>());
+ 
+ /// Where JIT code finds the parts of the VM's keyed property lookup cache it reads.
+ pub struct KeyedPropertyLookupCacheLayout {
+@@ -1098,6 +1098,7 @@ pub struct ObjectPropertyIteratorCacheDataStorage {
+ 
+ define_cell!(ObjectPropertyIteratorCacheData, Other, finalize: finalize);
+ 
++#[cfg(target_pointer_width = "64")]
+ const _: () = assert!(size_of::<ObjectPropertyIteratorCacheData>() == 64);
+ 
+ // SAFETY: Visits the shape, the validity, the materialized key values and the keys.
+diff --git a/Libraries/LibJS/Rust/src/console.rs b/Libraries/LibJS/Rust/src/console.rs
+index 3de1437c..3c1453d9 100644
+--- a/Libraries/LibJS/Rust/src/console.rs
++++ b/Libraries/LibJS/Rust/src/console.rs
+@@ -1005,6 +1005,7 @@ pub struct ConsoleClientMethods {
+ 
+ #[repr(C)]
+ #[derive(Trace)]
++#[cfg_attr(target_pointer_width = "32", repr(align(8)))]
+ pub struct ConsoleClient {
+     header: CellHeader,
+     #[gc(untraced)]
+diff --git a/Libraries/LibJS/Rust/src/contrib/test262/agent_object.rs b/Libraries/LibJS/Rust/src/contrib/test262/agent_object.rs
+index b7e29006..f515fcce 100644
+--- a/Libraries/LibJS/Rust/src/contrib/test262/agent_object.rs
++++ b/Libraries/LibJS/Rust/src/contrib/test262/agent_object.rs
+@@ -241,7 +241,7 @@ fn sleep_milliseconds(milliseconds: u32) {
+ }
+ 
+ /// Core::System::sleep_ms() on Windows: Sleep(), which takes the milliseconds as they are.
+-#[cfg(windows)]
++#[cfg(any(windows, target_os = "wasi"))]
+ fn sleep_milliseconds(milliseconds: u32) {
+     std::thread::sleep(core::time::Duration::from_millis(u64::from(milliseconds)));
+ }
+@@ -259,7 +259,7 @@ fn monotonic_time_now_in_milliseconds() -> i64 {
+ 
+ /// MonotonicTime::now().milliseconds() on Windows, rounded down the same way, but counted from the first call rather
+ /// than from boot, which makes no difference to scripts, as they can only compare the times they read.
+-#[cfg(windows)]
++#[cfg(any(windows, target_os = "wasi"))]
+ fn monotonic_time_now_in_milliseconds() -> i64 {
+     static FIRST_CALL: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+     let elapsed = FIRST_CALL.get_or_init(std::time::Instant::now).elapsed();
+diff --git a/Libraries/LibJS/Rust/src/embedding/host/host_object.rs b/Libraries/LibJS/Rust/src/embedding/host/host_object.rs
+index b255772e..84801ce2 100644
+--- a/Libraries/LibJS/Rust/src/embedding/host/host_object.rs
++++ b/Libraries/LibJS/Rust/src/embedding/host/host_object.rs
+@@ -450,8 +450,14 @@ impl HostObject {
+         let host_object = HostObject {
+             base,
+             host_class: table,
++            #[cfg(target_pointer_width = "32")]
++            host_class_high_word: 0,
+             wrappable: ForeignCellSlot::empty(),
++            #[cfg(target_pointer_width = "32")]
++            wrappable_high_word: core::cell::Cell::new(0),
+             host_data: ForeignCellSlot::empty(),
++            #[cfg(target_pointer_width = "32")]
++            host_data_high_word: core::cell::Cell::new(0),
+         };
+         // SAFETY: The caller passes absent or live cells, which the slots then keep alive.
+         unsafe {
+diff --git a/Libraries/LibJS/Rust/src/gc/class.rs b/Libraries/LibJS/Rust/src/gc/class.rs
+index 4bd1b46d..0a53e730 100644
+--- a/Libraries/LibJS/Rust/src/gc/class.rs
++++ b/Libraries/LibJS/Rust/src/gc/class.rs
+@@ -60,7 +60,11 @@ const _: () = {
+ };
+ 
+ /// LibGC hands out cells in the slots of fixed-size blocks, whose free list needs room for its own entry in each.
++#[cfg(target_pointer_width = "64")]
+ pub(crate) const MIN_CELL_SIZE: usize = 24;
++/// On 32-bit targets a free list entry is the 11-byte header, padding and a 4-byte link.
++#[cfg(target_pointer_width = "32")]
++pub(crate) const MIN_CELL_SIZE: usize = 16;
+ const MAX_CELL_ALIGNMENT: usize = 16;
+ 
+ impl Class {
+diff --git a/Libraries/LibJS/Rust/src/gc/embedder_cell.rs b/Libraries/LibJS/Rust/src/gc/embedder_cell.rs
+index 73156063..a2052f7e 100644
+--- a/Libraries/LibJS/Rust/src/gc/embedder_cell.rs
++++ b/Libraries/LibJS/Rust/src/gc/embedder_cell.rs
+@@ -40,7 +40,10 @@ union ValueWithRoomForFreeListLink<T> {
+ }
+ 
+ const _: () = assert!(size_of::<EmbedderCell<()>>() == MIN_CELL_SIZE);
++#[cfg(target_pointer_width = "64")]
+ const _: () = assert!(size_of::<EmbedderCell<u64>>() == 32);
++#[cfg(target_pointer_width = "32")]
++const _: () = assert!(size_of::<EmbedderCell<u64>>() == 24);
+ 
+ impl<T> Drop for EmbedderCell<T> {
+     fn drop(&mut self) {
+diff --git a/Libraries/LibJS/Rust/src/gc/interpreter_buffer.rs b/Libraries/LibJS/Rust/src/gc/interpreter_buffer.rs
+index c26646d5..dc3e9a4c 100644
+--- a/Libraries/LibJS/Rust/src/gc/interpreter_buffer.rs
++++ b/Libraries/LibJS/Rust/src/gc/interpreter_buffer.rs
+@@ -155,7 +155,8 @@ unsafe impl<T: Copy + Trace> Trace for InterpreterBuffer<T> {
+     }
+ }
+ 
+-const THIN_SLICE_HEADER_SIZE: usize = size_of::<usize>();
++// NB: 8 bytes on 32-bit targets as well, so that 8-byte aligned elements stay aligned. The length is in the last word.
++const THIN_SLICE_HEADER_SIZE: usize = if size_of::<usize>() < 8 { 8 } else { size_of::<usize>() };
+ 
+ impl<T> ThinSlice<T> {
+     const fn layout_for(length: usize) -> Layout {
+@@ -198,7 +199,7 @@ impl<T> From<Vec<T>> for ThinSlice<T> {
+             if allocation.is_null() {
+                 handle_alloc_error(layout);
+             }
+-            allocation.cast::<usize>().write(length);
++            allocation.add(THIN_SLICE_HEADER_SIZE - size_of::<usize>()).cast::<usize>().write(length);
+             let data = allocation.add(THIN_SLICE_HEADER_SIZE).cast::<T>();
+             core::ptr::copy_nonoverlapping(elements.as_ptr(), data, length);
+             elements.set_len(0);
+diff --git a/Libraries/LibJS/Rust/src/gc/shared_memory.rs b/Libraries/LibJS/Rust/src/gc/shared_memory.rs
+index 825ebb73..8587e019 100644
+--- a/Libraries/LibJS/Rust/src/gc/shared_memory.rs
++++ b/Libraries/LibJS/Rust/src/gc/shared_memory.rs
+@@ -13,9 +13,9 @@ use core::ptr::NonNull;
+ use super::capi;
+ use super::primitive_storage::OutOfMemory;
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "wasi"))]
+ pub type OwnedSharedMemory = std::os::fd::OwnedFd;
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "wasi"))]
+ pub type BorrowedSharedMemory<'descriptor> = std::os::fd::BorrowedFd<'descriptor>;
+ 
+ #[cfg(windows)]
+@@ -28,7 +28,7 @@ pub trait AsSharedMemory {
+     fn as_shared_memory(&self) -> BorrowedSharedMemory<'_>;
+ }
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "wasi"))]
+ impl<T: std::os::fd::AsFd> AsSharedMemory for T {
+     fn as_shared_memory(&self) -> BorrowedSharedMemory<'_> {
+         self.as_fd()
+@@ -55,7 +55,7 @@ fn descriptor_from_handle(handle: std::os::windows::io::RawHandle) -> c_int {
+ }
+ 
+ pub fn raw_descriptor(shared_memory: BorrowedSharedMemory<'_>) -> c_int {
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "wasi"))]
+     {
+         std::os::fd::AsRawFd::as_raw_fd(&shared_memory)
+     }
+@@ -66,7 +66,7 @@ pub fn raw_descriptor(shared_memory: BorrowedSharedMemory<'_>) -> c_int {
+ }
+ 
+ pub fn into_raw_descriptor(shared_memory: OwnedSharedMemory) -> c_int {
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "wasi"))]
+     {
+         std::os::fd::IntoRawFd::into_raw_fd(shared_memory)
+     }
+@@ -80,7 +80,7 @@ pub fn into_raw_descriptor(shared_memory: OwnedSharedMemory) -> c_int {
+ ///
+ /// `descriptor` must be open, and owned by nothing else.
+ pub unsafe fn owned_from_raw_descriptor(descriptor: c_int) -> OwnedSharedMemory {
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "wasi"))]
+     {
+         // SAFETY: As the caller guarantees.
+         unsafe { std::os::fd::FromRawFd::from_raw_fd(descriptor) }
+@@ -96,7 +96,7 @@ pub unsafe fn owned_from_raw_descriptor(descriptor: c_int) -> OwnedSharedMemory
+ ///
+ /// `descriptor` must stay open for `'descriptor`.
+ pub unsafe fn borrowed_from_raw_descriptor<'descriptor>(descriptor: c_int) -> BorrowedSharedMemory<'descriptor> {
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "wasi"))]
+     {
+         // SAFETY: As the caller guarantees.
+         unsafe { BorrowedSharedMemory::borrow_raw(descriptor) }
+diff --git a/Libraries/LibJS/Rust/src/interpreter/vm.rs b/Libraries/LibJS/Rust/src/interpreter/vm.rs
+index ff8768de..13e75ae8 100644
+--- a/Libraries/LibJS/Rust/src/interpreter/vm.rs
++++ b/Libraries/LibJS/Rust/src/interpreter/vm.rs
+@@ -316,6 +316,7 @@ struct StoredModule {
+ /// The modules the VM loaded, in a cell the VM roots.
+ #[repr(C)]
+ #[derive(Trace)]
++#[cfg_attr(target_pointer_width = "32", repr(align(8)))]
+ pub struct LoadedModules {
+     header: CellHeader,
+     stored_modules: GcRefCell<Vec<StoredModule>>,
+diff --git a/Libraries/LibJS/Rust/src/layout/buffer.rs b/Libraries/LibJS/Rust/src/layout/buffer.rs
+index 4509c085..52b45725 100644
+--- a/Libraries/LibJS/Rust/src/layout/buffer.rs
++++ b/Libraries/LibJS/Rust/src/layout/buffer.rs
+@@ -16,6 +16,7 @@ pub struct InterpreterBuffer<T> {
+     pub capacity: Cell<u32>,
+ }
+ 
++#[cfg(target_pointer_width = "64")]
+ const _: () = assert!(size_of::<InterpreterBuffer<u8>>() == 16);
+ 
+ /// A boxed slice in one word, which the interpreter can read the elements of directly: the pointer to the first
+@@ -26,6 +27,7 @@ pub struct ThinSlice<T> {
+     _elements: PhantomData<T>,
+ }
+ 
++#[cfg(target_pointer_width = "64")]
+ const _: () = assert!(size_of::<ThinSlice<u8>>() == 8);
+ 
+ impl<T> ThinSlice<T> {
+diff --git a/Libraries/LibJS/Rust/src/layout/environment.rs b/Libraries/LibJS/Rust/src/layout/environment.rs
+index 80eac8ef..741edd2a 100644
+--- a/Libraries/LibJS/Rust/src/layout/environment.rs
++++ b/Libraries/LibJS/Rust/src/layout/environment.rs
+@@ -35,6 +35,7 @@ pub struct Environment {
+ const _: () = assert!(size_of::<Environment>() == 16);
+ 
+ #[repr(C)]
++#[cfg_attr(target_pointer_width = "32", repr(align(8)))]
+ pub struct DeclarativeEnvironment {
+     pub base: Environment,
+     /// The first binding value, in the cell or in a malloc allocation that has its capacity in front of the first
+@@ -44,6 +45,7 @@ pub struct DeclarativeEnvironment {
+     pub rare_data: NullableMember<DeclarativeEnvironmentRareData>,
+ }
+ 
++#[cfg(target_pointer_width = "64")]
+ const _: () = assert!(size_of::<DeclarativeEnvironment>() == 32);
+ 
+ /// The declarative environment of a global environment. Caches of global variables hold on to its serial number, which
+@@ -62,6 +64,7 @@ pub struct DeclarativeEnvironmentRareData {
+ }
+ 
+ #[repr(C)]
++#[cfg_attr(target_pointer_width = "32", repr(align(8)))]
+ pub struct GlobalEnvironment {
+     pub base: Environment,
+     pub object_record: Cell<Option<Gc<ObjectEnvironment>>>,
+diff --git a/Libraries/LibJS/Rust/src/layout/executable.rs b/Libraries/LibJS/Rust/src/layout/executable.rs
+index a1b350c0..c1f9907c 100644
+--- a/Libraries/LibJS/Rust/src/layout/executable.rs
++++ b/Libraries/LibJS/Rust/src/layout/executable.rs
+@@ -42,4 +42,5 @@ pub struct ExecutableHead {
+     pub environment_coordinate_caches: ThinSlice<Cell<EnvironmentCoordinate>>,
+ }
+ 
++#[cfg(target_pointer_width = "64")]
+ const _: () = assert!(size_of::<ExecutableHead>() == 96);
+diff --git a/Libraries/LibJS/Rust/src/layout/function_object.rs b/Libraries/LibJS/Rust/src/layout/function_object.rs
+index b56cf135..84977dd4 100644
+--- a/Libraries/LibJS/Rust/src/layout/function_object.rs
++++ b/Libraries/LibJS/Rust/src/layout/function_object.rs
+@@ -42,6 +42,7 @@ pub struct NativeFunction {
+     pub raw_native_function_index: Cell<u32>,
+ }
+ 
++#[cfg(target_pointer_width = "64")]
+ const _: () = assert!(size_of::<NativeFunction>() == 72);
+ const _: () = assert!(core::mem::offset_of!(NativeFunction, inline_named_storage) == size_of::<Object>());
+ 
+@@ -50,6 +51,7 @@ pub struct RawNativeFunction {
+     pub base: NativeFunction,
+ }
+ 
++#[cfg(target_pointer_width = "64")]
+ const _: () = assert!(size_of::<RawNativeFunction>() == 72);
+ 
+ /// A raw native getter that reads a wrapped value straight out of a platform object, at offsets the embedder provides:
+@@ -98,7 +100,8 @@ pub struct EcmascriptFunctionFields {
+     pub environment: NullableMember<Environment>,
+ }
+ 
+-const _: () = assert!(size_of::<EcmascriptFunctionFields>() == size_of::<*mut Value>());
++// NB: The fields take the 8-byte slot of `Object::indexed_elements`, which keeps 8 bytes on 32-bit targets as well.
++const _: () = assert!(size_of::<EcmascriptFunctionFields>() == 8);
+ 
+ pub const ECMASCRIPT_FUNCTION_OBJECT_SHARED_DATA_OFFSET: usize =
+     core::mem::offset_of!(Object, indexed_elements) + core::mem::offset_of!(EcmascriptFunctionFields, shared_data);
+diff --git a/Libraries/LibJS/Rust/src/layout/host_object.rs b/Libraries/LibJS/Rust/src/layout/host_object.rs
+index 9ce49896..e8f79286 100644
+--- a/Libraries/LibJS/Rust/src/layout/host_object.rs
++++ b/Libraries/LibJS/Rust/src/layout/host_object.rs
+@@ -15,19 +15,27 @@ use crate::layout_forward::ForeignCellSlot;
+ 
+ // NB: The host object's own fields follow the object. Layout.h checks these against LibJS/HostObjectABI.h.
+ pub const JS_HOST_OBJECT_HOST_CLASS_OFFSET: usize = size_of::<Object>();
+-pub const JS_HOST_OBJECT_WRAPPABLE_OFFSET: usize = JS_HOST_OBJECT_HOST_CLASS_OFFSET + size_of::<usize>();
+-pub const JS_HOST_OBJECT_HOST_DATA_OFFSET: usize = JS_HOST_OBJECT_WRAPPABLE_OFFSET + size_of::<usize>();
+-pub const JS_HOST_OBJECT_SIZE: usize = JS_HOST_OBJECT_HOST_DATA_OFFSET + size_of::<usize>();
++// NB: Every field takes an 8-byte slot, also on 32-bit targets, as LibJS/HostObjectABI.h fixes.
++pub const JS_HOST_OBJECT_SLOT_SIZE: usize = 8;
++pub const JS_HOST_OBJECT_WRAPPABLE_OFFSET: usize = JS_HOST_OBJECT_HOST_CLASS_OFFSET + JS_HOST_OBJECT_SLOT_SIZE;
++pub const JS_HOST_OBJECT_HOST_DATA_OFFSET: usize = JS_HOST_OBJECT_WRAPPABLE_OFFSET + JS_HOST_OBJECT_SLOT_SIZE;
++pub const JS_HOST_OBJECT_SIZE: usize = JS_HOST_OBJECT_HOST_DATA_OFFSET + JS_HOST_OBJECT_SLOT_SIZE;
+ 
+ #[repr(C)]
+ pub struct HostObject {
+     pub base: Object,
+     pub host_class: &'static JSHostClass,
++    #[cfg(target_pointer_width = "32")]
++    pub host_class_high_word: u32,
+     /// The embedder's wrapped implementation object, a C++ GC cell, or null. Direct getter functions read this slot
+     /// without checking what it holds, so it never holds anything else.
+     pub wrappable: ForeignCellSlot,
++    #[cfg(target_pointer_width = "32")]
++    pub wrappable_high_word: core::cell::Cell<u32>,
+     /// A C++ GC cell with the rest of the embedder's per-object state, or null.
+     pub host_data: ForeignCellSlot,
++    #[cfg(target_pointer_width = "32")]
++    pub host_data_high_word: core::cell::Cell<u32>,
+ }
+ 
+ const _: () = assert!(offset_of!(HostObject, host_class) == JS_HOST_OBJECT_HOST_CLASS_OFFSET);
+diff --git a/Libraries/LibJS/Rust/src/layout/member.rs b/Libraries/LibJS/Rust/src/layout/member.rs
+index d0c297aa..c9796691 100644
+--- a/Libraries/LibJS/Rust/src/layout/member.rs
++++ b/Libraries/LibJS/Rust/src/layout/member.rs
+@@ -19,10 +19,18 @@ use super::cell::Gc;
+ use crate::layout_forward::heap_region_base;
+ 
+ /// How far a cell's offset into the heap region is shifted right to compress it: cells are 8-byte aligned.
++#[cfg(target_pointer_width = "64")]
+ pub const COMPRESSED_POINTER_SHIFT: u32 = 3;
++/// On 32-bit targets an address fits in 32 bits, so the compressed pointer is the address. Mirrors LibGC.
++#[cfg(target_pointer_width = "32")]
++pub const COMPRESSED_POINTER_SHIFT: u32 = 0;
+ 
+ /// The size of the heap region, which a compressed pointer covers whatever its 32 bits are.
++#[cfg(target_pointer_width = "64")]
+ pub const COMPRESSED_POINTER_RANGE: u64 = 1 << (32 + COMPRESSED_POINTER_SHIFT);
++/// The low 2 GiB of wasm32 linear memory, at base 0. Mirrors GC::HEAP_REGION_SIZE.
++#[cfg(target_pointer_width = "32")]
++pub const COMPRESSED_POINTER_RANGE: u64 = 1 << 31;
+ 
+ /// The compressed form of a pointer into the heap region. The region's base is aligned to its size, so the low 32 bits
+ /// of the shifted address are the shifted offset, and compressing needs no base.
+@@ -43,8 +51,12 @@ fn compress_address(address: usize) -> u32 {
+ /// unshifted offset, which the compiler could otherwise keep instead while either is held across an allocation.
+ #[inline(always)]
+ fn decompress_address(compressed: u32) -> usize {
++    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+     let mut address = heap_region_base() + ((compressed as usize) << COMPRESSED_POINTER_SHIFT);
+     // SAFETY: The assembly is empty: it only has the compiler put `compressed` and `address` in registers here.
++    // NB: wasm has no registers to pin values in. Its locals are invisible to the conservative scan anyway, which
++    //     only sees the shadow stack that the pointer-spilling pass writes them to.
++    #[cfg(not(target_arch = "wasm32"))]
+     unsafe {
+         core::arch::asm!(
+             "/* {compressed} {address} */",
+diff --git a/Libraries/LibJS/Rust/src/layout/object.rs b/Libraries/LibJS/Rust/src/layout/object.rs
+index 27d7509f..e84586cf 100644
+--- a/Libraries/LibJS/Rust/src/layout/object.rs
++++ b/Libraries/LibJS/Rust/src/layout/object.rs
+@@ -72,10 +72,17 @@ pub struct Object {
+     pub class_bits: Cell<u8>,
+     /// Points at the inline storage until the object needs more room.
+     pub named_properties: Cell<*mut Value>,
++    /// NB: On 32-bit targets the two storage pointers keep the 8-byte slots they have on 64-bit ones. Inline named
++    ///     storage can start at `indexed_elements`, and holds 8-byte values, and an ECMAScript function object keeps
++    ///     two compressed pointers there (see `EcmascriptFunctionFields`).
++    #[cfg(target_pointer_width = "32")]
++    pub named_properties_high_word: Cell<u32>,
+     /// The packed or holey elements. A plain object has its inline storage start here instead, as long as
+     /// `named_properties` points at this word, and moves it out of the way for its first indexed property. Nothing may
+     /// read this word without knowing that the object has packed, holey or dictionary indexed storage.
+     pub indexed_elements: Cell<*mut Value>,
++    #[cfg(target_pointer_width = "32")]
++    pub indexed_elements_high_word: Cell<u32>,
+     pub inline_named_storage: [Cell<Value>; 0],
+ }
+ 
+diff --git a/Libraries/LibJS/Rust/src/layout/primitive_string.rs b/Libraries/LibJS/Rust/src/layout/primitive_string.rs
+index 2123566d..0a93d55d 100644
+--- a/Libraries/LibJS/Rust/src/layout/primitive_string.rs
++++ b/Libraries/LibJS/Rust/src/layout/primitive_string.rs
+@@ -30,6 +30,7 @@ pub const INTERNED_FLAG: u8 = 1 << 7;
+ /// A string value. Ropes, substrings and inline strings resolve into `utf16_string` on first use; the interpreter only
+ /// reads strings that are not deferred.
+ #[repr(C)]
++#[cfg_attr(target_pointer_width = "32", repr(align(8)))]
+ pub struct PrimitiveString {
+     pub header: CellHeader,
+     /// The DeferredKind in the bits of DEFERRED_KIND_MASK, and INTERNED_FLAG. They share a byte since the cell has
+diff --git a/Libraries/LibJS/Rust/src/layout/property_lookup_cache.rs b/Libraries/LibJS/Rust/src/layout/property_lookup_cache.rs
+index b70fc317..dcdfc8c6 100644
+--- a/Libraries/LibJS/Rust/src/layout/property_lookup_cache.rs
++++ b/Libraries/LibJS/Rust/src/layout/property_lookup_cache.rs
+@@ -55,6 +55,7 @@ pub struct PropertyLookupCacheEntry {
+     pub getter: Cell<Option<Gc<FunctionObject>>>,
+ }
+ 
++#[cfg(target_pointer_width = "64")]
+ const _: () = assert!(size_of::<PropertyLookupCacheEntry>() == 64);
+ 
+ /// The layout of an entry of the VM's keyed property lookup cache (KeyedPropertyLookupCacheEntry of the bytecode
+@@ -69,7 +70,7 @@ pub struct KeyedPropertyLookupCacheEntryLayout {
+     pub prototype_chain_validity: Option<Gc<WatchpointSet>>,
+     pub new_shape: Option<Gc<Shape>>,
+     /// The identity of the name of the property, the word of a fly string, or 0.
+-    pub property_name: u64,
++    pub property_name: usize,
+ }
+ 
+ const _: () = assert!(size_of::<KeyedPropertyLookupCacheEntryLayout>() == 64);
+@@ -111,6 +112,7 @@ pub enum ObjectPropertyIteratorFastPath {
+ }
+ 
+ #[repr(C)]
++#[cfg_attr(target_pointer_width = "32", repr(align(8)))]
+ pub struct ObjectPropertyIteratorCacheData {
+     pub header: CellHeader,
+     pub shape_is_dictionary: Cell<bool>,
+diff --git a/Libraries/LibJS/Rust/src/layout/realm.rs b/Libraries/LibJS/Rust/src/layout/realm.rs
+index c58aef06..ee124df5 100644
+--- a/Libraries/LibJS/Rust/src/layout/realm.rs
++++ b/Libraries/LibJS/Rust/src/layout/realm.rs
+@@ -13,6 +13,7 @@ use super::shape::WatchpointSet;
+ use crate::layout_forward::{ForeignCellSlot, Intrinsics, RealmStorage};
+ 
+ #[repr(C)]
++#[cfg_attr(target_pointer_width = "32", repr(align(8)))]
+ pub struct Realm {
+     pub header: CellHeader,
+     pub global_object: Cell<Option<Gc<Object>>>,
+diff --git a/Libraries/LibJS/Rust/src/layout/shape.rs b/Libraries/LibJS/Rust/src/layout/shape.rs
+index f64dedbc..d874b6cc 100644
+--- a/Libraries/LibJS/Rust/src/layout/shape.rs
++++ b/Libraries/LibJS/Rust/src/layout/shape.rs
+@@ -15,6 +15,7 @@ use crate::layout_forward::{DescriptorArray, ShapeStorage, WatchpointSetStorage}
+ /// A shape starts with the realm and the prototype in the first word of its cell header, which LibGC leaves to the
+ /// cell, followed by the rest of the header.
+ #[repr(C)]
++#[cfg_attr(target_pointer_width = "32", repr(align(8)))]
+ pub struct Shape {
+     pub realm: Member<Realm>,
+     pub prototype: NullableMember<Object>,
+diff --git a/Libraries/LibJS/Rust/src/runtime/array_buffer.rs b/Libraries/LibJS/Rust/src/runtime/array_buffer.rs
+index f97f9c31..470626bc 100644
+--- a/Libraries/LibJS/Rust/src/runtime/array_buffer.rs
++++ b/Libraries/LibJS/Rust/src/runtime/array_buffer.rs
+@@ -333,7 +333,7 @@ impl SharedMemoryMapping {
+ /// raises SIGBUS. A Windows section is not a file, so it has no size to ask for, but MapViewOfFile() refuses a view
+ /// that extends past its end.
+ fn shared_memory_object_has_at_least(shared_memory: &std::fs::File, size: usize) -> bool {
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "wasi"))]
+     {
+         shared_memory
+             .metadata()
+@@ -1558,7 +1558,11 @@ impl ArrayBuffer {
+ 
+ /// The largest byte length of a buffer. Every byte of a buffer this long can be indexed by a Uint8Array, whose element
+ /// indices are u32s.
++#[cfg(target_pointer_width = "64")]
+ pub const MAX_ARRAY_BUFFER_BYTE_LENGTH: usize = 1 << 32;
++/// On 32-bit targets the primitive storage cage is the low 2 GiB of memory, which bounds every buffer.
++#[cfg(target_pointer_width = "32")]
++pub const MAX_ARRAY_BUFFER_BYTE_LENGTH: usize = 1 << 31;
+ 
+ fn exceeds_max_array_buffer_byte_length(size: usize, capacity: Option<usize>) -> bool {
+     capacity.unwrap_or(size).max(size) > MAX_ARRAY_BUFFER_BYTE_LENGTH
+diff --git a/Libraries/LibJS/Rust/src/runtime/big_int.rs b/Libraries/LibJS/Rust/src/runtime/big_int.rs
+index 099b0d99..595bd04c 100644
+--- a/Libraries/LibJS/Rust/src/runtime/big_int.rs
++++ b/Libraries/LibJS/Rust/src/runtime/big_int.rs
+@@ -22,6 +22,7 @@ pub use num_bigint::BigInt as SignedBigInteger;
+ 
+ #[repr(C)]
+ #[derive(Trace)]
++#[cfg_attr(target_pointer_width = "32", repr(align(8)))]
+ pub struct BigInt {
+     header: CellHeader,
+     big_integer: SignedBigInteger,
+diff --git a/Libraries/LibJS/Rust/src/runtime/descriptor_array.rs b/Libraries/LibJS/Rust/src/runtime/descriptor_array.rs
+index 18e19ac4..e37c3450 100644
+--- a/Libraries/LibJS/Rust/src/runtime/descriptor_array.rs
++++ b/Libraries/LibJS/Rust/src/runtime/descriptor_array.rs
+@@ -44,6 +44,7 @@ impl Entry {
+ /// The properties of the shapes along a chain of transitions, which share one array. A shape sees the entries whose
+ /// enum index is below its property count. Entries are sorted by key hash, and the enum indices keep insertion order.
+ #[repr(C)]
++#[cfg_attr(target_pointer_width = "32", repr(align(8)))]
+ pub struct DescriptorArray {
+     header: CellHeader,
+     entries: GcRefCell<Vec<Entry>>,
+diff --git a/Libraries/LibJS/Rust/src/runtime/error_data.rs b/Libraries/LibJS/Rust/src/runtime/error_data.rs
+index ab11d94b..3d1f7854 100644
+--- a/Libraries/LibJS/Rust/src/runtime/error_data.rs
++++ b/Libraries/LibJS/Rust/src/runtime/error_data.rs
+@@ -232,6 +232,7 @@ impl ErrorData {
+ /// embedder keeps alive with the object.
+ #[repr(C)]
+ #[derive(Trace)]
++#[cfg_attr(target_pointer_width = "32", repr(align(8)))]
+ pub struct ErrorDataCell {
+     header: CellHeader,
+     error_data: ErrorData,
+diff --git a/Libraries/LibJS/Rust/src/runtime/intrinsics.rs b/Libraries/LibJS/Rust/src/runtime/intrinsics.rs
+index 8dea1b7e..8f32dadd 100644
+--- a/Libraries/LibJS/Rust/src/runtime/intrinsics.rs
++++ b/Libraries/LibJS/Rust/src/runtime/intrinsics.rs
+@@ -173,6 +173,7 @@ use crate::utf16::Utf16View;
+ macro_rules! define_intrinsics {
+     ($($slot:ident: $type:ty,)*) => {
+         #[repr(C)]
++        #[cfg_attr(target_pointer_width = "32", repr(align(8)))]
+         #[derive(Trace)]
+         pub struct Intrinsics {
+             header: CellHeader,
+diff --git a/Libraries/LibJS/Rust/src/runtime/iterator_constructor.rs b/Libraries/LibJS/Rust/src/runtime/iterator_constructor.rs
+index 871bb4e9..c2845405 100644
+--- a/Libraries/LibJS/Rust/src/runtime/iterator_constructor.rs
++++ b/Libraries/LibJS/Rust/src/runtime/iterator_constructor.rs
+@@ -463,6 +463,7 @@ struct ConcatIterable {
+ /// The state of the closure of Iterator.concat: the iterables it captures and the iterator it is reading.
+ #[repr(C)]
+ #[derive(Trace)]
++#[cfg_attr(target_pointer_width = "32", repr(align(8)))]
+ pub struct ConcatIterator {
+     header: CellHeader,
+     iterables: GcRefCell<Vec<ConcatIterable>>,
+@@ -584,6 +585,7 @@ enum ZipFinishResults {
+ /// The state of IteratorZip: the iterators it zips, which of them are still open, and what pads them.
+ #[repr(C)]
+ #[derive(Trace)]
++#[cfg_attr(target_pointer_width = "32", repr(align(8)))]
+ pub struct ZipIterator {
+     header: CellHeader,
+     realm: Gc<Realm>,
+diff --git a/Libraries/LibJS/Rust/src/runtime/job_callback.rs b/Libraries/LibJS/Rust/src/runtime/job_callback.rs
+index 3d2f9b28..87f0f51c 100644
+--- a/Libraries/LibJS/Rust/src/runtime/job_callback.rs
++++ b/Libraries/LibJS/Rust/src/runtime/job_callback.rs
+@@ -22,6 +22,7 @@ use crate::runtime::function_object::FunctionObject;
+ // 9.5.1 JobCallback Records, https://tc39.es/ecma262/#sec-jobcallback-records
+ #[repr(C)]
+ #[derive(Trace)]
++#[cfg_attr(target_pointer_width = "32", repr(align(8)))]
+ pub struct JobCallback {
+     header: CellHeader,
+     callback: Member<FunctionObject>, // [[Callback]]
+diff --git a/Libraries/LibJS/Rust/src/runtime/module.rs b/Libraries/LibJS/Rust/src/runtime/module.rs
+index 14d9969b..42906ca1 100644
+--- a/Libraries/LibJS/Rust/src/runtime/module.rs
++++ b/Libraries/LibJS/Rust/src/runtime/module.rs
+@@ -114,6 +114,7 @@ pub fn module_stack_contains(stack: &ModuleStack<'_>, module: Gc<Module>) -> boo
+ // https://tc39.es/ecma262/#graphloadingstate-record
+ #[repr(C)]
+ #[derive(Trace)]
++#[cfg_attr(target_pointer_width = "32", repr(align(8)))]
+ pub struct GraphLoadingState {
+     header: CellHeader,
+     promise_capability: Gc<PromiseCapability>, // [[PromiseCapability]]
+diff --git a/Libraries/LibJS/Rust/src/runtime/object.rs b/Libraries/LibJS/Rust/src/runtime/object.rs
+index a7fa92a8..bea9f2c2 100644
+--- a/Libraries/LibJS/Rust/src/runtime/object.rs
++++ b/Libraries/LibJS/Rust/src/runtime/object.rs
+@@ -577,7 +577,11 @@ impl Object {
+             inline_named_capacity: Cell::new(0),
+             class_bits: Cell::new(0),
+             named_properties: Cell::new(core::ptr::null_mut()),
++            #[cfg(target_pointer_width = "32")]
++            named_properties_high_word: Cell::new(0),
+             indexed_elements: Cell::new(core::ptr::null_mut()),
++            #[cfg(target_pointer_width = "32")]
++            indexed_elements_high_word: Cell::new(0),
+             inline_named_storage: [],
+         };
+         if may_interfere_with_indexed_property_access == MayInterfereWithIndexedPropertyAccess::Yes {
+diff --git a/Libraries/LibJS/Rust/src/runtime/private_environment.rs b/Libraries/LibJS/Rust/src/runtime/private_environment.rs
+index 5dedd6a0..96e53e68 100644
+--- a/Libraries/LibJS/Rust/src/runtime/private_environment.rs
++++ b/Libraries/LibJS/Rust/src/runtime/private_environment.rs
+@@ -71,6 +71,7 @@ pub struct PrivateEnvironmentStorage {
+     private_names: GcRefCell<Vec<PrivateName>>,
+ }
+ 
++#[cfg(target_pointer_width = "64")]
+ const _: () = assert!(size_of::<PrivateEnvironment>() == 48);
+ 
+ define_cell!(PrivateEnvironment, Other);
+diff --git a/Libraries/LibJS/Rust/src/runtime/promise_resolving_element_functions.rs b/Libraries/LibJS/Rust/src/runtime/promise_resolving_element_functions.rs
+index 468d614d..f70129e6 100644
+--- a/Libraries/LibJS/Rust/src/runtime/promise_resolving_element_functions.rs
++++ b/Libraries/LibJS/Rust/src/runtime/promise_resolving_element_functions.rs
+@@ -66,6 +66,7 @@ impl RemainingElements {
+ 
+ #[repr(C)]
+ #[derive(Trace)]
++#[cfg_attr(target_pointer_width = "32", repr(align(8)))]
+ pub struct PromiseValueList {
+     header: CellHeader,
+     values: GcRefCell<Vec<Value>>,
+diff --git a/Libraries/LibJS/Rust/src/runtime/promise_resolving_function.rs b/Libraries/LibJS/Rust/src/runtime/promise_resolving_function.rs
+index 12e81cb8..429624de 100644
+--- a/Libraries/LibJS/Rust/src/runtime/promise_resolving_function.rs
++++ b/Libraries/LibJS/Rust/src/runtime/promise_resolving_function.rs
+@@ -41,6 +41,7 @@ pub struct PromiseResolvingFunction {
+     kind: PromiseResolvingFunctionKind,
+ }
+ 
++#[cfg(target_pointer_width = "64")]
+ const _: () = assert!(size_of::<PromiseResolvingFunction>() == 88);
+ 
+ static PROMISE_RESOLVING_FUNCTION_VIRTUAL_METHODS: NativeFunctionMethods = NativeFunctionMethods {
+diff --git a/Libraries/LibJS/Rust/src/runtime/regexp_object.rs b/Libraries/LibJS/Rust/src/runtime/regexp_object.rs
+index 0c957cec..8af7b29c 100644
+--- a/Libraries/LibJS/Rust/src/runtime/regexp_object.rs
++++ b/Libraries/LibJS/Rust/src/runtime/regexp_object.rs
+@@ -151,6 +151,7 @@ pub struct RegExpObject {
+     cached_regex: RefCell<Option<Rc<EcmaScriptRegex>>>,
+ }
+ 
++#[cfg(target_pointer_width = "64")]
+ const _: () = assert!(size_of::<RegExpObject>() == 96);
+ const _: () = assert!(core::mem::offset_of!(RegExpObject, inline_named_storage) == size_of::<Object>());
+ 
+diff --git a/Libraries/LibJS/Rust/src/runtime/shared_function_instance_data.rs b/Libraries/LibJS/Rust/src/runtime/shared_function_instance_data.rs
+index 25a7f72f..214c37bf 100644
+--- a/Libraries/LibJS/Rust/src/runtime/shared_function_instance_data.rs
++++ b/Libraries/LibJS/Rust/src/runtime/shared_function_instance_data.rs
+@@ -193,6 +193,7 @@ pub struct SharedFunctionInstanceDataStorage {
+ }
+ 
+ // NB: Every function has these bytes.
++#[cfg(target_pointer_width = "64")]
+ const _: () = assert!(size_of::<SharedFunctionInstanceData>() == 88);
+ 
+ /// The most properties that constructions make room for ahead (the largest inline capacity of plain objects).
+diff --git a/Libraries/LibJS/Rust/src/runtime/synthetic_module.rs b/Libraries/LibJS/Rust/src/runtime/synthetic_module.rs
+index 88b9acd3..5f153851 100644
+--- a/Libraries/LibJS/Rust/src/runtime/synthetic_module.rs
++++ b/Libraries/LibJS/Rust/src/runtime/synthetic_module.rs
+@@ -61,6 +61,7 @@ where
+ // 16.2.1.8 Synthetic Module Records, https://tc39.es/ecma262/#sec-synthetic-module-records
+ #[repr(C)]
+ #[derive(Trace)]
++#[cfg_attr(target_pointer_width = "32", repr(align(8)))]
+ pub struct SyntheticModule {
+     base: Module,
+     export_names: Vec<Utf16FlyString>,          // [[ExportNames]]
+diff --git a/Libraries/LibJS/Rust/src/runtime/value.rs b/Libraries/LibJS/Rust/src/runtime/value.rs
+index 5646d359..4f784825 100644
+--- a/Libraries/LibJS/Rust/src/runtime/value.rs
++++ b/Libraries/LibJS/Rust/src/runtime/value.rs
+@@ -53,8 +53,11 @@ use libjs_abi::value as nan_box;
+ fn decode_cell_address(encoded: u64) -> usize {
+     // NB: Cell values are offsets into the heap region, whose base was fixed before any cell existed.
+     let base = heap_region_base() as u64;
++    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+     let mut address = base + (encoded & HEAP_REGION_OFFSET_MASK);
+     // SAFETY: The assembly is empty: it only has the compiler put `encoded` and `address` in registers here.
++    // NB: wasm has no registers to pin values in (see layout::member::decompress_address()).
++    #[cfg(not(target_arch = "wasm32"))]
+     unsafe {
+         core::arch::asm!(
+             "/* {encoded} {address} */",
+diff --git a/Libraries/LibJS/Rust/src/standard_output.rs b/Libraries/LibJS/Rust/src/standard_output.rs
+index 8f6e35da..96f5fab0 100644
+--- a/Libraries/LibJS/Rust/src/standard_output.rs
++++ b/Libraries/LibJS/Rust/src/standard_output.rs
+@@ -103,7 +103,7 @@ impl UnbufferedWriter {
+ }
+ 
+ impl Write for UnbufferedWriter {
+-    #[cfg(unix)]
++    #[cfg(any(unix, target_os = "wasi"))]
+     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+         let file_descriptor = match self.stream {
+             StandardStream::Output => libc::STDOUT_FILENO,
+diff --git a/Libraries/LibJS/Rust/src/utilities/js.rs b/Libraries/LibJS/Rust/src/utilities/js.rs
+index ecbfb50c..6f7b91c8 100644
+--- a/Libraries/LibJS/Rust/src/utilities/js.rs
++++ b/Libraries/LibJS/Rust/src/utilities/js.rs
+@@ -1185,7 +1185,7 @@ fn write_to_file(path: &[u8]) -> io::Result<()> {
+     options.mode(0o666);
+     #[cfg(unix)]
+     let path = std::ffi::OsStr::from_bytes(path);
+-    #[cfg(windows)]
++    #[cfg(not(unix))]
+     let path = std::str::from_utf8(path).map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+     let mut file = options.open(path)?;
+     REPL_STATEMENTS.with_borrow(|statements| {
+@@ -1975,6 +1975,9 @@ fn history_path() -> Result<CString, String> {
+     let home_directory = std::env::var_os("USERPROFILE")
+         .map(std::ffi::OsString::into_encoded_bytes)
+         .unwrap_or_default();
++    // NB: WASI has no user database, only the environment the host passes.
++    #[cfg(target_os = "wasi")]
++    let home_directory = std::env::var_os("HOME").map_or_else(|| b"/".to_vec(), std::ffi::OsString::into_encoded_bytes);
+     let mut history_path = canonicalized_path_of_bytes(&home_directory);
+     history_path.extend_from_slice(b"/.js-history");
+     if utf16_from_wtf8(&history_path).is_none() {
+diff --git a/Libraries/LibJS/Rust/src/utilities/line_editor.rs b/Libraries/LibJS/Rust/src/utilities/line_editor.rs
+index 92c3c5d6..52db8345 100644
+--- a/Libraries/LibJS/Rust/src/utilities/line_editor.rs
++++ b/Libraries/LibJS/Rust/src/utilities/line_editor.rs
+@@ -144,7 +144,7 @@ fn strndup(string: &[u8]) -> *mut c_char {
+ }
+ 
+ /// strndup(), which the C runtime of Windows lacks.
+-#[cfg(windows)]
++#[cfg(any(windows, target_os = "wasi"))]
+ fn strndup(string: &[u8]) -> *mut c_char {
+     let length = string.iter().position(|&byte| byte == 0).unwrap_or(string.len());
+     // SAFETY: The copy has room for the bytes before the first NUL and the NUL that follows them.
+diff --git a/Libraries/LibJS/Rust/src/utilities/test_js.rs b/Libraries/LibJS/Rust/src/utilities/test_js.rs
+index 81fea18d..16457542 100644
+--- a/Libraries/LibJS/Rust/src/utilities/test_js.rs
++++ b/Libraries/LibJS/Rust/src/utilities/test_js.rs
+@@ -366,13 +366,28 @@ extern "C" fn handle_sigabrt(_: c_int) {
+         write_to_standard_error_from_signal_handler(b": SIGABRT received, cleaning up.\n");
+     }
+     cleanup();
+-    if !set_abort_action(libc::SIG_DFL) {
++    if !set_abort_action(SIGNAL_DEFAULT) {
+         std::process::exit(1);
+     }
+     std::process::abort();
+ }
+ 
+-#[cfg(unix)]
++#[cfg(not(target_os = "wasi"))]
++type SignalHandler = libc::sighandler_t;
++#[cfg(not(target_os = "wasi"))]
++const SIGNAL_DEFAULT: SignalHandler = libc::SIG_DFL;
++/// WASI has no signals, so there is no SIGABRT to handle.
++#[cfg(target_os = "wasi")]
++type SignalHandler = usize;
++#[cfg(target_os = "wasi")]
++const SIGNAL_DEFAULT: SignalHandler = 0;
++
++#[cfg(target_os = "wasi")]
++fn set_abort_action(_handler: SignalHandler) -> bool {
++    true
++}
++
++#[cfg(any(unix, target_os = "wasi"))]
+ fn write_to_standard_error_from_signal_handler(bytes: &[u8]) {
+     // SAFETY: The bytes are valid for their length.
+     unsafe { libc::write(libc::STDERR_FILENO, bytes.as_ptr().cast(), bytes.len()) };
+@@ -387,7 +402,7 @@ fn write_to_standard_error_from_signal_handler(bytes: &[u8]) {
+ }
+ 
+ #[cfg(unix)]
+-fn set_abort_action(handler: libc::sighandler_t) -> bool {
++fn set_abort_action(handler: SignalHandler) -> bool {
+     // SAFETY: An all-zero sigaction is valid, and sigaction only reads the struct.
+     unsafe {
+         let mut action: libc::sigaction = core::mem::zeroed();
+@@ -402,7 +417,7 @@ fn set_abort_action(handler: libc::sighandler_t) -> bool {
+ 
+ /// set_abort_action() on Windows, which has no sigaction().
+ #[cfg(windows)]
+-fn set_abort_action(handler: libc::sighandler_t) -> bool {
++fn set_abort_action(handler: SignalHandler) -> bool {
+     // SAFETY: signal() only installs the handler.
+     if unsafe { libc::signal(libc::SIGABRT, handler) } == libc::SIG_ERR as libc::sighandler_t {
+         // NB: signal() only fails with EINVAL, which perror() reports like this.
+@@ -494,7 +509,7 @@ fn ladybird_main(arguments: &[String]) -> c_int {
+         .unwrap_or_default();
+     let _ = PROGRAM_NAME.set(program_name.clone().into_bytes());
+ 
+-    if !set_abort_action(handle_sigabrt as *const () as libc::sighandler_t) {
++    if !set_abort_action(handle_sigabrt as *const () as SignalHandler) {
+         return 1;
+     }
+ 
+diff --git a/Libraries/LibJS/Rust/src/utilities/test_js/live_display.rs b/Libraries/LibJS/Rust/src/utilities/test_js/live_display.rs
+index 5c13ddcc..946f6b40 100644
+--- a/Libraries/LibJS/Rust/src/utilities/test_js/live_display.rs
++++ b/Libraries/LibJS/Rust/src/utilities/test_js/live_display.rs
+@@ -245,7 +245,7 @@ impl LiveDisplay {
+     }
+ 
+     /// Not implemented on Windows, where the test runner draws no live display.
+-    #[cfg(windows)]
++    #[cfg(any(windows, target_os = "wasi"))]
+     fn redirect_standard_streams_into_log_file(&mut self) -> Option<File> {
+         None
+     }
+@@ -293,7 +293,7 @@ impl LiveDisplay {
+         self.terminal_width = query_terminal_width(fd);
+     }
+ 
+-    #[cfg(windows)]
++    #[cfg(any(windows, target_os = "wasi"))]
+     fn refresh_terminal_width(&mut self) {}
+ 
+     /// Erases the reserved display area, leaving the cursor at the top of it.
+diff --git a/Libraries/LibJS/Rust/src/utilities/test_js/test_js_functions.rs b/Libraries/LibJS/Rust/src/utilities/test_js/test_js_functions.rs
+index 1f41428f..aaa933aa 100644
+--- a/Libraries/LibJS/Rust/src/utilities/test_js/test_js_functions.rs
++++ b/Libraries/LibJS/Rust/src/utilities/test_js/test_js_functions.rs
+@@ -287,7 +287,7 @@ fn set_current_time_zone(time_zone: Utf16View<'_>) -> Result<(), String> {
+     set_time_zone_environment_variable(&time_zone_utf8)
+ }
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, target_os = "wasi"))]
+ fn set_time_zone_environment_variable(time_zone: &CStr) -> Result<(), String> {
+     unsafe extern "C" {
+         fn tzset();
