@@ -38,7 +38,8 @@ url=http://127.0.0.1:$port/index.html
 
 check() {
   local png=$1
-  read -r img bar bg < <(pixel "$png" 50 50 250 50 600 400 | tr '\n' ' ')
+  local img bar bg
+  { read -r img; read -r bar; read -r bg; } < <(pixel "$png" 50 50 250 50 600 400)
   echo "  image $img, fetch() bar $bar, background $bg"
   [ "$img" = ff0000 ] && [ "$bar" = 00ff00 ] && [ "$bg" = 3366cc ]
 }
@@ -54,7 +55,8 @@ latha() { (cd "$out" && XDG_DATA_DIRS=/usr/share "${LATHA_RUN:-latha-run}" --dir
 for mode in one two; do
   if [ $mode = one ]; then echo "== RequestServer in the same module"; run=(webby-render.wasm)
   else echo "== RequestServer.wasm in a child instance"; run=(webby-render-latha.wasm --spawn RequestServer.wasm); fi
-  latha "${run[@]}" --theme /res/themes/Default.ini -o $mode.png "$url"
+  # The fetch() starts after the load event, so give it a moment (--wait) before painting.
+  latha "${run[@]}" --theme /res/themes/Default.ini --wait 2000 -o $mode.png "$url"
   check "$out/$mode.png"
   if [ -n "$https" ]; then
     latha "${run[@]}" --theme /res/themes/Default.ini -C "$ca" -o https-$mode.png "$https"
