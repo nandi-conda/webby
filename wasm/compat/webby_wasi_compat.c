@@ -1,5 +1,6 @@
 /* The functions webby_wasi_compat.h and netdb.h declare, for wasm32-wasip1. */
 #include "webby_wasi_compat.h"
+#include "webby_wasi_local.h"
 #include <netdb.h>
 #include <errno.h>
 #include <stdlib.h>
@@ -51,24 +52,6 @@ void endgrent(void) { }
 int setgroups(size_t count, gid_t const* groups) { (void)count; (void)groups; errno = EPERM; return -1; }
 int initgroups(char const* user, gid_t group) { (void)user; (void)group; errno = EPERM; return -1; }
 
-pid_t wait(int* status) { (void)status; errno = ECHILD; return -1; }
-pid_t waitpid(pid_t pid, int* status, int options) { (void)pid; (void)status; (void)options; errno = ECHILD; return -1; }
-
-int posix_spawn(pid_t* pid, char const* path, posix_spawn_file_actions_t const* actions, posix_spawnattr_t const* attributes, char* const arguments[], char* const environment[])
-{
-    (void)pid; (void)path; (void)actions; (void)attributes; (void)arguments; (void)environment;
-    return ENOSYS;
-}
-int posix_spawnp(pid_t* pid, char const* file, posix_spawn_file_actions_t const* actions, posix_spawnattr_t const* attributes, char* const arguments[], char* const environment[])
-{
-    return posix_spawn(pid, file, actions, attributes, arguments, environment);
-}
-int posix_spawn_file_actions_init(posix_spawn_file_actions_t* actions) { (void)actions; return 0; }
-int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t* actions) { (void)actions; return 0; }
-int posix_spawn_file_actions_addopen(posix_spawn_file_actions_t* actions, int fd, char const* path, int flags, mode_t mode) { (void)actions; (void)fd; (void)path; (void)flags; (void)mode; return 0; }
-int posix_spawn_file_actions_addclose(posix_spawn_file_actions_t* actions, int fd) { (void)actions; (void)fd; return 0; }
-int posix_spawn_file_actions_adddup2(posix_spawn_file_actions_t* actions, int fd, int new_fd) { (void)actions; (void)fd; (void)new_fd; return 0; }
-int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t* actions, char const* path) { (void)actions; (void)path; return 0; }
 int posix_spawnattr_init(posix_spawnattr_t* attributes) { (void)attributes; return 0; }
 int posix_spawnattr_destroy(posix_spawnattr_t* attributes) { (void)attributes; return 0; }
 int posix_spawnattr_setflags(posix_spawnattr_t* attributes, short flags) { (void)attributes; (void)flags; return 0; }
@@ -159,8 +142,7 @@ int kill(pid_t pid, int number)
 {
     if (pid == getpid() || pid == 0 || pid == -1)
         return number == 0 ? 0 : raise(number);
-    errno = ESRCH;
-    return -1;
+    return webby_local_kill(pid, number); /* a latha:proc child */
 }
 unsigned alarm(unsigned seconds) { (void)seconds; return 0; }
 

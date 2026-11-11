@@ -28,11 +28,40 @@ extern void __wasm_import_latha_proc_channels_parent(uint8_t *);
 __attribute__((__import_module__("latha:proc/process@0.1.0"), __import_name__("spawn")))
 extern void __wasm_import_latha_proc_process_spawn(uint8_t *, size_t, uint8_t *, size_t, uint8_t *);
 
+__attribute__((__import_module__("latha:proc/process@0.1.0"), __import_name__("spawn-with-env")))
+extern void __wasm_import_latha_proc_process_spawn_with_env(uint8_t *, size_t, uint8_t *, size_t, uint8_t *, size_t, uint8_t *);
+
 __attribute__((__import_module__("latha:proc/process@0.1.0"), __import_name__("wait-exit")))
 extern void __wasm_import_latha_proc_process_wait_exit(int32_t, int32_t, uint8_t *);
 
 __attribute__((__import_module__("latha:proc/process@0.1.0"), __import_name__("kill")))
 extern void __wasm_import_latha_proc_process_kill(int32_t);
+
+// Imported Functions from `latha:proc/memory@0.1.0`
+
+__attribute__((__import_module__("latha:proc/memory@0.1.0"), __import_name__("create")))
+extern void __wasm_import_latha_proc_memory_create(int64_t, uint8_t *);
+
+__attribute__((__import_module__("latha:proc/memory@0.1.0"), __import_name__("dup")))
+extern void __wasm_import_latha_proc_memory_dup(int32_t, uint8_t *);
+
+__attribute__((__import_module__("latha:proc/memory@0.1.0"), __import_name__("size")))
+extern void __wasm_import_latha_proc_memory_size(int32_t, uint8_t *);
+
+__attribute__((__import_module__("latha:proc/memory@0.1.0"), __import_name__("resize")))
+extern void __wasm_import_latha_proc_memory_resize(int32_t, int64_t, uint8_t *);
+
+__attribute__((__import_module__("latha:proc/memory@0.1.0"), __import_name__("map-at")))
+extern void __wasm_import_latha_proc_memory_map_at(int32_t, int64_t, int32_t, int32_t, uint8_t *);
+
+__attribute__((__import_module__("latha:proc/memory@0.1.0"), __import_name__("unmap-at")))
+extern void __wasm_import_latha_proc_memory_unmap_at(int32_t, int32_t, uint8_t *);
+
+__attribute__((__import_module__("latha:proc/memory@0.1.0"), __import_name__("page-size")))
+extern int32_t __wasm_import_latha_proc_memory_page_size(void);
+
+__attribute__((__import_module__("latha:proc/memory@0.1.0"), __import_name__("is-memory")))
+extern int32_t __wasm_import_latha_proc_memory_is_memory(int32_t);
 
 // Canonical ABI intrinsics
 
@@ -120,6 +149,24 @@ void latha_proc_process_result_tuple2_u32_handle_string_free(latha_proc_process_
 
 void proc_option_s32_free(proc_option_s32_t *ptr) {
   if (ptr->is_some) {
+  }
+}
+
+void latha_proc_memory_result_handle_error_free(latha_proc_memory_result_handle_error_t *ptr) {
+  if (!ptr->is_err) {
+  } else {
+  }
+}
+
+void latha_proc_memory_result_u64_error_free(latha_proc_memory_result_u64_error_t *ptr) {
+  if (!ptr->is_err) {
+  } else {
+  }
+}
+
+void latha_proc_memory_result_void_error_free(latha_proc_memory_result_void_error_t *ptr) {
+  if (!ptr->is_err) {
+  } else {
   }
 }
 
@@ -273,6 +320,36 @@ bool latha_proc_process_spawn(proc_string_t *path, proc_list_string_t *args, pro
   }
 }
 
+bool latha_proc_process_spawn_with_env(proc_string_t *path, proc_list_string_t *args, proc_list_string_t *env, proc_tuple2_u32_handle_t *ret, proc_string_t *err) {
+  __attribute__((__aligned__(sizeof(void*))))
+  uint8_t ret_area[(3*sizeof(void*))];
+  uint8_t *ptr = (uint8_t *) &ret_area;
+  __wasm_import_latha_proc_process_spawn_with_env((uint8_t *) (*path).ptr, (*path).len, (uint8_t *) (*args).ptr, (*args).len, (uint8_t *) (*env).ptr, (*env).len, ptr);
+  latha_proc_process_result_tuple2_u32_handle_string_t result;
+  switch ((int32_t) *((uint8_t*) (ptr + 0))) {
+    case 0: {
+      result.is_err = false;
+      result.val.ok = (proc_tuple2_u32_handle_t) {
+        (uint32_t) (uint32_t) (*((int32_t*) (ptr + sizeof(void*)))),
+        (latha_proc_process_handle_t) (uint32_t) (*((int32_t*) (ptr + (4+1*sizeof(void*))))),
+      };
+      break;
+    }
+    case 1: {
+      result.is_err = true;
+      result.val.err = (proc_string_t) { (uint8_t*)(*((uint8_t **) (ptr + sizeof(void*)))), (*((size_t*) (ptr + (2*sizeof(void*))))) };
+      break;
+    }
+  }
+  if (!result.is_err) {
+    *ret = result.val.ok;
+    return 1;
+  } else {
+    *err = result.val.err;
+    return 0;
+  }
+}
+
 bool latha_proc_process_wait_exit(uint32_t pid, int32_t timeout_ms, int32_t *ret) {
   __attribute__((__aligned__(4)))
   uint8_t ret_area[8];
@@ -296,6 +373,172 @@ bool latha_proc_process_wait_exit(uint32_t pid, int32_t timeout_ms, int32_t *ret
 
 void latha_proc_process_kill(uint32_t pid) {
   __wasm_import_latha_proc_process_kill((int32_t) (pid));
+}
+
+bool latha_proc_memory_create(uint64_t size, latha_proc_memory_handle_t *ret, latha_proc_memory_error_t *err) {
+  __attribute__((__aligned__(4)))
+  uint8_t ret_area[8];
+  uint8_t *ptr = (uint8_t *) &ret_area;
+  __wasm_import_latha_proc_memory_create((int64_t) (size), ptr);
+  latha_proc_memory_result_handle_error_t result;
+  switch ((int32_t) *((uint8_t*) (ptr + 0))) {
+    case 0: {
+      result.is_err = false;
+      result.val.ok = (uint32_t) (*((int32_t*) (ptr + 4)));
+      break;
+    }
+    case 1: {
+      result.is_err = true;
+      result.val.err = (int32_t) *((uint8_t*) (ptr + 4));
+      break;
+    }
+  }
+  if (!result.is_err) {
+    *ret = result.val.ok;
+    return 1;
+  } else {
+    *err = result.val.err;
+    return 0;
+  }
+}
+
+bool latha_proc_memory_dup(latha_proc_memory_handle_t h, latha_proc_memory_handle_t *ret, latha_proc_memory_error_t *err) {
+  __attribute__((__aligned__(4)))
+  uint8_t ret_area[8];
+  uint8_t *ptr = (uint8_t *) &ret_area;
+  __wasm_import_latha_proc_memory_dup((int32_t) (h), ptr);
+  latha_proc_memory_result_handle_error_t result;
+  switch ((int32_t) *((uint8_t*) (ptr + 0))) {
+    case 0: {
+      result.is_err = false;
+      result.val.ok = (uint32_t) (*((int32_t*) (ptr + 4)));
+      break;
+    }
+    case 1: {
+      result.is_err = true;
+      result.val.err = (int32_t) *((uint8_t*) (ptr + 4));
+      break;
+    }
+  }
+  if (!result.is_err) {
+    *ret = result.val.ok;
+    return 1;
+  } else {
+    *err = result.val.err;
+    return 0;
+  }
+}
+
+bool latha_proc_memory_size(latha_proc_memory_handle_t h, uint64_t *ret, latha_proc_memory_error_t *err) {
+  __attribute__((__aligned__(8)))
+  uint8_t ret_area[16];
+  uint8_t *ptr = (uint8_t *) &ret_area;
+  __wasm_import_latha_proc_memory_size((int32_t) (h), ptr);
+  latha_proc_memory_result_u64_error_t result;
+  switch ((int32_t) *((uint8_t*) (ptr + 0))) {
+    case 0: {
+      result.is_err = false;
+      result.val.ok = (uint64_t) (*((int64_t*) (ptr + 8)));
+      break;
+    }
+    case 1: {
+      result.is_err = true;
+      result.val.err = (int32_t) *((uint8_t*) (ptr + 8));
+      break;
+    }
+  }
+  if (!result.is_err) {
+    *ret = result.val.ok;
+    return 1;
+  } else {
+    *err = result.val.err;
+    return 0;
+  }
+}
+
+bool latha_proc_memory_resize(latha_proc_memory_handle_t h, uint64_t size, latha_proc_memory_error_t *err) {
+  __attribute__((__aligned__(1)))
+  uint8_t ret_area[2];
+  uint8_t *ptr = (uint8_t *) &ret_area;
+  __wasm_import_latha_proc_memory_resize((int32_t) (h), (int64_t) (size), ptr);
+  latha_proc_memory_result_void_error_t result;
+  switch ((int32_t) *((uint8_t*) (ptr + 0))) {
+    case 0: {
+      result.is_err = false;
+      break;
+    }
+    case 1: {
+      result.is_err = true;
+      result.val.err = (int32_t) *((uint8_t*) (ptr + 1));
+      break;
+    }
+  }
+  if (!result.is_err) {
+    return 1;
+  } else {
+    *err = result.val.err;
+    return 0;
+  }
+}
+
+bool latha_proc_memory_map_at(latha_proc_memory_handle_t h, uint64_t offset, uint32_t addr, uint32_t len, latha_proc_memory_error_t *err) {
+  __attribute__((__aligned__(1)))
+  uint8_t ret_area[2];
+  uint8_t *ptr = (uint8_t *) &ret_area;
+  __wasm_import_latha_proc_memory_map_at((int32_t) (h), (int64_t) (offset), (int32_t) (addr), (int32_t) (len), ptr);
+  latha_proc_memory_result_void_error_t result;
+  switch ((int32_t) *((uint8_t*) (ptr + 0))) {
+    case 0: {
+      result.is_err = false;
+      break;
+    }
+    case 1: {
+      result.is_err = true;
+      result.val.err = (int32_t) *((uint8_t*) (ptr + 1));
+      break;
+    }
+  }
+  if (!result.is_err) {
+    return 1;
+  } else {
+    *err = result.val.err;
+    return 0;
+  }
+}
+
+bool latha_proc_memory_unmap_at(uint32_t addr, uint32_t len, latha_proc_memory_error_t *err) {
+  __attribute__((__aligned__(1)))
+  uint8_t ret_area[2];
+  uint8_t *ptr = (uint8_t *) &ret_area;
+  __wasm_import_latha_proc_memory_unmap_at((int32_t) (addr), (int32_t) (len), ptr);
+  latha_proc_memory_result_void_error_t result;
+  switch ((int32_t) *((uint8_t*) (ptr + 0))) {
+    case 0: {
+      result.is_err = false;
+      break;
+    }
+    case 1: {
+      result.is_err = true;
+      result.val.err = (int32_t) *((uint8_t*) (ptr + 1));
+      break;
+    }
+  }
+  if (!result.is_err) {
+    return 1;
+  } else {
+    *err = result.val.err;
+    return 0;
+  }
+}
+
+uint32_t latha_proc_memory_page_size(void) {
+  int32_t ret = __wasm_import_latha_proc_memory_page_size();
+  return (uint32_t) (ret);
+}
+
+bool latha_proc_memory_is_memory(latha_proc_memory_handle_t h) {
+  int32_t ret = __wasm_import_latha_proc_memory_is_memory((int32_t) (h));
+  return ret;
 }
 
 // Ensure that the *_component_type.o object is linked in

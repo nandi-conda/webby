@@ -1,4 +1,5 @@
-/* spawn.h for WASI, which cannot start processes: posix_spawn() fails with ENOSYS. See webby_wasi_compat.c. */
+/* spawn.h for WASI. posix_spawn() starts a wasm program as a latha:proc process when the program links the
+ * latha:proc backend (webby_wasi_local.c), else fails with ENOSYS. */
 #pragma once
 #include <signal.h>
 #include <sys/types.h>
@@ -13,7 +14,9 @@ extern "C" {
 #define POSIX_SPAWN_SETSCHEDULER 32
 #define POSIX_SPAWN_SETSID 128
 typedef struct { int unused; } posix_spawnattr_t;
-typedef struct { int unused; } posix_spawn_file_actions_t;
+/* The actions the child's descriptors come from: dup2(src, fd) and (ignored) open/close/chdir. */
+typedef struct { int kind, fd, src; } webby_spawn_action;
+typedef struct { int count; webby_spawn_action *actions; } posix_spawn_file_actions_t;
 int posix_spawn(pid_t*, char const*, posix_spawn_file_actions_t const*, posix_spawnattr_t const*, char* const[], char* const[]);
 int posix_spawnp(pid_t*, char const*, posix_spawn_file_actions_t const*, posix_spawnattr_t const*, char* const[], char* const[]);
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t*);

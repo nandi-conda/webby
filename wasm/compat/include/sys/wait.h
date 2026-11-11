@@ -1,4 +1,5 @@
-/* sys/wait.h for WASI, which has no child processes: waiting fails with ECHILD. See webby_wasi_compat.c. */
+/* sys/wait.h for WASI: waitpid() waits for a latha:proc child (webby_wasi_local.c); without the backend it fails
+ * with ECHILD. */
 #pragma once
 #include <sys/types.h>
 #ifdef __cplusplus

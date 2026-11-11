@@ -68,11 +68,12 @@ fi
 # Programs that use sockets (webby-render links RequestServer) run as components: wasm-tools makes them, the wasmtime
 # CLI runs them with TCP (tools/wasi-run.py), latha-run runs latha:proc children. nandi-testing's packages, cached.
 if [[ " $targets " == *" webby-render "* ]]; then
-  tools=$C/tools-env
+  # latha:proc shared memory and spawn-with-env (wasm/compat) need latha-gui 0.4; a new version gets a new directory.
+  tools=$C/tools-env-latha-0.4
   if [ ! -x "$tools/bin/latha-run" ]; then
     (cd /tmp && curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj bin/micromamba) \
       && /tmp/bin/micromamba create -y -q -r /tmp/mamba -p "$tools" -c https://prefix.dev/nandi-testing -c conda-forge \
-         wasmtime wasm-tools latha-gui > /dev/null || fail "installing wasmtime, wasm-tools and latha-run failed"
+         wasmtime wasm-tools 'latha-gui>=0.4' > /dev/null || fail "installing wasmtime, wasm-tools and latha-run failed"
   fi
   adapter=$C/wasi_snapshot_preview1.command.wasm
   [ -s "$adapter" ] || curl -fsSL -o "$adapter" \

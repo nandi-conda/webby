@@ -32,9 +32,22 @@ struct webby_latha_ops {
     int (*parent)(uint32_t *h);
     /* Start a wasm program; argv[0] is its name. *channel is our end of the child's parent() channel. */
     int (*spawn)(const char *path, char *const argv[], uint32_t *pid, uint32_t *channel);
+    /* spawn with args (alen bytes of NUL-terminated strings) and env ("NAME=value", the same way) (latha-gui 0.4.0+). */
+    int (*spawn_env)(const char *path, const char *args, size_t alen, const char *env, size_t elen, uint32_t *pid,
+        uint32_t *channel);
     /* The child's exit code into *code once it ended; -EAGAIN until then. */
     int (*wait_exit)(uint32_t pid, int timeout_ms, int *code);
     void (*kill)(uint32_t pid);
+    /* Shared memory (latha:proc memory, latha-gui 0.4.0+). Handles close with close(). */
+    int (*mem_create)(uint64_t size, uint32_t *h);
+    int (*mem_dup)(uint32_t h, uint32_t *out);
+    int (*mem_size)(uint32_t h, uint64_t *size);
+    int (*mem_resize)(uint32_t h, uint64_t size);
+    /* [addr, addr + len) of our memory becomes the object's bytes from offset; all page aligned. */
+    int (*mem_map)(uint32_t h, uint64_t offset, void *addr, size_t len);
+    int (*mem_unmap)(void *addr, size_t len);
+    size_t (*page_size)(void);
+    int (*is_memory)(uint32_t h);
 };
 
 /* The latha:proc backend, or NULL when the program does not link it (endpoints are then in memory only). */
@@ -49,6 +62,31 @@ int webby_local_parent_fd(void);
 /* Spawn a wasm program with latha:proc; *fd is a local socket connected to the child's webby_local_parent_fd().
  * 0, or -1 with errno (ENOSYS without the backend). */
 int webby_local_spawn(const char *path, char *const argv[], uint32_t *pid, int *fd);
+
+/* Shared memory objects (what memfd/shm objects are on Unix; Core::AnonymousBuffer's backing). A descriptor from
+ * the local range. With the latha:proc backend it is a host memory object that several instances map, and passing
+ * it over a channel (SCM_RIGHTS) passes a handle to the same object; in memory, every mapping of one object is the
+ * same bytes. read/write/fstat (S_IFREG, st_size) work on it too. A regular file passed to another instance arrives
+ * as one of these, holding a copy of the file's bytes. */
+int webby_shm_create(size_t size);
+int webby_is_shm_fd(int fd);
+/* The object's size, or -1 with errno. */
+ssize_t webby_shm_size(int fd);
+int webby_shm_resize(int fd, size_t size);
+/* Map [offset, offset + length) of the object (offset a multiple of webby_shm_page_size()). NULL with errno on failure. */
+void *webby_shm_map(int fd, size_t offset, size_t length);
+/* Undo webby_shm_map; -1 with EINVAL if addr is not the start of such a mapping. */
+int webby_shm_unmap(void *addr, size_t length);
+size_t webby_shm_page_size(void);
+off_t webby_shm_lseek(int fd, off_t offset, int whence);
+
+/* Processes (with the latha:proc backend): posix_spawn() starts a wasm program as a child instance. The path gets
+ * ".wasm" if it has no extension; a relative one is relative to our own module's directory. The child gets the
+ * descriptors the file actions dup2() into place (channel endpoints move, memory objects are shared, regular files
+ * go as copies) under the same numbers, and the environment we pass. waitpid() and kill() reach it by its pid.
+ * webby_spawn_bootstrap() puts a spawned child's descriptors in place; LibMain calls it before main. */
+void webby_spawn_bootstrap(void);
+int webby_local_kill(pid_t pid, int signal);
 
 /* 1 if fd is a local socket whose peer is in this instance's memory (so only this thread can make it readable). */
 int webby_local_peer_in_memory(int fd);

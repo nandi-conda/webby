@@ -98,6 +98,42 @@ typedef struct {
   int32_t val;
 } proc_option_s32_t;
 
+typedef latha_proc_channels_handle_t latha_proc_memory_handle_t;
+
+typedef uint8_t latha_proc_memory_error_t;
+
+// Not a memory handle of this instance.
+#define LATHA_PROC_MEMORY_ERROR_BAD_HANDLE 0
+// An address, length or offset that is not a multiple of page-size.
+#define LATHA_PROC_MEMORY_ERROR_UNALIGNED 1
+// A range outside our linear memory, or past the object's end.
+#define LATHA_PROC_MEMORY_ERROR_FAULT 2
+// The host could not make or map it.
+#define LATHA_PROC_MEMORY_ERROR_NO_MEMORY 3
+
+typedef struct {
+  bool is_err;
+  union {
+    latha_proc_memory_handle_t ok;
+    latha_proc_memory_error_t err;
+  } val;
+} latha_proc_memory_result_handle_error_t;
+
+typedef struct {
+  bool is_err;
+  union {
+    uint64_t ok;
+    latha_proc_memory_error_t err;
+  } val;
+} latha_proc_memory_result_u64_error_t;
+
+typedef struct {
+  bool is_err;
+  union {
+    latha_proc_memory_error_t err;
+  } val;
+} latha_proc_memory_result_void_error_t;
+
 // Imported Functions from `latha:proc/channels@0.1.0`
 // A new channel: two connected endpoints.
 extern void latha_proc_channels_pair(proc_tuple2_handle_handle_t *ret);
@@ -122,15 +158,39 @@ extern bool latha_proc_channels_parent(latha_proc_channels_handle_t *ret);
 // component) as a new process on its own thread. `args` are its
 // arguments, its name first. A relative path is relative to the
 // directory of the caller's own .wasm; "" means the caller's own module.
-// The child sees the same directories and environment as we do. Returns
+// The child sees the same directories and environment as we do (our
+// environment as we were started with it). Returns
 // its pid and our end of a channel whose other end is the child's
 // `parent()`.
 extern bool latha_proc_process_spawn(proc_string_t *path, proc_list_string_t *args, proc_tuple2_u32_handle_t *ret, proc_string_t *err);
+// `spawn`, with `env` ("NAME=value" entries) as the child's whole
+// environment instead of ours (latha-gui 0.4.0 and later).
+extern bool latha_proc_process_spawn_with_env(proc_string_t *path, proc_list_string_t *args, proc_list_string_t *env, proc_tuple2_u32_handle_t *ret, proc_string_t *err);
 // The exit code of a child once it ended (`timeout-ms` as for recv),
 // else none. A child that trapped exits with 128 + 6.
 extern bool latha_proc_process_wait_exit(uint32_t pid, int32_t timeout_ms, int32_t *ret);
 // Ask a child to stop: it traps at its next loop back edge or call.
 extern void latha_proc_process_kill(uint32_t pid);
+
+// Imported Functions from `latha:proc/memory@0.1.0`
+// A new object of `size` bytes, zeroed.
+extern bool latha_proc_memory_create(uint64_t size, latha_proc_memory_handle_t *ret, latha_proc_memory_error_t *err);
+// Another handle to the same object.
+extern bool latha_proc_memory_dup(latha_proc_memory_handle_t h, latha_proc_memory_handle_t *ret, latha_proc_memory_error_t *err);
+extern bool latha_proc_memory_size(latha_proc_memory_handle_t h, uint64_t *ret, latha_proc_memory_error_t *err);
+// Make it bigger (never smaller: a mapping past the end would fault on the
+// host, so a smaller size is refused with `fault`).
+extern bool latha_proc_memory_resize(latha_proc_memory_handle_t h, uint64_t size, latha_proc_memory_error_t *err);
+// Make our linear memory [addr, addr + len) the object's bytes from `offset`.
+// All three are multiples of page-size; the range must be in our memory
+// already (allocate it, page aligned, then map over it).
+extern bool latha_proc_memory_map_at(latha_proc_memory_handle_t h, uint64_t offset, uint32_t addr, uint32_t len, latha_proc_memory_error_t *err);
+// Give [addr, addr + len) of our memory its own zeroed pages again.
+extern bool latha_proc_memory_unmap_at(uint32_t addr, uint32_t len, latha_proc_memory_error_t *err);
+// The host's page size (4096 on x86-64 Linux).
+extern uint32_t latha_proc_memory_page_size(void);
+// Whether `h` is a memory handle (else an endpoint, or not ours).
+extern bool latha_proc_memory_is_memory(latha_proc_memory_handle_t h);
 
 // Helper Functions
 
@@ -153,6 +213,12 @@ void proc_list_string_free(proc_list_string_t *ptr);
 void latha_proc_process_result_tuple2_u32_handle_string_free(latha_proc_process_result_tuple2_u32_handle_string_t *ptr);
 
 void proc_option_s32_free(proc_option_s32_t *ptr);
+
+void latha_proc_memory_result_handle_error_free(latha_proc_memory_result_handle_error_t *ptr);
+
+void latha_proc_memory_result_u64_error_free(latha_proc_memory_result_u64_error_t *ptr);
+
+void latha_proc_memory_result_void_error_free(latha_proc_memory_result_void_error_t *ptr);
 
 // Sets the string `ret` to reference the input string `s` without copying it
 void proc_string_set(proc_string_t *ret, const char*s);
