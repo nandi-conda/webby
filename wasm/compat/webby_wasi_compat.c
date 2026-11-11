@@ -315,3 +315,7 @@ char *realpath(const char *restrict path, char *restrict resolved)
     memcpy(resolved, buf, len + 1);
     return resolved;
 }
+
+/* flock: one browser process per run in wasm webby (LibWebView's startup lock), so locks always succeed. */
+#include <sys/file.h>
+int flock(int fd, int operation) { (void)fd; (void)operation; return 0; }

@@ -619,11 +619,14 @@ off_t webby_shm_lseek(int fd, off_t offset, int whence)
 }
 
 /* A regular file going to another instance: a new host object with a copy of its bytes. 0 and *h, or -1. */
-int __real_fstat(int fd, struct stat *st);
+/* libc's fstat. Weak: a program linked without -Wl,--wrap=fstat (the deps' tools, which only pull this file in through
+ * kill or posix_spawn) has no __real_fstat, and there plain fstat is libc's. */
+int __real_fstat(int fd, struct stat *st) __attribute__((weak));
+static int real_fstat(int fd, struct stat *st) { return __real_fstat ? __real_fstat(fd, st) : fstat(fd, st); }
 static int snapshot_file(int fd, uint32_t *h)
 {
     struct stat st;
-    if (__real_fstat(fd, &st) < 0 || !S_ISREG(st.st_mode))
+    if (real_fstat(fd, &st) < 0 || !S_ISREG(st.st_mode))
         return fail(EOPNOTSUPP);
     size_t size = (size_t)st.st_size;
     int r = webby_latha_ops->mem_create(size, h);
@@ -1070,7 +1073,7 @@ int __wrap_fstat(int fd, struct stat *st)
         st->st_ino = (ino_t)fd;
         return 0;
     }
-    return __real_fstat(fd, st);
+    return real_fstat(fd, st);
 }
 
 ssize_t sendmsg(int fd, const struct msghdr *message, int flags)
