@@ -30,7 +30,7 @@ timeout = 3600
 run = "depot --version && python3 -u wasm/ci/forge_wasm.py deps"
 
 # wasm-engine: Ladybird with patches/ and wasm/patches/ for wasm32-wasip1 against that sysroot; the programs in
-# wasm/ci/engine-targets (js and webby-render) go on the rolling `wasm-engine` release. A cold build takes longer than the
+# wasm/ci/engine-targets (js, webby-render, the Qt UI webby.wasm, ...) go on the rolling `wasm-engine` release. A cold build takes longer than the
 # job's hour: it stops in time, keeps its build directory in Depot's cache and starts this job again to carry on.
 [[job]]
 name = "wasm-engine"

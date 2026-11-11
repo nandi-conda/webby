@@ -7,3 +7,5 @@ requestserver-fetch
 requestserver-ipc
 requestserver-ipc-latha
 RequestServer
+# The Qt UI (wasm/ui, patches/0014): published as webby.wasm, the latha:gui component.
+webby-ui

@@ -46,6 +46,21 @@ build=$C/build
 conf=$( (cat "$w/wasm/build-engine.sh" "$w/wasm/cmake/wasi.cmake"; echo "gui=${ENABLE_GUI_TARGETS:-}") | sha256sum | cut -d' ' -f1)
 if [ "$(cat "$build/.webby-conf" 2>/dev/null)" != "$conf" ]; then rm -rf "$build"; mkdir -p "$build"; echo "$conf" > "$build/.webby-conf"; fi
 
+# The Qt UI (wasm/ui) builds against qt2wasm's Qt for WASI, wit-bindgen, wasm-tools and the preview1 reactor adapter:
+# a micromamba env, cached; ui/CMakeLists.txt finds it through WEBBY_QT_ENV.
+if [[ " $targets " == *" webby-ui "* ]]; then
+  export ENABLE_GUI_TARGETS=ON
+  qtenv=$C/qt2wasm-env-0.10.2
+  if [ ! -d "$qtenv/opt/qt6-wasi/wasi/lib" ]; then
+    rm -rf "$qtenv"
+    (cd /tmp && curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj bin/micromamba) \
+      && /tmp/bin/micromamba create -y -q -r /tmp/mamba -p "$qtenv" -c conda-forge -c https://prefix.dev/nandi-testing \
+         'qt2wasm=0.10.2' qt6-wasi wit-bindgen wasm-tools wasi-preview1-adapter > /dev/null \
+      || fail "installing qt2wasm (Qt for WASI) failed"
+  fi
+  export WEBBY_QT_ENV=$qtenv
+fi
+
 export LIBJS_TARGET_RUNNER="python $w/wasm/tools/wasi-run.py"
 echo "building $targets (budget ${budget}s)"
 # shellcheck disable=SC2086
@@ -57,6 +72,12 @@ if [ $rc = 124 ]; then status partial; exit 0; fi
 [ $rc = 0 ] || fail "build-engine.sh failed (exit $rc)"
 
 for t in $targets; do
+  if [ "$t" = webby-ui ]; then
+    # The UI is a latha:gui component, bin/webby.wasm (bin/webby-ui.core.wasm is its core module).
+    [ -f "$build/bin/webby.wasm" ] || fail "no $build/bin/webby.wasm after the build"
+    cp "$build/bin/webby.wasm" "$out/webby.wasm"
+    continue
+  fi
   [ -f "$build/bin/$t" ] || fail "no $build/bin/$t after the build"
   cp "$build/bin/$t" "$out/$t.wasm"
 done
@@ -122,6 +143,20 @@ if [[ " $targets " == *" webby-render-latha "* ]]; then
   for f in one.png two.png https-one.png https-two.png; do [ -f "$net/$f" ] && cp "$net/$f" "$out/webby-render-net-$f"; done
   if [ $rc != 0 ]; then tail -60 "$out/webby-render-net.log" >> "$out/build.log"; fail "webby-render network test failed (exit $rc)"; fi
   echo "webby-render loaded pages over the network"
+fi
+if [[ " $targets " == *" webby-ui "* ]] && [ -n "${LATHA_RUN:-}" ]; then
+  # The UI in latha-gui, headless: open a page with a script, screenshot it. Needs the tools env above.
+  ui=$(mktemp -d)
+  printf '<!doctype html><title>One</title><h1 style="color:#b03060">webby UI test</h1><p id=p>no script</p><p><a href="two.html">next</a></p><script>p.textContent = "script " + (6 * 7)</script>' > "$ui/one.html"
+  printf '<!doctype html><title>Two</title><h1>page two</h1>' > "$ui/two.html"
+  (cd "$ui" && QT_QPA_PLATFORM=offscreen timeout 1200 "$(dirname "$LATHA_RUN")/latha-gui" --dir "$lb/Base/res::/res" \
+    --size 1100x760 --screenshot "$ui/ui.png" --quit-after 20000 "$out/webby.wasm" "$ui/one.html") > "$out/webby-ui-test.log" 2>&1
+  rc=$?
+  [ -f "$ui/ui.png" ] && cp "$ui/ui.png" "$out/webby-ui-test.png"
+  if [ $rc != 0 ] || [ "$(stat -c %s "$ui/ui.png" 2>/dev/null || echo 0)" -lt 10000 ]; then
+    tail -40 "$out/webby-ui-test.log"; fail "webby-ui smoke test failed (exit $rc)"
+  fi
+  echo "webby.wasm ran in latha-gui"
 fi
 (cd "$out" && sha256sum ./*.wasm > SHA256SUMS)
 status ok

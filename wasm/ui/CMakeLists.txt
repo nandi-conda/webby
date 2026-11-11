@@ -11,6 +11,9 @@
 
 cmake_minimum_required(VERSION 3.25)
 
+if (NOT WEBBY_QT_ENV AND DEFINED ENV{WEBBY_QT_ENV})
+    set(WEBBY_QT_ENV "$ENV{WEBBY_QT_ENV}")
+endif()
 if (NOT WEBBY_QT_ENV)
     get_filename_component(WEBBY_QT_ENV "$ENV{WASI_SDK_PREFIX}/../.." ABSOLUTE)
 endif()
