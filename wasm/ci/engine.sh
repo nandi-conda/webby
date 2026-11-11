@@ -39,9 +39,11 @@ if [ ! -s "$hsts" ]; then
     || fail "downloading the HSTS preload list failed"
 fi
 
+# LibWeb and webby-render only exist with the GUI targets on (patches/0006).
+if [[ " $targets " == *" webby-render "* ]]; then export ENABLE_GUI_TARGETS=ON; fi
 # A different configuration (build-engine.sh's options, the toolchain file) starts the build directory over.
 build=$C/build
-conf=$(cat "$w/wasm/build-engine.sh" "$w/wasm/cmake/wasi.cmake" | sha256sum | cut -d' ' -f1)
+conf=$( (cat "$w/wasm/build-engine.sh" "$w/wasm/cmake/wasi.cmake"; echo "gui=${ENABLE_GUI_TARGETS:-}") | sha256sum | cut -d' ' -f1)
 if [ "$(cat "$build/.webby-conf" 2>/dev/null)" != "$conf" ]; then rm -rf "$build"; mkdir -p "$build"; echo "$conf" > "$build/.webby-conf"; fi
 
 export LIBJS_TARGET_RUNNER="python $w/wasm/tools/wasi-run.py"

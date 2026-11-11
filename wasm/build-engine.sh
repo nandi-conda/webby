@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Configure and build Ladybird (with webby's patches) for wasm32-wasip1.
 # usage: build-engine.sh LADYBIRD_SRC BUILD_DIR [targets...]   (default target: js)
-# env: WASI_SDK_PREFIX, WEBBY_WASI_SYSROOT (dependencies from deps/), RUSTUP_TOOLCHAIN (Ladybird's, with wasm32-wasip1)
+# env: ENABLE_GUI_TARGETS (ON for LibWeb and webby-render), WASI_SDK_PREFIX, WEBBY_WASI_SYSROOT (dependencies from deps/), RUSTUP_TOOLCHAIN (Ladybird's, with wasm32-wasip1)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 src=$1; build=$2; shift 2
@@ -16,7 +16,7 @@ if [ ! -f "$build/build.ninja" ]; then
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_SHARED_LIBS=OFF \
     -DBUILD_TESTING=OFF \
-    -DENABLE_GUI_TARGETS=OFF \
+    -DENABLE_GUI_TARGETS="${ENABLE_GUI_TARGETS:-OFF}" \
     -DENABLE_JS_JIT=OFF \
     -DENABLE_LTO_FOR_RELEASE=OFF \
     -DENABLE_LAGOM_CCACHE=OFF \

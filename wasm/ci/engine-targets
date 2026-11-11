@@ -1,2 +1,4 @@
-# The programs the wasm-engine forge job builds and publishes (build-engine.sh targets).
+# The programs the wasm-engine forge job builds and publishes (build-engine.sh targets). webby-render turns
+# on ENABLE_GUI_TARGETS (LibWeb, patches/0006).
 js
+webby-render

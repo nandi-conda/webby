@@ -25,6 +25,8 @@ RUN --mount=type=cache,id=webby-wasi-src,target=/cache/src --mount=type=cache,id
 RUN --mount=type=cache,id=webby-wasi-src,target=/cache/src --mount=type=cache,id=webby-wasi-work,target=/cache/work \
     /w/deps/all.sh /cache/src /cache/work libweb-deps
 RUN --mount=type=cache,id=webby-wasi-src,target=/cache/src --mount=type=cache,id=webby-wasi-work,target=/cache/work \
+    /w/deps/all.sh /cache/src /cache/work net-deps curl
+RUN --mount=type=cache,id=webby-wasi-src,target=/cache/src --mount=type=cache,id=webby-wasi-work,target=/cache/work \
     /w/deps/all.sh /cache/src /cache/work media-deps
 RUN --mount=type=cache,id=webby-wasi-src,target=/cache/src --mount=type=cache,id=webby-wasi-work,target=/cache/work \
     /w/deps/all.sh /cache/src /cache/work skia
