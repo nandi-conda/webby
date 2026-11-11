@@ -380,6 +380,22 @@ index 9e23b6fc..a424ef08 100644
      static_assert(JS_LAYOUT_TYPED_ARRAY_ARRAY_LENGTH_SIZE == sizeof(size_t));
      static_assert(JS_LAYOUT_TYPED_ARRAY_ARRAY_LENGTH_OFFSET % alignof(ByteLength) == 0);
      static_assert(JS_LAYOUT_TYPED_ARRAY_ARRAY_LENGTH_ALTERNATIVE_INDEX_OFFSET == JS_LAYOUT_TYPED_ARRAY_ARRAY_LENGTH_OFFSET + sizeof(size_t));
+diff --git a/Libraries/LibJS/Rust/build.rs b/Libraries/LibJS/Rust/build.rs
+index 347ab530..53fa1a65 100644
+--- a/Libraries/LibJS/Rust/build.rs
++++ b/Libraries/LibJS/Rust/build.rs
+@@ -168,8 +168,9 @@ fn main() {
+         heap_region_offset_mask: heap_region_size() - 1,
+         // Mirrors GC::PrimitiveStorage::default_cage_size.
+         primitive_storage_cage_offset_mask: primitive_storage_cage_size(&target) - 1,
+-        // Instrumented frames need more room before the stack is considered exhausted.
+-        vm_stack_space_limit: if address_sanitizer { 96 * KIB } else { 32 * KIB },
++        // Instrumented frames need more room before the stack is considered exhausted. So do wasm32's: what native
++        // code keeps in registers lives in the shadow stack there, and --spill-pointers adds a spill area per frame.
++        vm_stack_space_limit: if address_sanitizer || target.architecture.is_none() { 96 * KIB } else { 32 * KIB },
+     };
+     println!(
+         "cargo:rustc-env=LIBJS_RUNTIME_HEAP_REGION_OFFSET_MASK={}",
 diff --git a/Libraries/LibJS/Rust/generate/layout_table.rs b/Libraries/LibJS/Rust/generate/layout_table.rs
 index 92911b33..ecbca796 100644
 --- a/Libraries/LibJS/Rust/generate/layout_table.rs
