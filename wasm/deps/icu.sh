@@ -29,7 +29,9 @@ fi
 # pkgdata cannot write a wasm object for the data, so the data library fails; the .dat it packs is made by then.
 make -j"$jobs" > make.log 2>&1 || grep -q "packagedata" make.log || { tail -40 make.log; exit 1; }
 dat=$(ls data/out/tmp/icudt*l.dat)
-LD_LIBRARY_PATH="$work/host/lib" "$work/host/bin/genccode" -d data/out/tmp "$dat" > /dev/null
+# The entry point libicuuc looks for has no endianness letter: icudt<major>_dat.
+entry=$(basename "$dat" .dat); entry=${entry%l}
+LD_LIBRARY_PATH="$work/host/lib" "$work/host/bin/genccode" -e "$entry" -d data/out/tmp "$dat" > /dev/null
 datc=data/out/tmp/$(basename "$dat" .dat)_dat.c
 $CC_WASI -O2 -I"$src/common" -c "$datc" -o data/out/tmp/icudata.o
 rm -f lib/libicudata.a && "$sdk/bin/llvm-ar" rcs lib/libicudata.a data/out/tmp/icudata.o

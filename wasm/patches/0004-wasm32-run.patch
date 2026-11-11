@@ -1,0 +1,587 @@
+diff --git a/AK/Demangle.cpp b/AK/Demangle.cpp
+index c656038c..82d2f910 100644
+--- a/AK/Demangle.cpp
++++ b/AK/Demangle.cpp
+@@ -80,10 +80,16 @@ ByteString demangle(StringView name)
+ 
+ Optional<SymbolAtAddress> symbol_at_address(FlatPtr address)
+ {
++#if defined(AK_OS_WASI)
++    // NB: A wasm module has no dynamic symbol table to look addresses up in.
++    (void)address;
++    return {};
++#else
+     Dl_info info {};
+     if (!dladdr(reinterpret_cast<void const*>(address), &info) || !info.dli_sname)
+         return {};
+     return SymbolAtAddress { demangle({ info.dli_sname, strlen(info.dli_sname) }), address - reinterpret_cast<FlatPtr>(info.dli_saddr) };
++#endif
+ }
+ 
+ #else
+diff --git a/AK/StackInfo.cpp b/AK/StackInfo.cpp
+index 6d327917..f6a02676 100644
+--- a/AK/StackInfo.cpp
++++ b/AK/StackInfo.cpp
+@@ -24,6 +24,12 @@
+ #    include <Processthreadsapi.h>
+ #endif
+ 
++#if defined(AK_OS_WASI)
++// wasm-ld puts the shadow stack (the C stack in linear memory) between these two symbols.
++extern "C" unsigned char __stack_low;
++extern "C" unsigned char __stack_high;
++#endif
++
+ namespace AK {
+ 
+ StackInfo::StackInfo()
+@@ -113,9 +119,6 @@ StackInfo::StackInfo()
+     m_base = static_cast<FlatPtr>(low_limit);
+     m_size = static_cast<size_t>(high_limit - low_limit);
+ #elif defined(AK_OS_WASI)
+-    // wasm-ld puts the shadow stack (the C stack in linear memory) between these two symbols.
+-    extern unsigned char __stack_low;
+-    extern unsigned char __stack_high;
+     m_base = reinterpret_cast<FlatPtr>(&__stack_low);
+     m_size = reinterpret_cast<FlatPtr>(&__stack_high) - m_base;
+ #else
+diff --git a/Libraries/CMakeLists.txt b/Libraries/CMakeLists.txt
+index e5f45dde..63150fc9 100644
+--- a/Libraries/CMakeLists.txt
++++ b/Libraries/CMakeLists.txt
+@@ -1,7 +1,7 @@
+ if (WASI)
+     # The engine for one WebAssembly module: what JavaScript needs, for now.
+     set(LIBJS_FOLDED_INTO_LIBWEB OFF)
+-    foreach(lib LibCore LibCrypto LibFileSystem LibGC LibJS LibMain LibRegex LibSyntax LibTextCodec LibURL LibUnicode)
++    foreach(lib LibCore LibCrypto LibFileSystem LibGC LibJS LibMain LibRegex LibSyntax LibTextCodec LibThreading LibURL LibUnicode)
+         add_subdirectory(${lib})
+     endforeach()
+     return()
+diff --git a/Libraries/LibCore/EventLoopImplementationUnix.cpp b/Libraries/LibCore/EventLoopImplementationUnix.cpp
+index 564156ff..d16bf5d7 100644
+--- a/Libraries/LibCore/EventLoopImplementationUnix.cpp
++++ b/Libraries/LibCore/EventLoopImplementationUnix.cpp
+@@ -33,6 +33,11 @@ namespace Core {
+ 
+ // Signals remain bound to the first event loop that registers a handler.
+ static Atomic<int> s_signal_wake_pipe_write_fd { -1 };
++#if defined(AK_OS_WASI)
++// NB: A WASI module has one thread and no pipes, so wake() and signals (which only raise() sends) set this flag
++//     instead of writing to a wake pipe, and the next wait does not block.
++static bool s_wake_pending { false };
++#endif
+ static Atomic<pid_t> s_signal_wake_pipe_pid { 0 };
+ static Atomic<unsigned> s_pending_signal_counts[NSIG];
+ 
+@@ -158,6 +163,12 @@ struct ThreadData {
+     {
+         thread_id = AK::ThreadID::current();
+ 
++#if defined(AK_OS_WASI)
++        // Slot 0 stays the wake pipe's, so that notifiers start at 1 as elsewhere; it is never polled.
++        poll_fds.append({ .fd = -1, .events = 0, .revents = 0 });
++        notifiers.append(nullptr);
++        return;
++#endif
+         auto result = Core::System::pipe2(O_CLOEXEC | O_NONBLOCK);
+         if (result.is_error()) {
+             warnln("\033[31;1mFailed to create event loop pipe:\033[0m {}", result.error());
+@@ -211,7 +222,9 @@ static void destroy_thread_data(void* value)
+ EventLoopImplementationUnix::EventLoopImplementationUnix()
+     : m_wake_pipe_write_fd(ThreadData::the().wake_pipe_fds[1])
+ {
++#if !defined(AK_OS_WASI)
+     VERIFY(m_wake_pipe_write_fd >= 0);
++#endif
+ }
+ 
+ EventLoopImplementationUnix::~EventLoopImplementationUnix() = default;
+@@ -240,6 +253,10 @@ void EventLoopImplementationUnix::quit(int code)
+ 
+ void EventLoopImplementationUnix::wake()
+ {
++#if defined(AK_OS_WASI)
++    s_wake_pending = true;
++    return;
++#endif
+     int wake_event = 0;
+     auto result = Core::System::write(m_wake_pipe_write_fd, { &wake_event, sizeof(wake_event) });
+     if (result.is_error()) {
+@@ -277,9 +294,23 @@ void EventLoopManagerUnix::wait_for_events(EventLoopImplementation::PumpMode mod
+         }
+     }
+ 
++#if defined(AK_OS_WASI)
++    if (s_wake_pending) {
++        timeout = 0;
++        should_wait_forever = false;
++    }
++    // NB: With no descriptors to watch and nothing to time out, no event can come: there are no other threads.
++    auto descriptors_to_poll = thread_data.poll_fds.span().slice(1);
++    bool nothing_can_wake_us = descriptors_to_poll.is_empty() && should_wait_forever;
++#endif
++
+ try_select_again:
+     // select() and wait for file system events, calls to wake(), POSIX signals, or timer expirations.
++#if defined(AK_OS_WASI)
++    auto error_or_marked_fd_count = nothing_can_wake_us ? ErrorOr<int> { 0 } : System::poll(descriptors_to_poll, should_wait_forever ? -1 : timeout);
++#else
+     auto error_or_marked_fd_count = System::poll(thread_data.poll_fds, should_wait_forever ? -1 : timeout);
++#endif
+     auto time_after_poll = MonotonicTime::now();
+     // Because POSIX, we might spuriously return from select() with EINTR; just select again.
+     if (error_or_marked_fd_count.is_error()) {
+@@ -289,6 +320,10 @@ try_select_again:
+         VERIFY_NOT_REACHED();
+     }
+ 
++#if defined(AK_OS_WASI)
++    if (exchange(s_wake_pending, false))
++        dispatch_pending_signals();
++#else
+     // We woke up due to a call to wake() or a POSIX signal.
+     // Handle signals and see whether we need to handle events as well.
+     if (has_flag(thread_data.poll_fds[0].revents, POLLIN)) {
+@@ -310,6 +345,7 @@ try_select_again:
+         if (thread_data.wake_pipe_fds[1] == s_signal_wake_pipe_write_fd.load(AK::MemoryOrder::memory_order_acquire))
+             dispatch_pending_signals();
+     }
++#endif
+ 
+     if (error_or_marked_fd_count.value() != 0) {
+         // Handle file system notifiers by making them normal events.
+@@ -493,6 +529,9 @@ void EventLoopManagerUnix::handle_signal(int signal_number)
+     }
+ 
+     s_pending_signal_counts[signal_number].fetch_add(1, AK::MemoryOrder::memory_order_release);
++#if defined(AK_OS_WASI)
++    s_wake_pending = true;
++#endif
+ 
+     auto wake_pipe_write_fd = s_signal_wake_pipe_write_fd.load(AK::MemoryOrder::memory_order_acquire);
+     if (wake_pipe_write_fd >= 0) {
+diff --git a/Libraries/LibCore/System.cpp b/Libraries/LibCore/System.cpp
+index 9226b4d5..71ac10a0 100644
+--- a/Libraries/LibCore/System.cpp
++++ b/Libraries/LibCore/System.cpp
+@@ -951,6 +951,9 @@ ErrorOr<ByteString> current_executable_path()
+     if (sizeof(info.name) > sizeof(path))
+         return Error::from_errno(ENAMETOOLONG);
+     strlcpy(path, info.name, sizeof(path) - 1);
++#elif defined(AK_OS_WASI)
++    // NB: A WASI program has no path of its own; argv[0] is whatever the host passed.
++    return Error::from_errno(ENOTSUP);
+ #else
+ #    warning "Not sure how to get current_executable_path on this platform!"
+     // GetModuleFileName on Windows, unsure about OpenBSD.
+diff --git a/Libraries/LibGC/BlockAllocator.cpp b/Libraries/LibGC/BlockAllocator.cpp
+index 0dc60258..b19d6e5b 100644
+--- a/Libraries/LibGC/BlockAllocator.cpp
++++ b/Libraries/LibGC/BlockAllocator.cpp
+@@ -56,6 +56,14 @@ class HeapRegion {
+ public:
+     static constexpr size_t size = HEAP_REGION_SIZE;
+ 
++    static void register_base_copy(HeapRegionBaseCopyRegistration& registration)
++    {
++        MutexLocker locker(base_copies_mutex());
++        registration.m_next = exchange(s_base_copies, &registration);
++        if (js_heap_region_base)
++            *registration.m_copy = js_heap_region_base;
++    }
++
+ #if defined(AK_OS_WASI)
+     // NB: Linear memory cannot be reserved without being committed, and the region is the low part of it, so chunks
+     //     come from the allocator wherever it has room. The module never grows its memory past the region.
+@@ -113,14 +121,6 @@ public:
+         publish_base(reinterpret_cast<FlatPtr>(m_base));
+     }
+ 
+-    static void register_base_copy(HeapRegionBaseCopyRegistration& registration)
+-    {
+-        MutexLocker locker(base_copies_mutex());
+-        registration.m_next = exchange(s_base_copies, &registration);
+-        if (js_heap_region_base)
+-            *registration.m_copy = js_heap_region_base;
+-    }
+-
+     // This process-global region is shared by every Heap. GC block allocation is single-threaded per process, but the
+     // decommit worker prepares the next chunk ahead of time, so the chunk bookkeeping is under a lock.
+     void* allocate_chunk()
+diff --git a/Libraries/LibGC/CAPI.cpp b/Libraries/LibGC/CAPI.cpp
+index 8de3c5e5..bb14a9ed 100644
+--- a/Libraries/LibGC/CAPI.cpp
++++ b/Libraries/LibGC/CAPI.cpp
+@@ -150,7 +150,7 @@ struct CAPI {
+ 
+     static_assert(sizeof(Heap::m_allocated_bytes_since_last_gc) == sizeof(size_t));
+     static_assert(sizeof(Heap::m_gc_bytes_threshold) == sizeof(size_t));
+-    static_assert(sizeof(Heap::m_total_allocated_bytes) == sizeof(size_t));
++    static_assert(sizeof(Heap::m_total_allocated_bytes) == sizeof(u64));
+ 
+     // Foreign code reads and writes the head of the list, the cursor and the end as plain pointers.
+     static_assert(sizeof(RawPtr<Cell>) == sizeof(Cell*));
+diff --git a/Libraries/LibGC/HeapGroup.cpp b/Libraries/LibGC/HeapGroup.cpp
+index e5ef3475..ac0af89f 100644
+--- a/Libraries/LibGC/HeapGroup.cpp
++++ b/Libraries/LibGC/HeapGroup.cpp
+@@ -8,7 +8,9 @@
+ #include <LibCore/ElapsedTimer.h>
+ #include <LibGC/Heap.h>
+ #include <LibGC/HeapGroup.h>
+-#include <setjmp.h>
++#if !defined(AK_OS_WASI)
++#    include <setjmp.h>
++#endif
+ 
+ namespace GC {
+ 
+@@ -34,9 +36,15 @@ void HeapGroup::remove(Heap& heap)
+ 
+ NO_SANITIZE_ADDRESS void HeapGroup::collect_garbage(bool print_report)
+ {
++#if defined(AK_OS_WASI)
++    // NB: WebAssembly has no registers to capture (see Heap::collect_garbage()).
++    FlatPtr registers[1] { 0 };
++    ReadonlySpan<FlatPtr> captured_registers { registers, 1 };
++#else
+     jmp_buf registers;
+     setjmp(registers);
+     ReadonlySpan<FlatPtr> captured_registers { reinterpret_cast<FlatPtr const*>(registers), sizeof(jmp_buf) / (sizeof(FlatPtr)) };
++#endif
+     run_collection(captured_registers, print_report);
+ }
+ 
+diff --git a/Libraries/LibJS/Runtime/ExecutionContext.h b/Libraries/LibJS/Runtime/ExecutionContext.h
+index 460a478c..ef639385 100644
+--- a/Libraries/LibJS/Runtime/ExecutionContext.h
++++ b/Libraries/LibJS/Runtime/ExecutionContext.h
+@@ -64,11 +64,11 @@ public:
+     {
+         OverloadedVisitor<RemoveCVReference<Functions>...> visitor { forward<Functions>(functions)... };
+         if (has<GC::Ref<Script>>()) {
+-            GC::Ref<Script> script = *bit_cast<Script*>(m_bits);
++            GC::Ref<Script> script = *reinterpret_cast<Script*>(static_cast<FlatPtr>(m_bits));
+             return visitor(script);
+         }
+         if (has<GC::Ref<Module>>()) {
+-            GC::Ref<Module> module = *bit_cast<Module*>(m_bits & ~static_cast<FlatPtr>(JS_LAYOUT_SCRIPT_OR_MODULE_MODULE_BIT));
++            GC::Ref<Module> module = *reinterpret_cast<Module*>(static_cast<FlatPtr>(m_bits & ~static_cast<u64>(JS_LAYOUT_SCRIPT_OR_MODULE_MODULE_BIT)));
+             return visitor(module);
+         }
+         Empty empty;
+@@ -83,7 +83,8 @@ private:
+         using Functions::operator()...;
+     };
+ 
+-    FlatPtr m_bits { 0 };
++    // NB: A u64 on 32-bit targets as well, like the Rust runtime's ScriptOrModuleSlot.
++    u64 m_bits { 0 };
+ };
+ 
+ static_assert(sizeof(ScriptOrModule) == JS_LAYOUT_SCRIPT_OR_MODULE_SIZE);
+diff --git a/Libraries/LibJS/Runtime/PropertyKey.h b/Libraries/LibJS/Runtime/PropertyKey.h
+index c6f044b6..0d2aa7f4 100644
+--- a/Libraries/LibJS/Runtime/PropertyKey.h
++++ b/Libraries/LibJS/Runtime/PropertyKey.h
+@@ -33,7 +33,7 @@ public:
+         VERIFY(!value.is_special_empty_value());
+         if (value.is_symbol())
+             return PropertyKey { value.as_symbol() };
+-        if (value.is_integral_number() && value.as_double() >= 0 && value.as_double() < NumericLimits<u32>::max())
++        if (value.is_integral_number() && value.as_double() >= 0 && value.as_double() < static_cast<double>(NUMBER_LIMIT))
+             return static_cast<u32>(value.as_double());
+         return TRY(value.to_utf16_string(vm));
+     }
+@@ -42,6 +42,9 @@ public:
+     static constexpr uintptr_t SHORT_STRING_FLAG = 1;
+     static constexpr uintptr_t SYMBOL_FLAG = 2;
+     static constexpr uintptr_t NUMBER_FLAG = 3;
++    // NB: A number is kept shifted left by 2 in the word, so on 32-bit targets only indices below 2^30 - 1 fit.
++    //     Mirrors PropertyKey::NUMBER_LIMIT of the Rust runtime.
++    static constexpr u64 NUMBER_LIMIT = sizeof(uintptr_t) >= 8 ? NumericLimits<u32>::max() : (1u << 30) - 1;
+ 
+     bool is_string() const { return (m_bits & 3) == NORMAL_STRING_FLAG || (m_bits & 3) == SHORT_STRING_FLAG; }
+     bool is_number() const { return (m_bits & 3) == NUMBER_FLAG; }
+@@ -71,13 +74,13 @@ public:
+         // FIXME: Replace this with requires(IsUnsigned<T>)?
+         //        Needs changes in various places using `int` (but not actually being in the negative range)
+         VERIFY(index >= 0);
+-        if constexpr (NumericLimits<T>::max() >= NumericLimits<u32>::max()) {
+-            if (index >= NumericLimits<u32>::max()) {
++        if constexpr (static_cast<u64>(NumericLimits<T>::max()) >= NUMBER_LIMIT) {
++            if (static_cast<u64>(index) >= NUMBER_LIMIT) {
+                 new (&m_string) Utf16FlyString { Utf16String::number(index) };
+                 return;
+             }
+         }
+-        m_number = static_cast<u64>(index) << 2 | NUMBER_FLAG;
++        m_number = static_cast<uintptr_t>(index) << 2 | NUMBER_FLAG;
+     }
+ 
+     PropertyKey(Utf16FlyString string, StringMayBeNumber string_may_be_number = StringMayBeNumber::Yes)
+@@ -86,8 +89,8 @@ public:
+             auto first_code_unit = string.code_unit_at(0);
+             if (is_ascii_digit(first_code_unit) && !(first_code_unit == '0' && string.length_in_code_units() > 1)) {
+                 auto property_index = string.to_number<u32>(TrimWhitespace::No);
+-                if (property_index.has_value() && property_index.value() < NumericLimits<u32>::max()) {
+-                    m_number = static_cast<u64>(property_index.release_value()) << 2 | NUMBER_FLAG;
++                if (property_index.has_value() && property_index.value() < NUMBER_LIMIT) {
++                    m_number = static_cast<uintptr_t>(property_index.release_value()) << 2 | NUMBER_FLAG;
+                     return;
+                 }
+             }
+@@ -202,7 +205,7 @@ private:
+ 
+     union {
+         Utf16FlyString m_string;
+-        u64 m_number;
++        uintptr_t m_number;
+         Symbol const* m_symbol;
+         uintptr_t m_bits;
+     };
+diff --git a/Libraries/LibJS/Runtime/TypedArray.h b/Libraries/LibJS/Runtime/TypedArray.h
+index 9e23b6fc..a424ef08 100644
+--- a/Libraries/LibJS/Runtime/TypedArray.h
++++ b/Libraries/LibJS/Runtime/TypedArray.h
+@@ -71,7 +71,7 @@ public:
+ private:
+     // array_length() reads the runtime's [[ArrayLength]] slot as a ByteLength, whose Variant<Auto, Detached, size_t> keeps
+     // the length first and then the index of its alternative, as the slot does.
+-    static_assert(sizeof(ByteLength) == 16 && alignof(ByteLength) == alignof(size_t));
++    static_assert(sizeof(ByteLength) == 2 * sizeof(size_t) && alignof(ByteLength) == alignof(size_t));
+     static_assert(JS_LAYOUT_TYPED_ARRAY_ARRAY_LENGTH_SIZE == sizeof(size_t));
+     static_assert(JS_LAYOUT_TYPED_ARRAY_ARRAY_LENGTH_OFFSET % alignof(ByteLength) == 0);
+     static_assert(JS_LAYOUT_TYPED_ARRAY_ARRAY_LENGTH_ALTERNATIVE_INDEX_OFFSET == JS_LAYOUT_TYPED_ARRAY_ARRAY_LENGTH_OFFSET + sizeof(size_t));
+diff --git a/Libraries/LibJS/Rust/generate/layout_table.rs b/Libraries/LibJS/Rust/generate/layout_table.rs
+index 92911b33..ecbca796 100644
+--- a/Libraries/LibJS/Rust/generate/layout_table.rs
++++ b/Libraries/LibJS/Rust/generate/layout_table.rs
+@@ -76,7 +76,12 @@ impl LayoutWriter {
+     }
+ 
+     fn constant(&mut self, name: &str, value: impl std::fmt::Display) {
+-        let _ = writeln!(self.text, "const {name} = {value}");
++        let line = format!("const {name} = {value}\n");
++        // NB: A width can be recorded by both offset!() and check_width(); the first is kept.
++        if name.ends_with("_WIDTH") && self.text.contains(&line) {
++            return;
++        }
++        self.text.push_str(&line);
+     }
+ 
+     fn hex_constant(&mut self, name: &str, value: u64) {
+@@ -139,6 +144,12 @@ macro_rules! offset {
+         let offset = core::mem::offset_of!($type, $($field)+);
+         $writer.constant($name, offset);
+         $writer.assert_offset(stringify!($type), stringify!($($field)+), offset);
++        // NB: On 32-bit targets a field the layout file declares as 8 bytes wide may be a 4-byte pointer or usize, which
++        //     the interpreter then reads and writes at its width from NAME_WIDTH, zero-extending it. Flap only narrows
++        //     8-byte fields, so recording the width of a field that is 4 bytes everywhere changes nothing.
++        if size_of::<usize>() == 4 && size_of_field(|object: &$type| &object.$($field)+) == 4 {
++            $writer.constant(concat!($name, "_WIDTH"), 4);
++        }
+         offset
+     }};
+ }
+@@ -161,9 +172,6 @@ macro_rules! field {
+         let narrowed = $size == 8 && width == size_of::<usize>() && size_of::<usize>() == 4;
+         assert!(width == $size || narrowed, "size of {}: {} instead of {}", $field, width, $size);
+         offset!($writer, $name, $type, $member);
+-        if narrowed {
+-            $writer.constant(concat!($name, "_WIDTH"), width);
+-        }
+         $writer.field($field, $flap_type, $name, $storage, $representation);
+     }};
+     ($writer:expr, $name:literal, $field:literal, $flap_type:literal, $type:path, $member:ident, $size:expr, $storage:literal, $representation:literal, $pair:literal) => {{
+@@ -173,9 +181,6 @@ macro_rules! field {
+         let narrowed = $size == 8 && width == size_of::<usize>() && size_of::<usize>() == 4;
+         assert!(width == $size || narrowed, "size of {}: {} instead of {}", $field, width, $size);
+         offset!($writer, $name, $type, $member);
+-        if narrowed {
+-            $writer.constant(concat!($name, "_WIDTH"), width);
+-        }
+         $writer.paired_field($field, $flap_type, $name, $storage, $representation, $pair);
+     }};
+ }
+diff --git a/Libraries/LibJS/Rust/src/gc/class.rs b/Libraries/LibJS/Rust/src/gc/class.rs
+index 0a53e730..b538afac 100644
+--- a/Libraries/LibJS/Rust/src/gc/class.rs
++++ b/Libraries/LibJS/Rust/src/gc/class.rs
+@@ -379,11 +379,25 @@ impl<T: GcCell> crate::layout::cell::Gc<T> {
+ }
+ 
+ /// Whether `address` is in the region LibGC allocates every cell in, which has no cells before it is set up.
++#[cfg(not(target_arch = "wasm32"))]
+ pub(crate) fn is_in_heap_region(address: usize) -> bool {
+     let base = crate::layout_forward::heap_region_base();
+     base != 0 && address.wrapping_sub(base) as u64 <= crate::build_configuration::HEAP_REGION_OFFSET_MASK
+ }
+ 
++/// On wasm32 the heap region is the low part of linear memory, base 0, which LibGC's chunks share with the static data,
++/// the shadow stack and malloc. Only what lies past the static data and the stack (`__heap_base`, where wasm-ld starts
++/// the allocators' memory) can be a cell, so a value on the stack or in a static is told apart from one; a value that
++/// malloc allocated is not.
++#[cfg(target_arch = "wasm32")]
++pub(crate) fn is_in_heap_region(address: usize) -> bool {
++    unsafe extern "C" {
++        static __heap_base: u8;
++    }
++    let heap_base = core::ptr::addr_of!(__heap_base).addr();
++    address >= heap_base && address as u64 <= crate::build_configuration::HEAP_REGION_OFFSET_MASK
++}
++
+ impl<T> crate::layout::cell::Gc<T> {
+     pub fn upcast<Base>(self) -> crate::layout::cell::Gc<Base>
+     where
+diff --git a/Libraries/LibJS/Rust/src/gc/heap.rs b/Libraries/LibJS/Rust/src/gc/heap.rs
+index 2625b1a6..e5b18153 100644
+--- a/Libraries/LibJS/Rust/src/gc/heap.rs
++++ b/Libraries/LibJS/Rust/src/gc/heap.rs
+@@ -59,7 +59,8 @@ struct SizeClassTable {
+ pub struct InlineAllocationInfo {
+     pub allocated_bytes_since_last_gc: NonNull<usize>,
+     pub gc_bytes_threshold: NonNull<usize>,
+-    pub total_allocated_bytes: NonNull<usize>,
++    /// LibGC's monotonic counter is a u64 on every target.
++    pub total_allocated_bytes: NonNull<u64>,
+     pub free_cell_next_offset: usize,
+     pub free_cell_link_mask: usize,
+     /// Where an allocator keeps the cursor, the end and the cell size of the never-allocated cells it bumps through
+@@ -185,7 +186,7 @@ impl Heap {
+             inline_allocation_info: InlineAllocationInfo {
+                 allocated_bytes_since_last_gc: counter(layout.heap_allocated_bytes_since_last_gc_offset),
+                 gc_bytes_threshold: counter(layout.heap_gc_bytes_threshold_offset),
+-                total_allocated_bytes: counter(layout.heap_total_allocated_bytes_offset),
++                total_allocated_bytes: counter(layout.heap_total_allocated_bytes_offset).cast::<u64>(),
+                 free_cell_next_offset: layout.free_cell_next_offset as usize,
+                 free_cell_link_mask: layout.free_cell_link_mask as usize,
+                 local_cursor_offset: layout.local_cursor_offset as usize,
+@@ -494,7 +495,7 @@ impl Heap {
+                 info.allocated_bytes_since_last_gc.write(allocated_bytes);
+             }
+             info.total_allocated_bytes
+-                .write(info.total_allocated_bytes.read() + cell_size);
++                .write(info.total_allocated_bytes.read() + cell_size as u64);
+             if from_list {
+                 // NB: Only the bits of the link under the mask count, so that the next cell is in the block of this one
+                 //     whatever the link was overwritten with.
+diff --git a/Libraries/LibJS/Rust/src/gc/weak.rs b/Libraries/LibJS/Rust/src/gc/weak.rs
+index 17487f22..8615e18f 100644
+--- a/Libraries/LibJS/Rust/src/gc/weak.rs
++++ b/Libraries/LibJS/Rust/src/gc/weak.rs
+@@ -16,7 +16,8 @@ use crate::layout::cell::Gc;
+ 
+ /// Mirrors the part of GC::WeakImpl the runtime reads: the pointer at this offset, which LibGC clears once the cell is
+ /// collected. The startup layout check compares the offset with the one gc_get_layout() reports.
+-pub(super) const WEAK_IMPL_POINTER_OFFSET: usize = 16;
++// NB: After the reference count and one other word of LibGC's WeakImpl.
++pub(super) const WEAK_IMPL_POINTER_OFFSET: usize = 2 * size_of::<usize>();
+ 
+ /// A type whose GC pointers do not keep their cells alive: wherever a value of it is, the pointers to cells that a
+ /// collection frees are cleared before anything reads them. Ladybird's Rust GC lints accept such values in a Box or a
+diff --git a/Libraries/LibJS/Rust/src/jit/allocation.rs b/Libraries/LibJS/Rust/src/jit/allocation.rs
+index d160a6e5..970cba00 100644
+--- a/Libraries/LibJS/Rust/src/jit/allocation.rs
++++ b/Libraries/LibJS/Rust/src/jit/allocation.rs
+@@ -102,7 +102,7 @@ pub fn allocation_infos<'d>(vm: &Vm, realm: Gc<Realm>, defer_gc: &'d DeferGc<'_>
+         heap: heap_address,
+         heap_allocated_bytes_offset: heap_offset(inline.allocated_bytes_since_last_gc),
+         heap_threshold_offset: heap_offset(inline.gc_bytes_threshold),
+-        heap_total_allocated_bytes_offset: heap_offset(inline.total_allocated_bytes),
++        heap_total_allocated_bytes_offset: heap_offset(inline.total_allocated_bytes.cast::<usize>()),
+         local_free_list_offset: 0,
+         freelist_next_offset: offset(inline.free_cell_next_offset),
+         freelist_link_mask: u32::try_from(inline.free_cell_link_mask).expect("links are offsets within a block"),
+diff --git a/Libraries/LibJS/Rust/src/runtime/property_key.rs b/Libraries/LibJS/Rust/src/runtime/property_key.rs
+index ecb3593c..614dc77f 100644
+--- a/Libraries/LibJS/Rust/src/runtime/property_key.rs
++++ b/Libraries/LibJS/Rust/src/runtime/property_key.rs
+@@ -46,6 +46,10 @@ impl PropertyKey {
+     pub const SHORT_STRING_FLAG: usize = 1;
+     pub const SYMBOL_FLAG: usize = 2;
+     pub const NUMBER_FLAG: usize = 3;
++    /// Indices below this are numbers, the rest strings. A number is kept shifted left by 2 in the word, so on
++    /// 32-bit targets only indices below 2^30 - 1 fit.
++    // FIXME: On 32-bit targets, array indices from 2^30 - 1 up are keyed by strings, which indexed storage does not see.
++    pub const NUMBER_LIMIT: u32 = if size_of::<usize>() >= 8 { u32::MAX } else { (1 << 30) - 1 };
+     const FLAG_MASK: usize = 3;
+ 
+     pub fn from_value(vm: &Vm, value: Value) -> ThrowCompletionOr<PropertyKey> {
+@@ -53,7 +57,7 @@ impl PropertyKey {
+         if value.is_symbol() {
+             return Ok(PropertyKey::from_symbol(value.as_symbol()));
+         }
+-        if value.is_integral_number() && value.as_f64() >= 0.0 && value.as_f64() < f64::from(u32::MAX) {
++        if value.is_integral_number() && value.as_f64() >= 0.0 && value.as_f64() < f64::from(Self::NUMBER_LIMIT) {
+             return Ok(PropertyKey::from_number(value.as_f64() as u64));
+         }
+         Ok(PropertyKey::from_utf16_string(&value.to_utf16_string(vm)?))
+@@ -79,7 +83,7 @@ impl PropertyKey {
+     /// Mirrors the PropertyKey constructor from an integer: indices below u32::MAX are numbers, and larger ones are
+     /// strings, since they cannot be array indices.
+     pub fn from_number(index: u64) -> Self {
+-        if index >= u64::from(u32::MAX) {
++        if index >= u64::from(Self::NUMBER_LIMIT) {
+             return Self::from_fly_string_without_number_check(Utf16FlyString::from_utf8(
+                 DecimalDigits::new(index).as_str(),
+             ));
+@@ -195,7 +199,7 @@ fn array_index_of_canonical_string(string: Utf16View<'_>) -> Option<u32> {
+             .checked_mul(10)?
+             .checked_add(u32::from(code_unit - u16::from(b'0')))?;
+     }
+-    (property_index < u32::MAX).then_some(property_index)
++    (property_index < PropertyKey::NUMBER_LIMIT).then_some(property_index)
+ }
+ 
+ impl From<u32> for PropertyKey {
+diff --git a/Meta/CMake/check_for_dependencies_wasi.cmake b/Meta/CMake/check_for_dependencies_wasi.cmake
+index 91931745..f649500e 100644
+--- a/Meta/CMake/check_for_dependencies_wasi.cmake
++++ b/Meta/CMake/check_for_dependencies_wasi.cmake
+@@ -4,6 +4,11 @@ include_guard()
+ 
+ find_package(PkgConfig)
+ find_package(mimalloc CONFIG REQUIRED)
++# NB: Only the static library is built for WASI, and AK links the target named mimalloc.
++if (NOT TARGET mimalloc AND TARGET mimalloc-static)
++    add_library(mimalloc INTERFACE IMPORTED)
++    set_target_properties(mimalloc PROPERTIES INTERFACE_LINK_LIBRARIES mimalloc-static)
++endif()
+ find_package(FastFloat CONFIG REQUIRED)
+ find_package(simdutf REQUIRED)
+ find_package(zmij CONFIG REQUIRED)
+diff --git a/Meta/CMake/compile_options.cmake b/Meta/CMake/compile_options.cmake
+index 349bc73e..ff753093 100644
+--- a/Meta/CMake/compile_options.cmake
++++ b/Meta/CMake/compile_options.cmake
+@@ -219,7 +219,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/sanitizers.cmake)
+ 
+ include(CheckPIESupported)
+ check_pie_supported(LANGUAGES CXX)
+-if(CMAKE_CXX_LINK_PIE_SUPPORTED)
++if(CMAKE_CXX_LINK_PIE_SUPPORTED AND NOT WASI)
+     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+ endif()
+ 
+@@ -250,7 +250,8 @@ if (HAIKU)
+     add_compile_definitions(__USE_GNU)
+ endif()
+ 
+-if (NOT WIN32)
++# NB: wasm-ld leaves the name section out of a module with a build id, and traps then show bare function numbers.
++if (NOT WIN32 AND NOT WASI)
+     add_cxx_link_option_if_supported(LINKER:--gdb-index)
+     add_cxx_link_option_if_supported(LINKER:--build-id)
+ 
+@@ -259,7 +260,7 @@ if (NOT WIN32)
+     endif()
+ endif()
+ 
+-if (NOT WIN32 AND NOT APPLE AND NOT ENABLE_FUZZERS)
++if (NOT WIN32 AND NOT APPLE AND NOT ENABLE_FUZZERS AND NOT WASI)
+     # NOTE: Assume ELF
+     # NOTE: --no-undefined is not compatible with clang sanitizer runtimes
+     # NOTE: Some BSDs don't export all symbols from LibC so we can't use --no-undefined

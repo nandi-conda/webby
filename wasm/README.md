@@ -44,6 +44,23 @@ parameters, chained with clang's `musttail`, which wasi-sdk turns into wasm `ret
 uses it for wasm32 (or anywhere with `LIBJS_INTERPRETER_BACKEND=c`, JIT off) and compiles it with `cc`. Layout fields
 the wasm32 layout marks `<OFFSET>_WIDTH = 4` load and store as 32 bits. `flapc --emit-c` prints the C by hand.
 
+`patches/0004-wasm32-run.patch` (with `compat/` and `cmake/wasi.cmake`) gets `js` linked and running:
+
+- `compat/` now covers the rest of what LibCore names: rlimits (a fixed table), `sigaction` over `signal()` with
+  stored masks, `kill()` of the module itself (`raise`), uid/gid 0, `mkstemp`/`mkdtemp`, `cmsghdr`/`sendmsg` and
+  friends (ENOTSUP), and ENOSYS stubs for fork/exec/pipe/dup. LibThreading builds (wasi-libc's pthread stubs).
+- LibCore's Unix event loop has no wake pipe on WASI: `wake()` and signals set a flag and the next wait does not block.
+- Link: no ELF-only flags (`-z defs`, `--no-undefined`), no PIE, no `--build-id` (it makes wasm-ld drop the name section),
+  and `--undefined=__main_argc_argv`, since crt1 reaches main by a weak reference that does not pull LibMain out of
+  its archive (without it the call to main becomes `unreachable`). ICU's data symbol is `icudt78_dat` (`deps/icu.sh`).
+- Runtime: the weak pointer offset, LibGC's 64-bit allocation counter, `ByteLength`'s size and the heap region check
+  (`__heap_base` and up on wasm32) are pointer-width aware. Every 4-byte field gets `<OFFSET>_WIDTH = 4` in the wasm32
+  layout, so the interpreter reads e.g. the VM's interpreter stack bounds as 32 bits.
+
+Running: `python tools/wasi-run.py build/ladybird/bin/js script.js` runs closures, classes, generators, async
+functions, exceptions, JSON, RegExp, Date, Intl, BigInt and typed arrays correctly. Known bug: array indexing in the
+C interpreter's GetByValue fast path reads index 0 (`[5,6,7][1]` is 5), being fixed in the Flap C backend.
+
 ## Building what exists
 
 ```sh
@@ -58,6 +75,7 @@ rustup target add wasm32-wasip1 --toolchain "$(sed -n 's/channel = "\(.*\)"/\1/p
 pip install wasmtime   # for tools/wasi-run.py
 export LIBJS_TARGET_RUNNER="python $PWD/tools/wasi-run.py"
 pixi run ./build-engine.sh <ladybird with ../patches and patches/ applied> build/ladybird js
+python tools/wasi-run.py build/ladybird/bin/js -c 'print(6 * 7)'
 ```
 
 Sources come from git (the versions Ladybird's vcpkg.json pins); GitHub release archives are not needed.

@@ -6,6 +6,10 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 src=$1; build=$2; shift 2
 targets=("$@"); [ ${#targets[@]} -gt 0 ] || targets=(js)
+# NB: pixi's own rust has no wasm32-wasip1 standard library. rustup's proxies use Ladybird's rust-toolchain.toml.
+if [ -x "${CARGO_HOME:-$HOME/.cargo}/bin/rustup" ]; then export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"; fi
+# The Rust runtime's build script compiles the C interpreter (patches/0003) with cc-rs, which needs wasi-sdk's clang.
+export CC_wasm32_wasip1="${CC_wasm32_wasip1:-$WASI_SDK_PREFIX/bin/clang}" AR_wasm32_wasip1="${AR_wasm32_wasip1:-$WASI_SDK_PREFIX/bin/llvm-ar}"
 if [ ! -f "$build/build.ninja" ]; then
   cmake -S "$src" -B "$build" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$here/cmake/wasi.cmake" \

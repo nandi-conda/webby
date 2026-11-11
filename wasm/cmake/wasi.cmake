@@ -12,6 +12,12 @@ if(DEFINED ENV{WEBBY_WASI_SYSROOT} AND EXISTS "$ENV{WEBBY_WASI_SYSROOT}/include/
 endif()
 set(CMAKE_C_FLAGS_INIT "${_emu}")
 set(CMAKE_CXX_FLAGS_INIT "${_emu}")
+# LibGC and PrimitiveStorage treat the low 2 GiB of linear memory as their region (patches/0002), so memory never
+# grows past it. The main thread's shadow stack, which the conservative GC scans, gets 8 MiB like a native one.
+string(APPEND _libs " -Wl,--max-memory=2147483648 -Wl,-z,stack-size=8388608")
+# crt1's _start reaches main through a weak reference to __main_argc_argv, which does not pull LibMain's Main.cpp out of
+# its static archive: without this, wasm-ld turns the call to main into `unreachable`.
+string(APPEND _libs " -Wl,--undefined=__main_argc_argv")
 set(CMAKE_EXE_LINKER_FLAGS_INIT "${_libs}")
 if(DEFINED ENV{WEBBY_WASI_SYSROOT})
     list(PREPEND CMAKE_FIND_ROOT_PATH "$ENV{WEBBY_WASI_SYSROOT}")
