@@ -47,7 +47,7 @@ index 99385abe..46f91fda 100644
          ladybird_utility(requestserver-fetch SOURCES requestserver-fetch.cpp LIBS requestserverservice LibMain LibURL)
          target_include_directories(requestserver-fetch PRIVATE ${LADYBIRD_SOURCE_DIR}/Services)
 diff --git a/Utilities/webby-render.cpp b/Utilities/webby-render.cpp
-index ecb493a8..78c49fb0 100644
+index ecb493a8..71f353d5 100644
 --- a/Utilities/webby-render.cpp
 +++ b/Utilities/webby-render.cpp
 @@ -4,9 +4,14 @@
@@ -87,7 +87,7 @@ index ecb493a8..78c49fb0 100644
  #include <LibURL/Parser.h>
  #include <LibWeb/Bindings/MainThreadVM.h>
  #include <LibWeb/DOM/Document.h>
-@@ -34,11 +47,220 @@
+@@ -34,11 +47,223 @@
  #include <LibWeb/Painting/DocumentPaintState.h>
  #include <LibWeb/Platform/EventLoopPlugin.h>
  #include <LibWeb/Platform/FontPlugin.h>
@@ -97,6 +97,7 @@ index ecb493a8..78c49fb0 100644
 +#include <RequestServer/CURL.h>
 +#include <RequestServer/ConnectionFromClient.h>
 +#include <RequestServer/ControlConnectionFromClient.h>
++#include <RequestServer/Resolver.h>
 +#include <RequestServer/ResourceSubstitutionMap.h>
 +#include <errno.h>
 +#include <webby_wasi_local.h>
@@ -194,6 +195,8 @@ index ecb493a8..78c49fb0 100644
 +// RequestServer, reached the way WebContent reaches it: a control connection, then connect_new_client() over it for
 +// the RequestClient that LibWeb's ResourceLoader uses.
 +struct RequestServerConnection {
++    AK_ALLOC_WITH_KMALLOC;
++
 +    // RequestServer's side, when it runs in this module.
 +    RequestServer::ConnectionFromClient::ConnectionMap connections;
 +    RequestServer::ConnectionFromClient::RequestTransferLeaseMap request_transfer_leases;
@@ -308,7 +311,7 @@ index ecb493a8..78c49fb0 100644
  class HeadlessPageClient final : public Web::PageClient {
      GC_CELL(HeadlessPageClient, Web::PageClient);
      GC_DECLARE_ALLOCATOR(HeadlessPageClient);
-@@ -119,40 +341,67 @@ ErrorOr<NonnullRefPtr<Gfx::Bitmap>> paint(Web::DOM::Document& document, Gfx::Int
+@@ -119,40 +344,67 @@ ErrorOr<NonnullRefPtr<Gfx::Bitmap>> paint(Web::DOM::Document& document, Gfx::Int
  
  ErrorOr<int> ladybird_main(Main::Arguments arguments)
  {
@@ -384,7 +387,7 @@ index ecb493a8..78c49fb0 100644
  
      Gfx::IntSize viewport { width, height };
      auto theme = TRY(step("loading the theme"sv, Gfx::load_system_theme(ByteString { theme_path })));
-@@ -164,9 +413,11 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+@@ -164,9 +416,11 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
      auto& window = *navigable.active_window();
  
      // The document a navigation would have made, made directly: its bytes are parsed here, in this process, and it
@@ -397,7 +400,7 @@ index ecb493a8..78c49fb0 100644
      document->set_document_type(Web::DOM::Document::Type::HTML);
      document->set_content_type("text/html"_utf16_fly_string);
      document->set_browsing_context(navigable.active_browsing_context());
-@@ -178,11 +429,18 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+@@ -178,11 +432,18 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
      auto observer = Web::DOM::DocumentObserver::create(*document);
      observer->set_document_completely_loaded([&] { loaded = true; });
  
@@ -418,7 +421,7 @@ index ecb493a8..78c49fb0 100644
      if (wait_ms > 0) {
          bool waited = false;
          auto timer = Core::Timer::create_single_shot(AK::Duration::from_milliseconds(wait_ms), [&] { waited = true; });
-@@ -194,7 +452,7 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+@@ -194,7 +455,7 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
      auto png = TRY(step("encoding the PNG"sv, Gfx::PNGWriter::encode(*bitmap)));
      auto output = TRY(step("opening the output"sv, Core::File::open(output_path, Core::File::OpenMode::Write)));
      TRY(step("writing the output"sv, output->write_until_depleted(png)));
