@@ -1,0 +1,15 @@
+diff --git a/Utilities/CMakeLists.txt b/Utilities/CMakeLists.txt
+index 46f91fda..f8e90763 100644
+--- a/Utilities/CMakeLists.txt
++++ b/Utilities/CMakeLists.txt
+@@ -35,6 +35,10 @@ if (WASI)
+             target_include_directories(${ipc_utility} PRIVATE ${LADYBIRD_SOURCE_DIR}/Services ${CMAKE_BINARY_DIR}/Services)
+         endforeach()
+         target_link_options(requestserver-ipc-latha PRIVATE ${WEBBY_WASI_LATHA_LINK_OPTIONS})
++        # webby's Qt UI (webby/wasm/ui): QtGui chrome and LibWeb in one latha:gui component.
++        if (WEBBY_UI_DIR)
++            add_subdirectory(${WEBBY_UI_DIR} ${CMAKE_BINARY_DIR}/webby-ui)
++        endif()
+     endif()
+     return()
+ endif()

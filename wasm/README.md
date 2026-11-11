@@ -316,6 +316,36 @@ pixels both ways; `HTTPS=1` also renders https://example.com/ both ways. The was
     WASI_RUN_DIRS=/usr/share/fonts,$PWD/Base/res=/res,/etc/ssl XDG_DATA_DIRS=/usr/share python tools/wasi-run.py \
       build/bin/webby-render --theme /res/themes/Default.ini -C /etc/ssl/certs/ca-certificates.crt -o out.png https://example.com/
 
+## The Qt UI
+
+`ui/` is webby's browser window for latha-gui: QtGui chrome (tab strip, back/forward/reload, address field, link
+status bubble, all drawn with QPainter on a `QRasterWindow`) and Ladybird's LibWeb in one latha:gui component,
+`bin/webby.wasm`. There is no WebContent or Compositor: `ui/WebView.cpp` owns a `Web::Page` per tab, parses each
+document straight into it (top-level navigations come back through `PageClient::request_navigation_start`), paints
+its display list with the Compositor's Skia CPU player and hands the pixels to Qt. Mouse, wheel and keys go to
+`Page::handle_*`. file: pages and the built-in start page load; http(s) is not wired into the UI yet (patch 0010 has
+it for webby-render). Ctrl+T/W/L/R, F5, Alt+Left/Right and Ctrl+Tab work.
+
+It builds inside Ladybird's WASI build (`patches/0011-webby-ui.patch` adds the directory when `WEBBY_UI_DIR` names it),
+with Qt for WASI, qt2wasm, wit-bindgen, wasm-tools and the preview1 reactor adapter from this pixi env:
+
+    ENABLE_GUI_TARGETS=ON pixi run ./build-engine.sh <ladybird> build/ladybird webby-ui
+    latha-gui --dir <ladybird>/Base/res::/res build/ladybird/bin/webby.wasm [file or URL ...]
+
+Tested headless with latha-gui's `--screenshot`/`--type` plus the UI's own test input, `--click=X,Y@MS` and
+`--wheel=DY@MS` (window pixels, milliseconds after start): typing a path in the address bar loads it and runs its
+scripts, links navigate, back/forward, the + button and tab clicks work, and the wheel scrolls the page (on the main
+thread, since Ladybird scrolls in its Compositor process, and painted with the document's scroll-state snapshot).
+Not yet: http(s) in the UI, scroll and `requestAnimationFrame` callbacks (nothing drives LibWeb's rendering steps
+without a Compositor), wheel scrolling of inner scroll containers.
+
+    QT_QPA_PLATFORM=offscreen latha-gui --dir <ladybird>/Base/res::/res --size 1100x760 --screenshot out.png \
+      --quit-after 12000 build/ladybird/bin/webby.wasm page.html --click=95,315@5000
+
+The engine reads its resources from `/res` (or `WEBBY_RESOURCES`); the chrome font is the host's DejaVu, Liberation
+or Noto Sans. The module must not use wasm atomics, since latha-gui runs without the threads proposal: the meson
+wrapper (`tools/meson-wasi-cc`) drops `-pthread`, which dav1d's build used to add.
+
 ## Building what exists
 
 ```sh

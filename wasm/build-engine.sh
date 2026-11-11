@@ -24,6 +24,7 @@ if [ ! -f "$build/build.ninja" ]; then
     -DENABLE_CLANG_PLUGINS=OFF \
     -DLADYBIRD_ENABLE_CPPTRACE=OFF \
     -DENABLE_NETWORK_DOWNLOADS=OFF \
-    -DRUST_TARGET_TRIPLE=wasm32-wasip1
+    -DRUST_TARGET_TRIPLE=wasm32-wasip1 \
+    -DWEBBY_UI_DIR="$here/ui"
 fi
 cmake --build "$build" --target "${targets[@]}"
