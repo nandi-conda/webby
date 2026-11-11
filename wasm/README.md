@@ -61,9 +61,40 @@ the wasm32 layout marks `<OFFSET>_WIDTH = 4` load and store as 32 bits. `flapc -
 
 Running: `python tools/wasi-run.py build/ladybird/bin/js script.js`. The LibJS runtime suite
 (`test-js-runtime Tests/LibJS/Runtime Tests/LibJS/Runtime/test-common.js`, built with `BUILD_TESTING=ON`) passes
-7654 of 7668 tests in wasmtime, and `-g` (collect after every allocation) passes too. The 11 failures are 32-bit
-limits: ArrayBuffers of 2 GiB and more, typed array lengths past 2^32, and two index edge cases (array length 2^32-1,
-the order of `-1` among numeric property names).
+7666 of 7673 tests, the same in wasmtime (`tools/wasi-run.py`) and in latha-gui's `latha-run`, and `-g` (collect
+after every allocation) gives the same result. 3 are expected failures on every target. The 4 that fail are buffers
+wasm32 cannot hold (see [32-bit limits](#32-bit-limits)).
+
+### 32-bit limits
+
+`patches/0011-wasm32-index-limits.patch` and `patches/0012-wasm32-full-memory-buffers.patch` (applied last) fix the
+LibJS runtime suite's failures that were bugs rather than limits:
+
+- Property keys are one 64-bit word on every target (Rust `PropertyKey`, C++ `JS::PropertyKey`, `JSPropertyKey` in
+  the embedding ABI). The word had been pointer-sized, and a number is kept shifted left by two, so on wasm32 only
+  indices below 2^30 - 1 were numbers and the rest were string keys that indexed storage never saw:
+  `arr[2 ** 32 - 2] = x` left `arr.length` at 0 and integer keys from 2^30 sorted among the strings. A string's raw
+  word or a symbol's address sits zero-extended in the low half (wasm32 is little-endian).
+- `ToIndex` results become a usize with `Value::to_index_usize`, which saturates at usize::MAX on 32-bit targets
+  instead of wrapping (`as usize` made an offset of 2^32 into 0 and `new Uint8Array(2 ** 32 + 1)` into a 1-element
+  array). Bounds checks after it throw as on 64-bit. Array-like lengths that size typed arrays do the same.
+- The GC heap region and the ArrayBuffer cage are all 4 GiB of linear memory (it had been the low 2 GiB), and
+  `cmake/wasi.cmake` links with `--max-memory=4294967296`. Their size no longer fits in a size_t, so on WASI the
+  offset masks are 0xFFFFFFFF and the sizes are kept as u64 or as the last address. wasi-libc's malloc grows memory
+  with `sbrk`, whose increment is signed, so it never returns 2 GiB or more: PrimitiveStorage takes ranges of
+  64 MiB and up straight from `memory.grow`, in whole wasm pages, and keeps released ones for reuse (merged with their
+  neighbours, extended in place when they end at the top of memory). Buffers of up to about 3 GiB now work.
+
+What still fails, and why it cannot be fixed on wasm32:
+
+- `ArrayBuffer-max-byte-length.js` (3 tests): a buffer of 2^32 bytes. That is the whole 32-bit address space, which
+  also holds the program, its stack and its heap, and a usize cannot count it. Only memory64 (wasm64) would hold it,
+  and there is no wasm64 WASI target: no `wasm64-wasip1` Rust standard library and no wasm64 wasi-libc in wasi-sdk,
+  and the Flap C interpreter, the GC's compressed pointers and the embedding layouts all assume 32-bit addresses on
+  WASI. The largest buffer is 2^32 - 64 KiB; larger lengths throw "Invalid array buffer length".
+- `Uint8Array.prototype.toBase64.js` "result too long for a string": it needs a 3 GiB buffer, three quarters of the
+  address space. It passes on its own and with the rest of `builtins/TypedArray/`, but in the full suite the tests
+  before it have grown memory past 1 GiB (linear memory never shrinks), so the 3 GiB range does not fit.
 
 `patches/0005-libwasm-engine-wasm32.patch` makes LibWasm's engine (`libwasm_engine`, which LibWeb's Rust bindings
 depend on) build for wasm32-wasip1. The JIT is never enabled there (`jit::enabled()` is false), but the JIT crate

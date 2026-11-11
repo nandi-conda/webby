@@ -1,0 +1,283 @@
+diff --git a/Libraries/LibGC/BlockAllocator.cpp b/Libraries/LibGC/BlockAllocator.cpp
+index b19d6e5b..6641afdd 100644
+--- a/Libraries/LibGC/BlockAllocator.cpp
++++ b/Libraries/LibGC/BlockAllocator.cpp
+@@ -54,7 +54,12 @@ static_assert(HEAP_REGION_HIGH_GUARD_SIZE % CHUNK_SIZE == 0);
+ 
+ class HeapRegion {
+ public:
++#if defined(AK_OS_WASI)
++    // NB: The region is all of 32-bit linear memory, one byte more than a size_t can count.
++    static constexpr size_t last_address = HEAP_REGION_OFFSET_MASK;
++#else
+     static constexpr size_t size = HEAP_REGION_SIZE;
++#endif
+ 
+     static void register_base_copy(HeapRegionBaseCopyRegistration& registration)
+     {
+@@ -77,7 +82,10 @@ public:
+         auto* chunk = static_cast<u8*>(aligned_alloc(CHUNK_SIZE, CHUNK_SIZE));
+         VERIFY(chunk);
+         auto chunk_end = reinterpret_cast<FlatPtr>(chunk) + CHUNK_SIZE;
+-        VERIFY(chunk_end <= size);
++        // NB: A chunk at the very top of memory ends at 2^32, which wraps to 0.
++        VERIFY(chunk_end == 0 || chunk_end - 1 <= last_address);
++        if (chunk_end == 0)
++            chunk_end = last_address;
+         __builtin_memset(chunk, 0, CHUNK_SIZE);
+         if (chunk_end > m_committed_end)
+             m_committed_end = chunk_end;
+@@ -87,7 +95,7 @@ public:
+     void prepare_chunk() { }
+ 
+     FlatPtr start() const { return 0; }
+-    FlatPtr end() const { return size; }
++    FlatPtr end() const { return last_address; }
+     FlatPtr committed_end() { return m_committed_end; }
+ #else
+     HeapRegion()
+diff --git a/Libraries/LibGC/HeapRegion.h b/Libraries/LibGC/HeapRegion.h
+index c68932f0..84a0c16a 100644
+--- a/Libraries/LibGC/HeapRegion.h
++++ b/Libraries/LibGC/HeapRegion.h
+@@ -15,13 +15,13 @@
+ namespace GC {
+ 
+ #if defined(AK_OS_WASI)
+-// wasm32 has a 32-bit address space and no way to reserve address space without committing it. The heap region is the
+-// low 2 GiB of linear memory, which the module is linked to never grow past, so its base is 0, a cell's compressed
+-// pointer is its address, and HeapRegion takes its chunks from the allocator instead of from a reservation. There are
+-// no guards: the low end of memory holds the data and the shadow stack, and the scanner checks the live block set.
+-static constexpr size_t HEAP_REGION_SIZE = 2ull * GiB;
+-static_assert(is_power_of_two(HEAP_REGION_SIZE));
+-static constexpr size_t HEAP_REGION_OFFSET_MASK = HEAP_REGION_SIZE - 1;
++// wasm32 has a 32-bit address space and no way to reserve address space without committing it. The heap region is all
++// 4 GiB of linear memory, so its base is 0, a cell's compressed pointer is its address, and HeapRegion takes its chunks
++// from the allocator instead of from a reservation. There are no guards: the low end of memory holds the data and the
++// shadow stack, and the scanner checks the live block set. The size does not fit in a size_t; the offset mask does.
++static constexpr u64 HEAP_REGION_SIZE = 4ull * GiB;
++static constexpr size_t HEAP_REGION_OFFSET_MASK = NumericLimits<u32>::max();
++static_assert(HEAP_REGION_OFFSET_MASK == HEAP_REGION_SIZE - 1);
+ static constexpr size_t HEAP_REGION_LOW_GUARD_SIZE = 0;
+ static constexpr size_t HEAP_REGION_HIGH_GUARD_SIZE = 0;
+ #else
+diff --git a/Libraries/LibGC/PrimitiveStorage.cpp b/Libraries/LibGC/PrimitiveStorage.cpp
+index 57728666..1a6b251d 100644
+--- a/Libraries/LibGC/PrimitiveStorage.cpp
++++ b/Libraries/LibGC/PrimitiveStorage.cpp
+@@ -7,6 +7,7 @@
+ #include <AK/Checked.h>
+ #include <AK/NeverDestroyed.h>
+ #include <AK/ScopeGuard.h>
++#include <AK/Vector.h>
+ #include <LibCore/System.h>
+ #include <LibGC/PrimitiveStorage.h>
+ 
+@@ -27,6 +28,91 @@ static size_t round_up_to_page(size_t value)
+     return align_up_to(value, page);
+ }
+ 
++#if defined(AK_OS_WASI)
++// NB: wasi-libc's malloc grows memory with sbrk(), which takes a signed increment, so it never hands out a block of
++//     2 GiB or more, though the cage is all 4 GiB of linear memory. Ranges this large and up are taken straight from
++//     memory.grow instead, in whole wasm pages, and kept for reuse when released, since linear memory never shrinks.
++//     malloc copes with memory it did not grow itself: it starts a new segment past it.
++static constexpr size_t wasi_direct_range_threshold = 64 * MiB;
++static constexpr size_t wasi_page_size = 64 * KiB;
++
++struct WasiDirectRange {
++    size_t address { 0 };
++    size_t size { 0 };
++};
++
++static Vector<WasiDirectRange>& wasi_free_direct_ranges()
++{
++    static NeverDestroyed<Vector<WasiDirectRange>> ranges;
++    return *ranges;
++}
++
++static u64 wasi_memory_end()
++{
++    return static_cast<u64>(__builtin_wasm_memory_size(0)) * wasi_page_size;
++}
++
++static Optional<size_t> wasi_grow_memory(size_t size)
++{
++    auto previous_pages = __builtin_wasm_memory_grow(0, size / wasi_page_size);
++    if (previous_pages == static_cast<decltype(previous_pages)>(-1))
++        return {};
++    return static_cast<size_t>(previous_pages * wasi_page_size);
++}
++
++static ErrorOr<size_t> wasi_allocate_direct_range(size_t size)
++{
++    VERIFY(size % wasi_page_size == 0);
++    auto& free_ranges = wasi_free_direct_ranges();
++    for (size_t i = 0; i < free_ranges.size(); ++i) {
++        auto& range = free_ranges[i];
++        if (range.size < size)
++            continue;
++        auto address = range.address;
++        range.address += size;
++        range.size -= size;
++        if (range.size == 0)
++            free_ranges.remove(i);
++        __builtin_memset(bit_cast<void*>(address), 0, size);
++        return address;
++    }
++    // A free range at the very end of memory only needs the rest grown.
++    for (size_t i = 0; i < free_ranges.size(); ++i) {
++        auto range = free_ranges[i];
++        if (static_cast<u64>(range.address) + range.size != wasi_memory_end())
++            continue;
++        if (!wasi_grow_memory(size - range.size).has_value())
++            return Error::from_errno(ENOMEM);
++        free_ranges.remove(i);
++        // NB: The grown pages are fresh, so only the part that was used before needs zeroing.
++        __builtin_memset(bit_cast<void*>(range.address), 0, range.size);
++        return range.address;
++    }
++    auto address = wasi_grow_memory(size);
++    if (!address.has_value())
++        return Error::from_errno(ENOMEM);
++    return address.value();
++}
++
++static void wasi_release_direct_range(size_t address, size_t size)
++{
++    auto& free_ranges = wasi_free_direct_ranges();
++    size_t i = 0;
++    while (i < free_ranges.size() && free_ranges[i].address < address)
++        ++i;
++    free_ranges.insert(i, { address, size });
++    // Merge with the next range, then with the previous one.
++    if (i + 1 < free_ranges.size() && static_cast<u64>(free_ranges[i].address) + free_ranges[i].size == free_ranges[i + 1].address) {
++        free_ranges[i].size += free_ranges[i + 1].size;
++        free_ranges.remove(i + 1);
++    }
++    if (i > 0 && static_cast<u64>(free_ranges[i - 1].address) + free_ranges[i - 1].size == free_ranges[i].address) {
++        free_ranges[i - 1].size += free_ranges[i].size;
++        free_ranges.remove(i);
++    }
++}
++#endif
++
+ static Optional<u16> small_size_class_index(size_t size)
+ {
+     auto slot_size = max(size, minimum_small_slot_size);
+@@ -244,12 +330,17 @@ ErrorOr<size_t> PrimitiveStorage::Allocator::allocate_cage_range(size_t reservat
+     if (reservation_size == 0)
+         return m_next_offset;
+ #if defined(AK_OS_WASI)
++    if (reservation_size >= wasi_direct_range_threshold) {
++        if (reservation_size > NumericLimits<size_t>::max() - wasi_page_size)
++            return Error::from_errno(ENOMEM);
++        return wasi_allocate_direct_range(align_up_to(reservation_size, wasi_page_size));
++    }
+     // NB: The memory is accessible as soon as it is allocated, and committed memory is expected to read as zero.
+     auto* range = aligned_alloc(page_size(), reservation_size);
+     if (!range)
+         return Error::from_errno(ENOMEM);
+     auto address = bit_cast<FlatPtr>(range);
+-    if (address + reservation_size > m_cage_size) {
++    if (reservation_size > m_cage_size - address) {
+         ::free(range);
+         return Error::from_errno(ENOMEM);
+     }
+@@ -367,6 +458,10 @@ void PrimitiveStorage::Allocator::release_cage_range(size_t offset, size_t size)
+     if (size == 0)
+         return;
+ #if defined(AK_OS_WASI)
++    if (size >= wasi_direct_range_threshold) {
++        wasi_release_direct_range(offset, align_up_to(size, wasi_page_size));
++        return;
++    }
+     ::free(bit_cast<void*>(static_cast<FlatPtr>(offset)));
+     return;
+ #endif
+diff --git a/Libraries/LibGC/PrimitiveStorage.h b/Libraries/LibGC/PrimitiveStorage.h
+index 1438392e..00370622 100644
+--- a/Libraries/LibGC/PrimitiveStorage.h
++++ b/Libraries/LibGC/PrimitiveStorage.h
+@@ -32,8 +32,10 @@ public:
+     };
+ 
+ #if defined(AK_OS_WASI)
+-    // The low 2 GiB of wasm32 linear memory, like the GC heap region. Keep in sync with LibJS/Rust/build.rs.
+-    static constexpr size_t default_cage_size = 2ull * GiB;
++    // All of wasm32 linear memory, like the GC heap region. Keep in sync with LibJS/Rust/build.rs. That is 4 GiB, one
++    // byte more than a size_t holds, so the cage size is that byte short and the offset mask is the whole address.
++    static constexpr size_t default_cage_size = NumericLimits<size_t>::max();
++    static constexpr size_t cage_offset_mask = NumericLimits<u32>::max();
+ #elif AK_IS_ARCH_AARCH64() && !defined(AK_OS_MACOS)
+     // Some AArch64 systems (e.g. Android phones) provide only 39 bits of user virtual address space, where a 4 TiB
+     // reservation cannot succeed. Keep in sync with LibJS/Rust/build.rs.
+@@ -41,8 +43,10 @@ public:
+ #else
+     static constexpr size_t default_cage_size = 4ull * TiB;
+ #endif
++#if !defined(AK_OS_WASI)
+     static_assert(is_power_of_two(default_cage_size));
+     static constexpr size_t cage_offset_mask = default_cage_size - 1;
++#endif
+     // NB: JIT code accesses typed array elements at a masked offset plus a
+     //     zero-extended 32-bit index scaled by at most 8, which this keeps in
+     //     inaccessible memory past the cage.
+diff --git a/Libraries/LibJS/Rust/build.rs b/Libraries/LibJS/Rust/build.rs
+index 53fa1a65..3c338e15 100644
+--- a/Libraries/LibJS/Rust/build.rs
++++ b/Libraries/LibJS/Rust/build.rs
+@@ -106,7 +106,7 @@ fn target() -> Target {
+ 
+ /// Mirrors GC::HEAP_REGION_SIZE in Libraries/LibGC/HeapRegion.h.
+ fn heap_region_size() -> u64 {
+-    if target_is_wasm32() { 2 * GIB } else { 32 * GIB }
++    if target_is_wasm32() { 4 * GIB } else { 32 * GIB }
+ }
+ 
+ fn target_is_wasm32() -> bool {
+@@ -123,8 +123,8 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
+ fn primitive_storage_cage_size(target: &Target) -> u64 {
+     let os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS");
+     if target.architecture.is_none() {
+-        // wasm32: the low 2 GiB of linear memory, like the heap region.
+-        2 * GIB
++        // wasm32: all 4 GiB of linear memory, like the heap region.
++        4 * GIB
+     } else if matches!(target.architecture, Some(flapc::Architecture::Aarch64)) && os != "macos" {
+         64 * GIB
+     } else {
+diff --git a/Libraries/LibJS/Rust/src/layout/member.rs b/Libraries/LibJS/Rust/src/layout/member.rs
+index c9796691..fa9e0818 100644
+--- a/Libraries/LibJS/Rust/src/layout/member.rs
++++ b/Libraries/LibJS/Rust/src/layout/member.rs
+@@ -28,9 +28,9 @@ pub const COMPRESSED_POINTER_SHIFT: u32 = 0;
+ /// The size of the heap region, which a compressed pointer covers whatever its 32 bits are.
+ #[cfg(target_pointer_width = "64")]
+ pub const COMPRESSED_POINTER_RANGE: u64 = 1 << (32 + COMPRESSED_POINTER_SHIFT);
+-/// The low 2 GiB of wasm32 linear memory, at base 0. Mirrors GC::HEAP_REGION_SIZE.
++/// All 4 GiB of wasm32 linear memory, at base 0. Mirrors GC::HEAP_REGION_SIZE.
+ #[cfg(target_pointer_width = "32")]
+-pub const COMPRESSED_POINTER_RANGE: u64 = 1 << 31;
++pub const COMPRESSED_POINTER_RANGE: u64 = 1 << 32;
+ 
+ /// The compressed form of a pointer into the heap region. The region's base is aligned to its size, so the low 32 bits
+ /// of the shifted address are the shifted offset, and compressing needs no base.
+diff --git a/Libraries/LibJS/Rust/src/runtime/array_buffer.rs b/Libraries/LibJS/Rust/src/runtime/array_buffer.rs
+index d064c607..4191e4d8 100644
+--- a/Libraries/LibJS/Rust/src/runtime/array_buffer.rs
++++ b/Libraries/LibJS/Rust/src/runtime/array_buffer.rs
+@@ -1560,9 +1560,11 @@ impl ArrayBuffer {
+ /// indices are u32s.
+ #[cfg(target_pointer_width = "64")]
+ pub const MAX_ARRAY_BUFFER_BYTE_LENGTH: usize = 1 << 32;
+-/// On 32-bit targets the primitive storage cage is the low 2 GiB of memory, which bounds every buffer.
++/// On 32-bit targets a buffer is in the 4 GiB address space with everything else, so 2^32 bytes can never be allocated
++/// (nor counted by a usize). Lengths up to the last 64 KiB page are let through to the allocator, which fails when
++/// memory runs out; larger ones, and every length that saturated to usize::MAX, are invalid as on 64-bit.
+ #[cfg(target_pointer_width = "32")]
+-pub const MAX_ARRAY_BUFFER_BYTE_LENGTH: usize = 1 << 31;
++pub const MAX_ARRAY_BUFFER_BYTE_LENGTH: usize = usize::MAX - 0xFFFF;
+ 
+ fn exceeds_max_array_buffer_byte_length(size: usize, capacity: Option<usize>) -> bool {
+     capacity.unwrap_or(size).max(size) > MAX_ARRAY_BUFFER_BYTE_LENGTH

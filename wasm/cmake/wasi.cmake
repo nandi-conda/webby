@@ -27,9 +27,9 @@ set(CMAKE_C_FLAGS_INIT "${_emu}")
 # wasi-sdk's libc++ has no exception runtime (no __cxa_throw), so C++ dependencies build without exceptions, as
 # Ladybird does.
 set(CMAKE_CXX_FLAGS_INIT "${_emu} -fno-exceptions")
-# LibGC and PrimitiveStorage treat the low 2 GiB of linear memory as their region (patches/0002), so memory never
-# grows past it. The main thread's shadow stack, which the conservative GC scans, gets 8 MiB like a native one.
-string(APPEND _libs " -Wl,--max-memory=2147483648 -Wl,-z,stack-size=8388608")
+# LibGC and PrimitiveStorage treat all of linear memory as their region (patches/0002, 0012), so memory may grow to
+# the full 4 GiB. The main thread's shadow stack, which the conservative GC scans, gets 8 MiB like a native one.
+string(APPEND _libs " -Wl,--max-memory=4294967296 -Wl,-z,stack-size=8388608")
 # crt1's _start reaches main through a weak reference to __main_argc_argv, which does not pull LibMain's Main.cpp out of
 # its static archive: without this, wasm-ld turns the call to main into `unreachable`.
 string(APPEND _libs " -Wl,--undefined=__main_argc_argv")
