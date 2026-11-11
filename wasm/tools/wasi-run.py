@@ -35,6 +35,10 @@ def main() -> int:
     wasi.inherit_stderr()
     wasi.inherit_env()
     wasi.preopen_dir(".", ".")
+    # WASI_RUN_DIRS="host[=guest],...": more host directories for the module, e.g. /usr/share/fonts for webby-render.
+    for entry in filter(None, os.environ.get("WASI_RUN_DIRS", "").split(",")):
+        host, _, guest = entry.partition("=")
+        wasi.preopen_dir(host, guest or host)
     store.set_wasi(wasi)
     linker = wasmtime.Linker(engine)
     linker.define_wasi()

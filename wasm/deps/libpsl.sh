@@ -16,7 +16,8 @@ cat > config.h <<'H'
 #define PACKAGE_VERSION "0.21.5"
 H
 "$sdk/bin/clang" --target=wasm32-wasip1 -O2 -DHAVE_CONFIG_H -DPSL_STATIC -I. -I"$prefix/include" -c "$src/src/psl.c" -o psl.o
-"$sdk/bin/llvm-ar" rcs libpsl.a psl.o
+"$sdk/bin/clang" --target=wasm32-wasip1 -O2 -DHAVE_CONFIG_H -DPSL_STATIC -I. -I"$prefix/include" -c "$src/src/lookup_string_in_fixed_set.c" -o lookup.o
+rm -f libpsl.a; "$sdk/bin/llvm-ar" rcs libpsl.a psl.o lookup.o
 mkdir -p "$prefix/lib/pkgconfig" "$prefix/include"
 cp libpsl.a "$prefix/lib/"; cp libpsl.h "$prefix/include/"
 cat > "$prefix/lib/pkgconfig/libpsl.pc" <<PC

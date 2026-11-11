@@ -15,7 +15,9 @@ endif()
 string(APPEND _emu " -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false")
 string(APPEND _libs " -lsetjmp")
 set(CMAKE_C_FLAGS_INIT "${_emu}")
-set(CMAKE_CXX_FLAGS_INIT "${_emu}")
+# wasi-sdk's libc++ has no exception runtime (no __cxa_throw), so C++ dependencies build without exceptions, as
+# Ladybird does.
+set(CMAKE_CXX_FLAGS_INIT "${_emu} -fno-exceptions")
 # LibGC and PrimitiveStorage treat the low 2 GiB of linear memory as their region (patches/0002), so memory never
 # grows past it. The main thread's shadow stack, which the conservative GC scans, gets 8 MiB like a native one.
 string(APPEND _libs " -Wl,--max-memory=2147483648 -Wl,-z,stack-size=8388608")

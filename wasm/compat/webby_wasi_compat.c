@@ -330,3 +330,5 @@ int sem_timedwait(sem_t* restrict s, const struct timespec* restrict t)
     return -1;
 }
 int sem_getvalue(sem_t* restrict s, int* restrict value) { *value = s->__val[0]; return 0; }
+
+char *secure_getenv(const char *name) { return getenv(name); }

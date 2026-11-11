@@ -184,6 +184,9 @@ char *mkdtemp(char *template_);
 #    define F_DUPFD_CLOEXEC 1030
 #endif
 
+// A WASI module has no setuid state to guard against: secure_getenv is getenv.
+char *secure_getenv(const char *name);
+
 int pthread_getname_np(pthread_t thread, char *name, size_t length);
 int pthread_setname_np(pthread_t thread, const char *name);
 

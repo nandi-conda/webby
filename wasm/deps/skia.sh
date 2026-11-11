@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Skia (Ladybird's pin, "skia 148") as a static library for wasm32-wasip1: CPU raster only (no Ganesh/Graphite/GL/
-# Vulkan, no PDF), FreeType with the empty/custom font manager (no fontconfig), Skia's own bundled FreeType, libpng and
+# Skia (Ladybird's pin, "skia 148") as a static library for wasm32-wasip1: CPU raster only (Ganesh's core is built,
+# because the Compositor's code names GrDirectContext, but with no GL/Vulkan backend, so no GPU context is ever made;
+# no Graphite, no PDF), FreeType with the empty/custom font manager (no fontconfig), Skia's own bundled FreeType, libpng and
 # zlib. Image codecs: PNG only (Ladybird's Compositor only draws; LibGfx decodes images itself).
 # Installs libskia.a, the headers, skia.pc and an unofficial-skia CMake config into PREFIX (see the end).
 #
@@ -48,7 +49,7 @@ target_os=\"linux\" target_cpu=\"wasm32\"
 is_official_build=true is_component_build=false is_debug=false
 cc=\"$sdk/bin/clang\" cxx=\"$sdk/bin/clang++\" ar=\"$sdk/bin/llvm-ar\"
 extra_cflags=[${cflags%,}]
-skia_enable_ganesh=false skia_enable_graphite=false skia_use_gl=false skia_use_vulkan=false skia_use_dawn=false
+skia_enable_ganesh=true skia_enable_graphite=false skia_use_gl=false skia_use_vulkan=false skia_use_dawn=false
 skia_use_webgl=false skia_use_webgpu=false skia_use_egl=false skia_use_x11=false
 skia_enable_pdf=false skia_use_xps=false skia_enable_skottie=false skia_enable_svg=false skia_enable_tools=false
 skia_use_lua=false skia_enable_android_utils=false skia_enable_spirv_validation=false
