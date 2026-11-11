@@ -1,0 +1,450 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 963894a5..8cf2113c 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -137,7 +137,7 @@ if (NOT (ENABLE_FUZZERS OR ENABLE_COMPILER_EXPLORER_BUILD OR ANDROID OR IOS))
+     endif()
+ endif()
+ 
+-if (ENABLE_GUI_TARGETS)
++if (ENABLE_GUI_TARGETS AND NOT WASI)
+     add_subdirectory(Services)
+     add_subdirectory(UI)
+ 
+diff --git a/Libraries/CMakeLists.txt b/Libraries/CMakeLists.txt
+index 63150fc9..7a7f6d86 100644
+--- a/Libraries/CMakeLists.txt
++++ b/Libraries/CMakeLists.txt
+@@ -1,7 +1,14 @@
+ if (WASI)
+-    # The engine for one WebAssembly module: what JavaScript needs, for now.
+-    set(LIBJS_FOLDED_INTO_LIBWEB OFF)
+-    foreach(lib LibCore LibCrypto LibFileSystem LibGC LibJS LibMain LibRegex LibSyntax LibTextCodec LibThreading LibURL LibUnicode)
++    # The engine for one WebAssembly module: what JavaScript needs, and with ENABLE_GUI_TARGETS what LibWeb needs to
++    # parse, lay out and paint a page in the same module (no processes, no LibWebView).
++    set(LIBJS_FOLDED_INTO_LIBWEB ${ENABLE_GUI_TARGETS})
++    set(wasi_libraries LibCore LibCrypto LibFileSystem LibGC LibJS LibMain LibRegex LibSyntax LibTextCodec LibThreading LibURL LibUnicode)
++    if (ENABLE_GUI_TARGETS)
++        list(APPEND wasi_libraries LibCompress LibDNS LibDatabase LibHTTP LibIPC LibRequests LibTLS LibWasm LibXML
++            LibGfx LibImageDecoders LibImageDecoderClient LibAudio LibMediaCodecs LibMedia LibMediaClient LibWebCommon
++            LibCompositing LibWeb)
++    endif()
++    foreach(lib IN LISTS wasi_libraries)
+         add_subdirectory(${lib})
+     endforeach()
+     return()
+diff --git a/Libraries/LibIPC/CMakeLists.txt b/Libraries/LibIPC/CMakeLists.txt
+index a4cd61e2..01d1b1bc 100644
+--- a/Libraries/LibIPC/CMakeLists.txt
++++ b/Libraries/LibIPC/CMakeLists.txt
+@@ -19,7 +19,7 @@ if (APPLE)
+             MachBootstrapListener.cpp
+             TransportBootstrapMach.cpp)
+     endif()
+-elseif (UNIX)
++elseif (UNIX OR WASI)
+     list(APPEND SOURCES
+         Attachment.cpp
+         TransportSocket.cpp)
+diff --git a/Libraries/LibJS/HostClassBuilder.h b/Libraries/LibJS/HostClassBuilder.h
+index bc4fce88..82df5a3e 100644
+--- a/Libraries/LibJS/HostClassBuilder.h
++++ b/Libraries/LibJS/HostClassBuilder.h
+@@ -38,6 +38,8 @@
+ namespace JS::HostABI {
+ 
+ static_assert(sizeof(JSCompletion) == 16);
++// NB: These sizes are the 64-bit layout; with 4-byte pointers (wasm32) the C and Rust sides shrink alike.
++#if __SIZEOF_POINTER__ == 8
+ static_assert(offsetof(JSPropertyDescriptor, property_offset) == 24);
+ static_assert(offsetof(JSPropertyDescriptor, flags) == 28);
+ static_assert(sizeof(JSPropertyDescriptor) == 32);
+@@ -45,6 +47,7 @@ static_assert(offsetof(JSHostClass, flags) == 4);
+ static_assert(offsetof(JSHostClass, name) == 8);
+ static_assert(offsetof(JSHostClass, user_data) == 40);
+ static_assert(sizeof(JSHostClass) == 48);
++#endif
+ 
+ static_assert(sizeof(JSValue) == sizeof(Value));
+ static_assert(sizeof(JSPropertyKey) == sizeof(PropertyKey));
+diff --git a/Libraries/LibMedia/IncrementallyPopulatedStream.cpp b/Libraries/LibMedia/IncrementallyPopulatedStream.cpp
+index 63a66c93..ccf35f97 100644
+--- a/Libraries/LibMedia/IncrementallyPopulatedStream.cpp
++++ b/Libraries/LibMedia/IncrementallyPopulatedStream.cpp
+@@ -158,7 +158,7 @@ MediaStream::Availability IncrementallyPopulatedStream::availability() const
+     MutexLocker locker { m_mutex };
+     Vector<ByteRange> ranges;
+     for (auto it = m_chunks.begin(); it != m_chunks.end(); ++it)
+-        ranges.empend(it->offset(), it->end());
++        ranges.empend(static_cast<size_t>(it->offset()), static_cast<size_t>(it->end()));
+     return { move(ranges), m_expected_size, m_closed };
+ }
+ 
+diff --git a/Libraries/LibTLS/TLSv12.cpp b/Libraries/LibTLS/TLSv12.cpp
+index 1a068c17..2cb1d14e 100644
+--- a/Libraries/LibTLS/TLSv12.cpp
++++ b/Libraries/LibTLS/TLSv12.cpp
+@@ -252,7 +252,12 @@ ErrorOr<NonnullOwnPtr<TLSv12>> TLSv12::connect_internal(NonnullOwnPtr<Core::TCPS
+     // Ensure we check that the server has supplied a certificate for the hostname that we were expecting.
+     OPENSSL_TRY(SSL_set1_host(ssl, host.characters()));
+ 
++#if defined(AK_OS_WASI)
++    // OpenSSL for WASI is built without its socket BIOs; a socket is a plain file descriptor there.
++    auto* bio = OPENSSL_TRY_PTR(BIO_new_fd(socket->fd(), 0));
++#else
+     auto* bio = OPENSSL_TRY_PTR(BIO_new_socket(socket->fd(), 0));
++#endif
+ 
+     // SSL takes ownership of the BIO and will handle freeing it
+     SSL_set_bio(ssl, bio, bio);
+diff --git a/Libraries/LibWeb/Bindings/Wrappable.h b/Libraries/LibWeb/Bindings/Wrappable.h
+index 20617f70..5bfe71dd 100644
+--- a/Libraries/LibWeb/Bindings/Wrappable.h
++++ b/Libraries/LibWeb/Bindings/Wrappable.h
+@@ -186,7 +186,10 @@ private:
+     GC::Weak<JS::HostObject> m_main_world_wrapper;
+ };
+ 
++// NB: These sizes are the 64-bit layout; with 4-byte pointers (wasm32) the C and Rust sides shrink alike.
++#if __SIZEOF_POINTER__ == 8
+ static_assert(sizeof(Wrappable) == 24);
++#endif
+ 
+ // Current LibWeb implementation objects are GC-owned. Keeping that ownership
+ // and its preservation flags in a separate base lets classes migrate to other
+@@ -234,7 +237,10 @@ private:
+     u8 m_preservation_flags { 0 };
+ };
+ 
++// NB: These sizes are the 64-bit layout; with 4-byte pointers (wasm32) the C and Rust sides shrink alike.
++#if __SIZEOF_POINTER__ == 8
+ static_assert(sizeof(GCAllocatedWrappable) == 32);
++#endif
+ // GCAllocatedWrappable's dsize is 25 bytes, allowing derived classes to reuse
+ // the remaining tail padding where supported by the ABI.
+ 
+diff --git a/Libraries/LibWeb/Clipboard/ClipboardItem.h b/Libraries/LibWeb/Clipboard/ClipboardItem.h
+index 457c5a5a..48bec4d7 100644
+--- a/Libraries/LibWeb/Clipboard/ClipboardItem.h
++++ b/Libraries/LibWeb/Clipboard/ClipboardItem.h
+@@ -19,7 +19,8 @@
+ 
+ namespace Web::Clipboard {
+ 
+-constexpr auto WEB_CUSTOM_FORMAT_PREFIX = "web "_utf16;
++// NB: Not constexpr: with 32-bit pointers a 4-code-unit Utf16String no longer fits the inline (short) storage.
++inline Utf16String const WEB_CUSTOM_FORMAT_PREFIX = "web "_utf16;
+ 
+ using PresentationStyle = Bindings::PresentationStyle;
+ 
+diff --git a/Libraries/LibWebCommon/Loader/UserAgent.h b/Libraries/LibWebCommon/Loader/UserAgent.h
+index d2239889..c514005d 100644
+--- a/Libraries/LibWebCommon/Loader/UserAgent.h
++++ b/Libraries/LibWebCommon/Loader/UserAgent.h
+@@ -27,6 +27,9 @@ namespace Web {
+ #    define CPU_STRING "PowerPC 64"
+ #elif ARCH(PPC)
+ #    define CPU_STRING "PowerPC"
++#elif defined(__wasm32__)
++// NB: A wasm module runs on whatever the host is; sites sniff this, so claim the common desktop CPU.
++#    define CPU_STRING "x86_64"
+ #else
+ #    error Unknown architecture
+ #endif
+@@ -57,6 +60,8 @@ namespace Web {
+ #    define OS_STRING "Haiku"
+ #elif defined(AK_OS_GNU_HURD)
+ #    define OS_STRING "GNU/Hurd"
++#elif defined(AK_OS_WASI)
++#    define OS_STRING "Linux"
+ #else
+ #    error Unknown OS
+ #endif
+@@ -117,6 +122,8 @@ constexpr auto default_user_agent = "Mozilla/5.0 (" UA_PLATFORM_STRING ") " BROW
+ #        define NAVIGATOR_PLATFORM_MACHINE "ppc64"
+ #    elif ARCH(PPC)
+ #        define NAVIGATOR_PLATFORM_MACHINE "ppc"
++#    elif defined(__wasm32__)
++#        define NAVIGATOR_PLATFORM_MACHINE "x86_64"
+ #    else
+ #        error Unknown architecture
+ #    endif
+diff --git a/Meta/CMake/check_for_dependencies_wasi.cmake b/Meta/CMake/check_for_dependencies_wasi.cmake
+index f649500e..1e28fe5a 100644
+--- a/Meta/CMake/check_for_dependencies_wasi.cmake
++++ b/Meta/CMake/check_for_dependencies_wasi.cmake
+@@ -34,3 +34,30 @@ pkg_check_modules(LIBPSL REQUIRED IMPORTED_TARGET libpsl)
+ if (NOT TARGET Threads::Threads)
+     add_library(Threads::Threads INTERFACE IMPORTED)
+ endif()
++
++# LibGfx, LibMedia and LibWeb (ENABLE_GUI_TARGETS): webby's deps/libweb-deps.sh, media-deps.sh and skia.sh. No
++# fontconfig (fonts come from the module's files), no Vulkan/GL (Skia rasterizes on the CPU), no curl or SDL (nothing
++# here makes requests or plays audio itself). ANGLE is headers only, for WebGL's constants.
++if (ENABLE_GUI_TARGETS)
++    find_package(harfbuzz REQUIRED)
++    find_package(JPEG REQUIRED)
++    # libavif's static build installs no CMake package here; LibImageDecoders links the target `avif`.
++    pkg_check_modules(LIBAVIF REQUIRED IMPORTED_TARGET GLOBAL libavif)
++    add_library(avif ALIAS PkgConfig::LIBAVIF)
++    find_package(PNG REQUIRED)
++    find_package(WebP REQUIRED)
++    find_path(WUFFS_INCLUDE_DIR NAMES wuffs/wuffs-v0.3.c REQUIRED)
++    pkg_check_modules(WOFF2 REQUIRED IMPORTED_TARGET libwoff2dec)
++    # Static archives: woff2dec also needs its Requires.private (woff2common, brotli).
++    set_property(TARGET PkgConfig::WOFF2 APPEND PROPERTY INTERFACE_LINK_OPTIONS ${WOFF2_STATIC_LDFLAGS})
++    pkg_check_modules(AVCODEC REQUIRED IMPORTED_TARGET libavcodec)
++    pkg_check_modules(AVUTIL REQUIRED IMPORTED_TARGET libavutil)
++    pkg_check_modules(LIBSWRESAMPLE REQUIRED IMPORTED_TARGET libswresample)
++    find_package(LibXml2 REQUIRED)
++    find_package(SQLite3 REQUIRED)
++    find_package(ZLIB REQUIRED)
++    pkg_check_modules(angle REQUIRED IMPORTED_TARGET angle)
++    set(ANGLE_TARGETS PkgConfig::angle)
++    pkg_check_modules(skia REQUIRED IMPORTED_TARGET GLOBAL skia)
++    add_library(skia ALIAS PkgConfig::skia)
++endif()
+diff --git a/Meta/CMake/compile_options.cmake b/Meta/CMake/compile_options.cmake
+index ff753093..3cb38c29 100644
+--- a/Meta/CMake/compile_options.cmake
++++ b/Meta/CMake/compile_options.cmake
+@@ -250,6 +250,14 @@ if (HAIKU)
+     add_compile_definitions(__USE_GNU)
+ endif()
+ 
++# NB: With a 32-bit size_t, checks like `size > NumericLimits<i64>::max()` written for 64-bit hosts are always false.
++if (WASI)
++    add_cxx_compile_options(-Wno-tautological-constant-out-of-range-compare)
++    # Braced initializers that put a u64 (a file offset, a byte count) into a size_t are narrowing on wasm32. Values
++    # past 4 GiB cannot occur in a 32-bit address space anyway.
++    add_cxx_compile_options(-Wno-c++11-narrowing)
++endif()
++
+ # NB: wasm-ld leaves the name section out of a module with a build id, and traps then show bare function numbers.
+ if (NOT WIN32 AND NOT WASI)
+     add_cxx_link_option_if_supported(LINKER:--gdb-index)
+diff --git a/Utilities/CMakeLists.txt b/Utilities/CMakeLists.txt
+index 53b31f14..4a4213f8 100644
+--- a/Utilities/CMakeLists.txt
++++ b/Utilities/CMakeLists.txt
+@@ -1,6 +1,26 @@
+ ladybird_utility(js SOURCES js.cpp LIBS LibJSStandalone LibMain)
+ if (WASI)
+-    # No line editor in a WebAssembly module (js.cpp does without one), and only js so far.
++    # No line editor in a WebAssembly module (js.cpp does without one).
++    if (ENABLE_GUI_TARGETS)
++        # HTML to PNG in one module: LibWeb, and the Compositor's CPU Skia raster of a display list linked in beside it.
++        set(compositor_dir ${LADYBIRD_SOURCE_DIR}/Services/Compositor)
++        ladybird_utility(webby-render SOURCES webby-render.cpp
++            ${compositor_dir}/Canvas2DCommandPlayer.cpp
++            ${compositor_dir}/ColorSpaceSkia.cpp
++            ${compositor_dir}/DisplayListPlayer.cpp
++            ${compositor_dir}/DisplayListPlayerSkia.cpp
++            ${compositor_dir}/DisplayListRasterCache.cpp
++            ${compositor_dir}/FontSkia.cpp
++            ${compositor_dir}/PainterSkia.cpp
++            ${compositor_dir}/PaintingSurface.cpp
++            ${compositor_dir}/RasterizeDisplayList.cpp
++            ${compositor_dir}/ScrollbarController.cpp
++            ${compositor_dir}/SkiaBackendContext.cpp
++            ${compositor_dir}/SkiaUtils.cpp
++            ${compositor_dir}/VideoFrameSkia.cpp
++            LIBS LibWeb LibCompositing LibGfx LibMedia LibFileSystem LibURL LibMain skia)
++        target_include_directories(webby-render PRIVATE ${LADYBIRD_SOURCE_DIR}/Services ${CMAKE_BINARY_DIR}/Services)
++    endif()
+     return()
+ endif()
+ if (NOT WIN32 AND NOT ANDROID)
+diff --git a/Utilities/webby-render.cpp b/Utilities/webby-render.cpp
+new file mode 100644
+index 00000000..5657cc3f
+--- /dev/null
++++ b/Utilities/webby-render.cpp
+@@ -0,0 +1,187 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++// webby-render: lays out and paints one HTML file into a PNG, all inside one process, with no WebContent, Compositor,
++// RequestServer or ImageDecoder. This is what the WebAssembly build of webby runs: the page lives in this module's
++// LibWeb, and its display list is rasterized on the CPU by the Compositor's Skia player linked in beside it.
++
++#include <AK/LexicalPath.h>
++#include <Compositor/RasterizeDisplayList.h>
++#include <LibCompositing/DisplayList/DisplayListResourceStorage.h>
++#include <LibCore/ArgsParser.h>
++#include <LibCore/EventLoop.h>
++#include <LibCore/File.h>
++#include <LibCore/Timer.h>
++#include <LibFileSystem/FileSystem.h>
++#include <LibGfx/Bitmap.h>
++#include <LibGfx/ImageFormats/PNGWriter.h>
++#include <LibGfx/Palette.h>
++#include <LibGfx/SystemTheme.h>
++#include <LibMain/Main.h>
++#include <LibURL/Parser.h>
++#include <LibWeb/Bindings/MainThreadVM.h>
++#include <LibWeb/DOM/Document.h>
++#include <LibWeb/DOM/DocumentObserver.h>
++#include <LibWeb/HTML/LocalTraversableNavigable.h>
++#include <LibWeb/HTML/Parser/HTMLParser.h>
++#include <LibWeb/HTML/Window.h>
++#include <LibWeb/Layout/RenderDocument.h>
++#include <LibWeb/Loader/ResourceLoader.h>
++#include <LibWeb/Page/Page.h>
++#include <LibWeb/Painting/DocumentPaintState.h>
++#include <LibWeb/Platform/EventLoopPlugin.h>
++#include <LibWeb/Platform/FontPlugin.h>
++
++namespace {
++
++class HeadlessPageClient final : public Web::PageClient {
++    GC_CELL(HeadlessPageClient, Web::PageClient);
++    GC_DECLARE_ALLOCATOR(HeadlessPageClient);
++
++public:
++    static GC::Ref<HeadlessPageClient> create(Gfx::IntSize viewport, NonnullRefPtr<Gfx::PaletteImpl> palette_impl)
++    {
++        return GC::Heap::the().allocate<HeadlessPageClient>(viewport, move(palette_impl));
++    }
++
++    void set_page(Web::Page& page) { m_page = &page; }
++
++    virtual Web::PageId id() const override { return 1; }
++    virtual Web::Page& page() override { return *m_page; }
++    virtual Web::Page const& page() const override { return *m_page; }
++    virtual bool is_connection_open() const override { return false; }
++    virtual Gfx::Palette palette() const override { return Gfx::Palette { *m_palette_impl }; }
++    virtual Web::DevicePixelRect screen_rect() const override { return { { 0, 0 }, m_viewport.to_type<Web::DevicePixels>() }; }
++    virtual double zoom_level() const override { return 1.0; }
++    virtual double device_pixel_ratio() const override { return 1.0; }
++    virtual double device_pixels_per_css_pixel() const override { return 1.0; }
++    virtual Web::CSS::PreferredColorScheme preferred_color_scheme() const override { return Web::CSS::PreferredColorScheme::Light; }
++    virtual Web::CSS::PreferredContrast preferred_contrast() const override { return Web::CSS::PreferredContrast::NoPreference; }
++    virtual Web::CSS::PreferredMotion preferred_motion() const override { return Web::CSS::PreferredMotion::NoPreference; }
++    virtual size_t screen_count() const override { return 1; }
++    virtual Queue<Web::QueuedInputEvent>& input_event_queue() override { return m_input_event_queue; }
++    virtual void report_finished_handling_input_event(Web::PageId, u64, Web::EventResult) override { }
++    // Frames are painted once, when the page has loaded, by main() below.
++    virtual void request_frame() override { }
++    virtual void request_file(Web::FileRequest) override { }
++    virtual bool is_headless() const override { return true; }
++
++private:
++    HeadlessPageClient(Gfx::IntSize viewport, NonnullRefPtr<Gfx::PaletteImpl> palette_impl)
++        : m_viewport(viewport)
++        , m_palette_impl(move(palette_impl))
++    {
++    }
++
++    virtual void visit_edges(Visitor& visitor) override
++    {
++        Base::visit_edges(visitor);
++        visitor.visit(m_page);
++    }
++
++    GC::Ptr<Web::Page> m_page;
++    Gfx::IntSize m_viewport;
++    NonnullRefPtr<Gfx::PaletteImpl> m_palette_impl;
++    Queue<Web::QueuedInputEvent> m_input_event_queue;
++};
++
++GC_DEFINE_ALLOCATOR(HeadlessPageClient);
++
++ErrorOr<NonnullRefPtr<Gfx::Bitmap>> paint(Web::DOM::Document& document, Gfx::IntSize size)
++{
++    auto& navigable = *document.navigable();
++    auto& resource_storage = navigable.display_list_resource_storage();
++    navigable.set_viewport_size(size.to_type<Web::CSSPixels>());
++
++    Web::Layout::ForcedReadScope read { document };
++    document.update_layout(Web::DOM::UpdateLayoutReason::SVGDecodedImageDataRender);
++    auto display_list = document.record_display_list(read, {}, resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite);
++    if (!display_list)
++        return Error::from_string_literal("The document recorded no display list");
++
++    auto visual_context_tree = document.paint_state().visual_context_tree(document);
++    auto transaction = TRY(resource_storage.create_self_contained_transaction(*display_list, visual_context_tree));
++
++    auto bitmap = TRY(Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, size));
++    TRY(Compositor::rasterize_display_list(*display_list, visual_context_tree, move(transaction), *bitmap));
++    return bitmap;
++}
++
++}
++
++ErrorOr<int> ladybird_main(Main::Arguments arguments)
++{
++    StringView input_path;
++    StringView output_path = "out.png"sv;
++    int width = 800;
++    int height = 600;
++    int wait_ms = 0;
++    StringView theme_path = "Base/res/themes/Default.ini"sv;
++
++    Core::ArgsParser args_parser;
++    args_parser.set_general_help("Render an HTML file to a PNG, in one process.");
++    args_parser.add_option(output_path, "PNG to write (default out.png)", "output", 'o', "path");
++    args_parser.add_option(width, "Viewport width in CSS pixels (default 800)", "width", 'w', "pixels");
++    args_parser.add_option(height, "Viewport height in CSS pixels (default 600)", "height", 'h', "pixels");
++    args_parser.add_option(wait_ms, "Run the event loop this long after loading, for timers and late resources", "wait", 0, "ms");
++    args_parser.add_option(theme_path, "System theme for the palette (default Base/res/themes/Default.ini)", "theme", 0, "path");
++    args_parser.add_positional_argument(input_path, "HTML file to render", "file");
++    args_parser.parse(arguments);
++
++    Core::EventLoop event_loop;
++    Web::Platform::EventLoopPlugin::install(*new Web::Platform::EventLoopPlugin);
++    Web::Bindings::initialize_main_thread_vm(Web::HTML::AgentType::SimilarOriginWindow);
++    auto& heap = Web::Bindings::main_thread_vm().heap();
++    // file: and data: URLs load inside this process; nothing here makes network requests yet.
++    Web::ResourceLoader::initialize(heap);
++    Web::Platform::FontPlugin::install(*new Web::Platform::FontPlugin(false));
++
++    auto absolute_path = TRY(FileSystem::absolute_path(input_path));
++    auto url = URL::create_with_file_scheme(absolute_path).release_value();
++    auto file = TRY(Core::File::open(input_path, Core::File::OpenMode::Read));
++    auto html = TRY(file->read_until_eof());
++
++    Gfx::IntSize viewport { width, height };
++    auto theme = TRY(Gfx::load_system_theme(ByteString { theme_path }));
++    auto page_client = HeadlessPageClient::create(viewport, Gfx::PaletteImpl::create_with_anonymous_buffer(theme));
++    auto page = Web::Page::create(*page_client);
++    page_client->set_page(*page);
++    page->set_top_level_traversable(Web::HTML::LocalTraversableNavigable::create_a_new_top_level_traversable(page, nullptr, {}));
++    auto& navigable = *page->local_traversable();
++    auto& window = *navigable.active_window();
++
++    // The document a navigation would have made, made directly: its bytes are parsed here, in this process, and it
++    // takes the place of the initial about:blank document, as SVGDecodedImageData's documents do.
++    auto document = Web::DOM::Document::create(*page, window, url);
++    document->set_document_type(Web::DOM::Document::Type::HTML);
++    document->set_content_type("text/html"_utf16_fly_string);
++    document->set_browsing_context(navigable.active_browsing_context());
++    document->set_window(window);
++    window.set_associated_document(*document);
++    navigable.set_active_document(*document);
++
++    bool loaded = false;
++    auto observer = Web::DOM::DocumentObserver::create(*document);
++    observer->set_document_completely_loaded([&] { loaded = true; });
++
++    auto parser = Web::HTML::HTMLParser::create_from_byte_string(*document, StringView { html }, Web::HTML::ParserScriptingMode::Normal, "UTF-8"sv);
++    parser->run(url);
++
++    event_loop.spin_until([&] { return loaded; });
++    if (wait_ms > 0) {
++        bool waited = false;
++        auto timer = Core::Timer::create_single_shot(AK::Duration::from_milliseconds(wait_ms), [&] { waited = true; });
++        timer->start();
++        event_loop.spin_until([&] { return waited; });
++    }
++
++    auto bitmap = TRY(paint(*document, viewport));
++    auto png = TRY(Gfx::PNGWriter::encode(*bitmap));
++    auto output = TRY(Core::File::open(output_path, Core::File::OpenMode::Write));
++    TRY(output->write_until_depleted(png));
++    outln("{}: {}x{} -> {}", input_path, width, height, output_path);
++    return 0;
++}

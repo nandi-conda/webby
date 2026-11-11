@@ -73,6 +73,15 @@ the GC heap's primitive storage fail to allocate (WASI has no address-space rese
 size asserts only hold on 64-bit targets. Running LibWasm's `interpreter.flap` through the Flap C backend needs the
 WebAssembly profile, SIMD and atomics in `target/c.rs`.
 
+`patches/0006-libweb-wasi.patch` builds LibWeb and the libraries it needs (LibGfx, LibMedia, LibCompositing, LibIPC,
+LibTLS, LibHTTP, ...) for WASI when configured with `-DENABLE_GUI_TARGETS=ON`. There are no Services or UI; LibJS is
+folded into LibWeb. It also adds `webby-render`, a one-process HTML-to-PNG renderer
+(`Utilities/webby-render.cpp`). It parses a file: URL into a Page in the same process, lays it out, records the
+display list, and rasterizes it on the CPU with the Compositor's Skia player sources linked in. Its deps come from
+`deps/libweb-deps.sh`, `header-deps.sh`, `media-deps.sh` and `skia.sh`. Configure also needs the HSTS preload JSON in
+`Build/caches/HSTSPreload/`. Fonts come from `$XDG_DATA_DIRS/fonts`, so preopen a host font dir with
+`WASI_RUN_DIRS=/usr/share/fonts` (a comma list of `host[=guest]` dirs that tools/wasi-run.py preopens).
+
 What it took beyond the patches:
 
 - GC roots in wasm locals. After every link, `cmake/wasi.cmake` runs binaryen's `wasm-opt --spill-pointers
