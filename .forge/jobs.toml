@@ -17,3 +17,24 @@ apt-get install -y -qq --no-install-recommends ca-certificates curl python3 xvfb
 curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.56.0 bash > /dev/null
 python3 -u scripts/forge_appimage.py
 """
+
+# webby in WebAssembly (wasm/README.md), in two jobs that each run a `depot build` with cache mounts Depot keeps
+# between runs. See wasm/ci/forge_wasm.py.
+# wasm-deps: the WASI sysroot (wasm/deps/all.sh: ICU, OpenSSL, Skia, FFmpeg, ... and the patched wasm-opt) as
+# webby-wasi-sysroot-<key>.tar.zst on the rolling `wasm-deps` release. The key hashes the scripts that make it, so
+# a push that doesn't touch them builds nothing.
+[[job]]
+name = "wasm-deps"
+branches = ["main"]
+timeout = 3600
+run = "depot --version && python3 -u wasm/ci/forge_wasm.py deps"
+
+# wasm-engine: Ladybird with patches/ and wasm/patches/ for wasm32-wasip1 against that sysroot; the programs in
+# wasm/ci/engine-targets (js for now) go on the rolling `wasm-engine` release. A cold build takes longer than the
+# job's hour: it stops in time, keeps its build directory in Depot's cache and starts this job again to carry on.
+[[job]]
+name = "wasm-engine"
+branches = ["main"]
+after = "wasm-deps"
+timeout = 3600
+run = "depot --version && python3 -u wasm/ci/forge_wasm.py engine"

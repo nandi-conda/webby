@@ -7,3 +7,5 @@ __pycache__/
 nim/webby-screencast
 nim/webby-tabrec
 nim/webby-pdf
+wasm/ci/out/
+/build/wasm-*

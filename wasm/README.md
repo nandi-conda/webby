@@ -13,6 +13,7 @@ latha:gui host. Not usable yet.
 | `patches/` | Ladybird changes for a WASI build, on top of `../LADYBIRD_COMMIT` and `../patches/` |
 | `tests/` | small wasm programs that check a dependency works (`tests/skia-rect.sh`) |
 | `tools/wasi-run.py` | runs a wasm32-wasip1 program with PyPI wasmtime (`LIBJS_TARGET_RUNNER` for the layout generator) |
+| `ci/` | the forge jobs `wasm-deps` and `wasm-engine` (see [Forge CI](#forge-ci)) |
 | `build-engine.sh` | configures and builds Ladybird for wasm32-wasip1 (target `js` for now) |
 
 ## Status (2026-11-11)
@@ -130,3 +131,25 @@ python tools/wasi-run.py build/ladybird/bin/js -c 'print(6 * 7)'
 ```
 
 Sources come from git (the versions Ladybird's vcpkg.json pins); GitHub release archives are not needed.
+
+`deps/all.sh SRC WORK [stage...]` does every dependency step above in order, from the checkouts it makes of
+`deps/sources.txt` (the versions Ladybird's vcpkg.json pins).
+
+## Forge CI
+
+Two jobs in `../.forge/jobs.toml` build this on the fileapi forge (nandi.uk/webby), each a `depot build` whose
+BuildKit cache mounts Depot keeps between runs (`ci/forge_wasm.py`):
+
+- `wasm-deps` runs `deps/all.sh` (`ci/deps.Dockerfile`, one layer per stage) and publishes the sysroot as
+  `webby-wasi-sysroot-<key>.tar.zst` on the rolling `wasm-deps` release. `<key>` hashes `deps/`, `compat/`,
+  `cmake/`, `tools/meson-wasi-cc`, `ci/deps.Dockerfile` and `ci/base.sh` (`python3 ci/forge_wasm.py key`); when
+  the asset is already there the job builds nothing. Unpack it with `tar -C /opt -I zstd -xf ...`: it is
+  `/opt/webby-wasi`, the path its `.pc` and CMake files name.
+- `wasm-engine` (after `wasm-deps`) checks out `../LADYBIRD_COMMIT`, applies `../patches/*` and `patches/*`, runs
+  `build-engine.sh` for the targets in `ci/engine-targets` (`ci/engine.sh`), smoke-tests `js.wasm` and publishes
+  `<target>.wasm`, `SHA256SUMS` and the build log on the rolling `wasm-engine` release. The checkout and build
+  directory live in Depot's cache, and a build that would pass the forge's one-hour limit stops in time and starts
+  the job again, which carries on where it stopped.
+
+The image (`ci/base.sh`): Ubuntu 24.04, wasi-sdk 27 in `/opt/wasi-sdk`, CMake/Ninja/Meson and PyPI wasmtime in
+`/opt/venv`, Ladybird's Rust toolchain with wasm32-wasip1.

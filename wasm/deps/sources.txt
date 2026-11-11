@@ -1,0 +1,26 @@
+# Sources of the WASI dependencies (deps/all.sh clones them): name, git URL, tag or commit.
+# Versions are the ones Ladybird's vcpkg.json overrides pin at ../LADYBIRD_COMMIT (skia: its overlay port's commit).
+icu            https://github.com/unicode-org/icu                release-78.3
+openssl        https://github.com/openssl/openssl                openssl-3.6.5
+libpsl         https://github.com/rockdaboot/libpsl              0.21.5
+fast_float     https://github.com/fastfloat/fast_float           v8.3.1
+zmij           https://github.com/vitaut/zmij                    v1.2
+simdutf        https://github.com/simdutf/simdutf                v9.1.1
+libtommath     https://github.com/libtom/libtommath              v1.3.0
+mimalloc       https://github.com/microsoft/mimalloc             v2.2.7
+fmt            https://github.com/fmtlib/fmt                     12.1.0
+simdjson       https://github.com/simdjson/simdjson              v4.2.4
+zlib           https://github.com/madler/zlib                    v1.3.2
+libpng         https://github.com/pnggroup/libpng                v1.6.59
+libjpeg-turbo  https://github.com/libjpeg-turbo/libjpeg-turbo    3.2.0
+libwebp        https://github.com/webmproject/libwebp            v1.6.0
+brotli         https://github.com/google/brotli                  v1.2.0
+woff2          https://github.com/google/woff2                   v1.0.2
+freetype       https://github.com/freetype/freetype              VER-2-13-3
+harfbuzz       https://github.com/harfbuzz/harfbuzz              10.2.0
+libxml2        https://github.com/GNOME/libxml2                  v2.15.4
+sqlite         https://github.com/sqlite/sqlite                  version-3.53.4
+dav1d          https://code.videolan.org/videolan/dav1d          1.5.4
+libavif        https://github.com/AOMediaCodec/libavif           v1.4.2
+ffmpeg         https://github.com/FFmpeg/FFmpeg                  n9.0.2
+skia           https://skia.googlesource.com/skia                e7c90ecca9444fe09598f1630ab7cee2c0ee027a
