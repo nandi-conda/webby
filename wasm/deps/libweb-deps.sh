@@ -8,6 +8,8 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd); S=$1; D=$2; P=${WEBBY_WASI_SYSROOT:?}; mkdir -p "$D"
 dep() { "$here/cmake-dep.sh" "$@"; }
 dep "$S/zlib" "$D/zlib" -DZLIB_BUILD_TESTING=OFF -DZLIB_BUILD_SHARED=OFF
+# LibImageDecoders needs APNG: the libpng-apng patch vcpkg applies (sourceforge.net/projects/libpng-apng).
+git -C "$S/libpng" apply --check "$here/libpng-1.6.59-apng.patch" 2>/dev/null && git -C "$S/libpng" apply "$here/libpng-1.6.59-apng.patch"
 dep "$S/libpng" "$D/libpng" -DPNG_SHARED=OFF -DPNG_TESTS=OFF -DPNG_TOOLS=OFF -DPNG_HARDWARE_OPTIMIZATIONS=OFF
 dep "$S/libjpeg-turbo" "$D/jpeg" -DENABLE_SHARED=OFF -DWITH_SIMD=OFF -DWITH_TURBOJPEG=OFF -DCMAKE_SYSTEM_PROCESSOR=wasm32
 dep "$S/brotli" "$D/brotli" -DBROTLI_DISABLE_TESTS=ON -DBROTLI_BUILD_TOOLS=OFF
