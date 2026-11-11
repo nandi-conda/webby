@@ -1,0 +1,23 @@
+# webby on Qt (see README.md): the browser UI is a QtGui program built into a latha:gui WebAssembly component with
+# qt2wasm, and webby-qt is the native host that runs it in a Qt window and renders pages with libwebby (Ladybird).
+[workspace]
+name = "webby-qt"
+channels = ["conda-forge", "https://prefix.dev/nandi-testing"]
+platforms = ["linux-64"]
+
+[system-requirements]
+libc = { family = "glibc", version = "2.35" }
+
+[dependencies]
+# The component: qt2wasm with Qt for WASI, wasi-sdk, wit-bindgen, wasm-tools.
+qt2wasm = ">=0.10.1"
+# The host: Qt 6 for the window, Rust for wasmtime, libwebby for pages.
+qt6-main = ">=6.8"
+rust = ">=1.85"
+cmake = ">=3.24"
+ninja = "*"
+cxx-compiler = "*"
+webby-ladybird = ">=2026.11.9.1"
+fonts-conda-ecosystem = "*"
+
+[tasks]

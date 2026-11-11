@@ -1,0 +1,277 @@
+diff --git a/AK/NumericLimits.h b/AK/NumericLimits.h
+index 90075a00..8c5926a2 100644
+--- a/AK/NumericLimits.h
++++ b/AK/NumericLimits.h
+@@ -148,6 +148,15 @@ struct NumericLimits<long double> {
+ 
+ template<>
+ struct NumericLimits<f16> {
++#if defined(AK_HAS_SOFT_FLOAT16)
++    static constexpr f16 lowest() { return f16::from_bits(0xfbff); }
++    static constexpr f16 min_normal() { return f16::from_bits(0x0400); }
++    static constexpr f16 min_denormal() { return f16::from_bits(0x0001); }
++    static constexpr f16 max() { return f16::from_bits(0x7bff); }
++    static constexpr f16 epsilon() { return f16::from_bits(0x1400); }
++    static constexpr bool is_signed() { return true; }
++    static constexpr size_t digits() { return 11; }
++#else
+     static constexpr f16 lowest() { return -__FLT16_MAX__; }
+     static constexpr f16 min_normal() { return __FLT16_MIN__; }
+     static constexpr f16 min_denormal() { return __FLT16_DENORM_MIN__; }
+@@ -155,6 +164,7 @@ struct NumericLimits<f16> {
+     static constexpr f16 epsilon() { return __FLT16_EPSILON__; }
+     static constexpr bool is_signed() { return true; }
+     static constexpr size_t digits() { return __FLT16_MANT_DIG__; }
++#endif
+ };
+ 
+ }
+diff --git a/AK/Platform.h b/AK/Platform.h
+index 4eea285f..cd744771 100644
+--- a/AK/Platform.h
++++ b/AK/Platform.h
+@@ -130,6 +130,10 @@
+ #    define AK_OS_GNU_HURD
+ #endif
+ 
++#if defined(__wasi__)
++#    define AK_OS_WASI
++#endif
++
+ #if defined(__MACH__)
+ #    define AK_OS_MACH
+ #endif
+diff --git a/AK/Types.h b/AK/Types.h
+index 104679f1..546c853e 100644
+--- a/AK/Types.h
++++ b/AK/Types.h
+@@ -17,8 +17,101 @@ using i32 = __INT32_TYPE__;
+ using i16 = __INT16_TYPE__;
+ using i8 = __INT8_TYPE__;
+ 
++#if defined(__wasi__)
++// WebAssembly has no _Float16 (clang refuses it for wasm32), so f16 is a binary16 value that computes in float.
++namespace AK::Detail {
++struct SoftFloat16 {
++    __UINT16_TYPE__ bits { 0 };
++
++    constexpr SoftFloat16() = default;
++    constexpr SoftFloat16(float value)
++        : bits(from_float(value))
++    {
++    }
++    constexpr SoftFloat16(double value)
++        : bits(from_float(static_cast<float>(value)))
++    {
++    }
++    constexpr SoftFloat16(int value)
++        : bits(from_float(static_cast<float>(value)))
++    {
++    }
++    static constexpr SoftFloat16 from_bits(__UINT16_TYPE__ bits)
++    {
++        SoftFloat16 value;
++        value.bits = bits;
++        return value;
++    }
++    constexpr operator float() const { return to_float(bits); }
++    constexpr explicit operator double() const { return to_float(bits); }
++
++    constexpr SoftFloat16 operator-() const { return from_bits(bits ^ 0x8000); }
++    friend constexpr SoftFloat16 operator+(SoftFloat16 a, SoftFloat16 b) { return float(a) + float(b); }
++    friend constexpr SoftFloat16 operator-(SoftFloat16 a, SoftFloat16 b) { return float(a) - float(b); }
++    friend constexpr SoftFloat16 operator*(SoftFloat16 a, SoftFloat16 b) { return float(a) * float(b); }
++    friend constexpr SoftFloat16 operator/(SoftFloat16 a, SoftFloat16 b) { return float(a) / float(b); }
++
++    static constexpr float to_float(__UINT16_TYPE__ h)
++    {
++        __UINT32_TYPE__ sign = (h & 0x8000u) << 16;
++        __UINT32_TYPE__ exponent = (h >> 10) & 0x1f;
++        __UINT32_TYPE__ mantissa = h & 0x3ff;
++        __UINT32_TYPE__ f;
++        if (exponent == 0x1f) {
++            f = sign | 0x7f800000u | (mantissa << 13);
++        } else if (exponent != 0) {
++            f = sign | ((exponent + 112) << 23) | (mantissa << 13);
++        } else if (mantissa == 0) {
++            f = sign;
++        } else {
++            exponent = 113;
++            while (!(mantissa & 0x400)) {
++                mantissa <<= 1;
++                --exponent;
++            }
++            f = sign | (exponent << 23) | ((mantissa & 0x3ff) << 13);
++        }
++        return __builtin_bit_cast(float, f);
++    }
++
++    // Rounds to nearest, ties to even, as a hardware conversion does.
++    static constexpr __UINT16_TYPE__ from_float(float value)
++    {
++        __UINT32_TYPE__ f = __builtin_bit_cast(__UINT32_TYPE__, value);
++        __UINT32_TYPE__ sign = (f >> 16) & 0x8000;
++        __UINT32_TYPE__ exponent = (f >> 23) & 0xff;
++        __UINT32_TYPE__ mantissa = f & 0x7fffff;
++        if (exponent == 0xff)
++            return sign | 0x7c00 | (mantissa ? 0x200 | (mantissa >> 13) : 0);
++        __INT32_TYPE__ e = __INT32_TYPE__(exponent) - 127 + 15;
++        if (e >= 0x1f)
++            return sign | 0x7c00;
++        if (e <= 0) {
++            if (e < -10)
++                return sign;
++            mantissa |= 0x800000;
++            __UINT32_TYPE__ shift = 14 - e;
++            __UINT32_TYPE__ half = mantissa >> shift;
++            __UINT32_TYPE__ rest = mantissa & ((1u << shift) - 1);
++            __UINT32_TYPE__ midpoint = 1u << (shift - 1);
++            if (rest > midpoint || (rest == midpoint && (half & 1)))
++                ++half;
++            return sign | half;
++        }
++        __UINT32_TYPE__ half = (__UINT32_TYPE__(e) << 10) | (mantissa >> 13);
++        __UINT32_TYPE__ rest = mantissa & 0x1fff;
++        if (rest > 0x1000 || (rest == 0x1000 && (half & 1)))
++            ++half; // may carry into the exponent, up to infinity, which is right
++        return sign | half;
++    }
++};
++}
++using f16 = AK::Detail::SoftFloat16;
++#    define AK_HAS_SOFT_FLOAT16 1
++#else
+ using f16 = _Float16;
+ static_assert(__FLT16_MANT_DIG__ == 11 && __FLT16_MAX_EXP__ == 16);
++#endif
+ 
+ using f32 = float;
+ static_assert(__FLT_MANT_DIG__ == 24 && __FLT_MAX_EXP__ == 128);
+diff --git a/Libraries/CMakeLists.txt b/Libraries/CMakeLists.txt
+index fcfc0578..e5f45dde 100644
+--- a/Libraries/CMakeLists.txt
++++ b/Libraries/CMakeLists.txt
+@@ -1,3 +1,12 @@
++if (WASI)
++    # The engine for one WebAssembly module: what JavaScript needs, for now.
++    set(LIBJS_FOLDED_INTO_LIBWEB OFF)
++    foreach(lib LibCore LibCrypto LibFileSystem LibGC LibJS LibMain LibRegex LibSyntax LibTextCodec LibURL LibUnicode)
++        add_subdirectory(${lib})
++    endforeach()
++    return()
++endif()
++
+ add_subdirectory(LibCompress)
+ add_subdirectory(LibCore)
+ add_subdirectory(LibCrypto)
+diff --git a/Meta/CMake/check_for_dependencies.cmake b/Meta/CMake/check_for_dependencies.cmake
+index 3a1dc876..e2621d5a 100644
+--- a/Meta/CMake/check_for_dependencies.cmake
++++ b/Meta/CMake/check_for_dependencies.cmake
+@@ -1,5 +1,11 @@
+ include_guard()
+ 
++# A WebAssembly (WASI) build has only the dependencies the engine needs inside one module.
++if (WASI)
++    include(check_for_dependencies_wasi)
++    return()
++endif()
++
+ find_package(PkgConfig REQUIRED)
+ 
+ if (NOT WIN32 AND NOT ANDROID)
+diff --git a/Meta/CMake/check_for_dependencies_wasi.cmake b/Meta/CMake/check_for_dependencies_wasi.cmake
+new file mode 100644
+index 00000000..91931745
+--- /dev/null
++++ b/Meta/CMake/check_for_dependencies_wasi.cmake
+@@ -0,0 +1,31 @@
++# Dependencies of a WebAssembly build (wasm32-wasip1, webby's wasm/ directory). Only what the libraries built for WASI
++# use; each comes from the sysroot webby builds for it (CMAKE_PREFIX_PATH).
++include_guard()
++
++find_package(PkgConfig)
++find_package(mimalloc CONFIG REQUIRED)
++find_package(FastFloat CONFIG REQUIRED)
++find_package(simdutf REQUIRED)
++find_package(zmij CONFIG REQUIRED)
++find_package(ICU 78.3 EXACT REQUIRED COMPONENTS data i18n uc)
++find_package(OpenSSL REQUIRED)
++find_package(Python3 REQUIRED COMPONENTS Interpreter)
++find_package(Git)
++
++find_path(LIBTOMMATH_INCLUDE_DIR tommath.h REQUIRED)
++find_library(LIBTOMMATH_LIBRARY tommath REQUIRED)
++add_library(PkgConfig::libtommath INTERFACE IMPORTED)
++target_include_directories(PkgConfig::libtommath INTERFACE "${LIBTOMMATH_INCLUDE_DIR}")
++target_link_libraries(PkgConfig::libtommath INTERFACE "${LIBTOMMATH_LIBRARY}")
++
++set(HAS_FONTCONFIG OFF CACHE BOOL "" FORCE)
++set(HAS_VULKAN OFF CACHE BOOL "" FORCE)
++set(USE_VULKAN_DMABUF_IMAGES OFF CACHE BOOL "" FORCE)
++set(HAS_DIRECTX OFF CACHE BOOL "" FORCE)
++
++pkg_check_modules(LIBPSL REQUIRED IMPORTED_TARGET libpsl)
++
++# wasi-libc's pthreads are stubs for a single-threaded module and need no library.
++if (NOT TARGET Threads::Threads)
++    add_library(Threads::Threads INTERFACE IMPORTED)
++endif()
+diff --git a/Meta/CMake/use_linker.cmake b/Meta/CMake/use_linker.cmake
+index cf48ac34..4968c961 100644
+--- a/Meta/CMake/use_linker.cmake
++++ b/Meta/CMake/use_linker.cmake
+@@ -4,7 +4,8 @@
+ # SPDX-License-Identifier: BSD-2-Clause
+ #
+ 
+-if (NOT APPLE AND NOT ANDROID AND NOT VCPKG_TARGET_ANDROID AND NOT WIN32 AND NOT LAGOM_USE_LINKER)
++# A WebAssembly build links with wasi-sdk's wasm-ld (CMAKE_TOOLCHAIN_FILE is read later, at project()).
++if (NOT APPLE AND NOT ANDROID AND NOT VCPKG_TARGET_ANDROID AND NOT WIN32 AND NOT LAGOM_USE_LINKER AND NOT CMAKE_TOOLCHAIN_FILE MATCHES "wasi")
+     find_program(LLD_LINKER NAMES "ld.lld")
+     if (LLD_LINKER)
+         message(STATUS "Using LLD to link Lagom.")
+diff --git a/Utilities/CMakeLists.txt b/Utilities/CMakeLists.txt
+index d270120c..53b31f14 100644
+--- a/Utilities/CMakeLists.txt
++++ b/Utilities/CMakeLists.txt
+@@ -1,4 +1,8 @@
+ ladybird_utility(js SOURCES js.cpp LIBS LibJSStandalone LibMain)
++if (WASI)
++    # No line editor in a WebAssembly module (js.cpp does without one), and only js so far.
++    return()
++endif()
+ if (NOT WIN32 AND NOT ANDROID)
+     target_link_libraries(js PRIVATE PkgConfig::LIBEDIT)
+ endif()
+diff --git a/Utilities/js.cpp b/Utilities/js.cpp
+index da7dd71d..4945cce8 100644
+--- a/Utilities/js.cpp
++++ b/Utilities/js.cpp
+@@ -7,7 +7,7 @@
+ #include <LibJS/ToolEntryPoints.h>
+ #include <LibMain/Main.h>
+ 
+-#if !defined(AK_OS_WINDOWS) && !defined(AK_OS_ANDROID)
++#if !defined(AK_OS_WINDOWS) && !defined(AK_OS_ANDROID) && !defined(AK_OS_WASI)
+ #    include <editline/readline.h>
+ #endif
+ 
+@@ -25,7 +25,7 @@ struct JSLineEditor {
+ };
+ }
+ 
+-#if !defined(AK_OS_WINDOWS) && !defined(AK_OS_ANDROID)
++#if !defined(AK_OS_WINDOWS) && !defined(AK_OS_ANDROID) && !defined(AK_OS_WASI)
+ static LineCompletionFunction s_complete_line;
+ 
+ static char** complete_line_being_edited(char const*, int, int)
+@@ -50,7 +50,7 @@ static constexpr JSLineEditor s_libedit_line_editor {
+ 
+ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+ {
+-#if defined(AK_OS_WINDOWS) || defined(AK_OS_ANDROID)
++#if defined(AK_OS_WINDOWS) || defined(AK_OS_ANDROID) || defined(AK_OS_WASI)
+     JSLineEditor const* line_editor = nullptr;
+ #else
+     JSLineEditor const* line_editor = &s_libedit_line_editor;
