@@ -64,6 +64,14 @@ Running: `python tools/wasi-run.py build/ladybird/bin/js script.js`. The LibJS r
 limits: ArrayBuffers of 2 GiB and more, typed array lengths past 2^32, and two index edge cases (array length 2^32-1,
 the order of `-1` among numeric property names).
 
+`patches/0005-libwasm-engine-wasm32.patch` makes LibWasm's engine (`libwasm_engine`, which LibWeb's Rust bindings
+depend on) build for wasm32-wasip1. The JIT is never enabled there (`jit::enabled()` is false), but the JIT crate
+builds its x86-64 backend on wasm32 so the engine's glue type-checks. There is no LibWasm interpreter on wasm32 yet
+(Engine/build.rs only runs flapc for x86_64/aarch64), so calling into a wasm module traps, and memories not backed by
+the GC heap's primitive storage fail to allocate (WASI has no address-space reservations). Three LibWeb Rust
+size asserts only hold on 64-bit targets. Running LibWasm's `interpreter.flap` through the Flap C backend needs the
+WebAssembly profile, SIMD and atomics in `target/c.rs`.
+
 What it took beyond the patches:
 
 - GC roots in wasm locals. After every link, `cmake/wasi.cmake` runs binaryen's `wasm-opt --spill-pointers
