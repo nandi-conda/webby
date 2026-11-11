@@ -10,7 +10,7 @@ RUST_TOOLCHAIN=1.98.0
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends ca-certificates curl git build-essential perl python3 \
-  python3-venv pkg-config xz-utils zstd file unzip > /dev/null
+  python3-venv pkg-config xz-utils zstd file unzip fonts-liberation > /dev/null
 rm -rf /var/lib/apt/lists/*
 curl -fsSL "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VERSION%%.*}/wasi-sdk-${WASI_SDK_VERSION}-x86_64-linux.tar.gz" \
   | tar -xz -C /opt

@@ -16,6 +16,7 @@ COPY wasm/build-engine.sh /w/wasm/build-engine.sh
 COPY wasm/cmake /w/wasm/cmake
 COPY wasm/compat /w/wasm/compat
 COPY wasm/tools /w/wasm/tools
+COPY wasm/tests /w/wasm/tests
 COPY wasm/patches /w/wasm/patches
 COPY wasm/ci/engine.sh /w/wasm/ci/engine.sh
 ARG TARGETS=js

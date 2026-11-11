@@ -65,5 +65,19 @@ if [[ " $targets " == *" js "* ]]; then
   [ "$got" = 42 ] || fail "js.wasm smoke test printed: $got"
   echo "js.wasm prints $got"
 fi
+if [[ " $targets " == *" webby-render "* ]]; then
+  # tests/webby-render-test.html (gradients, transforms, text, a script) to a PNG, as the wasm-port thread runs it.
+  page=$(mktemp -d); cp "$w/wasm/tests/webby-render-test.html" "$page/index.html"
+  (cd "$lb" && XDG_DATA_DIRS=/usr/share WASI_RUN_DIRS="/usr/share/fonts,$lb/Base/res=/res,$page" timeout 600 \
+    python "$w/wasm/tools/wasi-run.py" "$out/webby-render.wasm" --theme /res/themes/Default.ini \
+    -o "$page/out.png" "$page/index.html") > "$out/webby-render-test.log" 2>&1
+  rc=$?
+  if [ $rc != 0 ] || [ "$(head -c 8 "$page/out.png" 2>/dev/null | od -An -tx1 | tr -d ' ')" != 89504e470d0a1a0a ] \
+     || [ "$(stat -c %s "$page/out.png")" -lt 10000 ]; then
+    tail -40 "$out/webby-render-test.log"; fail "webby-render smoke test failed (exit $rc)"
+  fi
+  cp "$page/out.png" "$out/webby-render-test.png"
+  echo "webby-render drew a $(stat -c %s "$out/webby-render-test.png")-byte PNG"
+fi
 (cd "$out" && sha256sum ./*.wasm > SHA256SUMS)
 status ok
