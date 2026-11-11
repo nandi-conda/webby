@@ -93,6 +93,7 @@ def depot_build(dockerfile, out, build_args, log):
     if not shutil.which("depot"):
         sys.exit("the depot CLI is missing (the forge installs it for jobs whose run mentions depot)")
     shutil.rmtree(out, ignore_errors=True)
+    log.parent.mkdir(parents=True, exist_ok=True)
     cmd = ["depot", "build", "--progress", "plain", "--platform", "linux/amd64", "-f", str(dockerfile),
            "--target", "out", "--output", f"type=local,dest={out}", str(ROOT)]
     for k, v in build_args.items():
