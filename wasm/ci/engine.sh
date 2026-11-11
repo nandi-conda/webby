@@ -79,7 +79,12 @@ if [[ " $targets " == *" webby-render "* ]]; then
   [ -s "$adapter" ] || curl -fsSL -o "$adapter" \
     https://github.com/bytecodealliance/wasmtime/releases/download/v36.0.0/wasi_snapshot_preview1.command.wasm \
     || fail "downloading the preview1 command adapter failed"
-  export WASMTIME=$tools/bin/wasmtime WASM_TOOLS=$tools/bin/wasm-tools LATHA_RUN=$tools/bin/latha-run WEBBY_WASI_ADAPTER=$adapter
+  # The conda wasmtime (36) cannot compile wasm exceptions, which setjmp/longjmp are on WASI; 40 can.
+  wasmtime_cli=$C/wasmtime-v40.0.0-x86_64-linux/wasmtime
+  [ -x "$wasmtime_cli" ] || curl -fsSL \
+    https://github.com/bytecodealliance/wasmtime/releases/download/v40.0.0/wasmtime-v40.0.0-x86_64-linux.tar.xz \
+    | tar -xJ -C "$C" || fail "downloading wasmtime 40 failed"
+  export WASMTIME=$wasmtime_cli WASM_TOOLS=$tools/bin/wasm-tools LATHA_RUN=$tools/bin/latha-run WEBBY_WASI_ADAPTER=$adapter
 fi
 if [[ " $targets " == *" webby-render "* ]]; then
   # tests/webby-render-test.html (gradients, transforms, text, a script) to a PNG, as the wasm-port thread runs it.
