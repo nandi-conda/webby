@@ -58,9 +58,34 @@ the wasm32 layout marks `<OFFSET>_WIDTH = 4` load and store as 32 bits. `flapc -
   (`__heap_base` and up on wasm32) are pointer-width aware. Every 4-byte field gets `<OFFSET>_WIDTH = 4` in the wasm32
   layout, so the interpreter reads e.g. the VM's interpreter stack bounds as 32 bits.
 
-Running: `python tools/wasi-run.py build/ladybird/bin/js script.js` runs closures, classes, generators, async
-functions, exceptions, JSON, RegExp, Date, Intl, BigInt and typed arrays correctly. Known bug: array indexing in the
-C interpreter's GetByValue fast path reads index 0 (`[5,6,7][1]` is 5), being fixed in the Flap C backend.
+Running: `python tools/wasi-run.py build/ladybird/bin/js script.js`. The LibJS runtime suite
+(`test-js-runtime Tests/LibJS/Runtime Tests/LibJS/Runtime/test-common.js`, built with `BUILD_TESTING=ON`) passes
+7654 of 7668 tests in wasmtime, and `-g` (collect after every allocation) passes too. The 11 failures are 32-bit
+limits: ArrayBuffers of 2 GiB and more, typed array lengths past 2^32, and two index edge cases (array length 2^32-1,
+the order of `-1` among numeric property names).
+
+What it took beyond the patches:
+
+- GC roots in wasm locals. After every link, `cmake/wasi.cmake` runs binaryen's `wasm-opt --spill-pointers
+  --stack-check` (keeping names) when `$WEBBY_WASI_SYSROOT/bin/webby-wasm-opt` exists. `deps/binaryen.sh` builds that
+  from binaryen 121 with `deps/binaryen-webby.patch`: SpillPointers also spills i64 locals (NaN-boxed JS values, whose
+  low 32 bits are an address), the spill area is given back before tail calls (the interpreter dispatches by
+  `return_call`; without this every handler leaked stack), and `--pass-arg=stack-check-size@N` starts StackCheck's
+  limits at the initial stack pointer, so an overflow of the 8 MiB shadow stack traps instead of silently overwriting
+  the static data below it (it had been corrupting ICU's resource bundles).
+- The wasm32 VM keeps 96 KiB of native stack in reserve, like ASan builds, since registers and spills live there.
+- `tools/wasi-run.py` gives wasmtime a 256 MiB wasm stack (`max_wasm_stack`, and the async stack size, which must be
+  at least as big) and runs the module on a thread with that much native stack, so Ladybird's own recursion check
+  fires before the engine's.
+- 32-bit AK: a short String holds 3 bytes there, so `String::from_code_point` makes a heap string for 4-byte UTF-8.
+- clang runs `wasm-opt` itself after linking whenever one is on PATH (pixi has one) and that drops the name section;
+  `--no-wasm-opt` stops it.
+
+LibWeb's dependencies build for WASI too: `deps/libweb-deps.sh` (zlib, libpng, libjpeg-turbo without SIMD, brotli,
+libwebp, woff2's libraries, FreeType, HarfBuzz with `HB_NO_MMAP`, libxml2, SQLite through `deps/sqlite.sh`:
+single-threaded, no WAL or mmap) and `deps/media-deps.sh` (dav1d through meson with `tools/meson-wasi-cc`, libavif,
+and FFmpeg 9.0.2 with only the decoders LibMedia uses, no threads, no asm). setjmp/longjmp is wasm exception handling
+everywhere (`-mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false`, `-lsetjmp`).
 
 Skia (`deps/skia.sh`, the pin's e7c90ecca9, "skia 148", for the Compositor) builds for WASI as a CPU raster
 library: no Ganesh/Graphite/GL/Vulkan, no PDF, FreeType with the empty font manager (no fontconfig) and Skia's
@@ -83,6 +108,9 @@ pixi run deps/icu.sh <icu>/icu4c/source build/icu "$WEBBY_WASI_SYSROOT"
 pixi run deps/openssl.sh <openssl> build/openssl "$WEBBY_WASI_SYSROOT"
 pixi run deps/libpsl.sh <libpsl> build/psl "$WEBBY_WASI_SYSROOT"
 pixi run deps/cmake-dep.sh <src> build/<name> [cmake args]   # fast_float, zmij, simdutf, libtommath, mimalloc
+pixi run deps/libweb-deps.sh <src dir> build   # checkouts of zlib, libpng, ... sqlite in <src dir>
+pixi run deps/media-deps.sh <src dir> build    # dav1d, libavif, ffmpeg; needs meson
+deps/binaryen.sh build/binaryen "$WEBBY_WASI_SYSROOT"   # host wasm-opt, before configuring Ladybird
 git clone https://skia.googlesource.com/skia <skia> && git -C <skia> checkout e7c90ecca9444fe09598f1630ab7cee2c0ee027a
 pixi run deps/skia.sh <skia> build/skia "$WEBBY_WASI_SYSROOT"   # fetches gn + FreeType/libpng/zlib by git
 pixi run tests/skia-rect.sh build/skia-test /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf

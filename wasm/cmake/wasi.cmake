@@ -10,6 +10,10 @@ if(DEFINED ENV{WEBBY_WASI_SYSROOT} AND EXISTS "$ENV{WEBBY_WASI_SYSROOT}/include/
     string(APPEND _emu " -isystem $ENV{WEBBY_WASI_SYSROOT}/include -include $ENV{WEBBY_WASI_SYSROOT}/include/webby_wasi_compat.h")
     string(APPEND _libs " -L$ENV{WEBBY_WASI_SYSROOT}/lib -lwebby_wasi_compat")
 endif()
+# setjmp/longjmp (libpng's and libjpeg's error handling) use the exception-handling proposal with exnref, which
+# wasmtime runs with wasm_exceptions on (tools/wasi-run.py); libsetjmp is wasi-libc's runtime for it.
+string(APPEND _emu " -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false")
+string(APPEND _libs " -lsetjmp")
 set(CMAKE_C_FLAGS_INIT "${_emu}")
 set(CMAKE_CXX_FLAGS_INIT "${_emu}")
 # LibGC and PrimitiveStorage treat the low 2 GiB of linear memory as their region (patches/0002), so memory never
@@ -18,7 +22,22 @@ string(APPEND _libs " -Wl,--max-memory=2147483648 -Wl,-z,stack-size=8388608")
 # crt1's _start reaches main through a weak reference to __main_argc_argv, which does not pull LibMain's Main.cpp out of
 # its static archive: without this, wasm-ld turns the call to main into `unreachable`.
 string(APPEND _libs " -Wl,--undefined=__main_argc_argv")
+# clang runs binaryen's wasm-opt after linking whenever one is on PATH (pixi has one), which drops the name section.
+# The build runs wasm-opt itself where it wants it.
+string(APPEND _libs " --no-wasm-opt")
 set(CMAKE_EXE_LINKER_FLAGS_INIT "${_libs}")
+# After linking, every program goes through binaryen (deps/binaryen.sh builds the patched webby-wasm-opt):
+#  --spill-pointers: LibGC's conservative scan cannot see wasm locals, so live i32 and i64 (NaN-boxed JS value) locals
+#    are stored to the shadow stack before each call.
+#  --stack-check: the shadow stack sits right above the static data, so an overflow traps instead of overwriting it.
+# Names are kept for backtraces.
+if(DEFINED ENV{WEBBY_WASI_SYSROOT} AND EXISTS "$ENV{WEBBY_WASI_SYSROOT}/bin/webby-wasm-opt")
+    set(_spill "$ENV{WEBBY_WASI_SYSROOT}/bin/webby-wasm-opt -g --all-features --spill-pointers --stack-check --pass-arg=stack-check-size@8388608 <TARGET> -o <TARGET>")
+    foreach(_lang C CXX)
+        set(CMAKE_${_lang}_LINK_EXECUTABLE
+            "<CMAKE_${_lang}_COMPILER> <FLAGS> <CMAKE_${_lang}_LINK_FLAGS> <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES> && ${_spill}")
+    endforeach()
+endif()
 if(DEFINED ENV{WEBBY_WASI_SYSROOT})
     list(PREPEND CMAKE_FIND_ROOT_PATH "$ENV{WEBBY_WASI_SYSROOT}")
     list(PREPEND CMAKE_PREFIX_PATH "$ENV{WEBBY_WASI_SYSROOT}")

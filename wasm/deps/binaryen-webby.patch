@@ -1,0 +1,172 @@
+diff --git a/src/abi/stack.h b/src/abi/stack.h
+index ae488e8..616a1e9 100644
+--- a/src/abi/stack.h
++++ b/src/abi/stack.h
+@@ -91,6 +91,49 @@ getStackSpace(Index local, Function* func, Index size, Module& wasm) {
+       *ptr = builder.makeSequence(makeStackRestore(), ret);
+     }
+   }
++  // webby: and to tail calls, whose frame goes away at the call. The operands
++  // are evaluated first (they may read the stack space), then the stack is
++  // restored, then the call is made.
++  auto restoreBeforeTailCall = [&](Expression** ptr, ExpressionList& operands,
++                                   Expression** target) {
++    auto* block = builder.makeBlock();
++    auto save = [&](Expression*& operand) {
++      auto temp = builder.addVar(func, operand->type);
++      block->list.push_back(builder.makeLocalSet(temp, operand));
++      operand = builder.makeLocalGet(temp, operand->type);
++    };
++    for (auto*& operand : operands) {
++      save(operand);
++    }
++    if (target) {
++      save(*target);
++    }
++    block->list.push_back(makeStackRestore());
++    block->list.push_back(*ptr);
++    block->finalize();
++    *ptr = block;
++  };
++  FindAllPointers<Call> callFinder(func->body);
++  for (auto** ptr : callFinder.list) {
++    auto* call = (*ptr)->cast<Call>();
++    if (call->isReturn) {
++      restoreBeforeTailCall(ptr, call->operands, nullptr);
++    }
++  }
++  FindAllPointers<CallIndirect> indirectFinder(func->body);
++  for (auto** ptr : indirectFinder.list) {
++    auto* call = (*ptr)->cast<CallIndirect>();
++    if (call->isReturn) {
++      restoreBeforeTailCall(ptr, call->operands, &call->target);
++    }
++  }
++  FindAllPointers<CallRef> refFinder(func->body);
++  for (auto** ptr : refFinder.list) {
++    auto* call = (*ptr)->cast<CallRef>();
++    if (call->isReturn) {
++      restoreBeforeTailCall(ptr, call->operands, &call->target);
++    }
++  }
+   // add stack restores to the body
+   if (func->body->type == Type::none) {
+     block->list.push_back(func->body);
+diff --git a/src/passes/SpillPointers.cpp b/src/passes/SpillPointers.cpp
+index cfa432a..c9ac330 100644
+--- a/src/passes/SpillPointers.cpp
++++ b/src/passes/SpillPointers.cpp
+@@ -63,8 +63,18 @@ struct SpillPointers
+     actualPointers[pointer] = pointer;
+   }
+ 
+-  void visitCall(Call* curr) { visitSpillable(curr); }
+-  void visitCallIndirect(CallIndirect* curr) { visitSpillable(curr); }
++  // A tail call (return_call) leaves this frame, so nothing of it needs to be
++  // seen by the GC during the call.
++  void visitCall(Call* curr) {
++    if (!curr->isReturn) {
++      visitSpillable(curr);
++    }
++  }
++  void visitCallIndirect(CallIndirect* curr) {
++    if (!curr->isReturn) {
++      visitSpillable(curr);
++    }
++  }
+ 
+   // main entry point
+ 
+@@ -84,10 +94,17 @@ struct SpillPointers
+     // we only care about possible pointers
+     auto* func = getFunction();
+     PointerMap pointerMap;
++    // webby: also spill i64 locals, since NaN-boxed JS values (whose low 32
++    // bits are a heap address) live in them. Each local gets a slot of its
++    // own type's size.
++    Index spillSize = 0;
+     for (Index i = 0; i < func->getNumLocals(); i++) {
+-      if (func->getLocalType(i) == pointerType) {
+-        auto offset = pointerMap.size() * pointerType.getByteSize();
+-        pointerMap[i] = offset;
++      auto type = func->getLocalType(i);
++      if (type == pointerType || type == Type::i64) {
++        auto size = type.getByteSize();
++        spillSize = (spillSize + size - 1) / size * size;
++        pointerMap[i] = spillSize;
++        spillSize += size;
+       }
+     }
+     // find calls and spill around them
+@@ -148,7 +165,7 @@ struct SpillPointers
+       // get the stack space, and set the local to it
+       ABI::getStackSpace(spillLocal,
+                          func,
+-                         pointerType.getByteSize() * pointerMap.size(),
++                         (spillSize + 15) / 16 * 16,
+                          *getModule());
+     }
+   }
+@@ -191,13 +208,14 @@ struct SpillPointers
+     }
+     // add the spills
+     for (auto index : toSpill) {
++      auto type = func->getLocalType(index);
+       block->list.push_back(
+-        builder.makeStore(pointerType.getByteSize(),
++        builder.makeStore(type.getByteSize(),
+                           pointerMap[index],
+-                          pointerType.getByteSize(),
++                          type.getByteSize(),
+                           builder.makeLocalGet(spillLocal, pointerType),
+-                          builder.makeLocalGet(index, pointerType),
+-                          pointerType,
++                          builder.makeLocalGet(index, type),
++                          type,
+                           getModule()->memories[0]->name));
+     }
+     // add the (modified) call
+diff --git a/src/passes/StackCheck.cpp b/src/passes/StackCheck.cpp
+index 31bf791..d736f1c 100644
+--- a/src/passes/StackCheck.cpp
++++ b/src/passes/StackCheck.cpp
+@@ -153,16 +153,29 @@ struct StackCheck : public Pass {
+     // Add the globals.
+     Type addressType =
+       module->memories.empty() ? Type::i32 : module->memories[0]->addressType;
+-    auto stackBase =
+-      module->addGlobal(builder.makeGlobal(stackBaseName,
+-                                           stackPointer->type,
+-                                           builder.makeConstPtr(0, addressType),
+-                                           Builder::Mutable));
+-    auto stackLimit =
+-      module->addGlobal(builder.makeGlobal(stackLimitName,
+-                                           stackPointer->type,
+-                                           builder.makeConstPtr(0, addressType),
+-                                           Builder::Mutable));
++    // webby: with --pass-arg=stack-check-size@N, the limits start out as the
++    // stack pointer's initial value and N bytes below it, so a module that
++    // never calls __set_stack_limits (a WASI program) is checked from _start.
++    uint64_t initialBase = 0, initialLimit = 0;
++    auto sizeArg = getArgumentOrDefault("stack-check-size", "");
++    if (sizeArg != "") {
++      if (auto* init = stackPointer->init->dynCast<Const>()) {
++        initialBase = init->value.getUnsigned();
++        initialLimit = initialBase - std::stoull(sizeArg);
++      } else {
++        Fatal() << "stack-check-size needs a constant __stack_pointer";
++      }
++    }
++    auto stackBase = module->addGlobal(
++      builder.makeGlobal(stackBaseName,
++                         stackPointer->type,
++                         builder.makeConstPtr(initialBase, addressType),
++                         Builder::Mutable));
++    auto stackLimit = module->addGlobal(
++      builder.makeGlobal(stackLimitName,
++                         stackPointer->type,
++                         builder.makeConstPtr(initialLimit, addressType),
++                         Builder::Mutable));
+ 
+     // Instrument all the code.
+     EnforceStackLimits(stackPointer, stackBase, stackLimit, builder, handler)

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# wasi-sdk clang for meson builds (MESON_WASI_CC=clang or clang++): wasm-ld has no --start-group/--end-group, which
+# meson passes for GNU-like linkers.
+args=(); for a in "$@"; do case "$a" in -Wl,--start-group|-Wl,--end-group) ;; *) args+=("$a");; esac; done
+exec "${WASI_SDK_PREFIX:?}/bin/${MESON_WASI_CC:-clang}" "${args[@]}"
