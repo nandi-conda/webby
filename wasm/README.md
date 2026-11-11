@@ -104,6 +104,34 @@ the GC heap's primitive storage fail to allocate (WASI has no address-space rese
 size asserts only hold on 64-bit targets. Running LibWasm's `interpreter.flap` through the Flap C backend needs the
 WebAssembly profile, SIMD and atomics in `target/c.rs`.
 
+`patches/0013-libwasm-interpreter-wasm32.patch` (on top of 0012) gives wasm32 a LibWasm interpreter, so a page's
+WebAssembly runs inside wasm webby:
+
+- The Flap C backend prints LibWasm's `interpreter.flap` (the WebAssembly profile) as C: its registers (`ip`, `stp`,
+  `vsp`, `mb`, `sp`, `fp`) are handler parameters, the 0xFF/0xFC/0xFD/0xFB/0xFE prefixes dispatch through secondary
+  tables, v128 values are two u64 halves, and the vector operations emulate the SSE instructions the x86-64 lowering
+  picks exactly (lane order, saturation, `cvtt*` giving 0x80000000, NaN results). Atomics are `__atomic_*`, runtime
+  helpers take the context pointer. `wasm_interpreter()` puts the interpreter's frames in an `alloca`'d region of
+  the C stack (the GC scans it), and narrows the context's stack limit to that region while it runs. Rounding a
+  signaling NaN quiets it, as the instructions do (libm returned it as is).
+- Engine/build.rs uses it for wasm32, or natively with `LIBWASM_INTERPRETER_BACKEND=c` (then the JIT is off and
+  there is no fault handler: a C handler cannot resume in another one).
+- No guard pages: Module/build.rs sets `libwasm_checked_memory` for the C interpreter, and the validator quickens
+  every memory access into its bounds-checked form, which reads the memory's current base and size. On 32-bit hosts
+  a memory reserves only what it has grown to (at most 2 GiB) and moves when it grows past that, doubling.
+- 4-byte pointers: the layout is computed on the target (like LibJS's, under `LIBJS_TARGET_RUNNER`), with
+  `POINTER_SIZE` and `<NAME>_WIDTH = 4` for 4-byte fields. flapc turns `load64`/`store64` of such a field into
+  `load32`/`store32`, and the interpreter reads the instance's function, table, memory, global, tag and RTT arrays
+  as `Sequence<ptr<u8>>`.
+- WASI stack bounds come from wasm-ld's `__stack_low`.
+
+`tests/libwasm.sh LADYBIRD_SRC OUT` runs LibWasm's Engine tests in wasm (execution, fixtures, side tables,
+validation: all pass) and the WebAssembly spec test suite (github.com/WebAssembly/testsuite, 258 scripts) with
+`tools/libwasm-wast`, a .wast runner on LibWasm's Rust API, three ways: natively with the assembly interpreter,
+natively with the C interpreter, and as a wasm32-wasip1 module under wasmtime (tail calls on, 64 MiB shadow stack).
+All three give 63,306 passed assertions and the same 18 failures (`instance.wast`'s module definitions, which the
+runner does not model); 2 scripts use text syntax the `wast` crate cannot parse.
+
 `patches/0006-libweb-wasi.patch` builds LibWeb and the libraries it needs (LibGfx, LibMedia, LibCompositing, LibIPC,
 LibTLS, LibHTTP, ...) for WASI when configured with `-DENABLE_GUI_TARGETS=ON`. There are no Services or UI; LibJS is
 folded into LibWeb. It also adds `webby-render`, a one-process HTML-to-PNG renderer

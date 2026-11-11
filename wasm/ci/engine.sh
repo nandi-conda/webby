@@ -93,6 +93,19 @@ if [[ " $targets " == *" webby-render "* ]]; then
   fi
   cp "$page/out.png" "$out/webby-render-test.png"
   echo "webby-render drew a $(stat -c %s "$out/webby-render-test.png")-byte PNG"
+  # tests/webby-render-wasm.html runs a WebAssembly module in the page (LibWasm's C interpreter, patches/0013) and
+  # paints itself green only if every result is right.
+  cp "$w/wasm/tests/webby-render-wasm.html" "$page/wasm.html"
+  (cd "$lb" && XDG_DATA_DIRS=/usr/share WASI_RUN_DIRS="/usr/share/fonts,$lb/Base/res=/res,$page" timeout 600 \
+    python "$w/wasm/tools/wasi-run.py" "$out/webby-render.wasm" --theme /res/themes/Default.ini \
+    -o "$page/wasm.png" "$page/wasm.html") > "$out/webby-render-wasm.log" 2>&1
+  rc=$?
+  [ -f "$page/wasm.png" ] && cp "$page/wasm.png" "$out/webby-render-wasm.png"
+  colour=$(python3 "$w/wasm/tests/png-pixel.py" "$page/wasm.png" 50 50 2>/dev/null || true)
+  if [ $rc != 0 ] || [ "$colour" != 00c000 ]; then
+    tail -40 "$out/webby-render-wasm.log"; fail "webby-render WebAssembly test failed (exit $rc, pixel ${colour:-none})"
+  fi
+  echo "webby-render ran a page's WebAssembly"
 fi
 if [[ " $targets " == *" webby-render-latha "* ]]; then
   # A page over HTTP through RequestServer (in the module, then RequestServer.wasm in a latha:proc child) and

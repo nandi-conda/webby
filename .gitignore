@@ -9,3 +9,5 @@ nim/webby-tabrec
 nim/webby-pdf
 wasm/ci/out/
 /build/wasm-*
+wasm/tools/libwasm-wast/ladybird
+wasm/tools/libwasm-wast/target

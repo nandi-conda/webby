@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<!-- WebAssembly in a page (patches/0013): the page compiles and runs a module with LibWasm's interpreter and paints
+     itself green (#00c000) if every result is right, red (#c00000) otherwise, listing the checks. -->
+<head><meta charset="utf-8"><title>wasm</title>
+<style>body { margin: 0; font: 20px sans-serif; } #result { width: 400px; height: 200px; padding: 10px; background: #808080; color: white; }</style>
+</head>
+<body>
+<div id="result">not run</div>
+<script>
+// wasm/tests/webby-render-wasm.wat
+const bytes = Uint8Array.from(atob("AGFzbQEAAAABDwNgAX8Bf2AAAX9gAX4BfgMGBQAAAAECBQMBAAEHLgYGbWVtb3J5AgAHc3F1YXJlcwAABGdyb3cAAQRsb2FkAAIDZG90AAMDZmliAAQKwwEFUAECfwJAA0AgASAATw0BIAFBAnQgASABbDYCACABQQFqIQEMAAsLQQAhAQJAA0AgASAATw0BIAIgAUECdCgCAGohAiABQQFqIQEMAAsLIAILBgAgAEAACwcAIAAtAAALRAEBe/0MAQAAAAIAAAADAAAABAAAAP0MBQAAAAYAAAAHAAAACAAAAP21ASEAIAD9GwAgAP0bAWogAP0bAiAA/RsDamoLHAAgAEICVAR+IAAFIABCAX0QBCAAQgJ9EAR8CwsARQRuYW1lAQYBBANmaWICGAMAAwABbgEBaQIDc3VtAwEAAXYEAQABbgMcAQAEAARkb25lAQVzdG9yZQIEZG9uZQMEbG9hZA=="), c => c.charCodeAt(0));
+const lines = [];
+let ok = true;
+function check(name, actual, expected) {
+    const good = actual === expected;
+    ok = ok && good;
+    lines.push((good ? "ok " : "FAIL ") + name + " = " + actual);
+}
+try {
+    const module = new WebAssembly.Module(bytes);
+    const instance = new WebAssembly.Instance(module, {});
+    const e = instance.exports;
+    check("squares(100)", e.squares(100), 328350);
+    check("fib(20)", e.fib(20n), 6765n);
+    check("dot", e.dot(), 70);
+    check("grow(3)", e.grow(3), 1);
+    // The memory grew, so its buffer is new; a byte written through it past the first page must reach the module.
+    check("pages", e.memory.buffer.byteLength / 65536, 4);
+    new Uint8Array(e.memory.buffer)[3 * 65536 + 7] = 42;
+    check("load", e.load(3 * 65536 + 7), 42);
+    check("squares(1000)", e.squares(1000), 332833500);
+} catch (error) {
+    ok = false;
+    lines.push("FAIL " + error);
+}
+const result = document.getElementById("result");
+result.style.background = ok ? "#00c000" : "#c00000";
+result.textContent = lines.join(" | ");
+</script>
+</body>
+</html>

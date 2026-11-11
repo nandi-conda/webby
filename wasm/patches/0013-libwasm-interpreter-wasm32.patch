@@ -1,0 +1,1463 @@
+diff --git a/Libraries/LibJS/Flap/src/frontend/layout.rs b/Libraries/LibJS/Flap/src/frontend/layout.rs
+index f354498c..6c41763c 100644
+--- a/Libraries/LibJS/Flap/src/frontend/layout.rs
++++ b/Libraries/LibJS/Flap/src/frontend/layout.rs
+@@ -153,6 +153,15 @@ impl LayoutConstants {
+         Ok(())
+     }
+ 
++    /// The constants named `<NAME>_WIDTH` whose value is `width`, by `NAME`.
++    pub(crate) fn names_with_width(&self, width: i64) -> crate::hash::HashSet<String> {
++        self.by_name
++            .iter()
++            .filter(|(_, constant)| constant.value() == width)
++            .filter_map(|(name, _)| name.strip_suffix("_WIDTH").map(str::to_string))
++            .collect()
++    }
++
+     pub(crate) fn get(&self, name: &str) -> Option<LayoutConstant> {
+         self.by_name.get(name).copied()
+     }
+diff --git a/Libraries/LibJS/Flap/src/hir/mod.rs b/Libraries/LibJS/Flap/src/hir/mod.rs
+index d469076f..654fe8a2 100644
+--- a/Libraries/LibJS/Flap/src/hir/mod.rs
++++ b/Libraries/LibJS/Flap/src/hir/mod.rs
+@@ -1379,6 +1379,7 @@ impl<'a> Checker<'a> {
+         failure: Option<Value>,
+         span: SourceSpan,
+     ) -> Result<Call, Diagnostic> {
++        let callee = narrowed_access(callee, arguments);
+         let mut resolved_intrinsic = resolve_intrinsic(callee, arguments.len());
+         let returning_builtin = resolved_intrinsic.as_ref().is_some_and(|resolved| {
+             matches!(
+@@ -3143,6 +3144,39 @@ fn is_integer_arithmetic_type(ty: &Type) -> bool {
+     matches!(ty, Type::I32 | Type::U32 | Type::I64 | Type::U64)
+ }
+ 
++thread_local! {
++    /// The layout constants that name 8-byte fields the target stores in 4 bytes (an `<NAME>_WIDTH = 4` constant):
++    /// pointers on wasm32.
++    static NARROW_OFFSETS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::default());
++}
++
++/// Set the constants whose `load64` and `store64` accesses become 4-byte ones, for the programs checked next on this
++/// thread.
++pub(crate) fn set_narrow_offsets(names: HashSet<String>) {
++    NARROW_OFFSETS.with(|offsets| *offsets.borrow_mut() = names);
++}
++
++/// `load64` or `store64` of a field the target stores in 4 bytes becomes `load32` or `store32`, which zero-extends
++/// or truncates it.
++fn narrowed_access<'a>(callee: &'a str, arguments: &[ast::Expression]) -> &'a str {
++    let (memory, narrow) = match (callee, arguments) {
++        ("load64", [_, memory]) => (memory, "load32"),
++        ("store64", [memory, _]) => (memory, "store32"),
++        _ => return callee,
++    };
++    let ExpressionKind::Memory(parts) = &memory.kind else {
++        return callee;
++    };
++    let is_narrow = NARROW_OFFSETS.with(|offsets| {
++        let offsets = offsets.borrow();
++        !offsets.is_empty()
++            && parts
++                .iter()
++                .any(|part| matches!(&part.kind, ExpressionKind::Name(name) if offsets.contains(name)))
++    });
++    if is_narrow { narrow } else { callee }
++}
++
+ fn sequence_access(element_type: &Type, narrow_pointers: bool) -> Option<(MemoryOperation, MemoryOperation, i64)> {
+     let load = if narrow_pointers && element_type.is_pointer() {
+         // A 4-byte pointer: the load zero-extends it, like a narrow layout field.
+diff --git a/Libraries/LibJS/Flap/src/lib.rs b/Libraries/LibJS/Flap/src/lib.rs
+index e43eb44c..7431328a 100644
+--- a/Libraries/LibJS/Flap/src/lib.rs
++++ b/Libraries/LibJS/Flap/src/lib.rs
+@@ -479,6 +479,12 @@ impl Compiler {
+         }
+         frontend::specialize::expand_declarative_specializations(unit.source.name, &mut ast, &specialized_ops)
+             .map_err(|diagnostic| CompileError::from_diagnostic(CompileStage::Semantic, diagnostic))?;
++        hir::set_narrow_offsets(
++            layouts
++                .as_ref()
++                .map(|layouts| layouts.constants().names_with_width(4))
++                .unwrap_or_default(),
++        );
+         let typed_program = if let Some(layouts) = &layouts {
+             hir::check_with_layouts_and_pointer_size(
+                 unit.source.name,
+@@ -702,7 +708,7 @@ impl Compiler {
+     /// for targets without an assembly backend. See `target::c`.
+     pub fn compile_prepared_c(&self, prepared: &PreparedProgram) -> Result<Assembly, CompileError> {
+         let program = self.lower(prepared)?;
+-        let text = target::c::generate(&program, &self.options)?;
++        let text = target::c::generate(&program, &self.options, &prepared.constants)?;
+         Ok(Assembly { text })
+     }
+ 
+diff --git a/Libraries/LibJS/Flap/src/target/c.rs b/Libraries/LibJS/Flap/src/target/c.rs
+index 5cfc3aa5..6e7d4d47 100644
+--- a/Libraries/LibJS/Flap/src/target/c.rs
++++ b/Libraries/LibJS/Flap/src/target/c.rs
+@@ -38,15 +38,19 @@ use crate::intrinsic::{
+ use crate::low_ir::{self, AddressDisplacement, AddressRegister, AddressScale, Instruction, MemoryAddress, Operand};
+ use crate::metadata::{ParameterMode, SlowPathAbi};
+ use crate::target::description::{Operation, OverflowOperation};
+-use crate::types::InterpreterRegister;
++use crate::types::{InterpreterRegister, RegisterClass};
+ use crate::{CompileError, CompileOptions, CompileStage, ObjectFormat, Profile};
+ 
+ const DISPATCH_TABLE_SIZE: usize = 256;
+ 
+ /// Print a lowered program as one C translation unit.
+-pub(crate) fn generate(program: &low_ir::Program, options: &CompileOptions) -> Result<String, CompileError> {
+-    if options.profile != Profile::JavaScript {
+-        return Err(error(None, "the C backend supports only the JavaScript interpreter"));
++pub(crate) fn generate(
++    program: &low_ir::Program,
++    options: &CompileOptions,
++    constants: &crate::frontend::layout::LayoutConstants,
++) -> Result<String, CompileError> {
++    if options.profile == Profile::WebAssembly {
++        return generate_webassembly(program, options, constants);
+     }
+     if !program.dispatch.secondary.is_empty() {
+         return Err(error(None, "the C backend does not support secondary dispatch tables"));
+@@ -87,6 +91,7 @@ pub(crate) fn generate(program: &low_ir::Program, options: &CompileOptions) -> R
+     let mut out = String::new();
+     out.push_str("/* Generated by flapc's C backend -- DO NOT EDIT */\n\n");
+     out.push_str(PRELUDE);
++    out.push_str(JAVASCRIPT_STATE);
+     unit.constants(&mut out);
+     out.push_str(RUNTIME_MACROS);
+     out.push('\n');
+@@ -174,10 +179,6 @@ typedef uintptr_t uptr;
+ #define FLAP_NOINLINE __attribute__((noinline))
+ #define FLAP_INLINE static inline __attribute__((always_inline))
+ 
+-#define FLAP_PARAMETERS uptr pb, u32 pc, uptr values, uptr dispatch, uptr heap, uptr vm
+-#define FLAP_ARGUMENTS pb, pc, values, dispatch, heap, vm
+-typedef void flap_handler(FLAP_PARAMETERS);
+-
+ /* Memory is accessed bytewise, so unaligned and type-punned accesses stay defined. */
+ FLAP_INLINE u64 ld8(u64 address) { u8 value; __builtin_memcpy(&value, (const void*)(uptr)address, 1); return value; }
+ FLAP_INLINE u64 ld16(u64 address) { u16 value; __builtin_memcpy(&value, (const void*)(uptr)address, 2); return value; }
+@@ -190,6 +191,14 @@ FLAP_INLINE void st32(u64 address, u64 value) { u32 narrow = (u32)value; __built
+ FLAP_INLINE void st64(u64 address, u64 value) { __builtin_memcpy((void*)(uptr)address, &value, 8); }
+ FLAP_INLINE double f64(u64 bits) { double value; __builtin_memcpy(&value, &bits, 8); return value; }
+ FLAP_INLINE u64 f64_bits(double value) { u64 bits; __builtin_memcpy(&bits, &value, 8); return bits; }
++/* Rounding a signaling NaN gives a quiet one, as the instructions do; libm's rounding may return it as is. */
++#define FLAP_ROUND(name) \
++    FLAP_INLINE double flap_##name(double x) { if (x != x) { u64 b; __builtin_memcpy(&b, &x, 8); b |= 1ull << 51; __builtin_memcpy(&x, &b, 8); return x; } return __builtin_##name(x); } \
++    FLAP_INLINE float flap_##name##f(float x) { if (x != x) { u32 b; __builtin_memcpy(&b, &x, 4); b |= 1u << 22; __builtin_memcpy(&x, &b, 4); return x; } return __builtin_##name##f(x); }
++FLAP_ROUND(floor)
++FLAP_ROUND(ceil)
++FLAP_ROUND(trunc)
++FLAP_ROUND(roundeven)
+ FLAP_INLINE float f32(u64 bits) { u32 narrow = (u32)bits; float value; __builtin_memcpy(&value, &narrow, 4); return value; }
+ FLAP_INLINE u64 f32_bits(float value) { u32 bits; __builtin_memcpy(&bits, &value, 4); return bits; }
+ FLAP_INLINE u64 flap_frame(void) { return (u64)(uptr)__builtin_frame_address(0); }
+@@ -272,6 +281,12 @@ static FLAP_NOINLINE flap_raw_native_result flap_call_raw_native(u64 function, u
+ 
+ "#;
+ 
++const JAVASCRIPT_STATE: &str = r#"
++#define FLAP_PARAMETERS uptr pb, u32 pc, uptr values, uptr dispatch, uptr heap, uptr vm
++#define FLAP_ARGUMENTS pb, pc, values, dispatch, heap, vm
++typedef void flap_handler(FLAP_PARAMETERS);
++"#;
++
+ const RUNTIME_MACROS: &str = r#"
+ #define FLAP_DISPATCH() FLAP_MUSTTAIL return ((flap_handler* const*)dispatch)[ld8(pb + pc)](FLAP_ARGUMENTS)
+ #define FLAP_STORE_PC() st32(values - FLAP_SIZEOF_EXECUTION_CONTEXT + FLAP_EXECUTION_CONTEXT_PROGRAM_COUNTER, pc)
+@@ -440,13 +455,25 @@ impl Unit<'_> {
+ 
+         let mut body = String::new();
+         w(&mut body, format_args!("/* {} */\nstatic void {function_name}(FLAP_PARAMETERS)\n{{\n", handler.name));
+-        if !registers.is_empty() {
+-            for chunk in (0..registers.len()).collect::<Vec<_>>().chunks(16) {
+-                let names: Vec<_> = chunk.iter().map(|index| format!("r{index} = 0")).collect();
+-                w(&mut body, format_args!("    u64 {};\n", names.join(", ")));
+-            }
++        let scalars: Vec<_> = (0..registers.len())
++            .filter(|index| registers[*index].class() != RegisterClass::Vector)
++            .collect();
++        let vectors: Vec<_> = (0..registers.len())
++            .filter(|index| registers[*index].class() == RegisterClass::Vector)
++            .collect();
++        for chunk in scalars.chunks(16) {
++            let names: Vec<_> = chunk.iter().map(|index| format!("r{index} = 0")).collect();
++            w(&mut body, format_args!("    u64 {};\n", names.join(", ")));
++        }
++        for chunk in vectors.chunks(16) {
++            let names: Vec<_> = chunk.iter().map(|index| format!("r{index} = {{ 0, 0 }}")).collect();
++            w(&mut body, format_args!("    flap_v128 {};\n", names.join(", ")));
++        }
++        if self.options.profile == Profile::JavaScript {
++            body.push_str("    (void)heap;\n");
++        } else {
++            body.push_str("    (void)stp; (void)mb; (void)dispatch;\n");
+         }
+-        body.push_str("    (void)heap;\n");
+         for instruction in &instructions {
+             self.instruction(&mut body, instruction, &context)?;
+         }
+@@ -514,16 +541,28 @@ impl Unit<'_> {
+                     let size = context
+                         .size
+                         .ok_or_else(|| error(Some(handler), "variable-length handler must use variable dispatch"))?;
+-                    line(out, format!("pc += {size}u;"));
++                    if is_webassembly() {
++                        line(out, format!("ip += {size}u;"));
++                    } else {
++                        line(out, format!("pc += {size}u;"));
++                    }
+                     line(out, "FLAP_DISPATCH();".to_string());
+                 }
+                 ControlOperation::Dispatch => line(out, "FLAP_DISPATCH();".to_string()),
+                 ControlOperation::DispatchVariable => {
+-                    line(out, format!("pc += (u32)({});", read(0)?));
++                    if is_webassembly() {
++                        line(out, format!("ip += (u64)({});", read(0)?));
++                    } else {
++                        line(out, format!("pc += (u32)({});", read(0)?));
++                    }
+                     line(out, "FLAP_DISPATCH();".to_string());
+                 }
+                 ControlOperation::GotoHandler => {
+-                    line(out, format!("pc = (u32)({});", read(0)?));
++                    if is_webassembly() {
++                        line(out, format!("ip = (u64)({});", read(0)?));
++                    } else {
++                        line(out, format!("pc = (u32)({});", read(0)?));
++                    }
+                     line(out, "FLAP_DISPATCH();".to_string());
+                 }
+                 ControlOperation::JumpBytecode => {
+@@ -531,7 +570,18 @@ impl Unit<'_> {
+                     line(out, "FLAP_DISPATCH();".to_string());
+                 }
+                 ControlOperation::DispatchSecondary => {
+-                    return Err(error(Some(handler), "the C backend does not support secondary dispatch"));
++                    let prefix = immediate(0)?;
++                    if !is_webassembly() || !(0..=255).contains(&prefix) {
++                        return Err(error(Some(handler), "the C backend supports secondary dispatch only for WebAssembly"));
++                    }
++                    // NB: Handlers bounds check sub-opcodes before they dispatch on them.
++                    line(
++                        out,
++                        format!(
++                            "FLAP_MUSTTAIL return flap_dispatch_table_{prefix:02x}[(u32)({})](FLAP_ARGUMENTS);",
++                            read(1)?
++                        ),
++                    );
+                 }
+             },
+             Operation::Branch(branch) => {
+@@ -572,10 +622,19 @@ impl Unit<'_> {
+                 line(out, assign(0, &format!("ld32(pb + pc + {})", literal(immediate(1)?)))?);
+             }
+             Operation::Memory(memory) => match memory {
++                MemoryOperation::Load {
++                    width: MemoryWidth::Vector,
++                    ..
++                } => {
++                    line(out, assign(0, &format!("ldv({})", address(1)?))?);
++                }
+                 MemoryOperation::Load { width, signed } => {
+                     let load = load_expression(width, signed, &address(1)?, handler)?;
+                     line(out, assign(0, &load)?);
+                 }
++                MemoryOperation::Store(MemoryWidth::Vector) => {
++                    line(out, format!("stv({}, {});", address(0)?, read(1)?));
++                }
+                 MemoryOperation::Store(width) => {
+                     line(out, store_statement(width, &address(0)?, &read(1)?, handler)?);
+                 }
+@@ -644,7 +703,16 @@ impl Unit<'_> {
+                 };
+                 line(out, assign(0, &value)?);
+             }
+-            Operation::Move(IntegerWidth::U64) | Operation::FloatMove => line(out, assign(0, &read(1)?)?),
++            Operation::FloatMove => {
++                let value = match (operand_class(operand(0)?), operand_class(operand(1)?)) {
++                    (RegisterClass::Vector, RegisterClass::Vector) => read(1)?,
++                    (RegisterClass::Vector, _) => format!("flap_v128_from_u64x2({}, 0)", read(1)?),
++                    (_, RegisterClass::Vector) => format!("{}.lo", read(1)?),
++                    _ => read(1)?,
++                };
++                line(out, assign(0, &value)?);
++            }
++            Operation::Move(IntegerWidth::U64) => line(out, assign(0, &read(1)?)?),
+             Operation::Move(IntegerWidth::U32) => line(out, assign(0, &format!("(u32)({})", read(1)?))?),
+             Operation::Move(width) => {
+                 return Err(error(Some(handler), format!("{width:?} moves are unsupported")));
+@@ -712,12 +780,9 @@ impl Unit<'_> {
+                 line(out, assign(0, &value)?);
+             }
+             Operation::Float(float) => self.float(out, float, operands, context)?,
+-            Operation::Numeric(_) | Operation::Vector(_) | Operation::Atomic(_) => {
+-                return Err(error(
+-                    Some(handler),
+-                    format!("the C backend does not support {:?}", instruction.opcode),
+-                ));
+-            }
++            Operation::Numeric(numeric) => line(out, numeric_statement(numeric, operands, handler)?),
++            Operation::Vector(vector) => line(out, vector_statement(vector, operands, handler)?),
++            Operation::Atomic(atomic) => line(out, atomic_statement(atomic, operands, handler)?),
+         }
+         Ok(())
+     }
+@@ -867,8 +932,8 @@ impl Unit<'_> {
+             }
+             FloatingPointOperation::Unary(unary) => {
+                 let builtin = match unary {
+-                    FloatUnaryOperation::Floor => "__builtin_floor",
+-                    FloatUnaryOperation::Ceil => "__builtin_ceil",
++                    FloatUnaryOperation::Floor => "flap_floor",
++                    FloatUnaryOperation::Ceil => "flap_ceil",
+                     FloatUnaryOperation::SquareRoot => "__builtin_sqrt",
+                 };
+                 assign(0, &format!("f64_bits({builtin}(f64({})))", read(1)?))?
+@@ -938,6 +1003,12 @@ impl Unit<'_> {
+             }
+         };
+         match call {
++            CallOperation::Helper if is_webassembly() => {
++                // NB: The runtime's functions take the execution context, a pointer.
++                let symbol = symbol()?;
++                self.declare(&symbol, format!("u64 {symbol}(uptr);"), handler)?;
++                w(out, format_args!("    {}\n", assign(2, &format!("{symbol}((uptr)({}))", read(1)?))?));
++            }
+             CallOperation::Helper => {
+                 let symbol = symbol()?;
+                 self.declare(&symbol, format!("u64 {symbol}(u64);"), handler)?;
+@@ -1201,7 +1272,34 @@ enum ValuesCall {
+     Try,
+ }
+ 
++thread_local! {
++    /// Whether the program being printed is the WebAssembly interpreter, whose
++    /// interpreter registers are handler parameters of their own.
++    static WEBASSEMBLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++}
++
++fn is_webassembly() -> bool {
++    WEBASSEMBLY.with(std::cell::Cell::get)
++}
++
+ fn interpreter_register(register: InterpreterRegister, handler: &str) -> Result<&'static str, CompileError> {
++    if is_webassembly() {
++        return Ok(match register {
++            InterpreterRegister::InstructionPointer => "ip",
++            InterpreterRegister::SideTablePointer => "stp",
++            InterpreterRegister::ValueStackPointer => "vsp",
++            InterpreterRegister::MemoryBase => "mb",
++            InterpreterRegister::DispatchTable => "(u64)dispatch",
++            InterpreterRegister::StackPointer => "sp",
++            InterpreterRegister::FramePointer => "fp",
++            other => {
++                return Err(error(
++                    Some(handler),
++                    format!("the C backend has no interpreter register ${}", other.as_str()),
++                ));
++            }
++        });
++    }
+     Ok(match register {
+         InterpreterRegister::ProgramCounter => "(u64)pc",
+         InterpreterRegister::ProgramBase => "(u64)pb",
+@@ -1236,6 +1334,21 @@ fn read_operand(operand: &Operand, handler: &str) -> Result<String, CompileError
+ fn assign_operand(operand: &Operand, value: &str, handler: &str) -> Result<String, CompileError> {
+     Ok(match operand {
+         Operand::VirtualRegister(_) => format!("{} = {value};", read_operand(operand, handler)?),
++        Operand::InterpreterRegister(register) if is_webassembly() => match register {
++            InterpreterRegister::InstructionPointer => format!("ip = (u64)({value});"),
++            InterpreterRegister::SideTablePointer => format!("stp = (u64)({value});"),
++            InterpreterRegister::ValueStackPointer => format!("vsp = (u64)({value});"),
++            InterpreterRegister::MemoryBase => format!("mb = (u64)({value});"),
++            InterpreterRegister::DispatchTable => format!("dispatch = (uptr)({value});"),
++            InterpreterRegister::StackPointer => format!("sp = (u64)({value});"),
++            InterpreterRegister::FramePointer => format!("fp = (u64)({value});"),
++            other => {
++                return Err(error(
++                    Some(handler),
++                    format!("the C backend cannot write the interpreter register ${}", other.as_str()),
++                ));
++            }
++        },
+         Operand::InterpreterRegister(register) => match register {
+             InterpreterRegister::ProgramCounter => format!("pc = (u32)({value});"),
+             InterpreterRegister::ProgramBase => format!("pb = (uptr)({value});"),
+@@ -1557,3 +1670,478 @@ fn check_registers_assigned(body: &str, handler: &str) -> Result<(), CompileErro
+         None => Ok(()),
+     }
+ }
++
++fn operand_class(operand: &Operand) -> RegisterClass {
++    match operand {
++        Operand::VirtualRegister(register) => register.class(),
++        _ => RegisterClass::GeneralPurpose,
++    }
++}
++
++fn memory_operand(operand: Option<&Operand>, handler: &str) -> Result<String, CompileError> {
++    match operand {
++        Some(Operand::Address(address)) => address_expression(address, handler),
++        other => Err(error(Some(handler), format!("expected a memory operand, found {other:?}"))),
++    }
++}
++
++fn operand_at<'a>(operands: &'a [Operand], index: usize, what: &str, handler: &str) -> Result<&'a Operand, CompileError> {
++    operands
++        .get(index)
++        .ok_or_else(|| error(Some(handler), format!("{what} is missing operand {index}")))
++}
++
++/// A numeric operation, with the semantics of the x86-64 instruction it is there.
++fn numeric_statement(
++    operation: crate::intrinsic::NumericOperation,
++    operands: &[Operand],
++    handler: &str,
++) -> Result<String, CompileError> {
++    use crate::intrinsic::NumericOperation::*;
++    let what = format!("{operation:?}");
++    let read = |index: usize| read_operand(operand_at(operands, index, &what, handler)?, handler);
++    let assign = |value: String| assign_operand(operand_at(operands, 0, &what, handler)?, &value, handler);
++    let value = match operation {
++        DivideSigned32 => format!("flap_div_s32({}, {})", read(1)?, read(2)?),
++        DivideUnsigned32 => format!("flap_div_u32({}, {})", read(1)?, read(2)?),
++        RemainderSigned32 => format!("flap_rem_s32({}, {})", read(1)?, read(2)?),
++        RemainderUnsigned32 => format!("flap_rem_u32({}, {})", read(1)?, read(2)?),
++        DivideSigned64 => format!("flap_div_s64({}, {})", read(1)?, read(2)?),
++        DivideUnsigned64 => format!("flap_div_u64({}, {})", read(1)?, read(2)?),
++        RemainderSigned64 => format!("flap_rem_s64({}, {})", read(1)?, read(2)?),
++        RemainderUnsigned64 => format!("flap_rem_u64({}, {})", read(1)?, read(2)?),
++        CountLeadingZeros32 => format!("flap_clz32({})", read(1)?),
++        CountTrailingZeros32 => format!("flap_ctz32({})", read(1)?),
++        PopulationCount32 => format!("(u64)__builtin_popcount((u32)({}))", read(1)?),
++        CountLeadingZeros64 => format!("flap_clz64({})", read(1)?),
++        CountTrailingZeros64 => format!("flap_ctz64({})", read(1)?),
++        PopulationCount64 => format!("(u64)__builtin_popcountll((u64)({}))", read(1)?),
++        RotateLeft32 => format!("flap_rotl32({}, {})", read(0)?, read(1)?),
++        RotateRight32 => format!("flap_rotr32({}, {})", read(0)?, read(1)?),
++        RotateLeft64 => format!("flap_rotl64({}, {})", read(0)?, read(1)?),
++        RotateRight64 => format!("flap_rotr64({}, {})", read(0)?, read(1)?),
++        Float64FromBits | Float64ToBits => read(1)?,
++        Float32FromBits | Float32ToBits => format!("(u64)(u32)({})", read(1)?),
++        TruncateFloat64ToSigned64 => format!("flap_truncate_f64_to_s64({})", read(1)?),
++        ConvertSigned64ToFloat32 => format!("f32_bits((float)(i64)({}))", read(1)?),
++        ConvertSigned64ToFloat64 => format!("f64_bits((double)(i64)({}))", read(1)?),
++        RoundFloat64ToZero => format!("f64_bits(flap_trunc(f64({})))", read(1)?),
++        RoundFloat64ToNearest => format!("f64_bits(flap_roundeven(f64({})))", read(1)?),
++        RoundFloat64Up => format!("f64_bits(flap_ceil(f64({})))", read(1)?),
++        RoundFloat64Down => format!("f64_bits(flap_floor(f64({})))", read(1)?),
++        SquareRootFloat64 => format!("f64_bits(__builtin_sqrt(f64({})))", read(1)?),
++        SquareRootFloat32 => format!("f32_bits(__builtin_sqrtf(f32({})))", read(1)?),
++        PromoteFloat32 => format!("f64_bits((double)f32({}))", read(1)?),
++        DemoteFloat64 => format!("f32_bits((float)f64({}))", read(1)?),
++        AddFloat32 => format!("f32_bits(f32({}) + f32({}))", read(0)?, read(1)?),
++        SubtractFloat32 => format!("f32_bits(f32({}) - f32({}))", read(0)?, read(1)?),
++        MultiplyFloat32 => format!("f32_bits(f32({}) * f32({}))", read(0)?, read(1)?),
++        DivideFloat32 => format!("f32_bits(f32({}) / f32({}))", read(0)?, read(1)?),
++    };
++    assign(value)
++}
++
++/// An atomic access. Sequentially consistent, as the interpreter's other targets make them.
++fn atomic_statement(
++    operation: crate::intrinsic::AtomicOperation,
++    operands: &[Operand],
++    handler: &str,
++) -> Result<String, CompileError> {
++    use crate::intrinsic::AtomicOperationKind;
++    let what = format!("{operation:?}");
++    if operation.kind() == AtomicOperationKind::Fence {
++        return Ok("__atomic_thread_fence(__ATOMIC_SEQ_CST);".to_string());
++    }
++    let ty = unsigned_type(operation.width());
++    let address = memory_operand(operands.get(1), handler)?;
++    let pointer = format!("(volatile {ty}*)(uptr)({address})");
++    let read = |index: usize| read_operand(operand_at(operands, index, &what, handler)?, handler);
++    let destination = operand_at(operands, 0, &what, handler)?;
++    let value = match operation.kind() {
++        AtomicOperationKind::Load => format!("(u64)__atomic_load_n({pointer}, __ATOMIC_SEQ_CST)"),
++        AtomicOperationKind::Exchange => {
++            format!("(u64)__atomic_exchange_n({pointer}, ({ty})({}), __ATOMIC_SEQ_CST)", read(0)?)
++        }
++        AtomicOperationKind::FetchAdd => {
++            format!("(u64)__atomic_fetch_add({pointer}, ({ty})({}), __ATOMIC_SEQ_CST)", read(0)?)
++        }
++        AtomicOperationKind::CompareExchange => {
++            return Ok(format!(
++                "{{ {ty} expected = ({ty})({}); __atomic_compare_exchange_n({pointer}, &expected, ({ty})({}), 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); {} }}",
++                read(0)?,
++                read(2)?,
++                assign_operand(destination, "(u64)expected", handler)?
++            ));
++        }
++        AtomicOperationKind::Fence => unreachable!(),
++    };
++    assign_operand(destination, &value, handler)
++}
++
++/// A vector operation, as a call of the prelude's emulation of the SSE instruction it is on x86-64.
++fn vector_statement(
++    operation: crate::intrinsic::VectorOperation,
++    operands: &[Operand],
++    handler: &str,
++) -> Result<String, CompileError> {
++    use crate::intrinsic::VectorOperationKind;
++    let what = format!("{operation:?}");
++    let read = |index: usize| read_operand(operand_at(operands, index, &what, handler)?, handler);
++    let destination = operand_at(operands, 0, &what, handler)?;
++    let function = format!("flap_{}", operation.name());
++    let value = match operation.kind() {
++        VectorOperationKind::FromU64Pair => format!("flap_v128_from_u64x2({}, {})", read(1)?, read(2)?),
++        VectorOperationKind::Binary => format!("{function}({}, {})", read(0)?, read(1)?),
++        VectorOperationKind::Unary | VectorOperationKind::ToGeneralPurpose | VectorOperationKind::ToGeneralPurpose32 => {
++            format!("{function}({})", read(1)?)
++        }
++    };
++    assign_operand(destination, &value, handler)
++}
++
++/// Print the WebAssembly interpreter. Its handlers keep `ip`, `stp`, `vsp`, `memory_base`, the dispatch table, `sp`
++/// and `fp` in parameters. The frames that the assembly backends build on the machine stack go in a region the entry
++/// function allocates on the C stack instead, the upper half of what the context's stack limit leaves it, so that
++/// the native calls handlers make (the runtime's functions, and through them nested entries) run below the frames.
++/// While it runs, the entry makes the bottom of that region the context's stack limit.
++fn generate_webassembly(
++    program: &low_ir::Program,
++    options: &CompileOptions,
++    constants: &crate::frontend::layout::LayoutConstants,
++) -> Result<String, CompileError> {
++    WEBASSEMBLY.with(|webassembly| webassembly.set(true));
++    let result = generate_webassembly_unit(program, options, constants);
++    WEBASSEMBLY.with(|webassembly| webassembly.set(false));
++    result
++}
++
++fn generate_webassembly_unit(
++    program: &low_ir::Program,
++    options: &CompileOptions,
++    constants: &crate::frontend::layout::LayoutConstants,
++) -> Result<String, CompileError> {
++    let constant = |name: &str| -> Result<i64, CompileError> {
++        constants
++            .get(name)
++            .map(|constant| constant.value())
++            .ok_or_else(|| error(None, format!("the WebAssembly interpreter needs the layout constant '{name}'")))
++    };
++    let mut unit = Unit {
++        runtime: &program.runtime,
++        options,
++        declarations: HashMap::default(),
++        declaration_order: Vec::new(),
++        helpers: String::new(),
++        helper_count: 0,
++    };
++    let mut names = HashMap::default();
++    for handler in &program.handlers {
++        names.insert(handler.id, handler_function_name(&handler.name));
++    }
++    let fallback = program
++        .dispatch
++        .fallback
++        .and_then(|fallback| names.get(&fallback).cloned())
++        .ok_or_else(|| error(None, "the WebAssembly interpreter needs a @fallback handler"))?;
++    let mut bodies = String::new();
++    for handler in &program.handlers {
++        bodies.push_str(&unit.handler(handler, &names[&handler.id])?);
++    }
++
++    let symbol = |suffix: &str| {
++        let prefix = options.profile.symbol_prefix();
++        if suffix.is_empty() {
++            prefix.to_string()
++        } else {
++            format!("{prefix}_{suffix}")
++        }
++    };
++    let mut out = String::new();
++    out.push_str("/* Generated by flapc's C backend -- DO NOT EDIT */\n\n");
++    out.push_str(PRELUDE);
++    out.push_str(WEBASSEMBLY_STATE);
++    out.push_str(VECTOR_PRELUDE);
++    for name in ["ENTRY_CONTEXT", "CONTEXT_STACK_LIMIT"] {
++        w(&mut out, format_args!("#define FLAP_{name} {}\n", literal(constant(name)?)));
++    }
++    out.push('\n');
++    for symbol in &unit.declaration_order {
++        w(&mut out, format_args!("{}\n", unit.declarations[symbol]));
++    }
++    out.push('\n');
++    for handler in &program.handlers {
++        w(&mut out, format_args!("static void {}(FLAP_PARAMETERS);\n", names[&handler.id]));
++    }
++    let dispatch_table = symbol("dispatch_table");
++    w(&mut out, format_args!("extern flap_handler* const {dispatch_table}[{DISPATCH_TABLE_SIZE}];\n"));
++    for table in &program.dispatch.secondary {
++        w(&mut out, format_args!(
++            "static flap_handler* const flap_dispatch_table_{:02x}[{}];\n",
++            table.prefix,
++            crate::SECONDARY_DISPATCH_TABLE_SIZE
++        ));
++    }
++    out.push('\n');
++    out.push_str(&unit.helpers);
++    out.push_str(&bodies);
++
++    let table_entry = |handler: Option<crate::identity::HandlerId>| {
++        handler.and_then(|handler| names.get(&handler)).map_or(fallback.as_str(), String::as_str)
++    };
++    w(&mut out, format_args!("flap_handler* const {dispatch_table}[{DISPATCH_TABLE_SIZE}] = {{\n"));
++    for index in 0..DISPATCH_TABLE_SIZE {
++        w(&mut out, format_args!("    {},\n", table_entry(program.dispatch_handlers.get(index).copied().flatten())));
++    }
++    out.push_str("};\n\n");
++    for table in &program.dispatch.secondary {
++        w(&mut out, format_args!(
++            "static flap_handler* const flap_dispatch_table_{:02x}[{}] = {{\n",
++            table.prefix,
++            crate::SECONDARY_DISPATCH_TABLE_SIZE
++        ));
++        for index in 0..crate::SECONDARY_DISPATCH_TABLE_SIZE {
++            w(&mut out, format_args!("    {},\n", table_entry(table.handlers.get(index).copied().flatten())));
++        }
++        out.push_str("};\n\n");
++    }
++    // The runtime recognizes faults in the interpreter by its code range, which C code has none of: its accesses are
++    // all bounds checked instead.
++    w(&mut out, format_args!("const u8 {} = 0;\n\n", symbol("end")));
++    let entry = symbol("");
++    w(&mut out, format_args!(r#"/* The native stack limit of the outermost entry on this thread, which nested entries split further. */
++static _Thread_local u64 flap_native_stack_limit;
++
++void {entry}(const u8* code, u64 argument)
++{{
++    uptr context = ldptr(argument + FLAP_ENTRY_CONTEXT);
++    u64 context_limit = ld64(context + FLAP_CONTEXT_STACK_LIMIT);
++    u64 outer_native_limit = flap_native_stack_limit;
++    u64 native_limit = outer_native_limit != 0 ? outer_native_limit : context_limit;
++    uptr here = (uptr)__builtin_frame_address(0);
++    uptr size = here > native_limit + 4096 ? ((here - native_limit) / 2) & ~(uptr)15 : 0;
++    /* NB: The frames live in this region, which the native stack's conservative scans see. */
++    u8* region = (u8*)__builtin_alloca(size + 16);
++    u64 bottom = ((uptr)region + 15) & ~(uptr)15;
++    u64 top = bottom + size;
++    flap_native_stack_limit = here > size ? (u64)(here - size) : native_limit;
++    st64(context + FLAP_CONTEXT_STACK_LIMIT, bottom);
++    {dispatch_table}[ld8((uptr)code)]((u64)(uptr)code, 0, argument, 0, (uptr){dispatch_table}, top, top);
++    st64(context + FLAP_CONTEXT_STACK_LIMIT, context_limit);
++    flap_native_stack_limit = outer_native_limit;
++}}
++"#));
++    Ok(out)
++}
++
++const WEBASSEMBLY_STATE: &str = r#"
++#define FLAP_PARAMETERS u64 ip, u64 stp, u64 vsp, u64 mb, uptr dispatch, u64 sp, u64 fp
++#define FLAP_ARGUMENTS ip, stp, vsp, mb, dispatch, sp, fp
++typedef void flap_handler(FLAP_PARAMETERS);
++#define FLAP_DISPATCH() FLAP_MUSTTAIL return ((flap_handler* const*)dispatch)[ld8(ip)](FLAP_ARGUMENTS)
++
++/* Integer division and remainder. Handlers check for zero divisors and overflow first; these only stay defined. */
++FLAP_INLINE u64 flap_div_s32(u64 a, u64 b) { i32 x = (i32)a, y = (i32)b; if (y == 0 || (y == -1 && x == INT32_MIN)) return (u32)x; return (u32)(x / y); }
++FLAP_INLINE u64 flap_div_u32(u64 a, u64 b) { u32 x = (u32)a, y = (u32)b; return y == 0 ? 0 : x / y; }
++FLAP_INLINE u64 flap_rem_s32(u64 a, u64 b) { i32 x = (i32)a, y = (i32)b; if (y == 0 || y == -1) return 0; return (u32)(x % y); }
++FLAP_INLINE u64 flap_rem_u32(u64 a, u64 b) { u32 x = (u32)a, y = (u32)b; return y == 0 ? 0 : x % y; }
++FLAP_INLINE u64 flap_div_s64(u64 a, u64 b) { i64 x = (i64)a, y = (i64)b; if (y == 0 || (y == -1 && x == INT64_MIN)) return (u64)x; return (u64)(x / y); }
++FLAP_INLINE u64 flap_div_u64(u64 a, u64 b) { return b == 0 ? 0 : a / b; }
++FLAP_INLINE u64 flap_rem_s64(u64 a, u64 b) { i64 x = (i64)a, y = (i64)b; if (y == 0 || y == -1) return 0; return (u64)(x % y); }
++FLAP_INLINE u64 flap_rem_u64(u64 a, u64 b) { return b == 0 ? 0 : a % b; }
++FLAP_INLINE u64 flap_clz32(u64 a) { u32 x = (u32)a; return x == 0 ? 32 : (u64)__builtin_clz(x); }
++FLAP_INLINE u64 flap_ctz32(u64 a) { u32 x = (u32)a; return x == 0 ? 32 : (u64)__builtin_ctz(x); }
++FLAP_INLINE u64 flap_clz64(u64 a) { return a == 0 ? 64 : (u64)__builtin_clzll(a); }
++FLAP_INLINE u64 flap_ctz64(u64 a) { return a == 0 ? 64 : (u64)__builtin_ctzll(a); }
++FLAP_INLINE u64 flap_rotl32(u64 a, u64 n) { u32 x = (u32)a; unsigned c = (unsigned)n & 31; return (u32)((x << c) | (x >> ((32 - c) & 31))); }
++FLAP_INLINE u64 flap_rotr32(u64 a, u64 n) { u32 x = (u32)a; unsigned c = (unsigned)n & 31; return (u32)((x >> c) | (x << ((32 - c) & 31))); }
++FLAP_INLINE u64 flap_rotl64(u64 x, u64 n) { unsigned c = (unsigned)n & 63; return (x << c) | (x >> ((64 - c) & 63)); }
++FLAP_INLINE u64 flap_rotr64(u64 x, u64 n) { unsigned c = (unsigned)n & 63; return (x >> c) | (x << ((64 - c) & 63)); }
++/* cvttsd2si: NaN and values out of range give 0x8000000000000000. */
++FLAP_INLINE u64 flap_truncate_f64_to_s64(u64 bits) { u64 result; (void)flap_f64_to_i64(bits, &result); return result; }
++"#;
++
++/// The v128 operations, as the SSE instructions the x86-64 backend uses for them compute them (see
++/// `VectorOperation::x86_64_mnemonic`): lane by lane, the lowest lane in the lowest bytes.
++const VECTOR_PRELUDE: &str = r#"
++typedef struct { u64 lo, hi; } flap_v128;
++typedef union {
++    flap_v128 v;
++    u8 u8[16]; i8 i8[16]; u16 u16[8]; i16 i16[8]; u32 u32[4]; i32 i32[4]; u64 u64[2]; i64 i64[2]; float f32[4]; double f64[2];
++} flap_lanes;
++
++FLAP_INLINE flap_v128 ldv(u64 address) { flap_v128 value; __builtin_memcpy(&value, (const void*)(uptr)address, 16); return value; }
++FLAP_INLINE void stv(u64 address, flap_v128 value) { __builtin_memcpy((void*)(uptr)address, &value, 16); }
++FLAP_INLINE flap_v128 flap_v128_from_u64x2(u64 lo, u64 hi) { flap_v128 value = { lo, hi }; return value; }
++
++FLAP_INLINE i8 flap_sat_i8(i32 x) { return x < -128 ? -128 : x > 127 ? 127 : (i8)x; }
++FLAP_INLINE u8 flap_sat_u8(i32 x) { return x < 0 ? 0 : x > 255 ? 255 : (u8)x; }
++FLAP_INLINE i16 flap_sat_i16(i32 x) { return x < -32768 ? -32768 : x > 32767 ? 32767 : (i16)x; }
++FLAP_INLINE u16 flap_sat_u16(i32 x) { return x < 0 ? 0 : x > 65535 ? 65535 : (u16)x; }
++FLAP_INLINE i16 flap_sat_i16_from_i64(i64 x) { return x < -32768 ? -32768 : x > 32767 ? 32767 : (i16)x; }
++FLAP_INLINE u16 flap_sat_u16_from_i64(i64 x) { return x < 0 ? 0 : x > 65535 ? 65535 : (u16)x; }
++/* cvttps2dq and cvttpd2dq: NaN and values out of range give 0x80000000. */
++FLAP_INLINE i32 flap_truncate_to_i32(double x) { return (x > -2147483649.0 && x < 2147483648.0) ? (i32)x : INT32_MIN; }
++
++#define FLAP_V_BINARY(name, lane, count, expression)                          \
++    FLAP_INLINE flap_v128 flap_##name(flap_v128 lhs, flap_v128 rhs)            \
++    {                                                                          \
++        flap_lanes a = { .v = lhs }, b = { .v = rhs }, r;                      \
++        for (int i = 0; i < (count); ++i)                                      \
++            r.lane[i] = (expression);                                          \
++        return r.v;                                                            \
++    }
++#define FLAP_V_UNARY(name, lane, count, expression)                           \
++    FLAP_INLINE flap_v128 flap_##name(flap_v128 source)                        \
++    {                                                                          \
++        flap_lanes a = { .v = source }, r;                                     \
++        for (int i = 0; i < (count); ++i)                                      \
++            r.lane[i] = (expression);                                          \
++        return r.v;                                                            \
++    }
++#define FLAP_MASK(condition, type) ((condition) ? (type)~(type)0 : (type)0)
++
++FLAP_V_BINARY(v128_and, u64, 2, a.u64[i] & b.u64[i])
++FLAP_V_BINARY(v128_or, u64, 2, a.u64[i] | b.u64[i])
++FLAP_V_BINARY(v128_xor, u64, 2, a.u64[i] ^ b.u64[i])
++FLAP_V_BINARY(v128_andnot, u64, 2, ~a.u64[i] & b.u64[i])
++FLAP_V_BINARY(v128_add_i8, u8, 16, (u8)(a.u8[i] + b.u8[i]))
++FLAP_V_BINARY(v128_sub_i8, u8, 16, (u8)(a.u8[i] - b.u8[i]))
++FLAP_V_BINARY(v128_eq_i8, u8, 16, FLAP_MASK(a.u8[i] == b.u8[i], u8))
++FLAP_V_BINARY(v128_gt_s_i8, u8, 16, FLAP_MASK(a.i8[i] > b.i8[i], u8))
++FLAP_V_BINARY(v128_add_i16, u16, 8, (u16)(a.u16[i] + b.u16[i]))
++FLAP_V_BINARY(v128_sub_i16, u16, 8, (u16)(a.u16[i] - b.u16[i]))
++FLAP_V_BINARY(v128_eq_i16, u16, 8, FLAP_MASK(a.u16[i] == b.u16[i], u16))
++FLAP_V_BINARY(v128_gt_s_i16, u16, 8, FLAP_MASK(a.i16[i] > b.i16[i], u16))
++FLAP_V_BINARY(v128_add_i32, u32, 4, a.u32[i] + b.u32[i])
++FLAP_V_BINARY(v128_sub_i32, u32, 4, a.u32[i] - b.u32[i])
++FLAP_V_BINARY(v128_eq_i32, u32, 4, FLAP_MASK(a.u32[i] == b.u32[i], u32))
++FLAP_V_BINARY(v128_gt_s_i32, u32, 4, FLAP_MASK(a.i32[i] > b.i32[i], u32))
++FLAP_V_BINARY(v128_add_i64, u64, 2, a.u64[i] + b.u64[i])
++FLAP_V_BINARY(v128_sub_i64, u64, 2, a.u64[i] - b.u64[i])
++FLAP_V_BINARY(v128_eq_i64, u64, 2, FLAP_MASK(a.u64[i] == b.u64[i], u64))
++FLAP_V_BINARY(v128_gt_s_i64, u64, 2, FLAP_MASK(a.i64[i] > b.i64[i], u64))
++FLAP_V_BINARY(v128_add_sat_s_i8, i8, 16, flap_sat_i8((i32)a.i8[i] + b.i8[i]))
++FLAP_V_BINARY(v128_add_sat_u_i8, u8, 16, flap_sat_u8((i32)a.u8[i] + b.u8[i]))
++FLAP_V_BINARY(v128_sub_sat_s_i8, i8, 16, flap_sat_i8((i32)a.i8[i] - b.i8[i]))
++FLAP_V_BINARY(v128_sub_sat_u_i8, u8, 16, flap_sat_u8((i32)a.u8[i] - b.u8[i]))
++FLAP_V_BINARY(v128_avgr_u_i8, u8, 16, (u8)(((u32)a.u8[i] + b.u8[i] + 1) >> 1))
++FLAP_V_BINARY(v128_add_sat_s_i16, i16, 8, flap_sat_i16((i32)a.i16[i] + b.i16[i]))
++FLAP_V_BINARY(v128_add_sat_u_i16, u16, 8, flap_sat_u16((i32)a.u16[i] + b.u16[i]))
++FLAP_V_BINARY(v128_sub_sat_s_i16, i16, 8, flap_sat_i16((i32)a.i16[i] - b.i16[i]))
++FLAP_V_BINARY(v128_sub_sat_u_i16, u16, 8, flap_sat_u16((i32)a.u16[i] - b.u16[i]))
++FLAP_V_BINARY(v128_avgr_u_i16, u16, 8, (u16)(((u32)a.u16[i] + b.u16[i] + 1) >> 1))
++FLAP_V_BINARY(v128_mul_i16, u16, 8, (u16)((u32)a.u16[i] * b.u16[i]))
++FLAP_V_BINARY(v128_mul_i32, u32, 4, (u32)((u64)a.u32[i] * b.u32[i]))
++FLAP_V_BINARY(v128_mul_u32_to_u64, u64, 2, (u64)a.u32[2 * i] * b.u32[2 * i])
++FLAP_V_BINARY(v128_mulhi_s_i16, u16, 8, (u16)(((i32)a.i16[i] * b.i16[i]) >> 16))
++FLAP_V_BINARY(v128_mulhi_u_i16, u16, 8, (u16)(((u32)a.u16[i] * b.u16[i]) >> 16))
++FLAP_V_BINARY(v128_mulhrs_i16, u16, 8, (u16)(((((i32)a.i16[i] * b.i16[i]) >> 14) + 1) >> 1))
++FLAP_V_BINARY(v128_madd_i16, u32, 4, (u32)((i32)a.i16[2 * i] * b.i16[2 * i]) + (u32)((i32)a.i16[2 * i + 1] * b.i16[2 * i + 1]))
++FLAP_V_BINARY(v128_madd_u8_s8, i16, 8, flap_sat_i16((i32)a.u8[2 * i] * b.i8[2 * i] + (i32)a.u8[2 * i + 1] * b.i8[2 * i + 1]))
++FLAP_V_BINARY(v128_min_s_i8, i8, 16, a.i8[i] < b.i8[i] ? a.i8[i] : b.i8[i])
++FLAP_V_BINARY(v128_min_u_i8, u8, 16, a.u8[i] < b.u8[i] ? a.u8[i] : b.u8[i])
++FLAP_V_BINARY(v128_max_s_i8, i8, 16, a.i8[i] > b.i8[i] ? a.i8[i] : b.i8[i])
++FLAP_V_BINARY(v128_max_u_i8, u8, 16, a.u8[i] > b.u8[i] ? a.u8[i] : b.u8[i])
++FLAP_V_BINARY(v128_min_s_i16, i16, 8, a.i16[i] < b.i16[i] ? a.i16[i] : b.i16[i])
++FLAP_V_BINARY(v128_min_u_i16, u16, 8, a.u16[i] < b.u16[i] ? a.u16[i] : b.u16[i])
++FLAP_V_BINARY(v128_max_s_i16, i16, 8, a.i16[i] > b.i16[i] ? a.i16[i] : b.i16[i])
++FLAP_V_BINARY(v128_max_u_i16, u16, 8, a.u16[i] > b.u16[i] ? a.u16[i] : b.u16[i])
++FLAP_V_BINARY(v128_min_s_i32, i32, 4, a.i32[i] < b.i32[i] ? a.i32[i] : b.i32[i])
++FLAP_V_BINARY(v128_min_u_i32, u32, 4, a.u32[i] < b.u32[i] ? a.u32[i] : b.u32[i])
++FLAP_V_BINARY(v128_max_s_i32, i32, 4, a.i32[i] > b.i32[i] ? a.i32[i] : b.i32[i])
++FLAP_V_BINARY(v128_max_u_i32, u32, 4, a.u32[i] > b.u32[i] ? a.u32[i] : b.u32[i])
++/* Shift counts come from the low 64 bits of the right operand; logical shifts past the lane width give 0, and
++   arithmetic ones fill with the sign. */
++FLAP_V_BINARY(v128_shl_i16, u16, 8, b.u64[0] > 15 ? 0 : (u16)(a.u16[i] << b.u64[0]))
++FLAP_V_BINARY(v128_shr_u_i16, u16, 8, b.u64[0] > 15 ? 0 : (u16)(a.u16[i] >> b.u64[0]))
++FLAP_V_BINARY(v128_shl_i32, u32, 4, b.u64[0] > 31 ? 0 : a.u32[i] << b.u64[0])
++FLAP_V_BINARY(v128_shr_u_i32, u32, 4, b.u64[0] > 31 ? 0 : a.u32[i] >> b.u64[0])
++FLAP_V_BINARY(v128_shl_i64, u64, 2, b.u64[0] > 63 ? 0 : a.u64[i] << b.u64[0])
++FLAP_V_BINARY(v128_shr_u_i64, u64, 2, b.u64[0] > 63 ? 0 : a.u64[i] >> b.u64[0])
++FLAP_V_BINARY(v128_shr_s_i16, i16, 8, (i16)(a.i16[i] >> (b.u64[0] > 15 ? 15 : b.u64[0])))
++FLAP_V_BINARY(v128_shr_s_i32, i32, 4, a.i32[i] >> (b.u64[0] > 31 ? 31 : b.u64[0]))
++FLAP_V_BINARY(v128_shuffle_i8, u8, 16, (b.u8[i] & 0x80) ? 0 : a.u8[b.u8[i] & 15])
++FLAP_V_BINARY(v128_narrow_s_i16, i8, 16, flap_sat_i8(i < 8 ? a.i16[i] : b.i16[i - 8]))
++FLAP_V_BINARY(v128_narrow_u_i16, u8, 16, flap_sat_u8(i < 8 ? a.i16[i] : b.i16[i - 8]))
++FLAP_V_BINARY(v128_narrow_s_i32, i16, 8, flap_sat_i16_from_i64(i < 4 ? a.i32[i] : b.i32[i - 4]))
++FLAP_V_BINARY(v128_narrow_u_i32, u16, 8, flap_sat_u16_from_i64(i < 4 ? a.i32[i] : b.i32[i - 4]))
++FLAP_V_BINARY(v128_interleave_low_i8, u8, 16, (i & 1) ? b.u8[i / 2] : a.u8[i / 2])
++FLAP_V_BINARY(v128_interleave_high_i8, u8, 16, (i & 1) ? b.u8[8 + i / 2] : a.u8[8 + i / 2])
++FLAP_V_BINARY(v128_interleave_low_i16, u16, 8, (i & 1) ? b.u16[i / 2] : a.u16[i / 2])
++FLAP_V_BINARY(v128_interleave_high_i16, u16, 8, (i & 1) ? b.u16[4 + i / 2] : a.u16[4 + i / 2])
++FLAP_V_BINARY(v128_interleave_low_i32, u32, 4, (i & 1) ? b.u32[i / 2] : a.u32[i / 2])
++FLAP_V_BINARY(v128_interleave_high_i32, u32, 4, (i & 1) ? b.u32[2 + i / 2] : a.u32[2 + i / 2])
++FLAP_V_BINARY(v128_interleave_low_i64, u64, 2, i ? b.u64[0] : a.u64[0])
++FLAP_V_BINARY(v128_interleave_high_i64, u64, 2, i ? b.u64[1] : a.u64[1])
++FLAP_V_BINARY(v128_add_f32, f32, 4, a.f32[i] + b.f32[i])
++FLAP_V_BINARY(v128_sub_f32, f32, 4, a.f32[i] - b.f32[i])
++FLAP_V_BINARY(v128_mul_f32, f32, 4, a.f32[i] * b.f32[i])
++FLAP_V_BINARY(v128_div_f32, f32, 4, a.f32[i] / b.f32[i])
++/* minps and maxps: the right operand unless the left one is strictly less (greater), so NaNs and zeros of either
++   sign give the right operand. */
++FLAP_V_BINARY(v128_min_f32, f32, 4, a.f32[i] < b.f32[i] ? a.f32[i] : b.f32[i])
++FLAP_V_BINARY(v128_max_f32, f32, 4, a.f32[i] > b.f32[i] ? a.f32[i] : b.f32[i])
++FLAP_V_BINARY(v128_eq_f32, u32, 4, FLAP_MASK(a.f32[i] == b.f32[i], u32))
++FLAP_V_BINARY(v128_ne_f32, u32, 4, FLAP_MASK(!(a.f32[i] == b.f32[i]), u32))
++FLAP_V_BINARY(v128_lt_f32, u32, 4, FLAP_MASK(a.f32[i] < b.f32[i], u32))
++FLAP_V_BINARY(v128_le_f32, u32, 4, FLAP_MASK(a.f32[i] <= b.f32[i], u32))
++FLAP_V_BINARY(v128_unord_f32, u32, 4, FLAP_MASK(a.f32[i] != a.f32[i] || b.f32[i] != b.f32[i], u32))
++FLAP_V_BINARY(v128_add_f64, f64, 2, a.f64[i] + b.f64[i])
++FLAP_V_BINARY(v128_sub_f64, f64, 2, a.f64[i] - b.f64[i])
++FLAP_V_BINARY(v128_mul_f64, f64, 2, a.f64[i] * b.f64[i])
++FLAP_V_BINARY(v128_div_f64, f64, 2, a.f64[i] / b.f64[i])
++FLAP_V_BINARY(v128_min_f64, f64, 2, a.f64[i] < b.f64[i] ? a.f64[i] : b.f64[i])
++FLAP_V_BINARY(v128_max_f64, f64, 2, a.f64[i] > b.f64[i] ? a.f64[i] : b.f64[i])
++FLAP_V_BINARY(v128_eq_f64, u64, 2, FLAP_MASK(a.f64[i] == b.f64[i], u64))
++FLAP_V_BINARY(v128_ne_f64, u64, 2, FLAP_MASK(!(a.f64[i] == b.f64[i]), u64))
++FLAP_V_BINARY(v128_lt_f64, u64, 2, FLAP_MASK(a.f64[i] < b.f64[i], u64))
++FLAP_V_BINARY(v128_le_f64, u64, 2, FLAP_MASK(a.f64[i] <= b.f64[i], u64))
++FLAP_V_BINARY(v128_unord_f64, u64, 2, FLAP_MASK(a.f64[i] != a.f64[i] || b.f64[i] != b.f64[i], u64))
++FLAP_V_UNARY(v128_sqrt_f32, f32, 4, __builtin_sqrtf(a.f32[i]))
++FLAP_V_UNARY(v128_ceil_f32, f32, 4, flap_ceilf(a.f32[i]))
++FLAP_V_UNARY(v128_floor_f32, f32, 4, flap_floorf(a.f32[i]))
++FLAP_V_UNARY(v128_trunc_f32, f32, 4, flap_truncf(a.f32[i]))
++FLAP_V_UNARY(v128_nearest_f32, f32, 4, flap_roundevenf(a.f32[i]))
++FLAP_V_UNARY(v128_sqrt_f64, f64, 2, __builtin_sqrt(a.f64[i]))
++FLAP_V_UNARY(v128_ceil_f64, f64, 2, flap_ceil(a.f64[i]))
++FLAP_V_UNARY(v128_floor_f64, f64, 2, flap_floor(a.f64[i]))
++FLAP_V_UNARY(v128_trunc_f64, f64, 2, flap_trunc(a.f64[i]))
++FLAP_V_UNARY(v128_nearest_f64, f64, 2, flap_roundeven(a.f64[i]))
++FLAP_V_UNARY(v128_abs_i8, u8, 16, a.i8[i] < 0 ? (u8)(0 - a.u8[i]) : a.u8[i])
++FLAP_V_UNARY(v128_abs_i16, u16, 8, a.i16[i] < 0 ? (u16)(0 - a.u16[i]) : a.u16[i])
++FLAP_V_UNARY(v128_abs_i32, u32, 4, a.i32[i] < 0 ? 0 - a.u32[i] : a.u32[i])
++FLAP_V_UNARY(v128_extend_low_s_i8, i16, 8, a.i8[i])
++FLAP_V_UNARY(v128_extend_low_u_i8, u16, 8, a.u8[i])
++FLAP_V_UNARY(v128_extend_low_s_i16, i32, 4, a.i16[i])
++FLAP_V_UNARY(v128_extend_low_u_i16, u32, 4, a.u16[i])
++FLAP_V_UNARY(v128_extend_low_s_i32, i64, 2, a.i32[i])
++FLAP_V_UNARY(v128_extend_low_u_i32, u64, 2, a.u32[i])
++FLAP_V_UNARY(v128_convert_s_i32_f32, f32, 4, (float)a.i32[i])
++FLAP_V_UNARY(v128_truncate_f32_s_i32, i32, 4, flap_truncate_to_i32(a.f32[i]))
++FLAP_V_UNARY(v128_convert_low_s_i32_f64, f64, 2, (double)a.i32[i])
++FLAP_V_UNARY(v128_truncate_f64_s_i32, i32, 4, i < 2 ? flap_truncate_to_i32(a.f64[i]) : 0)
++FLAP_V_UNARY(v128_promote_low_f32, f64, 2, (double)a.f32[i])
++FLAP_V_UNARY(v128_demote_f64, f32, 4, i < 2 ? (float)a.f64[i] : 0.0f)
++FLAP_V_UNARY(v128_high_half, u32, 4, a.u32[2 + (i & 1)])
++FLAP_V_UNARY(v128_broadcast_low_i32, u32, 4, a.u32[0])
++FLAP_INLINE u64 flap_v128_low_u64(flap_v128 a) { return a.lo; }
++FLAP_INLINE u64 flap_v128_high_u64(flap_v128 a) { return a.hi; }
++FLAP_INLINE u64 flap_v128_bitmask_i8(flap_v128 source)
++{
++    flap_lanes a = { .v = source };
++    u64 mask = 0;
++    for (int i = 0; i < 16; ++i)
++        mask |= (u64)(a.u8[i] >> 7) << i;
++    return mask;
++}
++FLAP_INLINE u64 flap_v128_bitmask_f32(flap_v128 source)
++{
++    flap_lanes a = { .v = source };
++    u64 mask = 0;
++    for (int i = 0; i < 4; ++i)
++        mask |= (u64)(a.u32[i] >> 31) << i;
++    return mask;
++}
++FLAP_INLINE u64 flap_v128_bitmask_f64(flap_v128 source) { return (source.lo >> 63) | ((source.hi >> 63) << 1); }
++
++"#;
+diff --git a/Libraries/LibWasm/Engine/build.rs b/Libraries/LibWasm/Engine/build.rs
+index fa13b5ab..c427b067 100644
+--- a/Libraries/LibWasm/Engine/build.rs
++++ b/Libraries/LibWasm/Engine/build.rs
+@@ -29,6 +29,8 @@ fn main() {
+     println!("cargo:rerun-if-changed=../Module/src/abi.rs");
+     println!("cargo:rerun-if-changed={}", interpreter_source.display());
+     println!("cargo::rustc-check-cfg=cfg(wasm_interpreter)");
++    println!("cargo::rustc-check-cfg=cfg(wasm_interpreter_c)");
++    println!("cargo:rerun-if-env-changed=LIBWASM_INTERPRETER_BACKEND");
+     println!("cargo:rerun-if-changed=cbindgen.toml");
+     println!("cargo:rerun-if-changed=src/capi.rs");
+     println!("cargo:rerun-if-changed=src/runtime/heap.rs");
+@@ -50,15 +52,31 @@ fn main() {
+         "windows" => flapc::ObjectFormat::Coff,
+         _ => flapc::ObjectFormat::Elf,
+     };
++    // Flap prints the interpreter as C instead of assembly for wasm32, which it has no assembly backend for, or when
++    // LIBWASM_INTERPRETER_BACKEND=c asks for it. The C chains handlers with guaranteed tail calls, so it needs clang.
++    // Its handlers cannot resume after a fault, so memory accesses are bounds checked instead (see Module/build.rs).
++    let is_wasm32 = architecture == "wasm32";
++    let c_backend = is_wasm32 || env::var("LIBWASM_INTERPRETER_BACKEND").is_ok_and(|backend| backend == "c");
+     let architecture = match architecture.as_str() {
+         "x86_64" => flapc::Architecture::X86_64,
+         // FIXME: Port the interpreter's entry and exit to the Windows AArch64 calling convention.
+         "aarch64" if object_format != flapc::ObjectFormat::Coff => flapc::Architecture::Aarch64,
++        // NB: The C backend lowers for x86-64 and emulates the instructions that picks exactly.
++        _ if c_backend => flapc::Architecture::X86_64,
+         _ => return,
+     };
+     println!("cargo:rustc-cfg=wasm_interpreter");
++    if c_backend {
++        println!("cargo:rustc-cfg=wasm_interpreter_c");
++    }
+ 
+-    let layout = abi::layout_constants();
++    // NB: The layout is computed with the build machine's type layouts, which only a target with the same pointer width
++    //     shares; for others (wasm32), it is computed on the target.
++    let layout = if env::var("CARGO_CFG_TARGET_POINTER_WIDTH").is_ok_and(|width| width != "64") {
++        layout_on_target(&manifest_directory, &output_directory)
++    } else {
++        abi::layout_constants()
++    };
+     let layout_path = output_directory.join("layout.conf");
+     write_if_changed(&layout_path, &layout);
+ 
+@@ -66,8 +84,8 @@ fn main() {
+     // `check_cpu_features()`), and with bit scans everywhere else.
+     let target_features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+     let has_target_feature = |feature: &str| target_features.split(',').any(|candidate| candidate == feature);
+-    let has_lzcnt = architecture == flapc::Architecture::X86_64 && has_target_feature("lzcnt");
+-    let has_bmi1 = architecture == flapc::Architecture::X86_64 && has_target_feature("bmi1");
++    let has_lzcnt = !c_backend && architecture == flapc::Architecture::X86_64 && has_target_feature("lzcnt");
++    let has_bmi1 = !c_backend && architecture == flapc::Architecture::X86_64 && has_target_feature("bmi1");
+ 
+     let source = fs::read_to_string(&interpreter_source).expect("read interpreter.flap");
+     let source_name = interpreter_source.display().to_string();
+@@ -83,21 +101,42 @@ fn main() {
+         profiling: false,
+         profile: flapc::Profile::WebAssembly,
+     });
+-    let assembly = compiler
+-        .compile(flapc::CompilationUnit {
+-            source: flapc::SourceInput {
+-                name: &source_name,
+-                contents: &source,
+-            },
+-            constants: Some(flapc::SourceInput {
+-                name: "layout.conf",
+-                contents: &layout,
+-            }),
+-        })
+-        .unwrap_or_else(|error| panic!("flapc failed to compile the interpreter:\n{error}"));
+-    let assembly_path = output_directory.join("interpreter.S");
++    let unit = flapc::CompilationUnit {
++        source: flapc::SourceInput {
++            name: &source_name,
++            contents: &source,
++        },
++        constants: Some(flapc::SourceInput {
++            name: "layout.conf",
++            contents: &layout,
++        }),
++    };
++    let assembly = if c_backend {
++        compiler.prepare(unit).and_then(|prepared| compiler.compile_prepared_c(&prepared))
++    } else {
++        compiler.compile(unit)
++    }
++    .unwrap_or_else(|error| panic!("flapc failed to compile the interpreter:\n{error}"));
++    let assembly_path = output_directory.join(if c_backend { "interpreter.c" } else { "interpreter.S" });
+     write_if_changed(&assembly_path, assembly.as_str());
+ 
++    if c_backend {
++        let mut build = cc::Build::new();
++        build.file(&assembly_path);
++        if env::var_os("CC").is_none() && !build.get_compiler().is_like_clang() {
++            build.compiler("clang");
++        }
++        build.std("c11");
++        build.opt_level(2);
++        build.warnings(false);
++        build.flag("-fno-strict-aliasing");
++        if is_wasm32 {
++            build.flag("-mtail-call");
++        }
++        build.compile("libwasm_interpreter");
++        return;
++    }
++
+     let mut build = cc::Build::new();
+     build.file(&assembly_path);
+     if os == "macos"
+@@ -125,6 +164,47 @@ fn main() {
+     build.compile("libwasm_interpreter");
+ }
+ 
++/// Compile a program that prints `abi::layout_constants()` for the target, and run it there with the command that
++/// LIBJS_TARGET_RUNNER names (wasmtime by default).
++fn layout_on_target(manifest_directory: &std::path::Path, output_directory: &std::path::Path) -> String {
++    println!("cargo:rerun-if-env-changed=LIBJS_TARGET_RUNNER");
++    let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
++    let target = env::var("TARGET").expect("TARGET");
++    let directory = output_directory.join("layout_for_target");
++    fs::create_dir_all(&directory).expect("create the layout generator directory");
++    let main = directory.join("main.rs");
++    let abi = manifest_directory.join("../Module/src/abi.rs");
++    write_if_changed(
++        &main,
++        &format!(
++            "#[path = {:?}]\n#[allow(dead_code)]\nmod abi;\nfn main() {{ print!(\"{{}}\", abi::layout_constants()); }}\n",
++            abi.display().to_string()
++        ),
++    );
++    let generator = directory.join(if target.starts_with("wasm") { "layout.wasm" } else { "layout" });
++    let status = std::process::Command::new(&rustc)
++        .args(["--edition", "2024", "-O", "--target", &target])
++        .arg(&main)
++        .arg("-o")
++        .arg(&generator)
++        .status()
++        .unwrap_or_else(|error| panic!("compile the layout generator for {target}: {error}"));
++    assert!(status.success(), "compiling the layout generator for {target} failed: {status}");
++    let runner = env::var("LIBJS_TARGET_RUNNER").unwrap_or_else(|_| "wasmtime".to_string());
++    let mut words = runner.split_whitespace();
++    let output = std::process::Command::new(words.next().expect("LIBJS_TARGET_RUNNER names a command"))
++        .args(words)
++        .arg(&generator)
++        .output()
++        .unwrap_or_else(|error| panic!("run the layout generator with {runner} (set LIBJS_TARGET_RUNNER): {error}"));
++    assert!(
++        output.status.success(),
++        "the layout generator failed: {}",
++        String::from_utf8_lossy(&output.stderr)
++    );
++    String::from_utf8(output.stdout).expect("the layout is UTF-8")
++}
++
+ /// The minimum macOS version rustc builds the crate's own code for, which the assembled interpreter has to match.
+ fn rust_macos_deployment_target() -> Option<String> {
+     if let Ok(target) = env::var("MACOSX_DEPLOYMENT_TARGET") {
+diff --git a/Libraries/LibWasm/Engine/src/runtime/interpreter.rs b/Libraries/LibWasm/Engine/src/runtime/interpreter.rs
+index 3644718b..7bf92076 100644
+--- a/Libraries/LibWasm/Engine/src/runtime/interpreter.rs
++++ b/Libraries/LibWasm/Engine/src/runtime/interpreter.rs
+@@ -29,9 +29,13 @@ unsafe extern "sysv64" {
+     fn wasm_interpreter(ip: *const u8, argument: u64);
+ }
+ 
+-#[cfg(wasm_interpreter)]
++#[cfg(all(wasm_interpreter, not(wasm_interpreter_c)))]
+ unsafe extern "C" {
+     static wasm_interpreter_end: u8;
++}
++
++#[cfg(wasm_interpreter)]
++unsafe extern "C" {
+     static wasm_interpreter_dispatch_table: [usize; 256];
+ }
+ 
+@@ -52,7 +56,7 @@ pub unsafe fn enter(record: &mut EntryRecord) {
+     }
+ }
+ 
+-#[cfg(wasm_interpreter)]
++#[cfg(all(wasm_interpreter, not(wasm_interpreter_c)))]
+ fn interpreter_code_range() -> (usize, usize) {
+     (
+         wasm_interpreter as *const () as usize,
+@@ -66,7 +70,7 @@ pub fn dispatch_table_entry(opcode: u8) -> usize {
+     unsafe { wasm_interpreter_dispatch_table[usize::from(opcode)] }
+ }
+ 
+-#[cfg(wasm_interpreter)]
++#[cfg(all(wasm_interpreter, not(wasm_interpreter_c)))]
+ fn memory_fault_handler() -> usize {
+     dispatch_table_entry(crate::abi::OPCODE_MEMORY_FAULT)
+ }
+@@ -75,6 +79,10 @@ fn memory_fault_handler() -> usize {
+ /// targets them (see build.rs), on x86-64, and NEON, LSE and RDM on AArch64. A CPU without them would not fault but compute wrong results (lzcnt
+ /// runs as bsr on older CPUs), so the engine refuses to start instead.
+ pub fn check_cpu_features() {
++    // NB: The C interpreter only uses what the compiler targets.
++    if cfg!(wasm_interpreter_c) {
++        return;
++    }
+     let missing = missing_interpreter_cpu_features();
+     assert!(
+         missing.is_empty(),
+@@ -205,12 +213,24 @@ fn thread_stack_lowest_address() -> Option<usize> {
+     Some(low)
+ }
+ 
+-#[cfg(not(any(any(target_os = "linux", target_os = "android"), target_os = "macos", windows)))]
++/// A WASI module has one thread, whose stack is the region of linear memory the linker places below `__stack_high`.
++#[cfg(target_os = "wasi")]
++#[allow(clippy::unnecessary_wraps)] // The other platforms' versions can fail.
++fn thread_stack_lowest_address() -> Option<usize> {
++    unsafe extern "C" {
++        static __stack_low: u8;
++    }
++    Some(&raw const __stack_low as usize)
++}
++
++#[cfg(not(any(any(target_os = "linux", target_os = "android"), target_os = "macos", windows, target_os = "wasi")))]
+ fn thread_stack_lowest_address() -> Option<usize> {
+     None
+ }
+ 
+-#[cfg(all(wasm_interpreter, unix))]
++// NB: The C interpreter's handlers keep their state where the compiler likes, so a fault cannot resume in another
++//     handler. Its memory accesses are all bounds checked instead.
++#[cfg(all(wasm_interpreter, not(wasm_interpreter_c), unix))]
+ mod fault {
+     use super::{interpreter_code_range, memory_fault_handler};
+     use crate::runtime::memory::is_in_any_reservation;
+@@ -308,7 +328,7 @@ mod fault {
+ }
+ 
+ /// Windows reports faults to vectored exception handlers before it looks for handlers in the faulting thread's frames.
+-#[cfg(all(wasm_interpreter, windows))]
++#[cfg(all(wasm_interpreter, not(wasm_interpreter_c), windows))]
+ mod fault {
+     use super::{interpreter_code_range, memory_fault_handler};
+     use crate::runtime::memory::is_in_any_reservation;
+@@ -373,6 +393,6 @@ mod fault {
+ }
+ 
+ pub fn install_fault_handler() {
+-    #[cfg(wasm_interpreter)]
++    #[cfg(all(wasm_interpreter, not(wasm_interpreter_c)))]
+     fault::install();
+ }
+diff --git a/Libraries/LibWasm/Engine/src/runtime/jit.rs b/Libraries/LibWasm/Engine/src/runtime/jit.rs
+index ff5a548c..6573672d 100644
+--- a/Libraries/LibWasm/Engine/src/runtime/jit.rs
++++ b/Libraries/LibWasm/Engine/src/runtime/jit.rs
+@@ -277,6 +277,10 @@ pub(crate) fn enabled() -> bool {
+     if cfg!(target_arch = "wasm32") {
+         return false;
+     }
++    // NB: Compiled code enters and leaves the assembly interpreter's handlers, which the C interpreter does not have.
++    if cfg!(wasm_interpreter_c) {
++        return false;
++    }
+     options().enabled && native::try_stubs().is_some()
+ }
+ 
+diff --git a/Libraries/LibWasm/Engine/src/runtime/memory.rs b/Libraries/LibWasm/Engine/src/runtime/memory.rs
+index 557d3211..67eab16d 100644
+--- a/Libraries/LibWasm/Engine/src/runtime/memory.rs
++++ b/Libraries/LibWasm/Engine/src/runtime/memory.rs
+@@ -116,24 +116,59 @@ mod platform {
+     }
+ }
+ 
+-// NB: WASI has no address space reservations; a wasm32 host has no room for a guarded memory anyway, so memories
+-//     that do not come from the heap's primitive storage fail to allocate.
++// NB: WASI has no address space reservations, and a wasm32 host has no room for a guarded memory anyway. A memory
++//     there is a zeroed allocation of its current size, which moves when it grows (see `MOVES_WHEN_GROWN`).
+ #[cfg(target_os = "wasi")]
+ mod platform {
+-    pub unsafe fn reserve(_size: usize) -> *mut u8 {
+-        std::ptr::null_mut()
++    fn layout(size: usize) -> Option<std::alloc::Layout> {
++        std::alloc::Layout::from_size_align(size.max(1), super::PAGE_SIZE as usize).ok()
++    }
++
++    pub unsafe fn reserve(size: usize) -> *mut u8 {
++        match layout(size) {
++            Some(layout) => unsafe { std::alloc::alloc_zeroed(layout) },
++            None => std::ptr::null_mut(),
++        }
+     }
+ 
+     pub unsafe fn commit(_address: *mut u8, _size: usize) -> bool {
+-        false
++        true
+     }
+ 
+-    pub unsafe fn release(_address: *mut u8, _size: usize) {}
++    pub unsafe fn release(address: *mut u8, size: usize) {
++        if let Some(layout) = layout(size) {
++            unsafe { std::alloc::dealloc(address, layout) };
++        }
++    }
+ }
+ 
++/// Whether a memory reserves only what it has grown to, and moves to a larger reservation when it grows past it. On
++/// 32-bit hosts there is no room for the reservations of full-size memories, so every access is bounds checked (see
++/// Module/build.rs), which reads the memory's current base, and nothing keeps memory 0's base across a grow.
++const MOVES_WHEN_GROWN: bool = cfg!(target_pointer_width = "32");
++
++/// The most pages a memory can have on a 32-bit host: 2 GiB, half of its address space.
++const MEMORY32_MAX_PAGES_ON_32_BIT_HOSTS: u64 = 1 << 15;
++
+ impl MemoryInstance {
+     pub fn new(ty: MemoryType, heap: &super::heap::Heap) -> Option<Self> {
+         let (maximum_pages, capacity, guard_size) = match ty.limits.address_type {
++            AddressType::I32 if MOVES_WHEN_GROWN => {
++                let maximum_pages = ty
++                    .limits
++                    .max
++                    .unwrap_or(MEMORY32_MAX_PAGES)
++                    .min(MEMORY32_MAX_PAGES_ON_32_BIT_HOSTS);
++                (maximum_pages, ty.limits.min.max(1) * PAGE_SIZE, 0)
++            }
++            AddressType::I64 if MOVES_WHEN_GROWN => {
++                let maximum_pages = ty
++                    .limits
++                    .max
++                    .unwrap_or(MEMORY64_MAX_PAGES)
++                    .min(MEMORY32_MAX_PAGES_ON_32_BIT_HOSTS);
++                (maximum_pages, ty.limits.min.max(1) * PAGE_SIZE, 0)
++            }
+             AddressType::I32 => {
+                 let maximum_pages = ty.limits.max.unwrap_or(MEMORY32_MAX_PAGES).min(MEMORY32_MAX_PAGES);
+                 let capacity = maximum_pages * PAGE_SIZE;
+@@ -223,7 +258,9 @@ impl MemoryInstance {
+         if new_pages > self.maximum_pages {
+             return None;
+         }
+-        if delta != 0 {
++        if delta != 0 && MOVES_WHEN_GROWN {
++            self.grow_by_moving(new_pages)?;
++        } else if delta != 0 {
+             match &self.backing {
+                 Backing::Mapping => {
+                     let start = unsafe { self.reservation.add(self.size()) };
+@@ -248,6 +285,47 @@ impl MemoryInstance {
+         Some(previous)
+     }
+ 
++    /// Grow to `new_pages` on a host where memories move when they grow past their reservation.
++    fn grow_by_moving(&mut self, new_pages: u64) -> Option<()> {
++        let new_size = usize::try_from(new_pages * PAGE_SIZE).ok()?;
++        match &self.backing {
++            Backing::Mapping => {
++                if new_size > self.reservation_size {
++                    // Reserve double, so that growing a page at a time copies the memory a logarithmic number of times.
++                    let maximum_size = (self.maximum_pages * PAGE_SIZE) as usize;
++                    let reservation_size = new_size.max(self.reservation_size.saturating_mul(2)).min(maximum_size);
++                    let reservation = unsafe { platform::reserve(reservation_size) };
++                    if reservation.is_null() {
++                        return None;
++                    }
++                    if !RESERVATIONS.add(reservation as usize, reservation_size) {
++                        unsafe { platform::release(reservation, reservation_size) };
++                        return None;
++                    }
++                    RESERVATIONS.remove(self.reservation as usize);
++                    unsafe {
++                        std::ptr::copy_nonoverlapping(self.reservation, reservation, self.size());
++                        platform::release(self.reservation, self.reservation_size);
++                    }
++                    self.reservation = reservation;
++                    self.reservation_size = reservation_size;
++                }
++            }
++            Backing::PrimitiveStorage { handle, interface } => {
++                // Beyond its capacity, the storage moves.
++                let resized = unsafe {
++                    (interface.gc_primitive_storage_resize)(*handle, new_size, true, core::ptr::null_mut())
++                };
++                if !resized {
++                    return None;
++                }
++                self.reservation = unsafe { (interface.gc_primitive_storage_data)(*handle) };
++            }
++        }
++        self.data.base = self.reservation;
++        Some(())
++    }
++
+     pub fn bytes(&self) -> &[u8] {
+         unsafe { ak::slice_from_raw_parts(self.reservation, self.size()) }
+     }
+diff --git a/Libraries/LibWasm/Engine/tests/execution.rs b/Libraries/LibWasm/Engine/tests/execution.rs
+index b7368de7..9e8af94f 100644
+--- a/Libraries/LibWasm/Engine/tests/execution.rs
++++ b/Libraries/LibWasm/Engine/tests/execution.rs
+@@ -4,7 +4,7 @@
+  * SPDX-License-Identifier: BSD-2-Clause
+  */
+ 
+-#![cfg(any(target_arch = "x86_64", all(target_arch = "aarch64", not(windows))))]
++#![cfg(any(target_arch = "x86_64", all(target_arch = "aarch64", not(windows)), target_arch = "wasm32"))]
+ 
+ use libwasm_engine::runtime::{ExternValue, InstanceAddress, Store, Trap, Value};
+ use std::sync::Arc;
+@@ -376,6 +376,8 @@ fn constant_arrays_too_large_for_memory_trap() {
+ /// a wake of the address from outside WebAssembly (here a FUTEX_WAKE, as Atomics.notify does) ends it.
+ #[cfg(target_os = "linux")]
+ #[test]
++// NB: wasm32-wasip1 has no threads.
++#[cfg_attr(target_os = "wasi", ignore)]
+ fn waits_end_with_wakes_from_outside_webassembly() {
+     let (sender, receiver) = std::sync::mpsc::channel();
+     let waiter = std::thread::spawn(move || {
+diff --git a/Libraries/LibWasm/Interpreter/interpreter.flap b/Libraries/LibWasm/Interpreter/interpreter.flap
+index ae834519..91a00b3c 100644
+--- a/Libraries/LibWasm/Interpreter/interpreter.flap
++++ b/Libraries/LibWasm/Interpreter/interpreter.flap
+@@ -380,8 +380,9 @@ handler Throw() @opcode(0x08) {
+     let instance_pointer = instance();
+     let mut tags_pointer: u64;
+     load64(tags_pointer, [instance_pointer, INSTANCE_TAGS]);
+-    let tags: Sequence<u64> = alias(tags_pointer);
+-    let tag = tags[tag_index];
++    # NB: Pointers, 4 bytes on wasm32.
++    let tags: Sequence<ptr<u8>> = alias(tags_pointer);
++    let tag: u64 = alias(tags[tag_index]);
+     throw_exception(tag, 0);
+ }
+ 
+@@ -1047,8 +1048,10 @@ inline fn function_at(index: u64) -> u64 {
+     let instance_pointer = instance();
+     let mut functions_pointer: u64;
+     load64(functions_pointer, [instance_pointer, INSTANCE_FUNCTIONS]);
+-    let functions: Sequence<u64> = alias(functions_pointer);
+-    functions[index]
++    # NB: Pointers, 4 bytes on wasm32.
++    let functions: Sequence<ptr<u8>> = alias(functions_pointer);
++    let element: u64 = alias(functions[index]);
++    element
+ }
+ 
+ handler Call() @opcode(0x10) {
+@@ -1069,8 +1072,9 @@ inline fn indirect_callee(bytes: Sequence<u8>) -> (u64, u64) {
+     let instance_pointer = instance();
+     let mut tables_pointer: u64;
+     load64(tables_pointer, [instance_pointer, INSTANCE_TABLES]);
+-    let tables: Sequence<u64> = alias(tables_pointer);
+-    let table = tables[table_index];
++    # NB: Pointers, 4 bytes on wasm32.
++    let tables: Sequence<ptr<u8>> = alias(tables_pointer);
++    let table: u64 = alias(tables[table_index]);
+     let mut size: u64;
+     load64(size, [table, TABLE_SIZE]);
+     guard element < size else @cold {
+@@ -1215,8 +1219,10 @@ inline fn global_address(index: u64) -> u64 {
+     let instance_pointer = instance();
+     let mut globals_pointer: u64;
+     load64(globals_pointer, [instance_pointer, INSTANCE_GLOBALS]);
+-    let globals: Sequence<u64> = alias(globals_pointer);
+-    globals[index]
++    # NB: Pointers, 4 bytes on wasm32.
++    let globals: Sequence<ptr<u8>> = alias(globals_pointer);
++    let element: u64 = alias(globals[index]);
++    element
+ }
+ 
+ handler GlobalGet() @opcode(0x23) {
+@@ -1242,8 +1248,10 @@ inline fn table_at(index: u64) -> u64 {
+     let instance_pointer = instance();
+     let mut tables_pointer: u64;
+     load64(tables_pointer, [instance_pointer, INSTANCE_TABLES]);
+-    let tables: Sequence<u64> = alias(tables_pointer);
+-    tables[index]
++    # NB: Pointers, 4 bytes on wasm32.
++    let tables: Sequence<ptr<u8>> = alias(tables_pointer);
++    let element: u64 = alias(tables[index]);
++    element
+ }
+ 
+ inline fn table_element_address(table: u64, index: u64) -> u64 {
+@@ -1285,8 +1293,10 @@ inline fn memory_at(index: u64) -> u64 {
+     let instance_pointer = instance();
+     let mut memories_pointer: u64;
+     load64(memories_pointer, [instance_pointer, INSTANCE_MEMORIES]);
+-    let memories: Sequence<u64> = alias(memories_pointer);
+-    memories[index]
++    # NB: Pointers, 4 bytes on wasm32.
++    let memories: Sequence<ptr<u8>> = alias(memories_pointer);
++    let element: u64 = alias(memories[index]);
++    element
+ }
+ 
+ # Check that `size` bytes from `address` are in the memory, and return their address.
+@@ -3550,8 +3560,9 @@ inline fn check_range(start: u64, count: u64, size: u64, code: u64) {
+ 
+ inline fn segment_at(segments_offset: u64, index: u64) -> u64 {
+     let instance_pointer = instance();
+-    let mut segments: u64;
+-    load64(segments, [instance_pointer, segments_offset]);
++    # NB: A pointer, 4 bytes on wasm32. Segments are 16 bytes on every target.
++    let words: Sequence<ptr<u8>> = alias(instance_pointer + segments_offset);
++    let segments: u64 = alias(words[0]);
+     segments + (index << 4)
+ }
+ 
+@@ -7191,8 +7202,10 @@ inline fn rtt_of_identity(identity: u64) -> u64 {
+     let context_pointer = context();
+     let mut rtts_pointer: u64;
+     load64(rtts_pointer, [context_pointer, CONTEXT_RTTS]);
+-    let rtts: Sequence<u64> = alias(rtts_pointer);
+-    rtts[identity]
++    # NB: Pointers, 4 bytes on wasm32.
++    let rtts: Sequence<ptr<u8>> = alias(rtts_pointer);
++    let element: u64 = alias(rtts[identity]);
++    element
+ }
+ 
+ inline fn identity_of_type(type_index: u64) -> u64 {
+diff --git a/Libraries/LibWasm/Module/build.rs b/Libraries/LibWasm/Module/build.rs
+new file mode 100644
+index 00000000..07090227
+--- /dev/null
++++ b/Libraries/LibWasm/Module/build.rs
+@@ -0,0 +1,21 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++//! Decides whether memory 0 has guard pages. The assembly interpreter turns faults in them into traps; the C
++//! interpreter (see ../Engine/build.rs) cannot, and wasm32 cannot reserve the address range, so there every access is
++//! bounds checked (see rule 1 in src/quickening.rs).
++
++use std::env;
++
++fn main() {
++    println!("cargo:rerun-if-changed=build.rs");
++    println!("cargo:rerun-if-env-changed=LIBWASM_INTERPRETER_BACKEND");
++    println!("cargo::rustc-check-cfg=cfg(libwasm_checked_memory)");
++    let is_wasm32 = env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|architecture| architecture == "wasm32");
++    if is_wasm32 || env::var("LIBWASM_INTERPRETER_BACKEND").is_ok_and(|backend| backend == "c") {
++        println!("cargo:rustc-cfg=libwasm_checked_memory");
++    }
++}
+diff --git a/Libraries/LibWasm/Module/src/abi.rs b/Libraries/LibWasm/Module/src/abi.rs
+index da378b84..2b7c0ece 100644
+--- a/Libraries/LibWasm/Module/src/abi.rs
++++ b/Libraries/LibWasm/Module/src/abi.rs
+@@ -313,9 +313,18 @@ pub fn layout_constants() -> String {
+     constant("FUNCTION_KIND_WASM_VECTOR", FUNCTION_KIND_WASM_VECTOR as usize);
+     constant("FUNCTION_KIND_COMPILED", FUNCTION_KIND_COMPILED as usize);
+     constant("TIER_UP_CALL_COST", TIER_UP_CALL_COST as usize);
++    // NB: Pointers are 4 bytes on wasm32, where the interpreter reads and writes them with 4-byte accesses: flapc turns
++    //     `load64` and `store64` of a field with a `<NAME>_WIDTH = 4` constant into `load32` and `store32`.
++    constant("POINTER_SIZE", size_of::<usize>());
++    fn field_size<T, F>(_: fn(&T) -> &F) -> usize {
++        size_of::<F>()
++    }
+     macro_rules! field {
+         ($name:literal, $type:ty, $field:ident) => {
+             constant($name, offset_of!($type, $field));
++            if size_of::<usize>() == 4 && field_size(|value: &$type| &value.$field) == 4 {
++                constant(concat!($name, "_WIDTH"), 4);
++            }
+         };
+     }
+     field!("FUNCTION_CODE", FunctionHeader, code);
+diff --git a/Libraries/LibWasm/Module/src/validator.rs b/Libraries/LibWasm/Module/src/validator.rs
+index 4724b158..64b8594a 100644
+--- a/Libraries/LibWasm/Module/src/validator.rs
++++ b/Libraries/LibWasm/Module/src/validator.rs
+@@ -721,8 +721,11 @@ impl FunctionValidator<'_> {
+         self.checked_access = None;
+         // The plain handlers only decode `align offset` with a one-byte alignment, for memory 0 as a memory32 (see
+         // rule 1 in quickening.rs). Every other encoding, even of the same access, becomes a checked access.
+-        let is_plain =
+-            memory_bytes.is_none() && alignment_end - alignment_start == 1 && address_type == AddressType::I32;
++        // Without guard pages, every access is checked.
++        let is_plain = !cfg!(libwasm_checked_memory)
++            && memory_bytes.is_none()
++            && alignment_end - alignment_start == 1
++            && address_type == AddressType::I32;
+         if !is_plain {
+             if is_core_access {
+                 self.rewrites.push(crate::quickening::checked_access(

@@ -1,0 +1,14 @@
+[package]
+name = "libwasm-wast"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Runs the WebAssembly spec test suite's .wast scripts on Ladybird's LibWasm engine, natively or as wasm32-wasip1.
+# `ladybird` is a link to the Ladybird checkout (see run.sh).
+[dependencies]
+libwasm_engine = { path = "ladybird/Libraries/LibWasm/Engine" }
+wast = "235"
+
+[workspace]
+exclude = ["ladybird"]
