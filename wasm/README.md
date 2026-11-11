@@ -85,6 +85,11 @@ LibJS runtime suite's failures that were bugs rather than limits:
   64 MiB and up straight from `memory.grow`, in whole wasm pages, and keeps released ones for reuse (merged with their
   neighbours, extended in place when they end at the top of memory). Buffers of up to about 3 GiB now work.
 
+`patches/0015-wasm32-intrinsic-accessor-sret.patch`: C++ returns a `JS::Value` (a class around a union) through a
+hidden result pointer on wasm32, so the Rust runtime calls LibWeb's intrinsic accessors (the lazily created
+constructors on `window`, such as `"AbortController" in window`) the way it does on Windows, with the result pointer
+first. Calling them as returning a `u64` trapped with "indirect call type mismatch".
+
 What still fails, and why it cannot be fixed on wasm32:
 
 - `ArrayBuffer-max-byte-length.js` (3 tests): a buffer of 2^32 bytes. That is the whole 32-bit address space, which

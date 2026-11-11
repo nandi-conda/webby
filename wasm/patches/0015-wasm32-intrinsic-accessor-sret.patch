@@ -1,0 +1,60 @@
+diff --git a/Libraries/LibJS/Rust/generate/abi_header.rs b/Libraries/LibJS/Rust/generate/abi_header.rs
+index 9ec8142e..6d286848 100644
+--- a/Libraries/LibJS/Rust/generate/abi_header.rs
++++ b/Libraries/LibJS/Rust/generate/abi_header.rs
+@@ -71,6 +71,7 @@ const CFG_PREDICATES_AS_C_MACROS: &[(&str, &str)] = &[
+     ("target_arch = x86_64", "__x86_64__"),
+     ("target_vendor = apple", "__APPLE__"),
+     ("target_os = windows", "_WIN32"),
++    ("target_arch = wasm32", "__wasm32__"),
+ ];
+ 
+ /// Parses the embedding module, whose mod.rs leads cbindgen to every file under it, and writes the header to `output`
+diff --git a/Libraries/LibJS/Rust/src/embedding/object.rs b/Libraries/LibJS/Rust/src/embedding/object.rs
+index 303037df..3c8e9f88 100644
+--- a/Libraries/LibJS/Rust/src/embedding/object.rs
++++ b/Libraries/LibJS/Rust/src/embedding/object.rs
+@@ -227,21 +227,21 @@ fn integrity_level_from_abi(level: u8) -> IntegrityLevel {
+ 
+ /// Computes the value of a property that an intrinsic accessor defines, when it is first read: given the realm of the
+ /// object, returns the value, which the runtime then stores in the property.
+-#[cfg(not(target_os = "windows"))]
++#[cfg(not(any(target_os = "windows", target_arch = "wasm32")))]
+ pub type JSIntrinsicAccessor = Option<unsafe extern "C" fn(realm: *mut JSRealm) -> JSValue>;
+ 
+ /// Computes the value of a property that an intrinsic accessor defines, when it is first read: given the realm of the
+ /// object, returns the value, which the runtime then stores in the property.
+-#[cfg(target_os = "windows")]
++#[cfg(any(target_os = "windows", target_arch = "wasm32"))]
+ pub type JSIntrinsicAccessor = Option<unsafe extern "C" fn(result: *mut JSValue, realm: *mut JSRealm)>;
+ 
+ pub fn call_host_intrinsic_accessor(accessor: HostIntrinsicAccessor, realm: Gc<Realm>) -> Value {
+     let realm = cell_into_abi::<JSRealm>(realm);
+     // SAFETY: The embedder defined the accessor for a property of an object of this runtime, and computes its value in
+     //         the realm of that object.
+-    #[cfg(not(target_os = "windows"))]
++    #[cfg(not(any(target_os = "windows", target_arch = "wasm32")))]
+     let value = unsafe { accessor(realm) };
+-    #[cfg(target_os = "windows")]
++    #[cfg(any(target_os = "windows", target_arch = "wasm32"))]
+     let value = {
+         let mut value = 0;
+         // SAFETY: As above.
+diff --git a/Libraries/LibJS/Rust/src/runtime/object.rs b/Libraries/LibJS/Rust/src/runtime/object.rs
+index bea9f2c2..35368b9c 100644
+--- a/Libraries/LibJS/Rust/src/runtime/object.rs
++++ b/Libraries/LibJS/Rust/src/runtime/object.rs
+@@ -425,11 +425,11 @@ pub enum IntrinsicAccessor {
+ pub type NativeIntrinsicAccessor = fn(&Vm, Gc<Realm>) -> Value;
+ 
+ /// An intrinsic accessor that an embedder defines through the C ABI, which returns the encoded value.
+-#[cfg(not(target_os = "windows"))]
++#[cfg(not(any(target_os = "windows", target_arch = "wasm32")))]
+ pub type HostIntrinsicAccessor = unsafe extern "C" fn(realm: *mut JSRealm) -> JSValue;
+ 
+ /// An intrinsic accessor that an embedder defines through the C ABI, which returns the encoded value.
+-#[cfg(target_os = "windows")]
++#[cfg(any(target_os = "windows", target_arch = "wasm32"))]
+ pub type HostIntrinsicAccessor = unsafe extern "C" fn(result: *mut JSValue, realm: *mut JSRealm);
+ 
+ impl IntrinsicAccessor {
