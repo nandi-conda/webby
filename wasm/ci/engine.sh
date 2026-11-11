@@ -61,7 +61,7 @@ for t in $targets; do
   cp "$build/bin/$t" "$out/$t.wasm"
 done
 if [[ " $targets " == *" js "* ]]; then
-  got=$(cd /tmp && timeout 300 python "$w/wasm/tools/wasi-run.py" "$out/js.wasm" -c 'print(6 * 7)' 2>&1 | tail -1)
+  got=$(cd /tmp && timeout 300 python "$w/wasm/tools/wasi-run.py" "$out/js.wasm" -c 'print(6 * 7)' 2>&1 | tail -1 | sed 's/\x1b\[[0-9;]*m//g')
   [ "$got" = 42 ] || fail "js.wasm smoke test printed: $got"
   echo "js.wasm prints $got"
 fi
