@@ -107,6 +107,57 @@ index 86ccecc9..46c71f72 100644
      /// List the runtime functions the assembly compiled from `prepared` calls,
      /// ordered by symbol and classified for this compiler's target. Fails if
      /// one symbol is called in two ways that need different definitions.
+diff --git a/Libraries/LibJS/Flap/src/low_ir/lowering.rs b/Libraries/LibJS/Flap/src/low_ir/lowering.rs
+index ecac4b5a..0191cdb0 100644
+--- a/Libraries/LibJS/Flap/src/low_ir/lowering.rs
++++ b/Libraries/LibJS/Flap/src/low_ir/lowering.rs
+@@ -2399,7 +2399,10 @@ fn lower_instruction(
+             let [destination] = require_results(&results, operation.name())?;
+             let folded_boolean = folded_i32_bool_source(function, instruction);
+             let source =
+-                if let Some((_, source)) = folded_boolean.or_else(|| folded_u32_unbox_source(function, instruction)) {
++                if let Some(source) = folded_boolean
++                    .map(|(_, source)| source)
++                    .or_else(|| u32_unbox_boxed_source(function, instruction))
++                {
+                     value_operand(function, source)?
+                 } else {
+                     let [source] = require_inputs(&inputs, operation.name())?;
+@@ -2940,6 +2943,34 @@ fn folded_u32_unbox_source(
+     )
+ }
+ 
++/// The boxed Value a `ToUint32` of an `UnboxInt32` reads its payload from
++/// directly. Besides the single-use unbox `folded_u32_unbox_source` folds away,
++/// this covers an unbox with several users that can all stay narrow: those
++/// users read the boxed source themselves (`folded_32bit_operation_source`),
++/// which can leave the unbox unlowered, so the conversion must not read it.
++fn u32_unbox_boxed_source(function: &FunctionUses<'_>, instruction: &super::ir::Instruction) -> Option<ValueId> {
++    if let Some((_, source)) = folded_u32_unbox_source(function, instruction) {
++        return Some(source);
++    }
++    if instruction.operation != Operation::Intrinsic(Intrinsic::Value(ValueOperation::ToUint32)) {
++        return None;
++    }
++    let [input] = instruction.inputs.as_slice() else {
++        return None;
++    };
++    let (_, unbox) = defining_instruction(function, *input)?;
++    if unbox.operation
++        != Operation::Intrinsic(Intrinsic::Value(ValueOperation::UnboxInt32 { rematerialized: false }))
++        || !integer_result_can_stay_narrow(function, *input)
++    {
++        return None;
++    }
++    let [boxed] = unbox.inputs.as_slice() else {
++        return None;
++    };
++    Some(*boxed)
++}
++
+ fn folded_i32_bool_source(
+     function: &FunctionUses<'_>,
+     instruction: &super::ir::Instruction,
 diff --git a/Libraries/LibJS/Flap/src/main.rs b/Libraries/LibJS/Flap/src/main.rs
 index c5f0cf52..60ca830f 100644
 --- a/Libraries/LibJS/Flap/src/main.rs
@@ -166,10 +217,10 @@ index c5f0cf52..60ca830f 100644
  
 diff --git a/Libraries/LibJS/Flap/src/target/c.rs b/Libraries/LibJS/Flap/src/target/c.rs
 new file mode 100644
-index 00000000..4a85864a
+index 00000000..5cfc3aa5
 --- /dev/null
 +++ b/Libraries/LibJS/Flap/src/target/c.rs
-@@ -0,0 +1,1517 @@
+@@ -0,0 +1,1559 @@
 +/*
 + * Copyright (c) 2026-present, the Ladybird developers.
 + *
@@ -201,7 +252,7 @@ index 00000000..4a85864a
 +use std::fmt::Write as _;
 +
 +use crate::frontend::layout::KnownLayoutConstant;
-+use crate::hash::HashMap;
++use crate::hash::{HashMap, HashSet};
 +use crate::intrinsic::{
 +    BinaryOperation, BranchOperation, CallOperation, ComparisonRelation, ControlOperation, FloatBinaryOperation,
 +    FloatComparison, FloatConversion, FloatUnaryOperation, FloatingPointOperation, IntegerBinaryOperation,
@@ -622,6 +673,7 @@ index 00000000..4a85864a
 +        for instruction in &instructions {
 +            self.instruction(&mut body, instruction, &context)?;
 +        }
++        check_registers_assigned(&body, &handler.name)?;
 +        body.push_str("    __builtin_unreachable();\n}\n\n");
 +        Ok(body)
 +    }
@@ -1687,6 +1739,47 @@ index 00000000..4a85864a
 +        }
 +    })
 +}
++
++/// Fails when the C of a handler reads a virtual register that nothing in the
++/// handler assigns. Its local would silently read as zero, where the register
++/// allocator of an assembly backend rejects the same LowIR.
++fn check_registers_assigned(body: &str, handler: &str) -> Result<(), CompileError> {
++    let mut assigned = HashSet::default();
++    let mut read = Vec::new();
++    for line in body.lines() {
++        if line.trim_start().starts_with("u64 r") {
++            continue;
++        }
++        let bytes = line.as_bytes();
++        let mut index = 0;
++        while index < bytes.len() {
++            let starts_word = index == 0 || !(bytes[index - 1].is_ascii_alphanumeric() || bytes[index - 1] == b'_');
++            if bytes[index] == b'r' && starts_word {
++                let digits = bytes[index + 1..].iter().take_while(|byte| byte.is_ascii_digit()).count();
++                let end = index + 1 + digits;
++                let ends_word = end >= bytes.len() || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_');
++                if digits > 0 && ends_word {
++                    let register = &line[index..end];
++                    if line[end..].starts_with(" = ") {
++                        assigned.insert(register.to_string());
++                    } else {
++                        read.push(register.to_string());
++                    }
++                    index = end;
++                    continue;
++                }
++            }
++            index += 1;
++        }
++    }
++    match read.iter().find(|register| !assigned.contains(*register)) {
++        Some(register) => Err(error(
++            Some(handler),
++            format!("virtual register {register} is read but never assigned"),
++        )),
++        None => Ok(()),
++    }
++}
 diff --git a/Libraries/LibJS/Flap/src/target/mod.rs b/Libraries/LibJS/Flap/src/target/mod.rs
 index 7f9f8718..c2f2290f 100644
 --- a/Libraries/LibJS/Flap/src/target/mod.rs
@@ -1701,10 +1794,10 @@ index 7f9f8718..c2f2290f 100644
  pub(crate) mod finalize;
 diff --git a/Libraries/LibJS/Flap/tests/interpreter_c.rs b/Libraries/LibJS/Flap/tests/interpreter_c.rs
 new file mode 100644
-index 00000000..d2a7009b
+index 00000000..597fd433
 --- /dev/null
 +++ b/Libraries/LibJS/Flap/tests/interpreter_c.rs
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,100 @@
 +/*
 + * Copyright (c) 2026-present, the Ladybird developers.
 + *
@@ -1718,6 +1811,10 @@ index 00000000..d2a7009b
 +const LAYOUT: &str = include_str!("interpreter-layout.conf");
 +
 +fn interpreter_c(profiling: bool) -> String {
++    interpreter_c_with_layout(profiling, LAYOUT)
++}
++
++fn interpreter_c_with_layout(profiling: bool, layout: &str) -> String {
 +    let compiler = Compiler::new(CompileOptions {
 +        target: Target {
 +            architecture: Architecture::X86_64,
@@ -1738,7 +1835,7 @@ index 00000000..d2a7009b
 +            },
 +            constants: Some(SourceInput {
 +                name: "interpreter-layout.conf",
-+                contents: LAYOUT,
++                contents: layout,
 +            }),
 +        })
 +        .expect("interpreter preparation should succeed");
@@ -1764,6 +1861,16 @@ index 00000000..d2a7009b
 +    let profiling = interpreter_c(true);
 +    assert!(profiling.contains("void js_interpreter_profiling("));
 +    assert!(profiling.contains("js_interpreter_dispatch_table_profiling[256]"));
++}
++
++/// A 4-byte cage base, as on wasm32, once let the lowering of GetByValue and
++/// PutByValue skip an Int32 unbox that their array index conversion still
++/// read. The C backend refuses a register nothing assigns.
++#[test]
++fn narrow_cage_base_reads_no_unassigned_register() {
++    let layout = format!("{LAYOUT}\nconst VM_PRIMITIVE_STORAGE_CAGE_BASE_WIDTH = 4\n");
++    let c = interpreter_c_with_layout(false, &layout);
++    assert!(c.contains("static void flap_handler_GetByValue(FLAP_PARAMETERS)"));
 +}
 +
 +/// Compiles the C with clang when it is installed, which checks that every
