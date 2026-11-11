@@ -50,6 +50,9 @@ int webby_local_parent_fd(void);
  * 0, or -1 with errno (ENOSYS without the backend). */
 int webby_local_spawn(const char *path, char *const argv[], uint32_t *pid, int *fd);
 
+/* 1 if fd is a local socket whose peer is in this instance's memory (so only this thread can make it readable). */
+int webby_local_peer_in_memory(int fd);
+
 /* The libc entry points, for webby_wasi_net_wrap.c and webby_wasi_net.c. */
 int webby_local_close(int fd);
 ssize_t webby_local_read(int fd, void *buffer, size_t length, int flags);

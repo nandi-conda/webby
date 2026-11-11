@@ -316,6 +316,12 @@ int webby_local_spawn(const char *path, char *const argv[], uint32_t *pid, int *
     return *fd < 0 ? -1 : 0;
 }
 
+int webby_local_peer_in_memory(int fd)
+{
+    lobj *o = get(fd);
+    return o && o->kind == K_MEM && o->peer;
+}
+
 int webby_local_close(int fd)
 {
     lobj *o = get(fd);

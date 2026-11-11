@@ -1,0 +1,541 @@
+diff --git a/AK/ThreadID.cpp b/AK/ThreadID.cpp
+index 505594cd9b0..010ca9e7973 100644
+--- a/AK/ThreadID.cpp
++++ b/AK/ThreadID.cpp
+@@ -30,6 +30,9 @@ static u64 query_current_thread_id()
+     return thread_id;
+ #elif defined(AK_OS_FREEBSD)
+     return static_cast<u64>(pthread_getthreadid_np());
++#elif defined(AK_OS_WASI)
++    // A WASI instance has one thread.
++    return 1;
+ #else
+     return 0;
+ #endif
+diff --git a/Libraries/LibCore/SystemServerTakeover.cpp b/Libraries/LibCore/SystemServerTakeover.cpp
+index 15113f87a08..ef11cc36b22 100644
+--- a/Libraries/LibCore/SystemServerTakeover.cpp
++++ b/Libraries/LibCore/SystemServerTakeover.cpp
+@@ -11,6 +11,10 @@
+ #include <LibCore/Socket.h>
+ #include <LibCore/System.h>
+ 
++#if defined(AK_OS_WASI)
++#    include <webby_wasi_local.h>
++#endif
++
+ namespace Core {
+ 
+ bool s_overtaken_sockets_parsed { false };
+@@ -28,6 +32,11 @@ static void parse_sockets_from_system_server()
+     constexpr auto socket_takeover = "SOCKET_TAKEOVER"sv;
+     auto sockets = Environment::get(socket_takeover);
+     if (!sockets.has_value()) {
++#if defined(AK_OS_WASI)
++        // webby: a wasm instance started over latha:proc gets its IPC socket as the channel to its parent.
++        if (auto fd = webby_local_parent_fd(); fd >= 0)
++            overtaken_sockets().set("ipc", fd);
++#endif
+         s_overtaken_sockets_parsed = true;
+         return;
+     }
+diff --git a/Libraries/LibIPC/TransportSocket.cpp b/Libraries/LibIPC/TransportSocket.cpp
+index b9da2fbd6c7..f2909bbfb5a 100644
+--- a/Libraries/LibIPC/TransportSocket.cpp
++++ b/Libraries/LibIPC/TransportSocket.cpp
+@@ -18,6 +18,13 @@
+ #include <LibIPC/TransportHandle.h>
+ #include <LibIPC/TransportSocket.h>
+ #include <LibThreading/Thread.h>
++#if defined(AK_OS_WASI)
++#    include <AK/TemporaryChange.h>
++#    include <LibCore/EventLoop.h>
++#    include <LibCore/Notifier.h>
++#    include <poll.h>
++#    include <webby_wasi_local.h>
++#endif
+ #include <fcntl.h>
+ #include <sys/ioctl.h>
+ #include <unistd.h>
+@@ -209,6 +216,7 @@ void SendQueue::release_drain_waiters()
+     m_drained_cv.broadcast();
+ }
+ 
++#if !defined(AK_OS_WASI)
+ TransportSocket::TransportSocket(NonnullOwnPtr<Core::LocalSocket> socket)
+     : m_socket(move(socket))
+ {
+@@ -437,6 +445,8 @@ void TransportSocket::wait_until_readable()
+     }
+ }
+ 
++#endif
++
+ static ErrorOr<NonnullRefPtr<AutoCloseFileDescriptor>> copy_payload_to_shared_memory(ReadonlyBytes payload)
+ {
+     auto shared_memory = adopt_ref(*new AutoCloseFileDescriptor(TRY(Core::System::anon_create(payload.size(), O_CLOEXEC))));
+@@ -495,7 +505,12 @@ ErrorOr<void> TransportSocket::post_message(MessageDataType bytes_to_write, Vect
+         fds.unchecked_append(shared_memory.release_nonnull());
+ 
+     m_send_queue->enqueue_message(header, move(bytes_to_write), move(fds));
++#if defined(AK_OS_WASI)
++    if (send_pending_messages() == SendResult::Pending && m_socket_write_notifier)
++        m_socket_write_notifier->set_enabled(true);
++#else
+     wake_io_thread();
++#endif
+     return {};
+ }
+ 
+@@ -754,6 +769,7 @@ TransportSocket::ShouldShutdown TransportSocket::read_as_many_messages_as_possib
+     return eof ? ShouldShutdown::Yes : ShouldShutdown::No;
+ }
+ 
++#if !defined(AK_OS_WASI)
+ ErrorOr<TransportHandle> TransportSocket::release_for_transfer()
+ {
+     m_is_being_transferred.store(true, AK::MemoryOrder::memory_order_release);
+@@ -762,5 +778,200 @@ ErrorOr<TransportHandle> TransportSocket::release_for_transfer()
+     auto fd = TRY(m_socket->release_fd());
+     return TransportHandle { File::adopt_fd(fd) };
+ }
++#endif
++
++
++#if defined(AK_OS_WASI)
++
++// A WASI instance has one thread. So, the socket is read when this thread's event loop sees it readable, written
++// right away when a message is posted (and on the event loop when it is writable again), and the waits (flush(),
++// wait_until_readable()) poll the socket themselves. The socket is one of compat/webby_wasi_local.c's: in this
++// instance's memory, or a latha:proc channel to another instance.
++TransportSocket::TransportSocket(NonnullOwnPtr<Core::LocalSocket> socket)
++    : m_socket(move(socket))
++{
++    m_socket->set_notifications_enabled(false);
++    m_send_queue = adopt_ref(*new SendQueue);
++
++    auto fd = m_socket->fd().value();
++    m_socket_read_notifier = Core::Notifier::construct(fd, Core::NotificationType::Read);
++    m_socket_read_notifier->on_activation = [this] { on_socket_readable(); };
++    m_socket_write_notifier = Core::Notifier::construct(fd, Core::NotificationType::Write);
++    m_socket_write_notifier->set_enabled(false);
++    m_socket_write_notifier->on_activation = [this] {
++        if (send_pending_messages() != SendResult::Pending)
++            m_socket_write_notifier->set_enabled(false);
++    };
++}
++
++TransportSocket::~TransportSocket()
++{
++    m_alive->alive = false;
++    if (m_socket_read_notifier)
++        m_socket_read_notifier->set_enabled(false);
++    if (m_socket_write_notifier)
++        m_socket_write_notifier->set_enabled(false);
++    m_socket_read_notifier.clear();
++    m_socket_write_notifier.clear();
++    m_read_hook_notifier.clear();
++}
++
++void TransportSocket::notify_read_available()
++{
++}
++
++void TransportSocket::socket_stopped()
++{
++    m_io_thread_state = IOThreadState::Stopped;
++    m_send_queue->release_drain_waiters();
++    if (m_socket_read_notifier)
++        m_socket_read_notifier->set_enabled(false);
++    if (m_socket_write_notifier)
++        m_socket_write_notifier->set_enabled(false);
++    MutexLocker locker(m_incoming_mutex);
++    m_incoming_eof = true;
++    m_receive_loop_finished = true;
++}
++
++void TransportSocket::on_socket_readable()
++{
++    if (m_io_thread_state != IOThreadState::Running)
++        return;
++    while (read_incoming_messages() == MoreToRead::Yes) { }
++    if (m_peer_eof)
++        socket_stopped();
++    // NB: A wait_until_readable() further up the stack takes the messages itself. Calling the hook here would hand them
++    //     to the connection, which only keeps the ones for its own endpoint: the response being waited for would be lost.
++    if (m_in_wait)
++        return;
++    bool have_messages;
++    {
++        MutexLocker locker(m_incoming_mutex);
++        have_messages = !m_incoming_messages.is_empty() || m_incoming_eof;
++    }
++    if (have_messages && m_on_read_hook)
++        m_on_read_hook();
++}
++
++TransportSocket::SendResult TransportSocket::send_pending_messages()
++{
++    for (;;) {
++        if (m_io_thread_state == IOThreadState::Stopped)
++            return SendResult::Closed;
++        // NB: Big batches, as one write to a latha:proc channel is one message to the host.
++        auto [bytes, fds] = m_send_queue->peek(MAX_INLINE_PAYLOAD_SIZE + sizeof(SocketMessageHeader));
++        if (bytes.is_empty() && fds.is_empty())
++            return SendResult::Drained;
++        ReadonlyBytes remaining = bytes;
++        if (transfer_data(remaining, fds) == TransferState::SocketClosed) {
++            socket_stopped();
++            return SendResult::Closed;
++        }
++        if (remaining.size() == bytes.size())
++            return SendResult::Pending;
++    }
++}
++
++void TransportSocket::wait_for_socket(short events)
++{
++    struct pollfd pollfd = { .fd = m_socket->fd().value(), .events = events, .revents = 0 };
++    Array<struct pollfd, 1> pollfds { pollfd };
++    // NB: A peer in this instance's memory can only answer once this thread lets it run. So, run the event loop for
++    //     one round instead of blocking here; that also delivers the answer, as our own notifier reads it.
++    if (webby_local_peer_in_memory(pollfd.fd)) {
++        if (Core::System::poll(pollfds, 0).value_or(0) == 0)
++            Core::EventLoop::current().pump(Core::EventLoop::WaitMode::WaitForEvents);
++        return;
++    }
++    ErrorOr<int> result { 0 };
++    do {
++        result = Core::System::poll(pollfds, -1);
++    } while (result.is_error() && result.error().code() == EINTR);
++}
++
++void TransportSocket::set_up_read_hook(Function<void()> hook)
++{
++    m_on_read_hook = move(hook);
++    bool have_messages;
++    {
++        MutexLocker locker(m_incoming_mutex);
++        have_messages = !m_incoming_messages.is_empty();
++    }
++    if (have_messages) {
++        Core::deferred_invoke([this, alive = m_alive] {
++            if (alive->alive && m_on_read_hook)
++                m_on_read_hook();
++        });
++    }
++}
++
++bool TransportSocket::is_open() const
++{
++    return m_socket_is_open.load(AK::MemoryOrder::memory_order_relaxed);
++}
++
++void TransportSocket::close()
++{
++    m_socket_is_open.store(false, AK::MemoryOrder::memory_order_relaxed);
++    socket_stopped();
++    m_socket->close();
++}
++
++void TransportSocket::close_after_sending_all_pending_messages()
++{
++    flush();
++    close();
++}
++
++void TransportSocket::flush()
++{
++    while (m_socket_is_open.load(AK::MemoryOrder::memory_order_relaxed) && send_pending_messages() == SendResult::Pending)
++        wait_for_socket(POLLOUT);
++}
++
++void TransportSocket::wait_until_incoming_is_current()
++{
++    if (m_io_thread_state != IOThreadState::Running)
++        return;
++    while (read_incoming_messages() == MoreToRead::Yes) { }
++    if (m_peer_eof)
++        socket_stopped();
++}
++
++void TransportSocket::wait_until_readable()
++{
++    TemporaryChange in_wait { m_in_wait, true };
++    for (;;) {
++        {
++            MutexLocker locker(m_incoming_mutex);
++            if (!m_incoming_messages.is_empty())
++                return;
++        }
++        if (m_io_thread_state != IOThreadState::Running)
++            return;
++        wait_until_incoming_is_current();
++        {
++            MutexLocker locker(m_incoming_mutex);
++            if (!m_incoming_messages.is_empty() || m_io_thread_state != IOThreadState::Running)
++                return;
++        }
++        wait_for_socket(POLLIN);
++    }
++}
++
++ErrorOr<TransportHandle> TransportSocket::release_for_transfer()
++{
++    m_is_being_transferred.store(true, AK::MemoryOrder::memory_order_release);
++    flush();
++    m_socket_is_open.store(false, AK::MemoryOrder::memory_order_relaxed);
++    m_io_thread_state = IOThreadState::Stopped;
++    if (m_socket_read_notifier)
++        m_socket_read_notifier->set_enabled(false);
++    if (m_socket_write_notifier)
++        m_socket_write_notifier->set_enabled(false);
++    auto fd = TRY(m_socket->release_fd());
++    return TransportHandle { File::adopt_fd(fd) };
++}
+ 
++#endif
+ }
+diff --git a/Libraries/LibIPC/TransportSocket.h b/Libraries/LibIPC/TransportSocket.h
+index 3748a929509..e7627d0d154 100644
+--- a/Libraries/LibIPC/TransportSocket.h
++++ b/Libraries/LibIPC/TransportSocket.h
+@@ -12,6 +12,7 @@
+ #include <AK/Mutex.h>
+ #include <AK/Platform.h>
+ #include <AK/Queue.h>
++#include <AK/RefCounted.h>
+ #include <AK/SinglyLinkedList.h>
+ #include <AK/SinglyLinkedListSizePolicy.h>
+ #include <LibCore/Socket.h>
+@@ -84,7 +85,12 @@ public:
+     AK_ALLOC_WITH_KMALLOC;
+ 
+     static constexpr socklen_t SOCKET_BUFFER_SIZE = 128 * KiB;
++#if defined(AK_OS_WASI)
++    // NB: WASI has no shared memory to move big payloads in, so every payload goes through the socket.
++    static constexpr size_t MAX_INLINE_PAYLOAD_SIZE = 64 * MiB;
++#else
+     static constexpr size_t MAX_INLINE_PAYLOAD_SIZE = 64 * KiB;
++#endif
+ 
+     struct Paired {
+         NonnullOwnPtr<TransportSocket> local;
+@@ -147,6 +153,28 @@ private:
+ 
+     static ErrorOr<void> send_message(Core::LocalSocket&, ReadonlyBytes& bytes, Vector<int>& unowned_fds);
+ 
++#if defined(AK_OS_WASI)
++    // NB: A WASI instance has one thread, so there is no IO thread: the socket is read and written from this thread's
++    //     event loop (Core::Notifiers), and the waits poll the socket. See TransportSocket.cpp.
++    void on_socket_readable();
++    enum class SendResult {
++        Drained,
++        Pending,
++        Closed,
++    };
++    SendResult send_pending_messages();
++    void socket_stopped();
++    void wait_for_socket(short events);
++
++    RefPtr<Core::Notifier> m_socket_read_notifier;
++    RefPtr<Core::Notifier> m_socket_write_notifier;
++    bool m_in_wait { false };
++    struct Alive : public RefCounted<Alive> {
++        bool alive { true };
++    };
++    NonnullRefPtr<Alive> m_alive { adopt_ref(*new Alive) };
++#endif
++
+     enum class IOThreadState {
+         Running,
+         SendPendingMessagesAndStop,
+diff --git a/Services/RequestServer/CMakeLists.txt b/Services/RequestServer/CMakeLists.txt
+index 47a8c5dfbbf..3288c642f61 100644
+--- a/Services/RequestServer/CMakeLists.txt
++++ b/Services/RequestServer/CMakeLists.txt
+@@ -44,6 +44,10 @@ target_include_directories(requestserverservice PRIVATE ${CMAKE_CURRENT_BINARY_D
+ target_include_directories(requestserverservice PRIVATE ${LADYBIRD_SOURCE_DIR}/Services/)
+ 
+ target_link_libraries(RequestServer PRIVATE requestserverservice LibFileSystem)
++if (WASI)
++    # webby: RequestServer.wasm is a child instance; its IPC socket is the latha:proc channel it was started with.
++    target_link_options(RequestServer PRIVATE ${WEBBY_WASI_LATHA_LINK_OPTIONS})
++endif()
+ target_link_libraries(requestserverservice PUBLIC LibCore LibDNS LibHTTP LibIPC LibMain LibRequests LibSandbox LibTLS LibWebSocket LibURL LibTextCodec CURL::libcurl)
+ target_link_libraries(requestserverservice PRIVATE OpenSSL::Crypto OpenSSL::SSL)
+ 
+diff --git a/Utilities/CMakeLists.txt b/Utilities/CMakeLists.txt
+index 049ce95464c..99385abe502 100644
+--- a/Utilities/CMakeLists.txt
++++ b/Utilities/CMakeLists.txt
+@@ -23,6 +23,13 @@ if (WASI)
+         # RequestServer's resolver and curl multi handle on the LibCore event loop, minus IPC (requestserver-fetch.cpp).
+         ladybird_utility(requestserver-fetch SOURCES requestserver-fetch.cpp LIBS requestserverservice LibMain LibURL)
+         target_include_directories(requestserver-fetch PRIVATE ${LADYBIRD_SOURCE_DIR}/Services)
++        # RequestServer over IPC (requestserver-ipc.cpp): in this module over a socketpair in memory, or, linked with
++        # the latha:proc backend (compat/webby_wasi_latha.c), with RequestServer.wasm in a child instance (--spawn).
++        foreach(ipc_utility requestserver-ipc requestserver-ipc-latha)
++            ladybird_utility(${ipc_utility} SOURCES requestserver-ipc.cpp LIBS requestserverservice LibRequests LibMain LibURL)
++            target_include_directories(${ipc_utility} PRIVATE ${LADYBIRD_SOURCE_DIR}/Services ${CMAKE_BINARY_DIR}/Services)
++        endforeach()
++        target_link_options(requestserver-ipc-latha PRIVATE ${WEBBY_WASI_LATHA_LINK_OPTIONS})
+     endif()
+     return()
+ endif()
+diff --git a/Utilities/requestserver-ipc.cpp b/Utilities/requestserver-ipc.cpp
+new file mode 100644
+index 00000000000..1074ae90b4a
+--- /dev/null
++++ b/Utilities/requestserver-ipc.cpp
+@@ -0,0 +1,150 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++// requestserver-ipc: RequestServer over IPC inside WebAssembly. URLs are fetched through Requests::RequestClient, as
++// WebContent fetches them, from a RequestServer that is reached the way the browser reaches it: a control connection
++// (RequestControlClient <-> ControlConnectionFromClient), connect_new_client() over it (a synchronous request that
++// hands back a new transport), and the request's body coming through a descriptor RequestServer passes along.
++//
++// By default RequestServer runs in this same module: both ends are TransportSockets over a socketpair in this
++// instance's memory (compat/webby_wasi_local.c), with LibIPC's thread-less WASI transport. With --spawn PATH it runs as
++// RequestServer.wasm in a child instance started over latha:proc, and the socket is a latha:proc channel.
++//
++// usage: requestserver-ipc [--spawn RequestServer.wasm] [-C ca-bundle] [-o FILE] URL...
++//        prints "<url> <http code> <bytes> <network error>" for each URL.
++
++#include <AK/Vector.h>
++#include <LibCore/ArgsParser.h>
++#include <LibCore/EventLoop.h>
++#include <LibCore/File.h>
++#include <LibHTTP/Cache/DiskCache.h>
++#include <LibHTTP/HeaderList.h>
++#include <LibIPC/ConnectionFromClient.h>
++#include <LibIPC/Transport.h>
++#include <LibMain/Main.h>
++#include <LibRequests/Request.h>
++#include <LibRequests/RequestClient.h>
++#include <LibRequests/RequestControlClient.h>
++#include <LibURL/Parser.h>
++#include <RequestServer/CURL.h>
++#include <RequestServer/ConnectionFromClient.h>
++#include <RequestServer/ControlConnectionFromClient.h>
++#include <RequestServer/Resolver.h>
++#include <RequestServer/ResourceSubstitutionMap.h>
++#include <webby_wasi_local.h>
++
++namespace RequestServer {
++
++// Defined by RequestServer's main.cpp, which this program takes the place of.
++OwnPtr<ResourceSubstitutionMap> g_resource_substitution_map;
++
++}
++
++ErrorOr<int> ladybird_main(Main::Arguments arguments)
++{
++    Vector<StringView> urls;
++    StringView spawn_path;
++    StringView certificate;
++    StringView output_path;
++    Core::ArgsParser args_parser;
++    args_parser.add_option(spawn_path, "Run RequestServer as this wasm program in a child instance (latha:proc)", "spawn", 0, "path");
++    args_parser.add_option(certificate, "Path to a CA bundle", "certificate", 'C', "file");
++    args_parser.add_option(output_path, "Write the first URL's body here", "output", 'o', "file");
++    args_parser.add_positional_argument(urls, "URLs to fetch", "url");
++    args_parser.parse(arguments);
++
++    Core::EventLoop event_loop;
++
++    // RequestServer's side, when it is in this module.
++    RequestServer::ConnectionFromClient::ConnectionMap connections;
++    RequestServer::ConnectionFromClient::RequestTransferLeaseMap request_transfer_leases;
++    Optional<HTTP::DiskCache> disk_cache;
++    RefPtr<RequestServer::ControlConnectionFromClient> server;
++
++    NonnullOwnPtr<IPC::Transport> control_transport = TRY([&]() -> ErrorOr<NonnullOwnPtr<IPC::Transport>> {
++        if (!spawn_path.is_empty()) {
++            Vector<ByteString> child_arguments { "RequestServer", "--disable-sandbox", "--http-disk-cache-mode=disabled" };
++            if (!certificate.is_empty())
++                child_arguments.append(ByteString::formatted("--certificate={}", certificate));
++            Vector<char*> argv;
++            for (auto& argument : child_arguments)
++                argv.append(const_cast<char*>(argument.characters()));
++            argv.append(nullptr);
++            auto path = ByteString { spawn_path };
++            u32 pid = 0;
++            int fd = -1;
++            if (webby_local_spawn(path.characters(), argv.data(), &pid, &fd) < 0)
++                return Error::from_syscall("webby_local_spawn"sv, errno);
++            outln("requestserver-ipc: RequestServer is process {}", pid);
++            return TRY(IPC::Transport::adopt_fd(fd));
++        }
++
++        if (!certificate.is_empty())
++            RequestServer::set_default_certificate_path(certificate);
++        TRY(RequestServer::initialize_libcurl());
++        auto [local, remote_handle] = TRY(IPC::Transport::create_paired());
++        server = IPC::new_client_connection<RequestServer::ControlConnectionFromClient>(
++            TRY(remote_handle.create_transport()), connections, request_transfer_leases, disk_cache);
++        return move(local);
++    }());
++
++    auto control = adopt_ref(*new Requests::RequestControlClient(move(control_transport)));
++    control->on_request_server_died = [] {
++        warnln("requestserver-ipc: RequestServer went away");
++        Core::EventLoop::current().quit(3);
++    };
++
++    // A synchronous request: the answer only comes once RequestServer's side has run.
++    auto response = control->send_sync_but_allow_failure<Messages::RequestServerControl::ConnectNewClient>(RequestServer::IsPrivate::No, RequestServer::SiteBinding::Unrestricted);
++    if (!response || response->client_id() < 0)
++        return Error::from_string_literal("connect_new_client failed");
++    auto client_id = response->client_id();
++    auto client = make_ref_counted<Requests::RequestClient>(TRY(response->take_handle().create_transport()), client_id);
++    outln("requestserver-ipc: RequestClient {} connected", client_id);
++
++    size_t remaining = urls.size();
++    int failures = 0;
++    Vector<RefPtr<Requests::Request>> requests;
++    Optional<Core::ImmutableBytes> first_body;
++    for (size_t i = 0; i < urls.size(); ++i) {
++        auto url_string = urls[i];
++        auto url = URL::Parser::basic_parse(url_string);
++        if (!url.has_value()) {
++            warnln("{}: not a URL", url_string);
++            return 2;
++        }
++        auto request = client->start_request("GET"sv, *url);
++        if (!request) {
++            warnln("{}: start_request failed", url_string);
++            return 1;
++        }
++        request->set_buffered_request_finished_callback(
++            [&, url_string, i](u64 total_size, Requests::RequestTimingInfo const&, Optional<Requests::NetworkError> const& network_error,
++                NonnullRefPtr<HTTP::HeaderList>, Optional<u32> response_code, Optional<String>, Optional<Core::ImmutableBytes>,
++                Optional<u64>, Requests::CacheState, Core::ImmutableBytes payload) {
++                outln("{} {} {} {}", url_string, response_code.value_or(0), payload.size(),
++                    network_error.has_value() ? Requests::network_error_to_string(*network_error) : "none"sv);
++                (void)total_size;
++                if (network_error.has_value() || !response_code.has_value())
++                    ++failures;
++                if (i == 0)
++                    first_body = payload;
++                if (--remaining == 0)
++                    Core::EventLoop::current().quit(failures ? 1 : 0);
++            });
++        requests.append(move(request));
++    }
++
++    auto result = event_loop.exec();
++    if (!output_path.is_empty() && first_body.has_value()) {
++        auto file = TRY(Core::File::open(output_path, Core::File::OpenMode::Write | Core::File::OpenMode::Truncate));
++        TRY(file->write_until_depleted(first_body->bytes()));
++    }
++    requests.clear();
++    client->shutdown();
++    control->shutdown();
++    return result;
++}

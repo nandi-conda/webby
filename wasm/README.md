@@ -8,10 +8,10 @@ latha:gui host. Not usable yet.
 | --- | --- |
 | `pixi.toml` | the toolchain: qt2wasm (wasi-sdk 27, Qt for WASI), CMake, Ninja, Rust |
 | `cmake/wasi.cmake` | CMake toolchain for wasm32-wasip1 with wasi-libc's emulation libraries and `compat/` |
-| `compat/` | `netdb.h` and the POSIX pieces wasi-libc lacks (one time zone), and TCP/UDP sockets over wasi:sockets (`webby_wasi_net.c`) |
+| `compat/` | `netdb.h` and the POSIX pieces wasi-libc lacks (one time zone), TCP/UDP sockets over wasi:sockets (`webby_wasi_net.c`), and local sockets with descriptor passing, in memory or over latha:proc channels (`webby_wasi_local.c`, `webby_wasi_latha.c`) |
 | `deps/` | scripts that build Ladybird's dependencies for WASI into a sysroot (`WEBBY_WASI_SYSROOT`) |
 | `patches/` | Ladybird changes for a WASI build, on top of `../LADYBIRD_COMMIT` and `../patches/` |
-| `tests/` | small wasm programs that check a dependency works (`tests/skia-rect.sh`, `tests/net.sh`) |
+| `tests/` | small wasm programs that check a dependency works (`tests/skia-rect.sh`, `tests/net.sh`, `tests/local-sockets.sh`, `tests/ipc.sh`) |
 | `tools/wasi-run.py` | runs a wasm32-wasip1 program with PyPI wasmtime (`LIBJS_TARGET_RUNNER` for the layout generator); programs with sockets as components in the wasmtime CLI |
 | `ci/` | the forge jobs `wasm-deps` and `wasm-engine` (see [Forge CI](#forge-ci)) |
 | `build-engine.sh` | configures and builds Ladybird for wasm32-wasip1 (target `js` for now) |
@@ -167,9 +167,7 @@ RequestServer (`patches/0007-requestserver-wasi.patch`, on top of 0006, with `EN
 `Services/RequestServer` plus LibSandbox (`SandboxUnimplemented.cpp`) and LibWebSocket, curl found as a CMake package.
 LibThreading's ThreadPool has no threads on WASI: `submit()` runs the job as a task on the submitting thread's event
 loop, which is how LibDNS's system resolver (`getaddrinfo`) works in one thread. `RequestServer.wasm` links and starts,
-then stops at "Non-existent socket requested": it waits for the IPC socket its parent hands it, and that is the
-multi-process part (latha:proc channels), not here. LibIPC's `TransportSocket` also starts an IO thread, so IPC needs a
-thread-less transport on WASI first.
+then waits for the IPC socket its parent hands it, which [IPC](#ipc) below provides.
 
 What runs is RequestServer's network path without IPC: `requestserver-fetch URL...` (`Utilities/requestserver-fetch.cpp`)
 resolves through RequestServer's `Resolver` (LibDNS), pins the addresses with `CURLOPT_RESOLVE`, and drives one curl
@@ -177,6 +175,47 @@ multi handle from the LibCore event loop with a `Core::Notifier` per socket and 
 `ConnectionFromClient` does. Several URLs go at once. `tests/net.sh` with `RS_FETCH=build/bin/requestserver-fetch`
 checks a local 300 KB body byte for byte, an unresolvable name, and https://example.com/ with https://www.google.com/
 at the same time over HTTP/2 with certificate checks (`-C /etc/ssl/certs/ca-certificates.crt`).
+
+## IPC
+
+Ladybird's processes talk over LibIPC, whose `TransportSocket` is a Unix socket with descriptors passed along
+(`SCM_RIGHTS`) and an IO thread. In wasm both pieces are replaced, and the processes are wasm instances:
+
+- **Local sockets** (`compat/webby_wasi_local.c`): `socketpair()` (stream, seqpacket, datagram), `pipe()`, and
+  `sendmsg`/`recvmsg` with `SCM_RIGHTS`, as descriptors from `WEBBY_LOCAL_FD_BASE` (0x200000) that `read`, `write`,
+  `poll`, `fcntl`, `ioctl(FIONREAD)` and `fstat` (`S_IFSOCK`) know. An endpoint is shared by every descriptor and
+  in-flight message that refers to it, and its peer reads EOF once the last goes. In memory, a write never blocks
+  (the reader is this same thread) and a read that would block fails with `EAGAIN`; a file or wasi:sockets
+  descriptor passed within the instance keeps its number, and `close()` only closes it with its last holder.
+- **latha:proc channels** (`compat/webby_wasi_latha.c`, in `libwebby_wasi_latha.a`): a program linked with
+  `${WEBBY_WASI_LATHA_LINK_OPTIONS}` (`cmake/wasi.cmake`) makes every `socketpair()` a latha:proc channel
+  (latha-gui/latha-run 0.3.1, qt2wasm's `proc/wit/proc.wit`, through wit-bindgen's C bindings in
+  `compat/latha-proc/`, so one component has both latha:proc and wasi:sockets). A write is one channel message and
+  the descriptors passed with it must be channel endpoints: they move to the receiver, which may be another instance.
+  `poll()` waits on channels with latha's `wait`, in 2 ms slices when wasi:sockets or wasip1 descriptors are in the set
+  too. `webby_local_spawn()` starts a wasm program as a child with a socket to it, and the child's LibCore takes that
+  socket over as its `ipc` socket (`webby_local_parent_fd()`, `SystemServerTakeover.cpp`), where a native Ladybird
+  process has `SOCKET_TAKEOVER`. Such a program needs a latha host and runs as a component.
+- **The thread-less transport** (`patches/0008-ipc-wasi.patch`): on WASI `TransportSocket` has no IO thread. A
+  `Core::Notifier` reads the socket on the event loop and calls the connection's hook; a posted message is written
+  right away (and the rest when the socket is writable again); `flush()` and the synchronous-request wait poll the
+  socket. When the peer is in this instance's memory, the wait runs the event loop for a round instead, so the peer
+  can answer; messages that come in meanwhile wait for the caller, not the connection's hook (which would drop the
+  response). Payloads up to 64 MiB go through the socket, since there is no shared memory to put big ones in.
+  `AK::ThreadID` is 1 on WASI, so the connections' owner-thread checks hold.
+
+`Utilities/requestserver-ipc.cpp` fetches URLs through `Requests::RequestClient`, the way WebContent does: a control
+connection (`RequestControlClient` to RequestServer's `ControlConnectionFromClient`), the synchronous
+`connect_new_client()` that hands back a new transport, and response bodies through the descriptor RequestServer
+passes along. `requestserver-ipc` runs RequestServer's side in the same module over an in-memory socketpair (run it
+with `tools/wasi-run.py`); `requestserver-ipc-latha --spawn RequestServer.wasm` starts `RequestServer.wasm` as a child
+instance under latha-run and talks to it over a channel. `tests/ipc.sh BUILD OUT` checks a 300 KB body byte for byte
+both ways (`HTTPS=1` adds https://example.com/), and `tests/local-sockets.sh OUT` checks the sockets themselves, in
+memory under wasmtime and over channels with a child instance under latha-run.
+
+Not yet: shared memory (`Core::AnonymousBuffer`, which bitmaps between WebContent and the UI use; latha:proc has none
+either), files passed to another instance (only channel endpoints can move), and spawning Ladybird's helpers from
+LibWebView (`Core::Process` on WASI).
 
 ## Building what exists
 
@@ -202,6 +241,9 @@ export LIBJS_TARGET_RUNNER="python $PWD/tools/wasi-run.py"
 pixi run ./build-engine.sh <ladybird with ../patches and patches/ applied> build/ladybird js
 python tools/wasi-run.py build/ladybird/bin/js -c 'print(6 * 7)'
 CURL=build/curl/src/curl pixi run tests/net.sh build/net-test   # sockets; needs wasmtime + wasm-tools
+pixi run tests/local-sockets.sh build/local-sockets   # local sockets; wasmtime, wasm-tools, latha-run (latha-gui 0.3.1+)
+ENABLE_GUI_TARGETS=ON pixi run ./build-engine.sh <ladybird> build/ladybird RequestServer requestserver-ipc requestserver-ipc-latha
+tests/ipc.sh build/ladybird build/ipc-test                       # IPC in one module, then RequestServer.wasm as a child
 ```
 
 Sources come from git (the versions Ladybird's vcpkg.json pins); GitHub release archives are not needed.
