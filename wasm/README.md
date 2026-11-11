@@ -118,7 +118,7 @@ wasm exceptions (`tools/wasi-run.py` turns them on). `compat/` has single-thread
 
 ## Networking
 
-The module does its own networking: curl, OpenSSL and (later) RequestServer run inside it, and the host only gives it
+The module does its own networking: curl, OpenSSL and RequestServer run inside it, and the host only gives it
 sockets, through the standard **wasi:sockets 0.2** interfaces (TCP, UDP, `ip-name-lookup`) with `wasi:io` streams and
 pollables. There is no webby-specific host import. `compat/webby_wasi_net.c` turns them into BSD sockets for the
 wasip1 libc:
@@ -162,6 +162,21 @@ UDP echo, a refused port and an unresolvable name, and with `CURL=curl.wasm` fet
 certificate checks (`--dir /etc/ssl`) over HTTP/1.1 and HTTP/2 (200, verify result 0), and https://localhost from a
 local HTTP/3 server (`tests/h3-server.py`, PyPI aioquic): QUIC over UDP, 72000 bytes. A 623 KB Wikipedia page comes in
 at about 2.8 MB/s under wasmtime.
+
+RequestServer (`patches/0007-requestserver-wasi.patch`, on top of 0006, with `ENABLE_GUI_TARGETS=ON`) builds for WASI:
+`Services/RequestServer` plus LibSandbox (`SandboxUnimplemented.cpp`) and LibWebSocket, curl found as a CMake package.
+LibThreading's ThreadPool has no threads on WASI: `submit()` runs the job as a task on the submitting thread's event
+loop, which is how LibDNS's system resolver (`getaddrinfo`) works in one thread. `RequestServer.wasm` links and starts,
+then stops at "Non-existent socket requested": it waits for the IPC socket its parent hands it, and that is the
+multi-process part (latha:proc channels), not here. LibIPC's `TransportSocket` also starts an IO thread, so IPC needs a
+thread-less transport on WASI first.
+
+What runs is RequestServer's network path without IPC: `requestserver-fetch URL...` (`Utilities/requestserver-fetch.cpp`)
+resolves through RequestServer's `Resolver` (LibDNS), pins the addresses with `CURLOPT_RESOLVE`, and drives one curl
+multi handle from the LibCore event loop with a `Core::Notifier` per socket and a `Core::Timer`, as
+`ConnectionFromClient` does. Several URLs go at once. `tests/net.sh` with `RS_FETCH=build/bin/requestserver-fetch`
+checks a local 300 KB body byte for byte, an unresolvable name, and https://example.com/ with https://www.google.com/
+at the same time over HTTP/2 with certificate checks (`-C /etc/ssl/certs/ca-certificates.crt`).
 
 ## Building what exists
 

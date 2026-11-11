@@ -1,0 +1,341 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 8cf2113c..60236fc6 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -137,6 +137,11 @@ if (NOT (ENABLE_FUZZERS OR ENABLE_COMPILER_EXPLORER_BUILD OR ANDROID OR IOS))
+     endif()
+ endif()
+ 
++if (ENABLE_GUI_TARGETS AND WASI)
++    # One service so far: RequestServer, whose curl runs on wasi:sockets (wasm/compat/webby_wasi_net.c).
++    add_subdirectory(Services/RequestServer)
++endif()
++
+ if (ENABLE_GUI_TARGETS AND NOT WASI)
+     add_subdirectory(Services)
+     add_subdirectory(UI)
+diff --git a/Libraries/CMakeLists.txt b/Libraries/CMakeLists.txt
+index 7a7f6d86..92fb99d4 100644
+--- a/Libraries/CMakeLists.txt
++++ b/Libraries/CMakeLists.txt
+@@ -7,6 +7,8 @@ if (WASI)
+         list(APPEND wasi_libraries LibCompress LibDNS LibDatabase LibHTTP LibIPC LibRequests LibTLS LibWasm LibXML
+             LibGfx LibImageDecoders LibImageDecoderClient LibAudio LibMediaCodecs LibMedia LibMediaClient LibWebCommon
+             LibCompositing LibWeb)
++        # RequestServer (Services/RequestServer) in a module of its own: curl over wasi:sockets.
++        list(APPEND wasi_libraries LibSandbox LibWebSocket)
+     endif()
+     foreach(lib IN LISTS wasi_libraries)
+         add_subdirectory(${lib})
+diff --git a/Libraries/LibThreading/ThreadPool.cpp b/Libraries/LibThreading/ThreadPool.cpp
+index d77a5250..11a4a1af 100644
+--- a/Libraries/LibThreading/ThreadPool.cpp
++++ b/Libraries/LibThreading/ThreadPool.cpp
+@@ -8,9 +8,15 @@
+ #include <AK/kmalloc.h>
+ #include <LibThreading/ThreadPool.h>
+ 
++#if defined(AK_OS_WASI)
++#    include <LibCore/EventLoop.h>
++#endif
++
++#if !defined(AK_OS_WASI)
+ static constexpr size_t THREAD_COUNT = 4;
+ static constexpr size_t THREAD_STACK_SIZE = 8 * MiB;
+ static constexpr auto THREAD_IDLE_MEMORY_COLLECTION_DELAY = AK::Duration::from_seconds(1);
++#endif
+ 
+ namespace Threading {
+ 
+@@ -20,6 +26,21 @@ ThreadPool& ThreadPool::the()
+     return *instance;
+ }
+ 
++#if defined(AK_OS_WASI)
++// NB: A wasm32-wasip1 module has one thread. Pool work runs as a task on the event loop of the thread that submits it,
++//     which is what the users of the pool (e.g. LibDNS's system resolver) hand their results back to anyway.
++ThreadPool::ThreadPool() = default;
++
++intptr_t ThreadPool::worker_thread_func()
++{
++    VERIFY_NOT_REACHED();
++}
++
++void ThreadPool::submit(Function<void()> work)
++{
++    Core::deferred_invoke(move(work));
++}
++#else
+ ThreadPool::ThreadPool()
+ {
+     for (size_t i = 0; i < THREAD_COUNT; ++i) {
+@@ -74,4 +95,6 @@ void ThreadPool::submit(Function<void()> work)
+     m_condition.signal();
+ }
+ 
++#endif
++
+ }
+diff --git a/Meta/CMake/check_for_dependencies_wasi.cmake b/Meta/CMake/check_for_dependencies_wasi.cmake
+index 1e28fe5a..10b9aca7 100644
+--- a/Meta/CMake/check_for_dependencies_wasi.cmake
++++ b/Meta/CMake/check_for_dependencies_wasi.cmake
+@@ -36,8 +36,8 @@ if (NOT TARGET Threads::Threads)
+ endif()
+ 
+ # LibGfx, LibMedia and LibWeb (ENABLE_GUI_TARGETS): webby's deps/libweb-deps.sh, media-deps.sh and skia.sh. No
+-# fontconfig (fonts come from the module's files), no Vulkan/GL (Skia rasterizes on the CPU), no curl or SDL (nothing
+-# here makes requests or plays audio itself). ANGLE is headers only, for WebGL's constants.
++# fontconfig (fonts come from the module's files), no Vulkan/GL (Skia rasterizes on the CPU), no SDL (nothing here plays
++# audio itself). ANGLE is headers only, for WebGL's constants.
+ if (ENABLE_GUI_TARGETS)
+     find_package(harfbuzz REQUIRED)
+     find_package(JPEG REQUIRED)
+@@ -60,4 +60,6 @@ if (ENABLE_GUI_TARGETS)
+     set(ANGLE_TARGETS PkgConfig::angle)
+     pkg_check_modules(skia REQUIRED IMPORTED_TARGET GLOBAL skia)
+     add_library(skia ALIAS PkgConfig::skia)
++    # RequestServer: webby's deps/net-deps.sh and curl.sh (HTTP/2, HTTP/3, brotli, zstd), on wasi:sockets.
++    find_package(CURL CONFIG REQUIRED)
+ endif()
+diff --git a/Utilities/CMakeLists.txt b/Utilities/CMakeLists.txt
+index 4a4213f8..049ce954 100644
+--- a/Utilities/CMakeLists.txt
++++ b/Utilities/CMakeLists.txt
+@@ -20,6 +20,9 @@ if (WASI)
+             ${compositor_dir}/VideoFrameSkia.cpp
+             LIBS LibWeb LibCompositing LibGfx LibMedia LibFileSystem LibURL LibMain skia)
+         target_include_directories(webby-render PRIVATE ${LADYBIRD_SOURCE_DIR}/Services ${CMAKE_BINARY_DIR}/Services)
++        # RequestServer's resolver and curl multi handle on the LibCore event loop, minus IPC (requestserver-fetch.cpp).
++        ladybird_utility(requestserver-fetch SOURCES requestserver-fetch.cpp LIBS requestserverservice LibMain LibURL)
++        target_include_directories(requestserver-fetch PRIVATE ${LADYBIRD_SOURCE_DIR}/Services)
+     endif()
+     return()
+ endif()
+diff --git a/Utilities/requestserver-fetch.cpp b/Utilities/requestserver-fetch.cpp
+new file mode 100644
+index 00000000..320c5d7c
+--- /dev/null
++++ b/Utilities/requestserver-fetch.cpp
+@@ -0,0 +1,221 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++// requestserver-fetch: fetches URLs the way RequestServer does, inside one WebAssembly module. The host names go
++// through RequestServer's resolver (LibDNS, with the system resolver underneath), the addresses are pinned with
++// CURLOPT_RESOLVE, and one curl multi handle is driven by the LibCore event loop: a Core::Notifier for each socket curl
++// wants watched and a Core::Timer for curl's timeout, as ConnectionFromClient does. What it leaves out is IPC.
++//
++// usage: requestserver-fetch [-o FILE] URL...   prints "<url> <http code> <bytes> <curl result>" for each URL.
++
++#include <AK/HashMap.h>
++#include <AK/Vector.h>
++#include <LibCore/ArgsParser.h>
++#include <LibCore/EventLoop.h>
++#include <LibCore/File.h>
++#include <LibCore/Notifier.h>
++#include <LibCore/Timer.h>
++#include <LibMain/Main.h>
++#include <LibURL/Parser.h>
++#include <RequestServer/CURL.h>
++#include <RequestServer/Resolver.h>
++
++namespace {
++
++struct Transfer {
++    AK_ALLOC_WITH_KMALLOC;
++
++    ByteString url;
++    CURL* easy { nullptr };
++    curl_slist* resolve { nullptr };
++    size_t bytes { 0 };
++    Vector<u8> body;
++    bool keep_body { false };
++};
++
++struct Fetcher {
++    CURLM* multi { nullptr };
++    HashMap<int, NonnullRefPtr<Core::Notifier>> read_notifiers;
++    HashMap<int, NonnullRefPtr<Core::Notifier>> write_notifiers;
++    RefPtr<Core::Timer> timer;
++    Vector<NonnullOwnPtr<Transfer>> transfers;
++    size_t remaining { 0 };
++    int failures { 0 };
++
++    void check_done();
++};
++
++size_t on_data(void* buffer, size_t size, size_t nmemb, void* user_data)
++{
++    auto& transfer = *static_cast<Transfer*>(user_data);
++    transfer.bytes += size * nmemb;
++    if (transfer.keep_body)
++        transfer.body.append(static_cast<u8 const*>(buffer), size * nmemb);
++    return size * nmemb;
++}
++
++int on_socket(CURL*, int sockfd, int what, void* user_data, void*)
++{
++    auto& fetcher = *static_cast<Fetcher*>(user_data);
++    if (what == CURL_POLL_REMOVE) {
++        fetcher.read_notifiers.remove(sockfd);
++        fetcher.write_notifiers.remove(sockfd);
++        return 0;
++    }
++    auto update = [&](auto& notifiers, Core::NotificationType type, int poll_flag, int select_flag) {
++        if (!(what & poll_flag)) {
++            if (auto notifier = notifiers.get(sockfd); notifier.has_value())
++                notifier.value()->set_enabled(false);
++            return;
++        }
++        auto& notifier = notifiers.ensure(sockfd, [&] {
++            auto notifier = Core::Notifier::construct(sockfd, type);
++            notifier->on_activation = [&fetcher, sockfd, select_flag] {
++                int running = 0;
++                VERIFY(curl_multi_socket_action(fetcher.multi, sockfd, select_flag, &running) == CURLM_OK);
++                fetcher.check_done();
++            };
++            return notifier;
++        });
++        notifier->set_enabled(true);
++    };
++    update(fetcher.read_notifiers, Core::NotificationType::Read, CURL_POLL_IN, CURL_CSELECT_IN);
++    update(fetcher.write_notifiers, Core::NotificationType::Write, CURL_POLL_OUT, CURL_CSELECT_OUT);
++    return 0;
++}
++
++int on_timeout(CURLM*, long timeout_ms, void* user_data)
++{
++    auto& fetcher = *static_cast<Fetcher*>(user_data);
++    if (timeout_ms < 0)
++        fetcher.timer->stop();
++    else
++        fetcher.timer->restart(AK::Duration::from_milliseconds(timeout_ms));
++    return 0;
++}
++
++void Fetcher::check_done()
++{
++    int in_queue = 0;
++    while (auto* message = curl_multi_info_read(multi, &in_queue)) {
++        if (message->msg != CURLMSG_DONE)
++            continue;
++        Transfer* transfer = nullptr;
++        curl_easy_getinfo(message->easy_handle, CURLINFO_PRIVATE, &transfer);
++        long code = 0;
++        long version = 0;
++        curl_easy_getinfo(message->easy_handle, CURLINFO_RESPONSE_CODE, &code);
++        curl_easy_getinfo(message->easy_handle, CURLINFO_HTTP_VERSION, &version);
++        auto result = message->data.result;
++        outln("{} {} {} {} http/{}", transfer->url, code, transfer->bytes, to_underlying(result),
++            version == CURL_HTTP_VERSION_3 ? "3"sv : version == CURL_HTTP_VERSION_2_0 ? "2"sv : "1.1"sv);
++        if (result != CURLE_OK) {
++            warnln("{}: {}", transfer->url, curl_easy_strerror(result));
++            ++failures;
++        }
++        curl_multi_remove_handle(multi, message->easy_handle);
++        curl_easy_cleanup(message->easy_handle);
++        curl_slist_free_all(transfer->resolve);
++        transfer->easy = nullptr;
++        if (--remaining == 0)
++            Core::EventLoop::current().quit(failures ? 1 : 0);
++    }
++}
++
++void start(Fetcher& fetcher, Transfer& transfer, RefPtr<DNS::LookupResult const> dns_result)
++{
++    auto url = URL::Parser::basic_parse(transfer.url);
++    auto* easy = curl_easy_init();
++    transfer.easy = easy;
++    curl_easy_setopt(easy, CURLOPT_PRIVATE, &transfer);
++    curl_easy_setopt(easy, CURLOPT_URL, transfer.url.characters());
++    curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L);
++    curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
++    curl_easy_setopt(easy, CURLOPT_ACCEPT_ENCODING, "");
++    curl_easy_setopt(easy, CURLOPT_USERAGENT, "webby-requestserver-fetch/1.0");
++    curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, on_data);
++    curl_easy_setopt(easy, CURLOPT_WRITEDATA, &transfer);
++    if (auto const& path = RequestServer::default_certificate_path(); !path.is_empty())
++        curl_easy_setopt(easy, CURLOPT_CAINFO, path.characters());
++    if (auto version = getenv("REQUESTSERVER_FETCH_HTTP"); version && version == "3"sv)
++        curl_easy_setopt(easy, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_3ONLY);
++    else
++        curl_easy_setopt(easy, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
++    if (dns_result && url.has_value()) {
++        auto entry = RequestServer::build_curl_resolve_list(*dns_result, url->serialized_host(), url->port_or_default());
++        transfer.resolve = curl_slist_append(nullptr, entry.characters());
++        curl_easy_setopt(easy, CURLOPT_RESOLVE, transfer.resolve);
++    }
++    VERIFY(curl_multi_add_handle(fetcher.multi, easy) == CURLM_OK);
++}
++
++}
++
++ErrorOr<int> ladybird_main(Main::Arguments arguments)
++{
++    Vector<StringView> urls;
++    StringView output_path;
++    StringView certificate;
++    Core::ArgsParser args_parser;
++    args_parser.add_option(output_path, "Write the first URL's body here", "output", 'o', "file");
++    args_parser.add_option(certificate, "Path to a CA bundle", "certificate", 'C', "file");
++    args_parser.add_positional_argument(urls, "URLs to fetch", "url");
++    args_parser.parse(arguments);
++
++    if (!certificate.is_empty())
++        RequestServer::set_default_certificate_path(certificate);
++
++    Core::EventLoop event_loop;
++    TRY(RequestServer::initialize_libcurl());
++
++    Fetcher fetcher;
++    fetcher.multi = curl_multi_init();
++    curl_multi_setopt(fetcher.multi, CURLMOPT_SOCKETFUNCTION, on_socket);
++    curl_multi_setopt(fetcher.multi, CURLMOPT_SOCKETDATA, &fetcher);
++    curl_multi_setopt(fetcher.multi, CURLMOPT_TIMERFUNCTION, on_timeout);
++    curl_multi_setopt(fetcher.multi, CURLMOPT_TIMERDATA, &fetcher);
++    fetcher.timer = Core::Timer::create_single_shot(AK::Duration::zero(), [&] {
++        int running = 0;
++        VERIFY(curl_multi_socket_action(fetcher.multi, CURL_SOCKET_TIMEOUT, 0, &running) == CURLM_OK);
++        fetcher.check_done();
++    });
++
++    auto resolver = RequestServer::Resolver::default_resolver();
++    for (auto url_string : urls) {
++        auto transfer = make<Transfer>();
++        transfer->url = url_string;
++        transfer->keep_body = !output_path.is_empty() && fetcher.transfers.is_empty();
++        auto& ref = *transfer;
++        fetcher.transfers.append(move(transfer));
++        ++fetcher.remaining;
++
++        auto url = URL::Parser::basic_parse(url_string);
++        if (!url.has_value() || !url->host().has_value()) {
++            warnln("{}: not a URL with a host", url_string);
++            return 2;
++        }
++        auto host = url->serialized_host().to_byte_string();
++        resolver->dns.lookup(host, DNS::Messages::Class::IN, { DNS::Messages::ResourceType::A, DNS::Messages::ResourceType::AAAA })
++            ->when_rejected([&fetcher, &ref, host](auto const& error) {
++                warnln("{}: DNS lookup for {} failed: {}", ref.url, host, error);
++                ++fetcher.failures;
++                if (--fetcher.remaining == 0)
++                    Core::EventLoop::current().quit(1);
++            })
++            .when_resolved([&fetcher, &ref](NonnullRefPtr<DNS::LookupResult const> dns_result) {
++                start(fetcher, ref, dns_result->has_cached_addresses() ? dns_result.ptr() : nullptr);
++            });
++    }
++
++    auto result = event_loop.exec();
++
++    if (!output_path.is_empty() && !fetcher.transfers.is_empty()) {
++        auto file = TRY(Core::File::open(output_path, Core::File::OpenMode::Write | Core::File::OpenMode::Truncate));
++        TRY(file->write_until_depleted(fetcher.transfers.first()->body.span()));
++    }
++    curl_multi_cleanup(fetcher.multi);
++    return result;
++}

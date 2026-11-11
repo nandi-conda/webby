@@ -4,7 +4,10 @@
 #     name that does not resolve;
 #  2. with CURL=path/to/curl.wasm (deps/curl.sh), curl + OpenSSL fetching an HTTPS URL (default https://example.com/,
 #     NET_URL to change; needs outbound HTTPS) with certificate checks, over HTTP/1.1 and HTTP/2, and HTTP/3 (QUIC over
-#     UDP) from a local aioquic server (tests/h3-server.py; skipped without `pip install aioquic`).
+#     UDP) from a local aioquic server (tests/h3-server.py; skipped without `pip install aioquic`);
+#  3. with RS_FETCH=path/to/requestserver-fetch (patches/0007, build-engine.sh with ENABLE_GUI_TARGETS=ON), RequestServer's
+#     resolver and curl multi handle on the LibCore event loop: the local 300 KB body, an unresolvable name, and
+#     NET_URL plus a second HTTPS URL (NET_URL2, default https://www.google.com/) fetched at the same time.
 # usage: net.sh OUT_DIR      env: WASI_SDK_PREFIX, WEBBY_WASI_SYSROOT, and what tools/wasi-run.py needs for components
 #        (WASMTIME or wasmtime on PATH, WASM_TOOLS or wasm-tools on PATH)
 set -euo pipefail
@@ -62,5 +65,18 @@ if [ -n "${CURL:-}" ]; then
     else
         echo "skip curl http/3 (pip install aioquic)"
     fi
+fi
+if [ -n "${RS_FETCH:-}" ]; then
+    cp "$RS_FETCH" rs-fetch.wasm
+    t_rs_local() { run rs-fetch.wasm -o rs-big.bin http://localhost:18765/big.bin | grep -q ' 200 300000 0 ' && cmp -s rs-big.bin www/big.bin; }
+    check "requestserver-fetch: local http, 300000-byte body" t_rs_local
+    t_rs_noname() { { run rs-fetch.wasm https://nonexistent.invalid/ 2>&1 || true; } | grep -q 'DNS lookup for nonexistent.invalid failed'; }
+    check "requestserver-fetch: unresolvable name fails" t_rs_noname
+    url=${NET_URL:-https://example.com/}; url2=${NET_URL2:-https://www.google.com/}
+    # NB: no proxy here: the module connects to the sites itself, as curl.wasm does with --noproxy.
+    t_rs_https() { env -u https_proxy -u HTTPS_PROXY python3 "$here/tools/wasi-run.py" --dir /etc/ssl rs-fetch.wasm \
+        -C /etc/ssl/certs/ca-certificates.crt "$url" "$url2" | tee rs.out | grep -c ' 200 [0-9]* 0 http/2$' | grep -q '^2$'; }
+    check "requestserver-fetch: $url + $url2 at once, http/2" t_rs_https
+    sed 's/^/     /' rs.out 2>/dev/null || true
 fi
 exit $fails
