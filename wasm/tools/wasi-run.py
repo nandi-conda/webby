@@ -15,7 +15,10 @@ def main() -> int:
         print("usage: wasi-run.py MODULE [ARGS...]", file=sys.stderr)
         return 2
     path = sys.argv[1]
-    engine = wasmtime.Engine()
+    config = wasmtime.Config()
+    # setjmp/longjmp (libpng, FreeType in deps/skia.sh) are wasm exception handling on WASI.
+    config.wasm_exceptions = True
+    engine = wasmtime.Engine(config)
     store = wasmtime.Store(engine)
     wasi = wasmtime.WasiConfig()
     wasi.argv = [os.path.basename(path)] + sys.argv[2:]

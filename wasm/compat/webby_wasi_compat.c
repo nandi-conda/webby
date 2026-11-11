@@ -303,3 +303,30 @@ int pthread_setname_np(pthread_t thread, const char* name)
     strcpy(webby_thread_name, name);
     return 0;
 }
+
+/* ---- unnamed POSIX semaphores (Skia's SkSemaphore): a counter, since nothing else can post while the one thread
+ * waits. Waiting on zero would block forever, so it fails with EDEADLK instead. ---- */
+#include <semaphore.h>
+int sem_init(sem_t* s, int shared, unsigned value) { (void)shared; s->__val[0] = (int)value; return 0; }
+int sem_destroy(sem_t* s) { (void)s; return 0; }
+int sem_post(sem_t* s) { s->__val[0]++; return 0; }
+int sem_trywait(sem_t* s)
+{
+    if (s->__val[0] > 0) { s->__val[0]--; return 0; }
+    errno = EAGAIN;
+    return -1;
+}
+int sem_wait(sem_t* s)
+{
+    if (sem_trywait(s) == 0) return 0;
+    errno = EDEADLK;
+    return -1;
+}
+int sem_timedwait(sem_t* restrict s, const struct timespec* restrict t)
+{
+    (void)t;
+    if (sem_trywait(s) == 0) return 0;
+    errno = ETIMEDOUT;
+    return -1;
+}
+int sem_getvalue(sem_t* restrict s, int* restrict value) { *value = s->__val[0]; return 0; }

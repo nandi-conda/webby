@@ -11,6 +11,7 @@ latha:gui host. Not usable yet.
 | `compat/` | `netdb.h` and the POSIX pieces wasi-libc lacks (socket calls fail with ENOTSUP, one time zone) |
 | `deps/` | scripts that build Ladybird's dependencies for WASI into a sysroot (`WEBBY_WASI_SYSROOT`) |
 | `patches/` | Ladybird changes for a WASI build, on top of `../LADYBIRD_COMMIT` and `../patches/` |
+| `tests/` | small wasm programs that check a dependency works (`tests/skia-rect.sh`) |
 | `tools/wasi-run.py` | runs a wasm32-wasip1 program with PyPI wasmtime (`LIBJS_TARGET_RUNNER` for the layout generator) |
 | `build-engine.sh` | configures and builds Ladybird for wasm32-wasip1 (target `js` for now) |
 
@@ -61,6 +62,17 @@ Running: `python tools/wasi-run.py build/ladybird/bin/js script.js` runs closure
 functions, exceptions, JSON, RegExp, Date, Intl, BigInt and typed arrays correctly. Known bug: array indexing in the
 C interpreter's GetByValue fast path reads index 0 (`[5,6,7][1]` is 5), being fixed in the Flap C backend.
 
+Skia (`deps/skia.sh`, the pin's e7c90ecca9, "skia 148", for the Compositor) builds for WASI as a CPU raster
+library: no Ganesh/Graphite/GL/Vulkan, no PDF, FreeType with the empty font manager (no fontconfig) and Skia's
+bundled FreeType, libpng and zlib, all inside one 7 MB `libskia.a`. GN runs with `target_os="linux"` and an unknown
+`target_cpu="wasm32"` (GN's own "wasm" means Emscripten) plus `-DSK_BUILD_FOR_UNIX`, since clang for WASI defines
+neither `__unix__` nor `__linux__`. The raster pipeline needs `-mtail-call`; SkVx uses `-msimd128`. The one source
+patch is Ladybird's `010-always-build-pathops` (`deps/skia-0001-always-build-pathops.patch`). libpng and FreeType
+use setjmp/longjmp, so Skia is compiled with `-mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false` and
+programs linking it add `-lsetjmp` (skia.pc and the unofficial-skia CMake config say so) and need an engine with
+wasm exceptions (`tools/wasi-run.py` turns them on). `compat/` has single-threaded POSIX semaphores for SkSemaphore.
+`tests/skia-rect.sh` draws a rect, a path-op shape and FreeType text into an SkBitmap and writes a PNG under wasmtime.
+
 ## Building what exists
 
 ```sh
@@ -71,6 +83,9 @@ pixi run deps/icu.sh <icu>/icu4c/source build/icu "$WEBBY_WASI_SYSROOT"
 pixi run deps/openssl.sh <openssl> build/openssl "$WEBBY_WASI_SYSROOT"
 pixi run deps/libpsl.sh <libpsl> build/psl "$WEBBY_WASI_SYSROOT"
 pixi run deps/cmake-dep.sh <src> build/<name> [cmake args]   # fast_float, zmij, simdutf, libtommath, mimalloc
+git clone https://skia.googlesource.com/skia <skia> && git -C <skia> checkout e7c90ecca9444fe09598f1630ab7cee2c0ee027a
+pixi run deps/skia.sh <skia> build/skia "$WEBBY_WASI_SYSROOT"   # fetches gn + FreeType/libpng/zlib by git
+pixi run tests/skia-rect.sh build/skia-test /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
 rustup target add wasm32-wasip1 --toolchain "$(sed -n 's/channel = "\(.*\)"/\1/p' <ladybird>/rust-toolchain.toml)"
 pip install wasmtime   # for tools/wasi-run.py
 export LIBJS_TARGET_RUNNER="python $PWD/tools/wasi-run.py"
