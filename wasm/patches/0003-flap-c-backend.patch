@@ -1,5 +1,5 @@
 diff --git a/Libraries/LibJS/Flap/src/frontend/layout.rs b/Libraries/LibJS/Flap/src/frontend/layout.rs
-index e0edd296..11114f84 100644
+index e0edd296..f354498c 100644
 --- a/Libraries/LibJS/Flap/src/frontend/layout.rs
 +++ b/Libraries/LibJS/Flap/src/frontend/layout.rs
 @@ -199,6 +199,9 @@ pub(crate) struct Field {
@@ -25,11 +25,29 @@ index e0edd296..11114f84 100644
                      owner: field.owner,
                      name: field.name,
                      ty: field.ty,
+@@ -410,7 +418,6 @@ impl LayoutDatabase {
+         &self.fields
+     }
+ 
+-    #[cfg(test)]
+     pub(crate) fn constants(&self) -> &LayoutConstants {
+         &self.constants
+     }
 diff --git a/Libraries/LibJS/Flap/src/hir/mod.rs b/Libraries/LibJS/Flap/src/hir/mod.rs
-index 3d399474..6a14b89c 100644
+index 3d399474..d469076f 100644
 --- a/Libraries/LibJS/Flap/src/hir/mod.rs
 +++ b/Libraries/LibJS/Flap/src/hir/mod.rs
-@@ -95,6 +95,8 @@ struct LayoutField {
+@@ -82,6 +82,9 @@ struct Checker<'a> {
+     known_null_pointers: HashSet<VariableId>,
+     known_integer_literals: HashSet<VariableId>,
+     active_value_tags: Vec<(VariableId, VariableId)>,
++    /// Whether the target's pointers are 4 bytes (POINTER_SIZE = 4, wasm32): sequences of pointers then have
++    /// 4-byte elements, which load zero-extended.
++    narrow_pointers: bool,
+ }
+ 
+ #[derive(Clone)]
+@@ -95,6 +98,8 @@ struct LayoutField {
      pair: Option<FieldPair>,
      pinned_base: Option<String>,
      pinned_offset: Option<layout::LayoutValue>,
@@ -38,7 +56,24 @@ index 3d399474..6a14b89c 100644
  }
  
  impl<'a> Checker<'a> {
-@@ -1592,7 +1594,14 @@ impl<'a> Checker<'a> {
+@@ -120,6 +125,7 @@ impl<'a> Checker<'a> {
+             known_null_pointers: HashSet::default(),
+             known_integer_literals: HashSet::default(),
+             active_value_tags: Vec::new(),
++            narrow_pointers: false,
+         }
+     }
+ 
+@@ -1206,7 +1212,7 @@ impl<'a> Checker<'a> {
+                 let (base, element_type) = self.check_index_base(base)?;
+                 let index = self.check_sequence_index(index)?;
+                 let value = self.check_materialized_value(value, &element_type)?;
+-                let (_, store_operation, scale) = sequence_access(&element_type).ok_or_else(|| {
++                let (_, store_operation, scale) = sequence_access(&element_type, self.narrow_pointers).ok_or_else(|| {
+                     Diagnostic::new(
+                         self.filename,
+                         value.span,
+@@ -1592,7 +1598,14 @@ impl<'a> Checker<'a> {
          }
          let width = field_width(&field.ty, false)
              .ok_or_else(|| Diagnostic::new(self.filename, span, format!("cannot load field of type {}", field.ty)))?;
@@ -54,7 +89,7 @@ index 3d399474..6a14b89c 100644
              debug_assert_eq!(width, FieldWidth::U64);
              FieldAccessKind::LoadCompressedCellPointer { nonzero: field.nonnull }
          } else if field.cell_pointer {
-@@ -1605,7 +1614,10 @@ impl<'a> Checker<'a> {
+@@ -1605,7 +1618,10 @@ impl<'a> Checker<'a> {
              }
          };
          Ok(Call::new(
@@ -66,7 +101,7 @@ index 3d399474..6a14b89c 100644
              vec![memory],
              vec![ParameterMode::In],
              Some(field.ty),
-@@ -1699,10 +1711,11 @@ impl<'a> Checker<'a> {
+@@ -1699,10 +1715,11 @@ impl<'a> Checker<'a> {
          let value = self.check_materialized_value(initializer, &field.ty)?;
          let width = field_width(&field.ty, true)
              .ok_or_else(|| Diagnostic::new(self.filename, span, format!("cannot store field of type {}", field.ty)))?;
@@ -80,7 +115,65 @@ index 3d399474..6a14b89c 100644
              }),
              vec![memory, value],
              vec![ParameterMode::In, ParameterMode::In],
-@@ -3489,6 +3502,7 @@ pub(crate) fn check_with_layouts(
+@@ -1863,7 +1880,7 @@ impl<'a> Checker<'a> {
+             ExpressionKind::Index { base, index } => {
+                 let (base, element_type) = self.check_index_base(base)?;
+                 let index = self.check_sequence_index(index)?;
+-                let (load_operation, _, scale) = sequence_access(&element_type).ok_or_else(|| {
++                let (load_operation, _, scale) = sequence_access(&element_type, self.narrow_pointers).ok_or_else(|| {
+                     Diagnostic::new(
+                         self.filename,
+                         expression.span,
+@@ -3126,8 +3143,16 @@ fn is_integer_arithmetic_type(ty: &Type) -> bool {
+     matches!(ty, Type::I32 | Type::U32 | Type::I64 | Type::U64)
+ }
+ 
+-fn sequence_access(element_type: &Type) -> Option<(MemoryOperation, MemoryOperation, i64)> {
+-    let load = element_type.memory_load()?;
++fn sequence_access(element_type: &Type, narrow_pointers: bool) -> Option<(MemoryOperation, MemoryOperation, i64)> {
++    let load = if narrow_pointers && element_type.is_pointer() {
++        // A 4-byte pointer: the load zero-extends it, like a narrow layout field.
++        MemoryOperation::Load {
++            width: crate::target::description::MemoryWidth::Word,
++            signed: false,
++        }
++    } else {
++        element_type.memory_load()?
++    };
+     Some((
+         load,
+         MemoryOperation::Store(load.width()),
+@@ -3418,8 +3443,10 @@ fn check_body(
+     parameters_are_bytecode_fields: bool,
+     layouts: &HashMap<(Type, String), LayoutField>,
+     aggregate_strides: &HashMap<Type, layout::LayoutValue>,
++    narrow_pointers: bool,
+ ) -> Result<(Vec<VariableId>, Body), Diagnostic> {
+     let mut checker = Checker::new(filename, signatures, inline_function_ids, layouts, aggregate_strides);
++    checker.narrow_pointers = narrow_pointers;
+     let mut parameter_ids = Vec::new();
+     for parameter in parameters {
+         parameter_ids.push(checker.declare(
+@@ -3455,6 +3482,18 @@ pub(crate) fn check_with_layouts(
+     program: &ast::Program,
+     layout_fields: &[layout::Field],
+ ) -> Result<Program, Diagnostic> {
++    check_with_layouts_and_pointer_size(filename, program, layout_fields, 8)
++}
++
++/// Check a program against generated layouts for a target whose pointers are
++/// `pointer_size` bytes (the layout's POINTER_SIZE).
++pub(crate) fn check_with_layouts_and_pointer_size(
++    filename: &str,
++    program: &ast::Program,
++    layout_fields: &[layout::Field],
++    pointer_size: i64,
++) -> Result<Program, Diagnostic> {
++    let narrow_pointers = pointer_size == 4;
+     let mut layouts = HashMap::default();
+     let mut aggregate_strides = HashMap::default();
+     let mut pairs = HashMap::default();
+@@ -3489,6 +3528,7 @@ pub(crate) fn check_with_layouts(
                  pair,
                  pinned_base: field.pinned_base.clone(),
                  pinned_offset: field.pinned_offset,
@@ -88,11 +181,41 @@ index 3d399474..6a14b89c 100644
              },
          );
      }
+@@ -3607,6 +3647,7 @@ pub(crate) fn check_with_layouts(
+                     false,
+                     &layouts,
+                     &aggregate_strides,
++                    narrow_pointers,
+                 )?;
+                 inline_functions.push(InlineFunction {
+                     id: inline_function_ids[&declaration.name],
+@@ -3635,6 +3676,7 @@ pub(crate) fn check_with_layouts(
+                     true,
+                     &layouts,
+                     &aggregate_strides,
++                    narrow_pointers,
+                 )?;
+                 handlers.push(Handler {
+                     name: declaration.name.clone(),
 diff --git a/Libraries/LibJS/Flap/src/lib.rs b/Libraries/LibJS/Flap/src/lib.rs
-index 86ccecc9..46c71f72 100644
+index 86ccecc9..e43eb44c 100644
 --- a/Libraries/LibJS/Flap/src/lib.rs
 +++ b/Libraries/LibJS/Flap/src/lib.rs
-@@ -693,6 +693,14 @@ impl Compiler {
+@@ -480,7 +480,12 @@ impl Compiler {
+         frontend::specialize::expand_declarative_specializations(unit.source.name, &mut ast, &specialized_ops)
+             .map_err(|diagnostic| CompileError::from_diagnostic(CompileStage::Semantic, diagnostic))?;
+         let typed_program = if let Some(layouts) = &layouts {
+-            hir::check_with_layouts(unit.source.name, &ast, layouts.fields())
++            hir::check_with_layouts_and_pointer_size(
++                unit.source.name,
++                &ast,
++                layouts.fields(),
++                layouts.constants().get("POINTER_SIZE").map_or(8, |constant| constant.value()),
++            )
+         } else {
+             hir::check(unit.source.name, &ast)
+         }
+@@ -693,6 +698,14 @@ impl Compiler {
          self.emit_program(&machine)
      }
  
@@ -1794,10 +1917,10 @@ index 7f9f8718..c2f2290f 100644
  pub(crate) mod finalize;
 diff --git a/Libraries/LibJS/Flap/tests/interpreter_c.rs b/Libraries/LibJS/Flap/tests/interpreter_c.rs
 new file mode 100644
-index 00000000..597fd433
+index 00000000..41c9db41
 --- /dev/null
 +++ b/Libraries/LibJS/Flap/tests/interpreter_c.rs
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,114 @@
 +/*
 + * Copyright (c) 2026-present, the Ladybird developers.
 + *
@@ -1871,6 +1994,20 @@ index 00000000..597fd433
 +    let layout = format!("{LAYOUT}\nconst VM_PRIMITIVE_STORAGE_CAGE_BASE_WIDTH = 4\n");
 +    let c = interpreter_c_with_layout(false, &layout);
 +    assert!(c.contains("static void flap_handler_GetByValue(FLAP_PARAMETERS)"));
++}
++
++/// With 4-byte pointers (wasm32), a sequence of pointers such as an
++/// executable's property lookup caches has 4-byte elements.
++#[test]
++fn four_byte_pointer_sequences_have_four_byte_elements() {
++    let get_by_id = |c: &str| {
++        let start = c.find("static void flap_handler_GetById(FLAP_PARAMETERS)\n{").unwrap();
++        let end = start + c[start..].find("\n}\n").unwrap();
++        c[start..end].to_string()
++    };
++    let narrow = get_by_id(&interpreter_c_with_layout(false, &format!("{LAYOUT}\nconst POINTER_SIZE = 4\n")));
++    assert!(narrow.contains(" * UINT64_C(0x4)))"), "GetById indexes its caches by 4 bytes");
++    assert!(!get_by_id(&interpreter_c(false)).contains(" * UINT64_C(0x4)))"));
 +}
 +
 +/// Compiles the C with clang when it is installed, which checks that every
