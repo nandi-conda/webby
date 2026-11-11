@@ -38,10 +38,11 @@ WASI mode (`patches/0001-wasi-build-mode.patch`: only the libraries `js` needs, 
 - Earlier AK/LibCore fixes: getentropy in 256-byte chunks, no coarse clocks, no stack unwinder, WASI stack bounds,
   32-bit libtommath digits.
 
-Still missing: the interpreter itself. LibJS's interpreter is `Libraries/LibJS/Interpreter/interpreter.flap`,
-compiled by Flap to x86-64 or arm64 only; a C backend for Flap (handlers as C functions chained with
-`[[clang::musttail]]`, which become wasm tail calls) is being written. Until it lands, build.rs builds the runtime
-without the interpreter on wasm32.
+The interpreter: `patches/0003-flap-c-backend.patch` gives Flap a C backend (`Flap/src/target/c.rs`). It prints
+LibJS's `interpreter.flap` from target-independent LowIR as C, one function per handler with the interpreter state as
+parameters, chained with clang's `musttail`, which wasi-sdk turns into wasm `return_call`s with `-mtail-call`. build.rs
+uses it for wasm32 (or anywhere with `LIBJS_INTERPRETER_BACKEND=c`, JIT off) and compiles it with `cc`. Layout fields
+the wasm32 layout marks `<OFFSET>_WIDTH = 4` load and store as 32 bits. `flapc --emit-c` prints the C by hand.
 
 ## Building what exists
 

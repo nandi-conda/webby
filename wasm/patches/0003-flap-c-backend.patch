@@ -1,0 +1,1882 @@
+diff --git a/Libraries/LibJS/Flap/src/frontend/layout.rs b/Libraries/LibJS/Flap/src/frontend/layout.rs
+index e0edd296..11114f84 100644
+--- a/Libraries/LibJS/Flap/src/frontend/layout.rs
++++ b/Libraries/LibJS/Flap/src/frontend/layout.rs
+@@ -199,6 +199,9 @@ pub(crate) struct Field {
+     pub(crate) pinned_base: Option<String>,
+     pub(crate) pinned_offset: Option<LayoutValue>,
+     pub(crate) stride: Option<LayoutValue>,
++    /// The width in bytes the target stores the field in, from an `<OFFSET>_WIDTH` constant, where it differs from
++    /// the width of the field's type: pointers are 4 bytes on wasm32.
++    pub(crate) width: Option<i64>,
+ }
+ 
+ struct UnresolvedField {
+@@ -379,7 +382,12 @@ impl LayoutDatabase {
+         database.fields = unresolved_fields
+             .into_iter()
+             .map(|field| {
++                let width = database
++                    .constants
++                    .get(&format!("{}_WIDTH", field.offset))
++                    .map(|width| width.value());
+                 Ok(Field {
++                    width,
+                     owner: field.owner,
+                     name: field.name,
+                     ty: field.ty,
+diff --git a/Libraries/LibJS/Flap/src/hir/mod.rs b/Libraries/LibJS/Flap/src/hir/mod.rs
+index 3d399474..6a14b89c 100644
+--- a/Libraries/LibJS/Flap/src/hir/mod.rs
++++ b/Libraries/LibJS/Flap/src/hir/mod.rs
+@@ -95,6 +95,8 @@ struct LayoutField {
+     pair: Option<FieldPair>,
+     pinned_base: Option<String>,
+     pinned_offset: Option<layout::LayoutValue>,
++    /// Whether the target stores this 8-byte field in 4 bytes, as wasm32 does pointers.
++    narrow: bool,
+ }
+ 
+ impl<'a> Checker<'a> {
+@@ -1592,7 +1594,14 @@ impl<'a> Checker<'a> {
+         }
+         let width = field_width(&field.ty, false)
+             .ok_or_else(|| Diagnostic::new(self.filename, span, format!("cannot load field of type {}", field.ty)))?;
+-        let kind = if field.compressed {
++        let narrow = field.narrow && !field.compressed && width == FieldWidth::U64;
++        let kind = if narrow {
++            // A pointer the target stores in 4 bytes: the load zero-extends it.
++            FieldAccessKind::Load {
++                width: FieldWidth::U32,
++                nonzero: false,
++            }
++        } else if field.compressed {
+             debug_assert_eq!(width, FieldWidth::U64);
+             FieldAccessKind::LoadCompressedCellPointer { nonzero: field.nonnull }
+         } else if field.cell_pointer {
+@@ -1605,7 +1614,10 @@ impl<'a> Checker<'a> {
+             }
+         };
+         Ok(Call::new(
+-            CallTarget::FieldAccess(FieldAccess { kind, pair: field.pair }),
++            CallTarget::FieldAccess(FieldAccess {
++                kind,
++                pair: if narrow { None } else { field.pair },
++            }),
+             vec![memory],
+             vec![ParameterMode::In],
+             Some(field.ty),
+@@ -1699,10 +1711,11 @@ impl<'a> Checker<'a> {
+         let value = self.check_materialized_value(initializer, &field.ty)?;
+         let width = field_width(&field.ty, true)
+             .ok_or_else(|| Diagnostic::new(self.filename, span, format!("cannot store field of type {}", field.ty)))?;
++        let narrow = field.narrow && width == FieldWidth::U64;
+         Ok(Call::new(
+             CallTarget::FieldAccess(FieldAccess {
+-                kind: FieldAccessKind::Store(width),
+-                pair: field.pair,
++                kind: FieldAccessKind::Store(if narrow { FieldWidth::U32 } else { width }),
++                pair: if narrow { None } else { field.pair },
+             }),
+             vec![memory, value],
+             vec![ParameterMode::In, ParameterMode::In],
+@@ -3489,6 +3502,7 @@ pub(crate) fn check_with_layouts(
+                 pair,
+                 pinned_base: field.pinned_base.clone(),
+                 pinned_offset: field.pinned_offset,
++                narrow: field.width == Some(4),
+             },
+         );
+     }
+diff --git a/Libraries/LibJS/Flap/src/lib.rs b/Libraries/LibJS/Flap/src/lib.rs
+index 86ccecc9..46c71f72 100644
+--- a/Libraries/LibJS/Flap/src/lib.rs
++++ b/Libraries/LibJS/Flap/src/lib.rs
+@@ -693,6 +693,14 @@ impl Compiler {
+         self.emit_program(&machine)
+     }
+ 
++    /// Compile a previously prepared set of handler templates to portable C,
++    /// for targets without an assembly backend. See `target::c`.
++    pub fn compile_prepared_c(&self, prepared: &PreparedProgram) -> Result<Assembly, CompileError> {
++        let program = self.lower(prepared)?;
++        let text = target::c::generate(&program, &self.options)?;
++        Ok(Assembly { text })
++    }
++
+     /// List the runtime functions the assembly compiled from `prepared` calls,
+     /// ordered by symbol and classified for this compiler's target. Fails if
+     /// one symbol is called in two ways that need different definitions.
+diff --git a/Libraries/LibJS/Flap/src/main.rs b/Libraries/LibJS/Flap/src/main.rs
+index c5f0cf52..60ca830f 100644
+--- a/Libraries/LibJS/Flap/src/main.rs
++++ b/Libraries/LibJS/Flap/src/main.rs
+@@ -10,7 +10,7 @@ use flapc::{
+ };
+ use std::fs;
+ 
+-const USAGE: &str = "Usage: flapc --arch x86_64 --input <file.flap> --output <file.S> [--profile js|wasm] [--constants <file>] [--optimization-report <file>] [--dump-changed-ir]";
++const USAGE: &str = "Usage: flapc --arch x86_64 --input <file.flap> --output <file.S> [--profile js|wasm] [--constants <file>] [--optimization-report <file>] [--dump-changed-ir] [--emit-c]";
+ 
+ struct CommandLine {
+     options: CompileOptions,
+@@ -19,6 +19,7 @@ struct CommandLine {
+     constants_path: Option<String>,
+     optimization_report_path: Option<String>,
+     dump_changed_ir: bool,
++    emit_c: bool,
+ }
+ 
+ fn main() {
+@@ -45,7 +46,10 @@ fn run() -> Result<(), String> {
+             .zip(constants.as_deref())
+             .map(|(name, contents)| SourceInput { name, contents }),
+     };
+-    let assembly = if let Some(report_path) = &command_line.optimization_report_path {
++    let assembly = if command_line.emit_c {
++        let prepared = compiler.prepare(unit).map_err(|error| error.to_string())?;
++        compiler.compile_prepared_c(&prepared).map_err(|error| error.to_string())?
++    } else if let Some(report_path) = &command_line.optimization_report_path {
+         let (prepared, report) = compiler
+             .prepare_with_optimization_report(
+                 unit,
+@@ -82,6 +86,7 @@ fn parse_command_line() -> Result<CommandLine, String> {
+     let mut enable_assertions = false;
+     let mut optimization_report_path = None;
+     let mut dump_changed_ir = false;
++    let mut emit_c = false;
+     let mut profiling = false;
+     let mut profile = Profile::JavaScript;
+ 
+@@ -92,6 +97,7 @@ fn parse_command_line() -> Result<CommandLine, String> {
+             "--has-bmi1" => has_bmi1 = true,
+             "--enable-assertions" => enable_assertions = true,
+             "--dump-changed-ir" => dump_changed_ir = true,
++            "--emit-c" => emit_c = true,
+             "--profiling" => profiling = true,
+             "--arch" => {
+                 architecture = match required_value(&mut args, "--arch")?.as_str() {
+@@ -147,6 +153,7 @@ fn parse_command_line() -> Result<CommandLine, String> {
+         constants_path,
+         optimization_report_path,
+         dump_changed_ir,
++        emit_c,
+     })
+ }
+ 
+diff --git a/Libraries/LibJS/Flap/src/target/c.rs b/Libraries/LibJS/Flap/src/target/c.rs
+new file mode 100644
+index 00000000..4a85864a
+--- /dev/null
++++ b/Libraries/LibJS/Flap/src/target/c.rs
+@@ -0,0 +1,1517 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++//! A portable backend that prints target-independent LowIR as C.
++//!
++//! Every handler becomes one C function taking the interpreter state as its
++//! parameters, and handlers chain into each other with guaranteed tail calls
++//! (clang's `musttail`), so the C compiler keeps the interpreter state in
++//! registers and no handler grows the native stack. This is what lets the
++//! interpreter run where Flap has no assembly backend, such as WebAssembly
++//! (built with `-mtail-call`).
++//!
++//! The backend works on LowIR before register allocation: virtual registers
++//! become `u64` locals and the C compiler allocates them. Every register holds
++//! a 64-bit pattern, floating-point registers included, so moves between the
++//! register classes are plain copies.
++//!
++//! Interpreter registers map to the handler parameters: `pb`, `pc`, `values`,
++//! the dispatch table, the heap region base, and the VM. The execution context
++//! sits right below the values, as in the assembly backends, so it is never
++//! stored separately.
++//!
++//! The semantics of each instruction follow the x86-64 backend: 32-bit results
++//! clear the upper half of their register, and partial-width results keep it.
++
++use std::fmt::Write as _;
++
++use crate::frontend::layout::KnownLayoutConstant;
++use crate::hash::HashMap;
++use crate::intrinsic::{
++    BinaryOperation, BranchOperation, CallOperation, ComparisonRelation, ControlOperation, FloatBinaryOperation,
++    FloatComparison, FloatConversion, FloatUnaryOperation, FloatingPointOperation, IntegerBinaryOperation,
++    IntegerSignedness, IntegerWidth, MemoryOperation, MemoryWidth, OrderedFloatComparison, PairWidth, ShiftOperation,
++};
++use crate::low_ir::{self, AddressDisplacement, AddressRegister, AddressScale, Instruction, MemoryAddress, Operand};
++use crate::metadata::{ParameterMode, SlowPathAbi};
++use crate::target::description::{Operation, OverflowOperation};
++use crate::types::InterpreterRegister;
++use crate::{CompileError, CompileOptions, CompileStage, ObjectFormat, Profile};
++
++const DISPATCH_TABLE_SIZE: usize = 256;
++
++/// Print a lowered program as one C translation unit.
++pub(crate) fn generate(program: &low_ir::Program, options: &CompileOptions) -> Result<String, CompileError> {
++    if options.profile != Profile::JavaScript {
++        return Err(error(None, "the C backend supports only the JavaScript interpreter"));
++    }
++    if !program.dispatch.secondary.is_empty() {
++        return Err(error(None, "the C backend does not support secondary dispatch tables"));
++    }
++    let mut unit = Unit {
++        runtime: &program.runtime,
++        options,
++        declarations: HashMap::default(),
++        declaration_order: Vec::new(),
++        helpers: String::new(),
++        helper_count: 0,
++    };
++
++    let mut bodies = String::new();
++    let mut names = HashMap::default();
++    for handler in &program.handlers {
++        names.insert(handler.id, handler_function_name(&handler.name));
++    }
++    for handler in &program.handlers {
++        let body = unit.handler(handler, &names[&handler.id])?;
++        bodies.push_str(&body);
++    }
++
++    let symbol = |suffix: &str| {
++        let prefix = options.profile.symbol_prefix();
++        let name = if suffix.is_empty() {
++            prefix.to_string()
++        } else {
++            format!("{prefix}_{suffix}")
++        };
++        if options.profiling {
++            format!("{name}_profiling")
++        } else {
++            name
++        }
++    };
++
++    let mut out = String::new();
++    out.push_str("/* Generated by flapc's C backend -- DO NOT EDIT */\n\n");
++    out.push_str(PRELUDE);
++    unit.constants(&mut out);
++    out.push_str(RUNTIME_MACROS);
++    out.push('\n');
++    w(&mut out, format_args!(
++        "i64 {}(const void*, u32, const u8*);\nvoid {}(const void*, u32);\ni64 {}(const void*, u32);\n",
++        crate::runtime_interface::FALLBACK_HANDLER,
++        crate::runtime_interface::BREAKPOINT_CHECK,
++        crate::runtime_interface::STACK_OVERFLOW_SLOW_PATH,
++    ));
++    for symbol in &unit.declaration_order {
++        w(&mut out, format_args!("{}\n", unit.declarations[symbol]));
++    }
++    out.push('\n');
++
++    let dispatch_table = symbol("dispatch_table");
++    let debug_dispatch_table = symbol("debug_dispatch_table");
++    let handler_ranges = symbol("handler_ranges");
++    let entry = symbol("");
++
++    w(&mut out, format_args!("extern flap_handler* const {dispatch_table}[{DISPATCH_TABLE_SIZE}];\n"));
++    out.push_str("static void flap_fallback(FLAP_PARAMETERS);\n");
++    out.push_str("static void flap_debugger_trampoline(FLAP_PARAMETERS);\n");
++    for handler in &program.handlers {
++        w(&mut out, format_args!("static void {}(FLAP_PARAMETERS);\n", names[&handler.id]));
++    }
++    out.push('\n');
++    out.push_str(&unit.helpers);
++    out.push_str(&bodies);
++
++    // The fallback hands an instruction without a handler to the runtime.
++    w(&mut out, format_args!(
++        "static void flap_fallback(FLAP_PARAMETERS)\n{{\n    FLAP_STORE_PC();\n    i64 result = {}((const void*)vm, pc, (const u8*)(pb + pc));\n    if (result < 0)\n        return;\n    FLAP_RELOAD_STATE();\n    pc = (u32)result;\n    FLAP_DISPATCH();\n}}\n\n",
++        crate::runtime_interface::FALLBACK_HANDLER
++    ));
++    // Every entry of the debug table checks for a breakpoint, then runs the
++    // instruction's handler and keeps the debug table for the next one.
++    w(&mut out, format_args!(
++        "static void flap_debugger_trampoline(FLAP_PARAMETERS)\n{{\n    FLAP_STORE_PC();\n    {}((const void*)vm, pc);\n    FLAP_RELOAD_STATE();\n    pc = ld32(values - FLAP_SIZEOF_EXECUTION_CONTEXT + FLAP_EXECUTION_CONTEXT_PROGRAM_COUNTER);\n    FLAP_MUSTTAIL return {dispatch_table}[ld8(pb + pc)](FLAP_ARGUMENTS);\n}}\n\n",
++        crate::runtime_interface::BREAKPOINT_CHECK
++    ));
++
++    w(&mut out, format_args!("flap_handler* const {dispatch_table}[{DISPATCH_TABLE_SIZE}] = {{\n"));
++    for index in 0..DISPATCH_TABLE_SIZE {
++        let handler = program.dispatch_handlers.get(index).copied().flatten();
++        let name = handler.and_then(|handler| names.get(&handler)).map_or("flap_fallback", String::as_str);
++        w(&mut out, format_args!("    {name},\n"));
++    }
++    out.push_str("};\n\n");
++    w(&mut out, format_args!("flap_handler* const {debug_dispatch_table}[{DISPATCH_TABLE_SIZE}] = {{\n"));
++    for _ in 0..DISPATCH_TABLE_SIZE {
++        out.push_str("    flap_debugger_trampoline,\n");
++    }
++    out.push_str("};\n\n");
++    // Handlers have no address ranges of their own here: the C compiler lays
++    // them out. Only bytecode dumps read these, to name handlers by address.
++    w(&mut out, format_args!(
++        "const void* const {handler_ranges}[{}] = {{ 0 }};\n\n",
++        DISPATCH_TABLE_SIZE * 4
++    ));
++
++    w(&mut out, format_args!(
++        "void {entry}(const void* bytecode, u32 entry_point, void* values_pointer, const void* vm_pointer)\n{{\n    uptr pb = (uptr)bytecode;\n    u32 pc = entry_point;\n    uptr values = (uptr)values_pointer;\n    uptr vm = (uptr)vm_pointer;\n    uptr heap = ldptr(vm + FLAP_VM_HEAP_REGION_BASE);\n    uptr dispatch = FLAP_EXECUTABLE_DISPATCH_TABLE(ldptr(values - FLAP_SIZEOF_EXECUTION_CONTEXT + FLAP_EXECUTION_CONTEXT_EXECUTABLE));\n    ((flap_handler* const*)dispatch)[ld8(pb + pc)](FLAP_ARGUMENTS);\n}}\n"
++    ));
++    Ok(out)
++}
++
++const PRELUDE: &str = r#"#include <stddef.h>
++#include <stdint.h>
++
++#if !defined(__clang__)
++#    error "the Flap C interpreter needs clang, for guaranteed tail calls"
++#endif
++
++typedef uint8_t u8;
++typedef uint16_t u16;
++typedef uint32_t u32;
++typedef uint64_t u64;
++typedef int8_t i8;
++typedef int16_t i16;
++typedef int32_t i32;
++typedef int64_t i64;
++typedef uintptr_t uptr;
++
++#define FLAP_MUSTTAIL __attribute__((musttail))
++#define FLAP_NOINLINE __attribute__((noinline))
++#define FLAP_INLINE static inline __attribute__((always_inline))
++
++#define FLAP_PARAMETERS uptr pb, u32 pc, uptr values, uptr dispatch, uptr heap, uptr vm
++#define FLAP_ARGUMENTS pb, pc, values, dispatch, heap, vm
++typedef void flap_handler(FLAP_PARAMETERS);
++
++/* Memory is accessed bytewise, so unaligned and type-punned accesses stay defined. */
++FLAP_INLINE u64 ld8(u64 address) { u8 value; __builtin_memcpy(&value, (const void*)(uptr)address, 1); return value; }
++FLAP_INLINE u64 ld16(u64 address) { u16 value; __builtin_memcpy(&value, (const void*)(uptr)address, 2); return value; }
++FLAP_INLINE u64 ld32(u64 address) { u32 value; __builtin_memcpy(&value, (const void*)(uptr)address, 4); return value; }
++FLAP_INLINE u64 ld64(u64 address) { u64 value; __builtin_memcpy(&value, (const void*)(uptr)address, 8); return value; }
++FLAP_INLINE uptr ldptr(u64 address) { uptr value; __builtin_memcpy(&value, (const void*)(uptr)address, sizeof(value)); return value; }
++FLAP_INLINE void st8(u64 address, u64 value) { u8 narrow = (u8)value; __builtin_memcpy((void*)(uptr)address, &narrow, 1); }
++FLAP_INLINE void st16(u64 address, u64 value) { u16 narrow = (u16)value; __builtin_memcpy((void*)(uptr)address, &narrow, 2); }
++FLAP_INLINE void st32(u64 address, u64 value) { u32 narrow = (u32)value; __builtin_memcpy((void*)(uptr)address, &narrow, 4); }
++FLAP_INLINE void st64(u64 address, u64 value) { __builtin_memcpy((void*)(uptr)address, &value, 8); }
++FLAP_INLINE double f64(u64 bits) { double value; __builtin_memcpy(&value, &bits, 8); return value; }
++FLAP_INLINE u64 f64_bits(double value) { u64 bits; __builtin_memcpy(&bits, &value, 8); return bits; }
++FLAP_INLINE float f32(u64 bits) { u32 narrow = (u32)bits; float value; __builtin_memcpy(&value, &narrow, 4); return value; }
++FLAP_INLINE u64 f32_bits(float value) { u32 bits; __builtin_memcpy(&bits, &value, 4); return bits; }
++FLAP_INLINE u64 flap_frame(void) { return (u64)(uptr)__builtin_frame_address(0); }
++
++/* Truncating conversions that report whether the result is exact, without undefined behavior. */
++FLAP_INLINE int flap_f64_to_i32(u64 bits, u64* result)
++{
++    double value = f64(bits);
++    if (!(value > -2147483649.0 && value < 2147483648.0)) {
++        *result = 0x80000000u;
++        return 0;
++    }
++    i32 truncated = (i32)value;
++    *result = (u32)truncated;
++    return (double)truncated == value;
++}
++FLAP_INLINE int flap_f64_to_i64(u64 bits, u64* result)
++{
++    double value = f64(bits);
++    if (!(value >= -9223372036854775808.0 && value < 9223372036854775808.0)) {
++        *result = 0x8000000000000000u;
++        return 0;
++    }
++    i64 truncated = (i64)value;
++    *result = (u64)truncated;
++    return (double)truncated == value;
++}
++FLAP_INLINE int flap_js_to_i32(u64 bits, u64* result)
++{
++    double value = f64(bits);
++    if (!(value > -9223372036854775808.0 && value < 9223372036854775808.0)) {
++        *result = 0x8000000000000000u;
++        return 0;
++    }
++    *result = (u32)(u64)(i64)value;
++    return 1;
++}
++FLAP_INLINE u64 flap_remainder32(u64 lhs, u64 rhs)
++{
++    i32 a = (i32)lhs, b = (i32)rhs;
++    return (b == 0 || b == -1) ? 0 : (u32)(a % b);
++}
++FLAP_INLINE u64 flap_remainder64(u64 lhs, u64 rhs)
++{
++    i64 a = (i64)lhs, b = (i64)rhs;
++    return (b == 0 || b == -1) ? 0 : (u64)(a % b);
++}
++
++typedef struct {
++    i64 control;
++    u64 value;
++} flap_scalar_result;
++
++typedef struct {
++    u64 payload;
++    u8 variant;
++} flap_raw_native_result;
++
++/* Raw native functions return their completion the way the runtime's thunks do. */
++#if defined(_WIN32) || (defined(__APPLE__) && defined(__x86_64__))
++typedef void flap_raw_native_function(flap_raw_native_result*, const void*);
++static FLAP_NOINLINE flap_raw_native_result flap_call_raw_native(u64 function, uptr vm)
++{
++    flap_raw_native_result result;
++    ((flap_raw_native_function*)(uptr)function)(&result, (const void*)vm);
++    return result;
++}
++#else
++typedef flap_raw_native_result flap_raw_native_function(const void*);
++static FLAP_NOINLINE flap_raw_native_result flap_call_raw_native(u64 function, uptr vm)
++{
++    return ((flap_raw_native_function*)(uptr)function)((const void*)vm);
++}
++#endif
++
++/* Pointers to compressed cells hold the offset into the heap region, shifted right by this. */
++#ifndef FLAP_COMPRESSED_CELL_POINTER_SHIFT
++#    define FLAP_COMPRESSED_CELL_POINTER_SHIFT 3
++#endif
++
++"#;
++
++const RUNTIME_MACROS: &str = r#"
++#define FLAP_DISPATCH() FLAP_MUSTTAIL return ((flap_handler* const*)dispatch)[ld8(pb + pc)](FLAP_ARGUMENTS)
++#define FLAP_STORE_PC() st32(values - FLAP_SIZEOF_EXECUTION_CONTEXT + FLAP_EXECUTION_CONTEXT_PROGRAM_COUNTER, pc)
++/* A slow path or the fallback may have switched frames, so the state comes from the VM again. */
++#define FLAP_RELOAD_STATE()                                                                               \
++    do {                                                                                                  \
++        values = ldptr(vm + FLAP_VM_RUNNING_EXECUTION_CONTEXT) + FLAP_SIZEOF_EXECUTION_CONTEXT;           \
++        pb = ldptr(ldptr(values - FLAP_SIZEOF_EXECUTION_CONTEXT + FLAP_EXECUTION_CONTEXT_EXECUTABLE)      \
++            + FLAP_EXECUTABLE_BYTECODE_DATA);                                                             \
++        FLAP_RELOAD_DISPATCH_TABLE();                                                                     \
++    } while (0)
++#define FLAP_EXECUTABLE_DISPATCH_TABLE(executable)                                                           \
++    ldptr(vm + FLAP_VM_DISPATCH_TABLES                                                                       \
++        + (ld8((executable) + FLAP_EXECUTABLE_DISPATCH_TABLE_INDEX) & FLAP_DISPATCH_TABLE_INDEX_MASK) * sizeof(void*))
++#define FLAP_CONTINUES(result) ((((u64)(result)) >> FLAP_SLOW_PATH_CONTINUATION_BIT) & 1)
++/* A slow path's control word: exit, continue in this frame, or transfer to another. */
++#define FLAP_FINISH(call)                    \
++    do {                                     \
++        i64 flap_result = (call);            \
++        if (flap_result < 0)                 \
++            return;                          \
++        if (!FLAP_CONTINUES(flap_result))    \
++            FLAP_RELOAD_STATE();             \
++        pc = (u32)flap_result;               \
++        FLAP_DISPATCH();                     \
++    } while (0)
++"#;
++
++struct Unit<'a> {
++    runtime: &'a low_ir::RuntimeConstants,
++    options: &'a CompileOptions,
++    declarations: HashMap<String, String>,
++    declaration_order: Vec<String>,
++    helpers: String,
++    helper_count: usize,
++}
++
++struct HandlerContext<'a> {
++    name: &'a str,
++    size: Option<u32>,
++    labels: HashMap<String, usize>,
++}
++
++fn error(handler: Option<&str>, message: impl Into<String>) -> CompileError {
++    CompileError::new(CompileStage::Emission, handler, message)
++}
++
++fn w(out: &mut String, arguments: std::fmt::Arguments<'_>) {
++    out.write_fmt(arguments).expect("writing to a String cannot fail");
++}
++
++fn handler_function_name(name: &str) -> String {
++    let sanitized: String = name
++        .chars()
++        .map(|character| if character.is_ascii_alphanumeric() { character } else { '_' })
++        .collect();
++    format!("flap_handler_{sanitized}")
++}
++
++fn literal(value: i64) -> String {
++    format!("UINT64_C({:#x})", value as u64)
++}
++
++fn unsigned_type(width: IntegerWidth) -> &'static str {
++    match width {
++        IntegerWidth::U8 => "u8",
++        IntegerWidth::U16 => "u16",
++        IntegerWidth::U32 => "u32",
++        IntegerWidth::U64 => "u64",
++    }
++}
++
++fn signed_type(width: IntegerWidth) -> &'static str {
++    match width {
++        IntegerWidth::U8 => "i8",
++        IntegerWidth::U16 => "i16",
++        IntegerWidth::U32 => "i32",
++        IntegerWidth::U64 => "i64",
++    }
++}
++
++fn relation(relation: ComparisonRelation) -> &'static str {
++    match relation {
++        ComparisonRelation::Less => "<",
++        ComparisonRelation::LessOrEqual => "<=",
++        ComparisonRelation::Greater => ">",
++        ComparisonRelation::GreaterOrEqual => ">=",
++    }
++}
++
++const CONSTANTS: &[(KnownLayoutConstant, &str)] = &[
++    (KnownLayoutConstant::SizeOfExecutionContext, "SIZEOF_EXECUTION_CONTEXT"),
++    (KnownLayoutConstant::ExecutionContextProgramCounter, "EXECUTION_CONTEXT_PROGRAM_COUNTER"),
++    (KnownLayoutConstant::ExecutionContextExecutable, "EXECUTION_CONTEXT_EXECUTABLE"),
++    (KnownLayoutConstant::ExecutableBytecodeData, "EXECUTABLE_BYTECODE_DATA"),
++    (KnownLayoutConstant::ExecutableDispatchTableIndex, "EXECUTABLE_DISPATCH_TABLE_INDEX"),
++    (KnownLayoutConstant::VmRunningExecutionContext, "VM_RUNNING_EXECUTION_CONTEXT"),
++    (KnownLayoutConstant::VmHeapRegionBase, "VM_HEAP_REGION_BASE"),
++    (KnownLayoutConstant::VmDispatchTables, "VM_DISPATCH_TABLES"),
++    (KnownLayoutConstant::VmStackInfoBase, "VM_STACK_INFO_BASE"),
++    (KnownLayoutConstant::VmStackSpaceLimit, "VM_STACK_SPACE_LIMIT"),
++    (KnownLayoutConstant::DispatchTableIndexMask, "DISPATCH_TABLE_INDEX_MASK"),
++    (KnownLayoutConstant::SlowPathContinuationBit, "SLOW_PATH_CONTINUATION_BIT"),
++    (KnownLayoutConstant::EmptyValue, "EMPTY_VALUE"),
++    (KnownLayoutConstant::CanonicalNanBits, "CANON_NAN_BITS"),
++    (KnownLayoutConstant::HeapRegionOffsetMask, "HEAP_REGION_OFFSET_MASK"),
++    (KnownLayoutConstant::Int32TagShifted, "INT32_TAG_SHIFTED"),
++];
++
++impl Unit<'_> {
++    fn constants(&self, out: &mut String) {
++        for (constant, name) in CONSTANTS {
++            if let Some(value) = self.runtime.get(*constant) {
++                w(out, format_args!("#define FLAP_{name} {}\n", literal(value)));
++            }
++        }
++        if self.options.profiling {
++            out.push_str("#define FLAP_RELOAD_DISPATCH_TABLE() (dispatch = FLAP_EXECUTABLE_DISPATCH_TABLE(ldptr(values - FLAP_SIZEOF_EXECUTION_CONTEXT + FLAP_EXECUTION_CONTEXT_EXECUTABLE)))\n");
++        } else {
++            out.push_str("#define FLAP_RELOAD_DISPATCH_TABLE() ((void)0)\n");
++        }
++    }
++
++    fn require(&self, constant: KnownLayoutConstant, handler: &str) -> Result<(), CompileError> {
++        if self.runtime.get(constant).is_none() {
++            let name = CONSTANTS
++                .iter()
++                .find(|(known, _)| *known == constant)
++                .map_or("?", |(_, name)| name);
++            return Err(error(Some(handler), format!("required runtime constant '{name}' is missing")));
++        }
++        Ok(())
++    }
++
++    fn declare(&mut self, symbol: &str, declaration: String, handler: &str) -> Result<(), CompileError> {
++        match self.declarations.get(symbol) {
++            Some(existing) if *existing != declaration => Err(error(
++                Some(handler),
++                format!("runtime function '{symbol}' is called in two incompatible ways"),
++            )),
++            Some(_) => Ok(()),
++            None => {
++                self.declarations.insert(symbol.to_string(), declaration);
++                self.declaration_order.push(symbol.to_string());
++                Ok(())
++            }
++        }
++    }
++
++    fn handler(&mut self, handler: &low_ir::Handler, function_name: &str) -> Result<String, CompileError> {
++        let mut instructions = handler.instructions.clone();
++        let registers = low_ir::intern_virtual_registers(handler.id, &mut instructions);
++        let mut context = HandlerContext {
++            name: &handler.name,
++            size: handler.size,
++            labels: HashMap::default(),
++        };
++        for instruction in &instructions {
++            if instruction.opcode == Operation::Label
++                && let Some(Operand::Label(label)) = instruction.operands.first()
++            {
++                let index = context.labels.len();
++                context.labels.entry(label.as_str().to_string()).or_insert(index);
++            }
++        }
++
++        let mut body = String::new();
++        w(&mut body, format_args!("/* {} */\nstatic void {function_name}(FLAP_PARAMETERS)\n{{\n", handler.name));
++        if !registers.is_empty() {
++            for chunk in (0..registers.len()).collect::<Vec<_>>().chunks(16) {
++                let names: Vec<_> = chunk.iter().map(|index| format!("r{index} = 0")).collect();
++                w(&mut body, format_args!("    u64 {};\n", names.join(", ")));
++            }
++        }
++        body.push_str("    (void)heap;\n");
++        for instruction in &instructions {
++            self.instruction(&mut body, instruction, &context)?;
++        }
++        body.push_str("    __builtin_unreachable();\n}\n\n");
++        Ok(body)
++    }
++
++    fn instruction(
++        &mut self,
++        out: &mut String,
++        instruction: &Instruction,
++        context: &HandlerContext<'_>,
++    ) -> Result<(), CompileError> {
++        let handler = context.name;
++        let operands = &instruction.operands;
++        let operand = |index: usize| -> Result<&Operand, CompileError> {
++            operands
++                .get(index)
++                .ok_or_else(|| error(Some(handler), format!("{:?} is missing operand {index}", instruction.opcode)))
++        };
++        let read = |index: usize| -> Result<String, CompileError> { read_operand(operand(index)?, handler) };
++        let address = |index: usize| -> Result<String, CompileError> {
++            match operand(index)? {
++                Operand::Address(address) => address_expression(address, handler),
++                other => Err(error(Some(handler), format!("expected a memory operand, found {other:?}"))),
++            }
++        };
++        let assign = |index: usize, value: &str| -> Result<String, CompileError> {
++            assign_operand(operand(index)?, value, handler)
++        };
++        let immediate = |index: usize| -> Result<i64, CompileError> {
++            match operand(index)? {
++                Operand::Immediate(value) | Operand::ValueConstant(value) => Ok(*value),
++                other => Err(error(Some(handler), format!("expected an immediate, found {other:?}"))),
++            }
++        };
++        let label = |index: usize| -> Result<String, CompileError> {
++            match operand(index)? {
++                Operand::Label(label) => context
++                    .labels
++                    .get(label.as_str())
++                    .map(|index| format!("L{index}"))
++                    .ok_or_else(|| error(Some(handler), format!("label '{label}' is never defined"))),
++                other => Err(error(Some(handler), format!("expected a label, found {other:?}"))),
++            }
++        };
++        let line = |out: &mut String, text: String| {
++            out.push_str("    ");
++            out.push_str(&text);
++            out.push('\n');
++        };
++        let assertions = self.options.enable_assertions;
++
++        match instruction.opcode {
++            Operation::Cold => {}
++            Operation::Label => {
++                let name = label(0)?;
++                line(out, format!("{name}:;"));
++            }
++            Operation::Control(control) => match control {
++                ControlOperation::JumpLabel => line(out, format!("goto {};", label(0)?)),
++                ControlOperation::Exit => line(out, "return;".to_string()),
++                ControlOperation::DispatchNext => {
++                    let size = context
++                        .size
++                        .ok_or_else(|| error(Some(handler), "variable-length handler must use variable dispatch"))?;
++                    line(out, format!("pc += {size}u;"));
++                    line(out, "FLAP_DISPATCH();".to_string());
++                }
++                ControlOperation::Dispatch => line(out, "FLAP_DISPATCH();".to_string()),
++                ControlOperation::DispatchVariable => {
++                    line(out, format!("pc += (u32)({});", read(0)?));
++                    line(out, "FLAP_DISPATCH();".to_string());
++                }
++                ControlOperation::GotoHandler => {
++                    line(out, format!("pc = (u32)({});", read(0)?));
++                    line(out, "FLAP_DISPATCH();".to_string());
++                }
++                ControlOperation::JumpBytecode => {
++                    line(out, format!("pc = (u32)ld32(pb + pc + {});", literal(immediate(0)?)));
++                    line(out, "FLAP_DISPATCH();".to_string());
++                }
++                ControlOperation::DispatchSecondary => {
++                    return Err(error(Some(handler), "the C backend does not support secondary dispatch"));
++                }
++            },
++            Operation::Branch(branch) => {
++                let condition = branch_condition(branch, operands, handler)?;
++                let target = label(operands.len() - 1)?;
++                line(out, format!("if ({condition}) goto {target};"));
++            }
++            Operation::AssertBranch(branch) => {
++                if assertions {
++                    let condition = branch_condition(branch, operands, handler)?;
++                    line(out, format!("if ({condition}) __builtin_trap();"));
++                }
++            }
++            Operation::AssertFailure => {
++                if assertions {
++                    line(out, "__builtin_trap();".to_string());
++                }
++            }
++            Operation::AssertNonzero => {
++                if assertions {
++                    line(out, format!("if (({}) == 0) __builtin_trap();", read(0)?));
++                }
++            }
++            Operation::Call(call) => self.call(out, call, operands, context)?,
++            Operation::LoadVm => line(out, assign(0, "(u64)vm")?),
++            Operation::LoadProgramCounter => line(out, assign(0, "(u64)pc")?),
++            Operation::StoreOperand => {
++                line(
++                    out,
++                    format!(
++                        "st64(values + ld32(pb + pc + {}) * 8, {});",
++                        literal(immediate(0)?),
++                        read(1)?
++                    ),
++                );
++            }
++            Operation::LoadLabel => {
++                line(out, assign(0, &format!("ld32(pb + pc + {})", literal(immediate(1)?)))?);
++            }
++            Operation::Memory(memory) => match memory {
++                MemoryOperation::Load { width, signed } => {
++                    let load = load_expression(width, signed, &address(1)?, handler)?;
++                    line(out, assign(0, &load)?);
++                }
++                MemoryOperation::Store(width) => {
++                    line(out, store_statement(width, &address(0)?, &read(1)?, handler)?);
++                }
++                MemoryOperation::LoadPair(width) => {
++                    let width = MemoryWidth::from(width);
++                    let first = load_expression(width, false, &address(2)?, handler)?;
++                    let second = load_expression(width, false, &address(3)?, handler)?;
++                    line(
++                        out,
++                        format!(
++                            "{{ u64 first = {first}; u64 second = {second}; {} {} }}",
++                            assign(0, "first")?,
++                            assign(1, "second")?
++                        ),
++                    );
++                }
++                MemoryOperation::StorePair(width) => {
++                    let width = MemoryWidth::from(width);
++                    line(out, store_statement(width, &address(0)?, &read(2)?, handler)?);
++                    line(out, store_statement(width, &address(1)?, &read(3)?, handler)?);
++                }
++                _ => return Err(error(Some(handler), format!("{memory:?} must be lowered before emission"))),
++            },
++            Operation::StoreExecutionContext => {
++                line(
++                    out,
++                    format!("st64({}, values - FLAP_SIZEOF_EXECUTION_CONTEXT);", address(0)?),
++                );
++            }
++            Operation::Store64IndexedOffset => {
++                line(
++                    out,
++                    format!(
++                        "st64({} + {} * {} + {}, {});",
++                        read(0)?,
++                        read(1)?,
++                        literal(immediate(2)?),
++                        literal(immediate(3)?),
++                        read(4)?
++                    ),
++                );
++            }
++            Operation::StorePairIndexed(width) => {
++                if width != PairWidth::DoubleWord {
++                    return Err(error(Some(handler), "indexed pair store must use double-word values"));
++                }
++                let base = format!("{} + {} * {}", read(0)?, read(1)?, literal(immediate(2)?));
++                line(out, format!("st64({base}, {});", read(3)?));
++                line(out, format!("st64({base} + 8, {});", read(4)?));
++            }
++            Operation::Increment32Memory => {
++                let address = address(0)?;
++                line(out, format!("st32({address}, ld32({address}) + 1);"));
++            }
++            Operation::MemoryUpdate { operation, width } => {
++                let address = address(0)?;
++                let current = load_expression(width, false, &address, handler)?;
++                let operator = binary_operator(operation);
++                let value = format!("{current} {operator} ({})", read(1)?);
++                line(out, store_statement(width, &address, &value, handler)?);
++            }
++            Operation::LoadEffectiveAddress => {
++                let value = match operand(1)? {
++                    Operand::Address(address) => address_expression(address, handler)?,
++                    other => read_operand(other, handler)?,
++                };
++                line(out, assign(0, &value)?);
++            }
++            Operation::Move(IntegerWidth::U64) | Operation::FloatMove => line(out, assign(0, &read(1)?)?),
++            Operation::Move(IntegerWidth::U32) => line(out, assign(0, &format!("(u32)({})", read(1)?))?),
++            Operation::Move(width) => {
++                return Err(error(Some(handler), format!("{width:?} moves are unsupported")));
++            }
++            Operation::IntegerBinary { operation, width } => {
++                line(out, integer_binary(operation, width, operands, handler)?);
++            }
++            Operation::Or32Branch(condition) => {
++                line(out, assign(0, &format!("(u32)(({}) | ({}))", read(1)?, read(2)?))?);
++                let comparison = condition.select("<", ">=");
++                line(out, format!("if ((i32)({}) {comparison} 0) goto {};", read(0)?, label(3)?));
++            }
++            Operation::Negate => line(out, assign(0, &format!("(u64)0 - ({})", read(0)?))?),
++            Operation::Not(IntegerWidth::U64) => line(out, assign(0, &format!("~({})", read(0)?))?),
++            Operation::Not(IntegerWidth::U32) => line(out, assign(0, &format!("(u32)~({})", read(0)?))?),
++            Operation::Not(width) => return Err(error(Some(handler), format!("{width:?} not is unsupported"))),
++            Operation::Modulo(width) => {
++                let function = match width {
++                    IntegerWidth::U32 => "flap_remainder32",
++                    IntegerWidth::U64 => "flap_remainder64",
++                    _ => return Err(error(Some(handler), "remainder requires a 32-bit or 64-bit width")),
++                };
++                line(out, assign(0, &format!("{function}({}, {})", read(1)?, read(2)?))?);
++            }
++            Operation::Overflow(overflow) => self.overflow(out, overflow, operands, context)?,
++            Operation::ExtractTag => line(out, assign(0, &format!("({}) >> 48", read(1)?))?),
++            Operation::UnboxInt32 => line(out, assign(0, &format!("(u64)(i64)(i32)({})", read(1)?))?),
++            Operation::UnboxObject => {
++                self.require(KnownLayoutConstant::HeapRegionOffsetMask, handler)?;
++                line(
++                    out,
++                    assign(0, &format!("(({}) & FLAP_HEAP_REGION_OFFSET_MASK) + (u64)heap", read(1)?))?,
++                );
++            }
++            Operation::DecompressCellPointer { nullable } => {
++                let source = read(1)?;
++                let pointer = format!("(u64)heap + (({source}) << FLAP_COMPRESSED_CELL_POINTER_SHIFT)");
++                let value = if nullable {
++                    format!("((u32)({source}) != 0) ? ({pointer}) : ({source})")
++                } else {
++                    pointer
++                };
++                line(out, assign(0, &value)?);
++            }
++            Operation::BoxInt32 { clean } => {
++                self.require(KnownLayoutConstant::Int32TagShifted, handler)?;
++                let source = read(1)?;
++                let value = if clean {
++                    format!("({source}) | FLAP_INT32_TAG_SHIFTED")
++                } else {
++                    format!("(u64)(u32)({source}) | FLAP_INT32_TAG_SHIFTED")
++                };
++                line(out, assign(0, &value)?);
++            }
++            Operation::ToggleBit | Operation::ClearBit => {
++                let bit = immediate(1)?;
++                if !(0..64).contains(&bit) {
++                    return Err(error(Some(handler), "bit update index must be between 0 and 63"));
++                }
++                let value = if instruction.opcode == Operation::ToggleBit {
++                    format!("({}) ^ (UINT64_C(1) << {bit})", read(0)?)
++                } else {
++                    format!("({}) & ~(UINT64_C(1) << {bit})", read(0)?)
++                };
++                line(out, assign(0, &value)?);
++            }
++            Operation::Float(float) => self.float(out, float, operands, context)?,
++            Operation::Numeric(_) | Operation::Vector(_) | Operation::Atomic(_) => {
++                return Err(error(
++                    Some(handler),
++                    format!("the C backend does not support {:?}", instruction.opcode),
++                ));
++            }
++        }
++        Ok(())
++    }
++
++    fn overflow(
++        &mut self,
++        out: &mut String,
++        operation: OverflowOperation,
++        operands: &[Operand],
++        context: &HandlerContext<'_>,
++    ) -> Result<(), CompileError> {
++        let handler = context.name;
++        let read32 = |operand: &Operand| -> Result<String, CompileError> {
++            match operand {
++                Operand::Address(address) => Ok(format!("ld32({})", address_expression(address, handler)?)),
++                operand => read_operand(operand, handler),
++            }
++        };
++        let target = |operand: &Operand| -> Result<String, CompileError> {
++            match operand {
++                Operand::Label(label) => context
++                    .labels
++                    .get(label.as_str())
++                    .map(|index| format!("L{index}"))
++                    .ok_or_else(|| error(Some(handler), format!("label '{label}' is never defined"))),
++                other => Err(error(Some(handler), format!("expected a label, found {other:?}"))),
++            }
++        };
++        let checked = |builtin: &str, destination: &Operand, lhs: String, rhs: String, label: String| {
++            Ok::<_, CompileError>(format!(
++                "    {{ i32 result; int overflowed = {builtin}((i32)({lhs}), (i32)({rhs}), &result); {} if (overflowed) goto {label}; }}\n",
++                assign_operand(destination, "(u32)result", handler)?
++            ))
++        };
++        match (operation, operands) {
++            (OverflowOperation::AddWithOverflow, [destination, rhs, label]) => out.push_str(&checked(
++                "__builtin_add_overflow",
++                destination,
++                read_operand(destination, handler)?,
++                read32(rhs)?,
++                target(label)?,
++            )?),
++            (OverflowOperation::SubtractWithOverflow, [destination, rhs, label]) => out.push_str(&checked(
++                "__builtin_sub_overflow",
++                destination,
++                read_operand(destination, handler)?,
++                read32(rhs)?,
++                target(label)?,
++            )?),
++            (OverflowOperation::MultiplyWithOverflow, [destination, rhs, label]) => out.push_str(&checked(
++                "__builtin_mul_overflow",
++                destination,
++                read_operand(destination, handler)?,
++                read32(rhs)?,
++                target(label)?,
++            )?),
++            (OverflowOperation::MultiplyCopy, [destination, lhs, rhs, label]) => out.push_str(&checked(
++                "__builtin_mul_overflow",
++                destination,
++                read_operand(lhs, handler)?,
++                read32(rhs)?,
++                target(label)?,
++            )?),
++            (OverflowOperation::Increment, [destination, label]) => out.push_str(&checked(
++                "__builtin_add_overflow",
++                destination,
++                read_operand(destination, handler)?,
++                "1".to_string(),
++                target(label)?,
++            )?),
++            (OverflowOperation::Decrement, [destination, label]) => out.push_str(&checked(
++                "__builtin_sub_overflow",
++                destination,
++                read_operand(destination, handler)?,
++                "1".to_string(),
++                target(label)?,
++            )?),
++            (OverflowOperation::Negate, [destination, label]) => out.push_str(&checked(
++                "__builtin_sub_overflow",
++                destination,
++                "0".to_string(),
++                read_operand(destination, handler)?,
++                target(label)?,
++            )?),
++            (OverflowOperation::RecoverAddLhs, [destination, rhs]) => {
++                let value = format!("(u32)(({}) - ({}))", read_operand(destination, handler)?, read32(rhs)?);
++                w(out, format_args!("    {}\n", assign_operand(destination, &value, handler)?));
++            }
++            (OverflowOperation::RecoverSubtractLhs, [destination, rhs]) => {
++                let value = format!("(u32)(({}) + ({}))", read_operand(destination, handler)?, read32(rhs)?);
++                w(out, format_args!("    {}\n", assign_operand(destination, &value, handler)?));
++            }
++            _ => {
++                return Err(error(
++                    Some(handler),
++                    format!("{operation:?} has unexpected operands {operands:?}"),
++                ));
++            }
++        }
++        Ok(())
++    }
++
++    fn float(
++        &mut self,
++        out: &mut String,
++        operation: FloatingPointOperation,
++        operands: &[Operand],
++        context: &HandlerContext<'_>,
++    ) -> Result<(), CompileError> {
++        let handler = context.name;
++        let read = |index: usize| -> Result<String, CompileError> {
++            read_operand(
++                operands
++                    .get(index)
++                    .ok_or_else(|| error(Some(handler), format!("{operation:?} is missing operand {index}")))?,
++                handler,
++            )
++        };
++        let assign = |index: usize, value: &str| -> Result<String, CompileError> {
++            assign_operand(
++                operands
++                    .get(index)
++                    .ok_or_else(|| error(Some(handler), format!("{operation:?} is missing operand {index}")))?,
++                value,
++                handler,
++            )
++        };
++        let label = |index: usize| -> Result<String, CompileError> {
++            match operands.get(index) {
++                Some(Operand::Label(label)) => context
++                    .labels
++                    .get(label.as_str())
++                    .map(|index| format!("L{index}"))
++                    .ok_or_else(|| error(Some(handler), format!("label '{label}' is never defined"))),
++                other => Err(error(Some(handler), format!("expected a label, found {other:?}"))),
++            }
++        };
++        let statement = match operation {
++            FloatingPointOperation::Binary(binary) => {
++                let operator = match binary {
++                    FloatBinaryOperation::Add => "+",
++                    FloatBinaryOperation::Subtract => "-",
++                    FloatBinaryOperation::Multiply => "*",
++                    FloatBinaryOperation::Divide => "/",
++                };
++                assign(0, &format!("f64_bits(f64({}) {operator} f64({}))", read(0)?, read(1)?))?
++            }
++            FloatingPointOperation::Unary(unary) => {
++                let builtin = match unary {
++                    FloatUnaryOperation::Floor => "__builtin_floor",
++                    FloatUnaryOperation::Ceil => "__builtin_ceil",
++                    FloatUnaryOperation::SquareRoot => "__builtin_sqrt",
++                };
++                assign(0, &format!("f64_bits({builtin}(f64({})))", read(1)?))?
++            }
++            FloatingPointOperation::CanonicalizeNan => {
++                self.require(KnownLayoutConstant::CanonicalNanBits, handler)?;
++                let source = read(1)?;
++                assign(
++                    0,
++                    &format!("(f64({source}) != f64({source})) ? FLAP_CANON_NAN_BITS : ({source})"),
++                )?
++            }
++            FloatingPointOperation::Convert(conversion) => match conversion {
++                FloatConversion::Int32ToFloat64 => assign(0, &format!("f64_bits((double)(i32)({}))", read(1)?))?,
++                FloatConversion::Int64ToFloat64 => assign(0, &format!("f64_bits((double)(i64)({}))", read(1)?))?,
++                FloatConversion::Uint32ToFloat64 => assign(0, &format!("f64_bits((double)(u32)({}))", read(1)?))?,
++                FloatConversion::Float32ToFloat64 => assign(0, &format!("f64_bits((double)f32({}))", read(1)?))?,
++                FloatConversion::Float64ToFloat32 => assign(0, &format!("f32_bits((float)f64({}))", read(1)?))?,
++                FloatConversion::Float64ToInt32 | FloatConversion::Float64ToInt64 | FloatConversion::JavaScriptToInt32 => {
++                    let function = match conversion {
++                        FloatConversion::Float64ToInt32 => "flap_f64_to_i32",
++                        FloatConversion::Float64ToInt64 => "flap_f64_to_i64",
++                        _ => "flap_js_to_i32",
++                    };
++                    format!(
++                        "{{ u64 result; int exact = {function}({}, &result); {} if (!exact) goto {}; }}",
++                        read(1)?,
++                        assign(0, "result")?,
++                        label(2)?
++                    )
++                }
++            },
++        };
++        w(out, format_args!("    {statement}\n"));
++        Ok(())
++    }
++
++    fn call(
++        &mut self,
++        out: &mut String,
++        call: CallOperation,
++        operands: &[Operand],
++        context: &HandlerContext<'_>,
++    ) -> Result<(), CompileError> {
++        let handler = context.name;
++        let read = |index: usize| -> Result<String, CompileError> {
++            read_operand(
++                operands
++                    .get(index)
++                    .ok_or_else(|| error(Some(handler), format!("{call:?} is missing operand {index}")))?,
++                handler,
++            )
++        };
++        let assign = |index: usize, value: &str| -> Result<String, CompileError> {
++            assign_operand(
++                operands
++                    .get(index)
++                    .ok_or_else(|| error(Some(handler), format!("{call:?} is missing operand {index}")))?,
++                value,
++                handler,
++            )
++        };
++        let symbol = || -> Result<String, CompileError> {
++            match operands.first() {
++                Some(Operand::Relocation(relocation)) => Ok(relocation.as_str().to_string()),
++                other => Err(error(Some(handler), format!("expected a function symbol, found {other:?}"))),
++            }
++        };
++        match call {
++            CallOperation::Helper => {
++                let symbol = symbol()?;
++                self.declare(&symbol, format!("u64 {symbol}(u64);"), handler)?;
++                w(out, format_args!("    {}\n", assign(2, &format!("{symbol}({})", read(1)?))?));
++            }
++            CallOperation::HelperWithTwoArguments => {
++                let symbol = symbol()?;
++                self.declare(&symbol, format!("u64 {symbol}(u64, u64);"), handler)?;
++                w(out, format_args!(
++                    "    {}\n",
++                    assign(3, &format!("{symbol}({}, {})", read(1)?, read(2)?))?
++                ));
++            }
++            CallOperation::RawNative => {
++                w(out, format_args!(
++                    "    {{ flap_raw_native_result raw = flap_call_raw_native({}, vm); {} {} }}\n",
++                    read(0)?,
++                    assign(1, "raw.payload")?,
++                    assign(2, "(u64)raw.variant")?
++                ));
++            }
++            CallOperation::JumpSlowPath => {
++                let symbol = symbol()?;
++                self.declare(&symbol, format!("i64 {symbol}(const void*, u32, u64, u64, u32, u32);"), handler)?;
++                out.push_str("    FLAP_STORE_PC();\n");
++                w(out, format_args!(
++                    "    FLAP_FINISH({symbol}((const void*)vm, pc, {}, {}, (u32)({}), (u32)({})));\n",
++                    read(1)?,
++                    read(2)?,
++                    read(3)?,
++                    read(4)?
++                ));
++            }
++            CallOperation::BinarySlowPath => {
++                let symbol = symbol()?;
++                self.declare(&symbol, format!("i64 {symbol}(const void*, u32, u64*, u64, u64);"), handler)?;
++                let helper = self.binary_slow_path_helper(&symbol);
++                w(out, format_args!(
++                    "    FLAP_FINISH({helper}(pc, values, vm, {}, {}, {}));\n",
++                    read(1)?,
++                    read(2)?,
++                    read(3)?
++                ));
++            }
++            CallOperation::SlowPath => {
++                let symbol = symbol()?;
++                let helper = self.values_call_helper(&symbol, handler, ValuesCall::SlowPath)?;
++                w(out, format_args!("    FLAP_FINISH({helper}(pb, pc, values, vm));\n"));
++            }
++            CallOperation::Interpreter => {
++                let symbol = symbol()?;
++                let helper = self.values_call_helper(&symbol, handler, ValuesCall::Try)?;
++                w(out, format_args!("    {}\n", assign(1, &format!("(u64){helper}(pb, pc, values, vm)"))?));
++            }
++        }
++        Ok(())
++    }
++
++    fn next_helper_name(&mut self, kind: &str) -> String {
++        self.helper_count += 1;
++        format!("flap_{kind}_{}", self.helper_count)
++    }
++
++    fn binary_slow_path_helper(&mut self, symbol: &str) -> String {
++        let name = format!("flap_binary_slow_path_{symbol}");
++        if self.helpers.contains(&format!("static FLAP_NOINLINE i64 {name}(")) {
++            return name;
++        }
++        w(&mut self.helpers, format_args!(
++            "static FLAP_NOINLINE i64 {name}(u32 pc, uptr values, uptr vm, u64 destination, u64 lhs, u64 rhs)\n{{\n    FLAP_STORE_PC();\n    u64 result = 0;\n    i64 control = {symbol}((const void*)vm, pc, &result, lhs, rhs);\n    if (control >= 0 && FLAP_CONTINUES(control))\n        st64(values + (u64)(u32)destination * 8, result);\n    return control;\n}}\n\n"
++        ));
++        name
++    }
++
++    /// A call that hands the runtime the instruction's operand values, as
++    /// described by the handler's slow-path layout, and writes its outputs back.
++    fn values_call_helper(&mut self, symbol: &str, handler: &str, kind: ValuesCall) -> Result<String, CompileError> {
++        let layout = self.runtime.slow_paths.get(handler).cloned();
++        let name = self.next_helper_name(match kind {
++            ValuesCall::SlowPath => "slow_path",
++            ValuesCall::Try => "try",
++        });
++        let mut body = String::new();
++        w(&mut body, format_args!(
++            "/* {handler}: {symbol} */\nstatic FLAP_NOINLINE i64 {name}(uptr pb, u32 pc, uptr values, uptr vm)\n{{\n"
++        ));
++        if kind == ValuesCall::SlowPath {
++            body.push_str("    FLAP_STORE_PC();\n");
++        }
++        body.push_str("    u64 instruction = (u64)pb + pc;\n    (void)values;\n");
++
++        let Some(layout) = layout else {
++            self.declare(symbol, format!("i64 {symbol}(const void*, u32, const void*);"), handler)?;
++            w(&mut body, format_args!(
++                "    return {symbol}((const void*)vm, pc, (const void*)(uptr)instruction);\n}}\n\n"
++            ));
++            self.helpers.push_str(&body);
++            return Ok(name);
++        };
++
++        let abi = match kind {
++            ValuesCall::SlowPath => layout.abi(self.options.target.object_format == ObjectFormat::Coff),
++            ValuesCall::Try => SlowPathAbi::Record,
++        };
++        let load_value = |field_offset: usize, optional: bool, target: &str| {
++            let index = format!("ld32(instruction + {field_offset})");
++            if optional {
++                format!(
++                    "    {{ u64 index = {index}; {target} = (u32)index == 0xffffffffu ? FLAP_EMPTY_VALUE : ld64(values + index * 8); }}\n"
++                )
++            } else {
++                format!("    {target} = ld64(values + {index} * 8);\n")
++            }
++        };
++        let store_value = |field_offset: usize, optional: bool, source: &str| {
++            let index = format!("ld32(instruction + {field_offset})");
++            if optional {
++                format!(
++                    "{{ u64 index = {index}; if ((u32)index != 0xffffffffu) st64(values + index * 8, {source}); }}"
++                )
++            } else {
++                format!("st64(values + {index} * 8, {source});")
++            }
++        };
++
++        if abi == SlowPathAbi::Scalar {
++            let inputs: Vec<_> = layout.fields.iter().filter(|field| field.mode == ParameterMode::In).collect();
++            let parameters: String = inputs.iter().map(|_| ", u64").collect();
++            self.declare(
++                symbol,
++                format!("flap_scalar_result {symbol}(const void*, u32, const void*{parameters});"),
++                handler,
++            )?;
++            let mut arguments = String::new();
++            for (index, field) in inputs.iter().enumerate() {
++                w(&mut body, format_args!("    u64 input{index};\n"));
++                body.push_str(&load_value(field.instruction_offset, field.optional, &format!("input{index}")));
++                w(&mut arguments, format_args!(", input{index}"));
++            }
++            w(&mut body, format_args!(
++                "    flap_scalar_result result = {symbol}((const void*)vm, pc, (const void*)(uptr)instruction{arguments});\n"
++            ));
++            if let Some(output) = layout.fields.iter().find(|field| field.mode == ParameterMode::Out) {
++                w(&mut body, format_args!(
++                    "    if (result.control >= 0 && FLAP_CONTINUES(result.control))\n        {}\n",
++                    store_value(output.instruction_offset, false, "result.value")
++                ));
++            }
++            body.push_str("    return result.control;\n}\n\n");
++            self.helpers.push_str(&body);
++            return Ok(name);
++        }
++
++        let field_count = layout.fields.len();
++        if let Some(array) = &layout.array {
++            self.require(KnownLayoutConstant::VmStackInfoBase, handler)?;
++            self.require(KnownLayoutConstant::VmStackSpaceLimit, handler)?;
++            w(&mut body, format_args!(
++                "    u64 count = ld32(instruction + {});\n    uptr size = (((uptr)({field_count} + count) * 8) + 15) & ~(uptr)15;\n    if ((uptr)flap_frame() - size < ldptr(vm + FLAP_VM_STACK_INFO_BASE) + (uptr)FLAP_VM_STACK_SPACE_LIMIT)\n",
++                array.count_offset
++            ));
++            match kind {
++                ValuesCall::SlowPath => w(&mut body, format_args!(
++                    "        return {}((const void*)vm, pc);\n",
++                    crate::runtime_interface::STACK_OVERFLOW_SLOW_PATH
++                )),
++                ValuesCall::Try => body.push_str("        return 1;\n"),
++            }
++            w(&mut body, format_args!("    u64 record[{field_count} + count + 1];\n"));
++        } else {
++            w(&mut body, format_args!("    u64 record[{}] = {{ 0 }};\n", field_count + 1));
++        }
++
++        let mut scalar_arguments = String::new();
++        let mut scalar_parameters = String::new();
++        for (index, field) in layout.fields.iter().enumerate() {
++            if field.mode == ParameterMode::Out {
++                continue;
++            }
++            let slot = field.value_offset / 8;
++            if abi == SlowPathAbi::Mixed {
++                w(&mut body, format_args!("    u64 input{index};\n"));
++                body.push_str(&load_value(field.instruction_offset, field.optional, &format!("input{index}")));
++                w(&mut body, format_args!("    record[{slot}] = input{index};\n"));
++                w(&mut scalar_arguments, format_args!(", input{index}"));
++                scalar_parameters.push_str(", u64");
++            } else {
++                body.push_str(&load_value(field.instruction_offset, field.optional, &format!("record[{slot}]")));
++            }
++        }
++        if let Some(array) = &layout.array {
++            let element = format!("ld32(instruction + {} + index * 4)", array.instruction_offset);
++            if array.optional {
++                w(&mut body, format_args!(
++                    "    for (u64 index = 0; index < count; ++index) {{ u64 operand = {element}; record[{field_count} + index] = (u32)operand == 0xffffffffu ? FLAP_EMPTY_VALUE : ld64(values + operand * 8); }}\n"
++                ));
++            } else {
++                w(&mut body, format_args!(
++                    "    for (u64 index = 0; index < count; ++index) record[{field_count} + index] = ld64(values + {element} * 8);\n"
++                ));
++            }
++        }
++        self.declare(
++            symbol,
++            format!("i64 {symbol}(const void*, u32, const void*, u64*{scalar_parameters});"),
++            handler,
++        )?;
++        w(&mut body, format_args!(
++            "    i64 control = {symbol}((const void*)vm, pc, (const void*)(uptr)instruction, record{scalar_arguments});\n"
++        ));
++
++        let writes = |modes: &[ParameterMode]| -> String {
++            let mut out = String::new();
++            for field in layout.fields.iter().filter(|field| modes.contains(&field.mode)) {
++                w(&mut out, format_args!(
++                    "        {}\n",
++                    store_value(field.instruction_offset, field.optional, &format!("record[{}]", field.value_offset / 8))
++                ));
++            }
++            out
++        };
++        let has_outputs = layout.fields.iter().any(|field| field.mode != ParameterMode::In);
++        let has_in_outs = layout.fields.iter().any(|field| field.mode == ParameterMode::InOut);
++        let same_frame = "ldptr(vm + FLAP_VM_RUNNING_EXECUTION_CONTEXT) + FLAP_SIZEOF_EXECUTION_CONTEXT == values";
++        if has_outputs {
++            match kind {
++                // A slow path that continues runs in the original frame; one
++                // that throws only keeps its input/output operands, and only
++                // while their frame lives.
++                ValuesCall::SlowPath => {
++                    w(&mut body, format_args!(
++                        "    if (control >= 0 && FLAP_CONTINUES(control)) {{\n{}    }}",
++                        writes(&[ParameterMode::Out, ParameterMode::InOut])
++                    ));
++                    if has_in_outs {
++                        w(&mut body, format_args!(
++                            " else if ({same_frame}) {{\n{}    }}",
++                            writes(&[ParameterMode::InOut])
++                        ));
++                    }
++                    body.push('\n');
++                }
++                ValuesCall::Try => {
++                    w(&mut body, format_args!(
++                        "    if ({same_frame}) {{\n        if (control == 0) {{\n{}        }} else {{\n{}        }}\n    }}\n",
++                        writes(&[ParameterMode::Out, ParameterMode::InOut]),
++                        writes(&[ParameterMode::InOut])
++                    ));
++                }
++            }
++        }
++        body.push_str("    return control;\n}\n\n");
++        self.helpers.push_str(&body);
++        Ok(name)
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum ValuesCall {
++    SlowPath,
++    Try,
++}
++
++fn interpreter_register(register: InterpreterRegister, handler: &str) -> Result<&'static str, CompileError> {
++    Ok(match register {
++        InterpreterRegister::ProgramCounter => "(u64)pc",
++        InterpreterRegister::ProgramBase => "(u64)pb",
++        InterpreterRegister::Values => "(u64)values",
++        InterpreterRegister::ExecutionContext => "((u64)values - FLAP_SIZEOF_EXECUTION_CONTEXT)",
++        InterpreterRegister::DispatchTable => "(u64)dispatch",
++        InterpreterRegister::HeapRegionBase => "(u64)heap",
++        InterpreterRegister::FramePointer | InterpreterRegister::StackPointer => "flap_frame()",
++        other => {
++            return Err(error(
++                Some(handler),
++                format!("the C backend has no interpreter register ${}", other.as_str()),
++            ));
++        }
++    })
++}
++
++fn read_operand(operand: &Operand, handler: &str) -> Result<String, CompileError> {
++    Ok(match operand {
++        Operand::VirtualRegister(register) => {
++            let id = register
++                .id()
++                .ok_or_else(|| error(Some(handler), format!("virtual register {register} was not interned")))?;
++            format!("r{}", id.index())
++        }
++        Operand::InterpreterRegister(register) => interpreter_register(*register, handler)?.to_string(),
++        Operand::Immediate(value) | Operand::ValueConstant(value) => literal(*value),
++        other => return Err(error(Some(handler), format!("cannot read {other:?} as a value"))),
++    })
++}
++
++fn assign_operand(operand: &Operand, value: &str, handler: &str) -> Result<String, CompileError> {
++    Ok(match operand {
++        Operand::VirtualRegister(_) => format!("{} = {value};", read_operand(operand, handler)?),
++        Operand::InterpreterRegister(register) => match register {
++            InterpreterRegister::ProgramCounter => format!("pc = (u32)({value});"),
++            InterpreterRegister::ProgramBase => format!("pb = (uptr)({value});"),
++            InterpreterRegister::Values => format!("values = (uptr)({value});"),
++            InterpreterRegister::ExecutionContext => {
++                format!("values = (uptr)(({value}) + FLAP_SIZEOF_EXECUTION_CONTEXT);")
++            }
++            InterpreterRegister::DispatchTable => format!("dispatch = (uptr)({value});"),
++            other => {
++                return Err(error(
++                    Some(handler),
++                    format!("the C backend cannot write the interpreter register ${}", other.as_str()),
++                ));
++            }
++        },
++        other => return Err(error(Some(handler), format!("cannot write {other:?}"))),
++    })
++}
++
++fn address_register(register: &AddressRegister, handler: &str) -> Result<String, CompileError> {
++    match register {
++        AddressRegister::Virtual(register) => read_operand(&Operand::VirtualRegister(register.clone()), handler),
++        AddressRegister::Interpreter(register) => Ok(interpreter_register(*register, handler)?.to_string()),
++        AddressRegister::Physical(register) => Err(error(
++            Some(handler),
++            format!("the C backend cannot address through physical register {}", register.as_str()),
++        )),
++    }
++}
++
++fn address_expression(address: &MemoryAddress, handler: &str) -> Result<String, CompileError> {
++    let mut expression = format!("({}", address_register(&address.base, handler)?);
++    if let Some(index) = &address.index {
++        let scale = match &address.scale {
++            None => 1,
++            Some(AddressScale::Immediate(scale)) => *scale,
++            Some(AddressScale::LayoutConstant(_)) => {
++                return Err(error(Some(handler), "unresolved address scale layout constant"));
++            }
++        };
++        w(&mut expression, format_args!(" + {} * {}", address_register(index, handler)?, literal(scale)));
++    }
++    match &address.displacement {
++        None => {}
++        Some(AddressDisplacement::Immediate(displacement)) => {
++            w(&mut expression, format_args!(" + {}", literal(*displacement)));
++        }
++        Some(AddressDisplacement::LayoutConstant(_) | AddressDisplacement::BytecodeField(_)) => {
++            return Err(error(Some(handler), "unresolved address displacement"));
++        }
++    }
++    expression.push(')');
++    Ok(expression)
++}
++
++fn load_expression(width: MemoryWidth, signed: bool, address: &str, handler: &str) -> Result<String, CompileError> {
++    Ok(match (width, signed) {
++        (MemoryWidth::Byte, false) => format!("ld8({address})"),
++        (MemoryWidth::HalfWord, false) => format!("ld16({address})"),
++        (MemoryWidth::Word | MemoryWidth::Float, false) => format!("ld32({address})"),
++        (MemoryWidth::DoubleWord | MemoryWidth::Double, false) => format!("ld64({address})"),
++        // Sign-extending loads fill a 32-bit register, as x86-64's movsx does.
++        (MemoryWidth::Byte, true) => format!("(u64)(u32)(i32)(i8)ld8({address})"),
++        (MemoryWidth::HalfWord, true) => format!("(u64)(u32)(i32)(i16)ld16({address})"),
++        _ => return Err(error(Some(handler), format!("unsupported {width:?} load"))),
++    })
++}
++
++fn store_statement(width: MemoryWidth, address: &str, value: &str, handler: &str) -> Result<String, CompileError> {
++    Ok(match width {
++        MemoryWidth::Byte => format!("st8({address}, {value});"),
++        MemoryWidth::HalfWord => format!("st16({address}, {value});"),
++        MemoryWidth::Word | MemoryWidth::Float => format!("st32({address}, {value});"),
++        MemoryWidth::DoubleWord | MemoryWidth::Double => format!("st64({address}, {value});"),
++        MemoryWidth::Vector => return Err(error(Some(handler), "the C backend does not support vector stores")),
++    })
++}
++
++fn binary_operator(operation: BinaryOperation) -> &'static str {
++    match operation {
++        BinaryOperation::Add => "+",
++        BinaryOperation::Subtract => "-",
++        BinaryOperation::Multiply => "*",
++        BinaryOperation::And => "&",
++        BinaryOperation::Or => "|",
++        BinaryOperation::Xor => "^",
++    }
++}
++
++fn integer_binary(
++    operation: IntegerBinaryOperation,
++    width: IntegerWidth,
++    operands: &[Operand],
++    handler: &str,
++) -> Result<String, CompileError> {
++    let read = |operand: &Operand| read_operand(operand, handler);
++    match (operation, width, operands) {
++        (IntegerBinaryOperation::Binary(BinaryOperation::Multiply), IntegerWidth::U64, [destination, lhs, rhs]) => {
++            assign_operand(destination, &format!("({}) * ({})", read(lhs)?, read(rhs)?), handler)
++        }
++        (IntegerBinaryOperation::Binary(operation), IntegerWidth::U64, [destination, rhs]) => assign_operand(
++            destination,
++            &format!("({}) {} ({})", read(destination)?, binary_operator(operation), read(rhs)?),
++            handler,
++        ),
++        // A 16-bit AND keeps the upper bits of its destination.
++        (IntegerBinaryOperation::Binary(BinaryOperation::And), IntegerWidth::U16, [destination, rhs]) => {
++            let current = read(destination)?;
++            assign_operand(
++                destination,
++                &format!("(({current}) & ~UINT64_C(0xffff)) | (({current}) & ({}) & UINT64_C(0xffff))", read(rhs)?),
++                handler,
++            )
++        }
++        (IntegerBinaryOperation::Binary(operation), IntegerWidth::U32, [destination, lhs, rhs]) => assign_operand(
++            destination,
++            &format!("(u32)(({}) {} ({}))", read(lhs)?, binary_operator(operation), read(rhs)?),
++            handler,
++        ),
++        (IntegerBinaryOperation::Shift(shift), IntegerWidth::U64, [destination, count]) => {
++            let value = read(destination)?;
++            let count = format!("(({}) & 63)", read(count)?);
++            let result = match shift {
++                ShiftOperation::Left => format!("({value}) << {count}"),
++                ShiftOperation::RightLogical => format!("({value}) >> {count}"),
++                ShiftOperation::RightArithmetic => format!("(u64)((i64)({value}) >> {count})"),
++            };
++            assign_operand(destination, &result, handler)
++        }
++        (IntegerBinaryOperation::Shift(shift), IntegerWidth::U32, [destination, lhs, count, ..]) => {
++            let value = read(lhs)?;
++            let count = format!("(({}) & 31)", read(count)?);
++            let result = match shift {
++                ShiftOperation::Left => format!("(u32)((u32)({value}) << {count})"),
++                ShiftOperation::RightLogical => format!("(u32)((u32)({value}) >> {count})"),
++                ShiftOperation::RightArithmetic => format!("(u32)((i32)({value}) >> {count})"),
++            };
++            assign_operand(destination, &result, handler)
++        }
++        _ => Err(error(
++            Some(handler),
++            format!("unsupported integer operation {operation:?} at {width:?} with operands {operands:?}"),
++        )),
++    }
++}
++
++fn branch_condition(branch: BranchOperation, operands: &[Operand], handler: &str) -> Result<String, CompileError> {
++    let read = |index: usize| -> Result<String, CompileError> {
++        read_operand(
++            operands
++                .get(index)
++                .ok_or_else(|| error(Some(handler), format!("{branch:?} is missing operand {index}")))?,
++            handler,
++        )
++    };
++    let address = |index: usize| -> Result<String, CompileError> {
++        match operands.get(index) {
++            Some(Operand::Address(address)) => address_expression(address, handler),
++            other => Err(error(Some(handler), format!("expected a memory operand, found {other:?}"))),
++        }
++    };
++    let immediate = |index: usize| -> Result<i64, CompileError> {
++        match operands.get(index) {
++            Some(Operand::Immediate(value) | Operand::ValueConstant(value)) => Ok(*value),
++            other => Err(error(Some(handler), format!("expected an immediate, found {other:?}"))),
++        }
++    };
++    Ok(match branch {
++        BranchOperation::Equality {
++            width: IntegerWidth::U8,
++            condition,
++        } => format!(
++            "ld8({}) {} {}",
++            address(0)?,
++            condition.select("==", "!="),
++            literal(immediate(1)? & 0xff)
++        ),
++        BranchOperation::Equality { width, condition } => {
++            let ty = unsigned_type(width);
++            format!("({ty})({}) {} ({ty})({})", read(0)?, condition.select("==", "!="), read(1)?)
++        }
++        BranchOperation::Ordered {
++            width,
++            relation: comparison,
++            signedness,
++        } => {
++            let ty = match signedness {
++                IntegerSignedness::Signed => signed_type(width),
++                IntegerSignedness::Unsigned => unsigned_type(width),
++            };
++            format!("({ty})({}) {} ({ty})({})", read(0)?, relation(comparison), read(1)?)
++        }
++        BranchOperation::Float(comparison) => {
++            let (lhs, rhs) = (read(0)?, read(1)?);
++            match comparison {
++                FloatComparison::Unordered => format!("f64({lhs}) != f64({lhs}) || f64({rhs}) != f64({rhs})"),
++                FloatComparison::Equal => format!("f64({lhs}) == f64({rhs})"),
++                FloatComparison::Less => format!("f64({lhs}) < f64({rhs})"),
++                FloatComparison::LessOrEqual => format!("f64({lhs}) <= f64({rhs})"),
++                FloatComparison::Greater => format!("f64({lhs}) > f64({rhs})"),
++                FloatComparison::GreaterOrEqual => format!("f64({lhs}) >= f64({rhs})"),
++            }
++        }
++        BranchOperation::OrderedFloat(comparison) => {
++            let operator = match comparison {
++                OrderedFloatComparison::Equal => "==",
++                OrderedFloatComparison::NotEqual => "!=",
++                OrderedFloatComparison::Less => "<",
++                OrderedFloatComparison::LessOrEqual => "<=",
++                OrderedFloatComparison::Greater => ">",
++                OrderedFloatComparison::GreaterOrEqual => ">=",
++            };
++            format!("f64({}) {operator} f64({})", read(0)?, read(1)?)
++        }
++        BranchOperation::Zero { width, condition } => {
++            format!("({})({}) {} 0", unsigned_type(width), read(0)?, condition.select("==", "!="))
++        }
++        BranchOperation::Sign { width, condition } => {
++            format!("({})({}) {} 0", signed_type(width), read(0)?, condition.select("<", ">="))
++        }
++        BranchOperation::ValueBitsNegative => format!("(i64)({}) < 0", read(0)?),
++        BranchOperation::Bits {
++            width: MemoryWidth::DoubleWord,
++            condition,
++        } => format!("(({}) & ({})) {} 0", read(0)?, read(1)?, condition.select("!=", "==")),
++        BranchOperation::Bits {
++            width: MemoryWidth::Byte,
++            condition,
++        } => format!(
++            "(ld8({}) & {}) {} 0",
++            address(0)?,
++            literal(immediate(1)? & 0xff),
++            condition.select("!=", "==")
++        ),
++        BranchOperation::Bits { width, .. } => {
++            return Err(error(Some(handler), format!("unsupported {width:?} bit-test branch")));
++        }
++        BranchOperation::Bit(condition) => {
++            let bit = immediate(1)?;
++            if !(0..64).contains(&bit) {
++                return Err(error(Some(handler), "bit branch index must be between 0 and 63"));
++            }
++            format!("((({}) >> {bit}) & 1) {} 0", read(0)?, condition.select("!=", "=="))
++        }
++        BranchOperation::Tag(condition) | BranchOperation::Singleton(condition) => {
++            // Value constants name a whole value; the comparison is of its tag.
++            let tag = match operands.get(1) {
++                Some(Operand::ValueConstant(value)) => (*value as u64 >> 48) as i64,
++                _ => immediate(1)?,
++            };
++            format!(
++                "(u16)(({}) >> 48) {} (u16){}",
++                read(0)?,
++                condition.select("==", "!="),
++                literal(tag & 0xffff)
++            )
++        }
++        BranchOperation::Memory { width, condition } => {
++            let load = match width {
++                PairWidth::Word => format!("ld32({})", address(0)?),
++                PairWidth::DoubleWord => format!("ld64({})", address(0)?),
++            };
++            let ty = match width {
++                PairWidth::Word => "u32",
++                PairWidth::DoubleWord => "u64",
++            };
++            format!("({ty}){load} {} ({ty})({})", condition.select("==", "!="), read(1)?)
++        }
++        BranchOperation::AnyEqual => {
++            let value = read(0)?;
++            let comparisons = (1..operands.len().saturating_sub(1))
++                .map(|index| Ok(format!("({value}) == ({})", read(index)?)))
++                .collect::<Result<Vec<_>, CompileError>>()?;
++            if comparisons.is_empty() {
++                return Err(error(Some(handler), "branch_any_eq needs a value to compare against"));
++            }
++            comparisons.join(" || ")
++        }
++    })
++}
+diff --git a/Libraries/LibJS/Flap/src/target/mod.rs b/Libraries/LibJS/Flap/src/target/mod.rs
+index 7f9f8718..c2f2290f 100644
+--- a/Libraries/LibJS/Flap/src/target/mod.rs
++++ b/Libraries/LibJS/Flap/src/target/mod.rs
+@@ -9,6 +9,7 @@
+ pub(crate) mod aarch64;
+ pub(crate) mod allocator;
+ pub(crate) mod backend;
++pub(crate) mod c;
+ pub(crate) mod description;
+ pub(crate) mod emitter;
+ pub(crate) mod finalize;
+diff --git a/Libraries/LibJS/Flap/tests/interpreter_c.rs b/Libraries/LibJS/Flap/tests/interpreter_c.rs
+new file mode 100644
+index 00000000..d2a7009b
+--- /dev/null
++++ b/Libraries/LibJS/Flap/tests/interpreter_c.rs
+@@ -0,0 +1,86 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++use flapc::{Architecture, CompilationUnit, CompileOptions, Compiler, ObjectFormat, SourceInput, Target};
++use std::process::Command;
++
++const INTERPRETER: &str = include_str!("../../Interpreter/interpreter.flap");
++const LAYOUT: &str = include_str!("interpreter-layout.conf");
++
++fn interpreter_c(profiling: bool) -> String {
++    let compiler = Compiler::new(CompileOptions {
++        target: Target {
++            architecture: Architecture::X86_64,
++            object_format: ObjectFormat::Elf,
++        },
++        has_jscvt: false,
++        has_lzcnt: false,
++        has_bmi1: false,
++        enable_assertions: true,
++        profiling,
++        profile: flapc::Profile::JavaScript,
++    });
++    let prepared = compiler
++        .prepare(CompilationUnit {
++            source: SourceInput {
++                name: "interpreter.flap",
++                contents: INTERPRETER,
++            },
++            constants: Some(SourceInput {
++                name: "interpreter-layout.conf",
++                contents: LAYOUT,
++            }),
++        })
++        .expect("interpreter preparation should succeed");
++    compiler
++        .compile_prepared_c(&prepared)
++        .expect("the interpreter should print as C")
++        .as_str()
++        .to_owned()
++}
++
++#[test]
++fn prints_the_interpreter_as_c() {
++    let c = interpreter_c(false);
++    for symbol in [
++        "void js_interpreter(",
++        "flap_handler* const js_interpreter_dispatch_table[256]",
++        "flap_handler* const js_interpreter_debug_dispatch_table[256]",
++        "js_interpreter_handler_ranges[1024]",
++        "static void flap_handler_Add(FLAP_PARAMETERS)",
++    ] {
++        assert!(c.contains(symbol), "the C interpreter lacks {symbol}");
++    }
++    let profiling = interpreter_c(true);
++    assert!(profiling.contains("void js_interpreter_profiling("));
++    assert!(profiling.contains("js_interpreter_dispatch_table_profiling[256]"));
++}
++
++/// Compiles the C with clang when it is installed, which checks that every
++/// dispatch is a tail call clang can guarantee.
++#[test]
++fn interpreter_c_compiles_with_clang() {
++    let clang = std::env::var("FLAP_TEST_CLANG").unwrap_or_else(|_| "clang".to_string());
++    if Command::new(&clang).arg("--version").output().is_err() {
++        eprintln!("skipping: {clang} is not installed");
++        return;
++    }
++    let directory = std::env::temp_dir().join(format!("flapc-c-test-{}", std::process::id()));
++    std::fs::create_dir_all(&directory).unwrap();
++    let source = directory.join("interpreter.c");
++    std::fs::write(&source, interpreter_c(false)).unwrap();
++    let output = Command::new(&clang)
++        .args(["-std=c11", "-fsyntax-only", "-Werror=return-type"])
++        .arg(&source)
++        .output()
++        .expect("run clang");
++    let _ = std::fs::remove_dir_all(&directory);
++    assert!(
++        output.status.success(),
++        "clang rejected the C interpreter:\n{}",
++        String::from_utf8_lossy(&output.stderr)
++    );
++}
+diff --git a/Libraries/LibJS/Rust/build.rs b/Libraries/LibJS/Rust/build.rs
+index 44e8422b..347ab530 100644
+--- a/Libraries/LibJS/Rust/build.rs
++++ b/Libraries/LibJS/Rust/build.rs
+@@ -230,6 +230,15 @@ fn main() {
+     // of them calls. Without the JIT, only the plain variant is assembled, but the runtime still defines the
+     // functions of both, so that its interface with the interpreter is the same in every build.
+     let jit = env::var_os("CARGO_FEATURE_JIT").is_some();
++    // Flap prints the interpreter as C instead of assembly for targets it has no assembly backend for, such as
++    // wasm32, or when asked to. The C chains handlers with guaranteed tail calls, so it needs clang.
++    println!("cargo:rerun-if-env-changed=LIBJS_INTERPRETER_BACKEND");
++    let c_backend =
++        target.architecture.is_none() || env::var("LIBJS_INTERPRETER_BACKEND").is_ok_and(|backend| backend == "c");
++    assert!(
++        !(c_backend && jit),
++        "the optimizing JIT enters the assembly interpreter's handlers, so it needs the assembly backend"
++    );
+     let source = || flapc::CompilationUnit {
+         source: flapc::SourceInput {
+             name: &interpreter_source_name,
+@@ -260,12 +269,15 @@ fn main() {
+                 None => functions.push(function),
+             }
+         }
+-        if (profiling && !jit) || target.architecture.is_none() {
++        if profiling && !jit {
+             continue;
+         }
+-        let assembly = compiler
+-            .compile_prepared(&prepared)
+-            .unwrap_or_else(|error| panic!("flapc failed to compile the interpreter:\n{error}"));
++        let assembly = if c_backend {
++            compiler.compile_prepared_c(&prepared)
++        } else {
++            compiler.compile_prepared(&prepared)
++        }
++        .unwrap_or_else(|error| panic!("flapc failed to compile the interpreter:\n{error}"));
+         assemblies.push((profiling, assembly));
+     }
+     let instructions = flapc::metadata::parse_flap_metadata(&interpreter_source_name, &interpreter_source_text)
+@@ -292,21 +304,42 @@ fn main() {
+     let assembly_paths = assemblies
+         .iter()
+         .map(|(profiling, assembly)| {
++            let extension = if c_backend { "c" } else { "S" };
+             let file_name = if *profiling {
+-                "interpreter_profiling.S"
++                format!("interpreter_profiling.{extension}")
+             } else {
+-                "interpreter.S"
++                format!("interpreter.{extension}")
+             };
+             let assembly_path = output_directory.join(file_name);
+             write_if_changed(&assembly_path, assembly.as_str());
+             assembly_path
+         })
+         .collect::<Vec<_>>();
+-    if target.architecture.is_none() {
+-        println!("cargo:warning=flapc has no backend for this target yet, so the interpreter is not built");
+-        return;
++    if c_backend {
++        compile_c_interpreter(&assembly_paths);
++    } else {
++        assemble_interpreter(&target, &assembly_paths);
+     }
+-    assemble_interpreter(&target, &assembly_paths);
++}
++
++/// Compile the interpreter Flap printed as C. Its handlers tail-call each other, which only clang guarantees, and on
++/// WebAssembly only with the tail-call proposal.
++fn compile_c_interpreter(source_paths: &[PathBuf]) {
++    let mut build = cc::Build::new();
++    build.files(source_paths);
++    if env::var_os("CC").is_none() && !build.get_compiler().is_like_clang() {
++        build.compiler("clang");
++    }
++    build.std("c11");
++    build.opt_level(2);
++    build.warnings(false);
++    build.flag("-fno-strict-aliasing");
++    if target_is_wasm32() {
++        build.flag("-mtail-call");
++        // The heap region starts at address 0 and cells are addressed by their uncompressed offset.
++        build.define("FLAP_COMPRESSED_CELL_POINTER_SHIFT", "0");
++    }
++    build.compile("libjs_runtime_interpreter");
+ }
+ 
+ /// Slow paths that only the optimizing JIT's code calls, with the instruction whose operands they take. JIT code calls
