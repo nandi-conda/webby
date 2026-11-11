@@ -88,9 +88,7 @@ void setspent(void) { }
 void endspent(void) { }
 int putspent(struct spwd const* entry, void* file) { (void)entry; (void)file; errno = ENOSYS; return -1; }
 
-/* ---- descriptor passing: not over wasi:sockets ---- */
-ssize_t sendmsg(int fd, const struct msghdr* message, int flags) { (void)fd; (void)message; (void)flags; errno = ENOTSUP; return -1; }
-ssize_t recvmsg(int fd, struct msghdr* message, int flags) { (void)fd; (void)message; (void)flags; errno = ENOTSUP; return -1; }
+/* sendmsg, recvmsg, socketpair, pipe and pipe2 are in webby_wasi_local.c (local sockets). */
 
 /* ---- resource limits ---- */
 static struct rlimit webby_rlimits[16] = {
@@ -189,8 +187,6 @@ int fchown(int fd, uid_t owner, gid_t group) { (void)fd; (void)owner; (void)grou
 int lchown(const char* path, uid_t owner, gid_t group) { (void)path; (void)owner; (void)group; return 0; }
 
 /* ---- descriptors ---- */
-int pipe(int fds[2]) { (void)fds; errno = ENOSYS; return -1; }
-int pipe2(int fds[2], int flags) { (void)fds; (void)flags; errno = ENOSYS; return -1; }
 int dup(int fd) { (void)fd; errno = ENOSYS; return -1; }
 int dup3(int fd, int new_fd, int flags)
 {

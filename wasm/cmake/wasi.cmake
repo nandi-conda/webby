@@ -9,11 +9,15 @@ set(_libs "-lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated
 if(DEFINED ENV{WEBBY_WASI_SYSROOT} AND EXISTS "$ENV{WEBBY_WASI_SYSROOT}/include/webby_wasi_compat.h")
     string(APPEND _emu " -isystem $ENV{WEBBY_WASI_SYSROOT}/include -include $ENV{WEBBY_WASI_SYSROOT}/include/webby_wasi_compat.h")
     string(APPEND _libs " -L$ENV{WEBBY_WASI_SYSROOT}/lib -lwebby_wasi_compat")
-    # Sockets (compat/webby_wasi_net.c, over wasi:sockets) are descriptors too: libc's descriptor calls go through
-    # compat/webby_wasi_net_wrap.c first. Same list as WEBBY_NET_WRAPPED and compat/build.sh.
-    foreach(_f close read write readv writev send recv shutdown poll fcntl ioctl getsockopt)
+    # Sockets (compat/webby_wasi_net.c, over wasi:sockets) and local sockets (compat/webby_wasi_local.c, socketpair
+    # and pipe) are descriptors too: libc's descriptor calls go through compat/webby_wasi_net_wrap.c first. Same list
+    # as WEBBY_NET_WRAPPED and compat/build.sh.
+    foreach(_f close read write readv writev send recv shutdown poll fcntl ioctl getsockopt fstat)
         string(APPEND _libs " -Wl,--wrap=${_f}")
     endforeach()
+    # Programs that run as several wasm instances (Ladybird's processes) link the latha:proc backend for local
+    # sockets (compat/webby_wasi_latha.c): target_link_options(<target> PRIVATE ${WEBBY_WASI_LATHA_LINK_OPTIONS}).
+    set(WEBBY_WASI_LATHA_LINK_OPTIONS "-lwebby_wasi_latha;-Wl,--undefined=webby_latha_backend_ops")
 endif()
 # setjmp/longjmp (libpng's and libjpeg's error handling) use the exception-handling proposal with exnref, which
 # wasmtime runs with wasm_exceptions on (tools/wasi-run.py); libsetjmp is wasi-libc's runtime for it.

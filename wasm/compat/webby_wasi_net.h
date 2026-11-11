@@ -1,5 +1,5 @@
-/* Sockets over wasi:sockets 0.2 (webby_wasi_net.c) and the libc wrappers that route socket descriptors to them
- * (webby_wasi_net_wrap.c, linked with `wasm-ld --wrap`, see cmake/wasi.cmake). */
+/* Sockets over wasi:sockets 0.2 (webby_wasi_net.c) and the libc wrappers that route socket descriptors to them, and
+ * local socket descriptors to webby_wasi_local.c (webby_wasi_net_wrap.c, linked with `wasm-ld --wrap`, see cmake/wasi.cmake). */
 #pragma once
 #include <poll.h>
 #include <sys/socket.h>
@@ -11,6 +11,8 @@
 
 struct webby_net_ops {
     int (*close)(int fd);
+    int (*setsockopt)(int fd, int level, int name, const void *value, socklen_t len);
+    int (*name)(int fd, struct sockaddr *addr, socklen_t *len, int peer);
     ssize_t (*recvfrom)(int fd, void *buffer, size_t length, int flags, struct sockaddr *addr, socklen_t *addr_len);
     ssize_t (*sendto)(int fd, const void *buffer, size_t length, int flags, const struct sockaddr *addr, socklen_t addr_len);
     int (*shutdown)(int fd, int how);
@@ -28,4 +30,4 @@ extern const struct webby_net_ops webby_net_ops_impl;
 void webby_net_trace(const char *format, ...) __attribute__((format(printf, 1, 2)));
 
 /* The libc functions cmake/wasi.cmake wraps (keep the two lists the same). */
-#define WEBBY_NET_WRAPPED close read write readv writev send recv shutdown poll fcntl ioctl getsockopt
+#define WEBBY_NET_WRAPPED close read write readv writev send recv shutdown poll fcntl ioctl getsockopt fstat

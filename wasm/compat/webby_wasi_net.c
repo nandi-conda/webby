@@ -420,14 +420,7 @@ int listen(int fd, int backlog)
     return fail(ENOTSUP);
 }
 
-int socketpair(int domain, int type, int protocol, int fds[2])
-{
-    (void)domain;
-    (void)type;
-    (void)protocol;
-    (void)fds;
-    return fail(ENOTSUP);
-}
+/* socketpair() makes local sockets: webby_wasi_local.c. */
 
 /* ---- reading and writing ---- */
 
@@ -693,19 +686,13 @@ static int sock_name(int fd, struct sockaddr *addr, socklen_t *addr_len, int pee
     return 0;
 }
 
-int getsockname(int fd, struct sockaddr *addr, socklen_t *addr_len)
+static int net_name(int fd, struct sockaddr *addr, socklen_t *addr_len, int peer)
 {
-    int r = sock_name(fd, addr, addr_len, 0);
-    webby_net_trace("net: getsockname(%d) = %d%s%s", fd, r, r < 0 ? " " : "", r < 0 ? strerror(errno) : "");
+    int r = sock_name(fd, addr, addr_len, peer);
+    webby_net_trace("net: %s(%d) = %d%s%s", peer ? "getpeername" : "getsockname", fd, r, r < 0 ? " " : "", r < 0 ? strerror(errno) : "");
     return r;
 }
 
-int getpeername(int fd, struct sockaddr *addr, socklen_t *addr_len)
-{
-    int r = sock_name(fd, addr, addr_len, 1);
-    webby_net_trace("net: getpeername(%d) = %d%s%s", fd, r, r < 0 ? " " : "", r < 0 ? strerror(errno) : "");
-    return r;
-}
 
 static int put_int(void *value, socklen_t *len, int v)
 {
@@ -734,7 +721,7 @@ static int net_getsockopt(int fd, int level, int name, void *value, socklen_t *l
     return put_int(value, len, 0);
 }
 
-int setsockopt(int fd, int level, int name, const void *value, socklen_t len)
+static int net_setsockopt(int fd, int level, int name, const void *value, socklen_t len)
 {
     net_sock *s = net_get(fd);
     if (!s)
@@ -898,6 +885,8 @@ static int net_poll(struct pollfd *fds, nfds_t n, int timeout, int (*real_poll)(
 
 const struct webby_net_ops webby_net_ops_impl = {
     .close = net_close,
+    .setsockopt = net_setsockopt,
+    .name = net_name,
     .recvfrom = net_recvfrom,
     .sendto = net_sendto,
     .shutdown = net_shutdown,

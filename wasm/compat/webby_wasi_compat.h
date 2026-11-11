@@ -1,7 +1,7 @@
 /* Included before every source of webby's wasm build (cmake/wasi.cmake): POSIX pieces wasm32-wasip1 lacks that
  * Ladybird and its dependencies name. TCP and UDP sockets and name lookup go through wasi:sockets (webby_wasi_net.c);
- * local (AF_UNIX) sockets, listen and socketpair fail with ENOTSUP; there is one time zone (UTC); threads are
- * wasi-libc's stubs. */
+ * socketpair(), pipe() and SCM_RIGHTS are local sockets inside the instance, or latha:proc channels between instances
+ * (webby_wasi_local.c); listen() fails with ENOTSUP; there is one time zone (UTC); threads are wasi-libc's stubs. */
 #pragma once
 #ifdef __wasi__
 #include <stddef.h>
@@ -32,6 +32,16 @@ extern "C" {
 #endif
 #ifndef SOCK_CLOEXEC
 #    define SOCK_CLOEXEC 0
+#endif
+/* Local sockets (webby_wasi_local.c) also do records. */
+#ifndef SOCK_SEQPACKET
+#    define SOCK_SEQPACKET 8
+#endif
+#ifndef MSG_CTRUNC
+#    define MSG_CTRUNC 0x0008
+#endif
+#ifndef F_DUPFD
+#    define F_DUPFD 0
 #endif
 #ifndef SOL_IP
 #    define SOL_IP 0
