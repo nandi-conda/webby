@@ -326,7 +326,7 @@ its display list with the Compositor's Skia CPU player and hands the pixels to Q
 `Page::handle_*`. file: pages and the built-in start page load; http(s) is not wired into the UI yet (patch 0010 has
 it for webby-render). Ctrl+T/W/L/R, F5, Alt+Left/Right and Ctrl+Tab work.
 
-It builds inside Ladybird's WASI build (`patches/0011-webby-ui.patch` adds the directory when `WEBBY_UI_DIR` names it),
+It builds inside Ladybird's WASI build (`patches/0014-webby-ui.patch` adds the directory when `WEBBY_UI_DIR` names it),
 with Qt for WASI, qt2wasm, wit-bindgen, wasm-tools and the preview1 reactor adapter from this pixi env:
 
     ENABLE_GUI_TARGETS=ON pixi run ./build-engine.sh <ladybird> build/ladybird webby-ui

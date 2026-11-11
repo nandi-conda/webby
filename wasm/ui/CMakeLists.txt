@@ -1,6 +1,6 @@
 # webby's Qt UI as one latha:gui WebAssembly component: QtGui chrome (BrowserWindow) and Ladybird's LibWeb (WebView)
 # in one module. Built inside Ladybird's WASI build (ENABLE_GUI_TARGETS=ON) when WEBBY_UI_DIR names this directory:
-# Utilities/CMakeLists.txt (wasm/patches/0011) adds it; it shares webby-render's Compositor sources.
+# Utilities/CMakeLists.txt (wasm/patches/0014) adds it; it shares webby-render's Compositor sources.
 #
 # Qt for WASI and the qt2wasm GUI pieces come from the wasm/ pixi env (qt2wasm, qt6-wasi, wit-bindgen, wasm-tools,
 # wasi-preview1-adapter): WEBBY_QT_ENV, which defaults to the env that holds $WASI_SDK_PREFIX. This is what
