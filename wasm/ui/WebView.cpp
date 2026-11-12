@@ -7,6 +7,7 @@
 #include "WebView.h"
 #include "Network.h"
 #include "Resources.h"
+#include "Storage.h"
 
 #include <AK/LexicalPath.h>
 #include <AK/Utf16String.h>
@@ -367,6 +368,8 @@ ErrorOr<void> initialize_engine()
     Core::ResourceImplementation::install(make<Core::ResourceImplementationFile>(MUST(String::from_utf8(resources))));
     Web::Bindings::initialize_main_thread_vm(Web::HTML::AgentType::SimilarOriginWindow);
     Web::ResourceLoader::initialize(Web::Bindings::main_thread_vm().heap());
+    // localStorage and sessionStorage: LibWeb's mirrors need an owner, which is the browser process natively.
+    Storage::initialize();
     // Fonts: the built-in Liberation faces, so there are always some (a host with no /usr/share/fonts, such as NixOS,
     // or nothing opened to the module), then whatever the system font directories hold.
     auto& font_provider = static_cast<Gfx::PathFontProvider&>(Gfx::FontDatabase::the().install_system_font_provider(make<Gfx::PathFontProvider>()));
@@ -417,6 +420,8 @@ WebView::~WebView()
         Network::cancel(m_fetch_id);
     if (m_impl->client)
         m_impl->client->detach();
+    // A tab closing may be the app quitting: localStorage is otherwise written half a second after a change.
+    Storage::flush();
 }
 
 void WebView::load(std::string const& url)

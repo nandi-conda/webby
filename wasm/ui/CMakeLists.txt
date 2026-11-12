@@ -54,6 +54,7 @@ add_executable(webby-ui
     PopupMenu.cpp
     KeyMap.cpp
     Network.cpp
+    Storage.cpp
     Omnibox.cpp
     PageFrame.cpp
     Pages.cpp
@@ -130,6 +131,7 @@ add_custom_command(OUTPUT "${gen}/engine/engine.c" "${gen}/engine/engine.h" "${g
     DEPENDS "${engine_wit}" VERBATIM)
 add_executable(webby-core
     Network.cpp
+    Storage.cpp
     WebView.cpp
     Resources.c
     engine/EngineExports.cpp
