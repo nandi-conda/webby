@@ -403,6 +403,10 @@ A response with Content-Disposition: attachment, or of a type the engine cannot 
 `$WEBBY_DOWNLOAD_DIR`, `$XDG_DOWNLOAD_DIR` or `~/Downloads` instead (never overwriting: "name (1).ext"), the page
 staying as it was; the engine reports a `download-finished` event, the UI shows a toast and keeps
 `download_history.jsonl`, and Ctrl+J opens a Downloads page with links to the saved files.
+Right of the address field are the Nim toolbar's Bookmarks, History and Downloads buttons and the ⋮ menu
+(`ui/MoreMenu.cpp`), grouped as `nim/src/browser.nim` groups it: New tab; History (recently closed tabs);
+Bookmarks; Downloads; Find, Zoom, Reload; Settings (restore tabs, colour tabs by age, bookmarks bar, search
+engine, kept in `wasm_ui.json` and the Nim `tabs.json`); Help (Keyboard shortcuts, About Webby).
 
 It builds inside Ladybird's WASI build (`patches/0014-webby-ui.patch` adds the directory when `WEBBY_UI_DIR` names it),
 with Qt for WASI, qt2wasm, wit-bindgen, wasm-tools and the preview1 reactor adapter from this pixi env:
