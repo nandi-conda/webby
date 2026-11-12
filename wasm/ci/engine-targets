@@ -15,3 +15,6 @@ webby-headless
 WebContent
 Compositor
 ImageDecoder
+# The engine alone as a component (wasm/ui/wit/engine), for the UI component wasm/ui/shell builds without Ladybird:
+# published as webby-core.wasm (wasm/ui/shell/build.sh downloads it and composes webby.wasm with wac).
+webby-core

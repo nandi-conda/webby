@@ -399,6 +399,21 @@ without a Compositor), wheel scrolling of inner scroll containers.
 `ConfigFile::open_from_text`, and skips font directories the sandbox refuses). A `/res` (or `WEBBY_RESOURCES`) with
 Ladybird's Base/res takes over the theme, and system font directories add their fonts.
 
+### The UI on its own, over a prebuilt engine
+
+The engine is also a component by itself, `bin/webby-core.wasm` (target `webby-core`): `ui/WebView.cpp`, the
+Compositor's Skia player and all of Ladybird behind `webby:engine`'s views (`ui/wit/engine/engine.wit`, the same API
+as `ui/WebView.h`; page callbacks come back as events the UI takes after each call). `ui/shell/` builds the Qt UI
+alone as a ~14 MB component that imports it (`ui/shell/WebViewRemote.cpp` stands in for WebView.cpp), with no
+Ladybird tree or engine build, and composes the two with `wac plug`:
+
+    WEBBY_QT_ENV=<env with qt2wasm> ui/shell/build.sh            # downloads webby-core.wasm from the wasm-engine release
+    latha-gui ui/shell/build/webby.wasm [file or URL ...]
+
+A UI change rebuilds in seconds (`WEBBY_CORE_WASM=<path>` uses a local engine component). latha-gui 0.4.1 caches
+compiled functions, so the composed app only compiles the UI part again. `ui/KeyCodes.h` is Ladybird's key code
+list copied for the UI, and the engine build stops if it no longer matches.
+
 ## Building what exists
 
 ```sh
@@ -445,9 +460,12 @@ BuildKit cache mounts Depot keeps between runs (`ci/forge_wasm.py`):
   `/opt/webby-wasi`, the path its `.pc` and CMake files name.
 - `wasm-engine` (after `wasm-deps`) checks out `../LADYBIRD_COMMIT`, applies `../patches/*` and `patches/*`, runs
   `build-engine.sh` for the targets in `ci/engine-targets` (`ci/engine.sh`), smoke-tests `js.wasm` and publishes
-  `<target>.wasm`, `SHA256SUMS` and the build log on the rolling `wasm-engine` release. The checkout and build
-  directory live in Depot's cache, and a build that would pass the forge's one-hour limit stops in time and starts
-  the job again, which carries on where it stopped.
+  `<target>.wasm`, `SHA256SUMS` and the build log on the rolling `wasm-engine` release (`webby-core.wasm` too, with
+  `webby-ui-shell.wasm` composed with it and run headless as a check). The checkout, the build directory and a
+  ccache live in Depot's cache. A patch change only rewrites the source files whose contents changed (the patched
+  tree is staged and `rsync -c`'d over the cached one), so ninja rebuilds what the patch touched; only a
+  `cmake/wasi.cmake` change starts the build directory over. A build that would pass the forge's one-hour limit
+  stops in time and starts the job again, which carries on where it stopped.
 
 The image (`ci/base.sh`): Ubuntu 24.04, wasi-sdk 27 in `/opt/wasi-sdk`, CMake/Ninja/Meson and PyPI wasmtime in
 `/opt/venv`, Ladybird's Rust toolchain with wasm32-wasip1.

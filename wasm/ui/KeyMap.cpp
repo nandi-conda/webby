@@ -7,7 +7,7 @@
 
 #include "KeyMap.h"
 
-#include <LibWebCommon/UIEvents/KeyCode.h>
+#include "KeyCodes.h"
 #include <QKeyEvent>
 
 unsigned web_key_code(QKeyEvent const& event)

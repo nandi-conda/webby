@@ -1,5 +1,6 @@
 # webby's Qt UI as one latha:gui WebAssembly component: QtGui chrome (BrowserWindow) and Ladybird's LibWeb (WebView)
-# in one module. Built inside Ladybird's WASI build (ENABLE_GUI_TARGETS=ON) when WEBBY_UI_DIR names this directory:
+# in one module (webby-ui), and the engine alone as a component of its own (webby-core, wit/engine/engine.wit) for
+# the UI component that shell/ builds without Ladybird (wac plug composes the two). Built inside Ladybird's WASI build (ENABLE_GUI_TARGETS=ON) when WEBBY_UI_DIR names this directory:
 # Utilities/CMakeLists.txt (wasm/patches/0014) adds it; it shares webby-render's Compositor sources.
 #
 # Qt for WASI and the qt2wasm GUI pieces come from the wasm/ pixi env (qt2wasm, qt6-wasi, wit-bindgen, wasm-tools,
@@ -7,7 +8,7 @@
 # `qt2wasm build --gui` does (Qt2Wasm.cmake, qt2wasm/build.py), spelled out so that it can live in Ladybird's build.
 #
 # Output: bin/webby-ui.core.wasm (the reactor module, after the build's spill-pointers pass) and bin/webby.wasm (the
-# component a latha:gui host runs).
+# component a latha:gui host runs); bin/webby-core.wasm (the engine component, target webby-core).
 
 cmake_minimum_required(VERSION 3.25)
 
@@ -110,3 +111,48 @@ add_custom_command(TARGET webby-ui POST_BUILD
     COMMAND "${WASM_TOOLS}" component new "$<TARGET_FILE:webby-ui>" --adapt "wasi_snapshot_preview1=${adapter}"
         -o "${CMAKE_BINARY_DIR}/bin/webby.wasm"
     COMMENT "Making the latha:gui component bin/webby.wasm" VERBATIM)
+
+# The engine as its own component: WebView.cpp and the Compositor's Skia player behind webby:engine's views
+# (wit/engine/engine.wit, engine/EngineExports.cpp). No Qt. shell/ builds the UI that imports it.
+set(engine_wit "${CMAKE_CURRENT_SOURCE_DIR}/wit/engine/engine.wit")
+add_custom_command(OUTPUT "${gen}/engine/engine.c" "${gen}/engine/engine.h" "${gen}/engine/engine_component_type.o"
+    COMMAND "${WIT_BINDGEN}" c "${CMAKE_CURRENT_SOURCE_DIR}/wit/engine" --world engine --out-dir "${gen}/engine"
+    DEPENDS "${engine_wit}" VERBATIM)
+add_executable(webby-core
+    WebView.cpp
+    Resources.c
+    engine/EngineExports.cpp
+    "${gen}/engine/engine.c"
+    ${compositor_dir}/Canvas2DCommandPlayer.cpp
+    ${compositor_dir}/ColorSpaceSkia.cpp
+    ${compositor_dir}/DisplayListPlayer.cpp
+    ${compositor_dir}/DisplayListPlayerSkia.cpp
+    ${compositor_dir}/DisplayListRasterCache.cpp
+    ${compositor_dir}/FontSkia.cpp
+    ${compositor_dir}/PainterSkia.cpp
+    ${compositor_dir}/PaintingSurface.cpp
+    ${compositor_dir}/RasterizeDisplayList.cpp
+    ${compositor_dir}/ScrollbarController.cpp
+    ${compositor_dir}/SkiaBackendContext.cpp
+    ${compositor_dir}/SkiaUtils.cpp
+    ${compositor_dir}/VideoFrameSkia.cpp)
+set_target_properties(webby-core PROPERTIES SUFFIX ".core.wasm" RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+target_include_directories(webby-core PRIVATE ${LADYBIRD_SOURCE_DIR}/Services ${CMAKE_BINARY_DIR}/Services
+    "${CMAKE_CURRENT_SOURCE_DIR}" "${gen}/engine")
+set_source_files_properties("${gen}/engine/engine.c" PROPERTIES COMPILE_OPTIONS "-w;-Wno-error")
+target_link_libraries(webby-core PRIVATE "${gen}/engine/engine_component_type.o"
+    LibWeb LibCompositing LibGfx LibMedia LibFileSystem LibURL skia)
+target_link_options(webby-core PRIVATE -mexec-model=reactor)
+add_custom_command(TARGET webby-core POST_BUILD
+    COMMAND "${WASM_TOOLS}" component new "$<TARGET_FILE:webby-core>" --adapt "wasi_snapshot_preview1=${adapter}"
+        -o "${CMAKE_BINARY_DIR}/bin/webby-core.wasm"
+    COMMENT "Making the engine component bin/webby-core.wasm" VERBATIM)
+
+# KeyCodes.h is Ladybird's key code list copied for the UI component (which has no Ladybird tree): it has to match.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/KeyCodes.h" _ours)
+file(READ "${LADYBIRD_SOURCE_DIR}/Libraries/LibWebCommon/UIEvents/KeyCode.h" _theirs)
+string(REGEX MATCH "#define ENUMERATE_KEY_CODES[^\n]*\n([^\n]*\\\\\n)*[^\n]*" _block "${_ours}")
+string(FIND "${_theirs}" "${_block}" _at)
+if (NOT _block OR _at EQUAL -1)
+    message(FATAL_ERROR "wasm/ui/KeyCodes.h no longer matches Ladybird's LibWebCommon/UIEvents/KeyCode.h: copy its ENUMERATE_KEY_CODES again")
+endif()

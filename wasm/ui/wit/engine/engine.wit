@@ -1,0 +1,65 @@
+/// webby:engine: Ladybird (LibWeb, LibJS, Skia) as its own component, behind the same API as ../../WebView.h.
+///
+/// The engine component (webby-core.wasm, bin/webby-core.wasm in the engine build) exports `views`; webby's Qt UI
+/// (webby-ui-shell.wasm) imports it, and `wac plug webby-ui-shell.wasm --plug webby-core.wasm -o webby.wasm` makes
+/// the latha:gui app. A UI change rebuilds only the small UI component (wasm/ui/shell, a standalone CMake project
+/// that needs no Ladybird build) and composes again.
+///
+/// The engine cannot call back into the UI (a component only calls what it imports), so what a page does comes
+/// back as events: the UI takes them after each call.
+package webby:engine@0.1.0;
+
+interface views {
+    /// Keyboard modifiers, in LibWeb's UIEvents::KeyModifier bit order.
+    flags modifiers { alt, ctrl, shift, super, keypad }
+    /// Mouse buttons, in LibWeb's UIEvents::MouseButton bit order.
+    flags buttons { primary, secondary, middle, backward, forward }
+
+    /// What a page did since the last `take-events`, for the chrome.
+    variant event {
+        /// The page changed: `paint` it again.
+        needs-paint,
+        title-changed(string),
+        url-changed(string),
+        loading-changed(bool),
+        /// The URL of the link under the pointer, "" when it leaves the link.
+        link-hovered(string),
+    }
+
+    /// One page (a tab). Sizes and coordinates are CSS pixels at device pixel ratio 1.
+    resource view {
+        /// The first view sets the engine up (its JS VM, resource loader, theme and fonts).
+        constructor(width: u32, height: u32);
+        load: func(url: string);
+        reload: func();
+        can-go-back: func() -> bool;
+        can-go-forward: func() -> bool;
+        go-back: func();
+        go-forward: func();
+        url: func() -> string;
+        title: func() -> string;
+        is-loading: func() -> bool;
+        resize: func(width: u32, height: u32);
+        needs-paint: func() -> bool;
+        /// The page's pixels, premultiplied BGRA (Qt's ARGB32_Premultiplied), width x height, rows packed; none when
+        /// nothing changed since the last paint (or before the first load).
+        paint: func() -> option<list<u8>>;
+        /// `button` is the one that changed, `held` the buttons held after the event.
+        mouse-down: func(x: s32, y: s32, button: buttons, held: buttons, mods: modifiers, clicks: u32);
+        mouse-up: func(x: s32, y: s32, button: buttons, held: buttons, mods: modifiers);
+        mouse-move: func(x: s32, y: s32, held: buttons, mods: modifiers);
+        mouse-leave: func();
+        wheel: func(x: s32, y: s32, dx: f64, dy: f64, mods: modifiers);
+        /// `key` is a LibWeb UIEvents::KeyCode (wasm/ui/KeyCodes.h), `code-point` the text the key types (0: none).
+        key-down: func(key: u32, mods: modifiers, code-point: u32, repeat: bool);
+        key-up: func(key: u32, mods: modifiers, code-point: u32);
+        take-events: func() -> list<event>;
+    }
+
+    /// Run the engine's event loop until nothing is due right now (timers, tasks). Never blocks.
+    pump: func();
+}
+
+world engine {
+    export views;
+}

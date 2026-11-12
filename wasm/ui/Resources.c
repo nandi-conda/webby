@@ -6,10 +6,15 @@
 
 #include "Resources.h"
 
-// C23 #embed; CMakeLists.txt passes fonts/ and Ladybird's Base/res/themes as --embed-dir.
+// C23 #embed; CMakeLists.txt passes fonts/ and Ladybird's Base/res/themes as --embed-dir. The UI component (shell/)
+// only draws its chrome with the fonts and has no Ladybird tree: WEBBY_RESOURCES_NO_THEME.
+#ifndef WEBBY_RESOURCES_NO_THEME
 static unsigned char const theme[] = {
 #embed <Default.ini>
 };
+#else
+static unsigned char const theme[] = { 0 };
+#endif
 static unsigned char const sans[] = {
 #embed <LiberationSans-Regular.ttf>
 };

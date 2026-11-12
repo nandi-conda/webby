@@ -95,6 +95,9 @@ public:
     void did_request_navigation(std::string url);
     void did_finish_loading();
     void did_hover_link(std::string url);
+    // The UI component's WebView (shell/WebViewRemote.cpp) only: the engine component's queued events, as the
+    // callbacks above.
+    void deliver_engine_events();
 
 private:
     WebView(int width, int height);

@@ -194,7 +194,7 @@ def engine():
         sys.exit(f"the engine build failed ({status})")
     sha = os.environ.get("FORGE_SHA", "")
     wasms = sorted(out.glob("*.wasm"))
-    upload(ENGINE_TAG, [*wasms, *out.glob("webby-render-test.png"), *out.glob("webby-ui-test.png"), *out.glob("webby-render-net-*.png"), out / "SHA256SUMS", out / "build.log"], f"webby wasm engine {sha[:12]}",
+    upload(ENGINE_TAG, [*wasms, *out.glob("webby-render-test.png"), *out.glob("webby-ui-test.png"), *out.glob("webby-split-test.png"), *out.glob("webby-render-net-*.png"), out / "SHA256SUMS", out / "build.log"], f"webby wasm engine {sha[:12]}",
            f"Ladybird ({(ROOT / 'LADYBIRD_COMMIT').read_text().strip()[:10]}) with webby's patches for wasm32-wasip1, "
            f"from {sha}, built against {name}: {', '.join(p.name for p in wasms)}.\n\n"
            f"Run with wasm/tools/wasi-run.py (PyPI wasmtime, wasm exceptions on, a big wasm stack): "

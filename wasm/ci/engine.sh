@@ -56,9 +56,10 @@ export CCACHE_DIR=$C/ccache CCACHE_MAXSIZE=10G CCACHE_COMPILERCHECK=content \
   CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime
 ccache -z > /dev/null 2>&1 || true
 
+if [[ " $targets " == *" webby-core "* ]]; then export ENABLE_GUI_TARGETS=ON; fi
 # The Qt UI (wasm/ui) builds against qt2wasm's Qt for WASI, wit-bindgen, wasm-tools and the preview1 reactor adapter:
 # a micromamba env, cached; ui/CMakeLists.txt finds it through WEBBY_QT_ENV.
-if [[ " $targets " == *" webby-ui "* ]]; then
+if [[ " $targets " == *" webby-ui "* || " $targets " == *" webby-core "* ]]; then
   export ENABLE_GUI_TARGETS=ON
   qtenv=$C/qt2wasm-env-0.10.2
   if [ ! -d "$qtenv/opt/qt6-wasi/wasi/lib" ]; then
@@ -89,6 +90,11 @@ for t in $targets; do
     cp "$build/bin/webby.wasm" "$out/webby.wasm"
     continue
   fi
+  if [ "$t" = webby-core ]; then
+    [ -f "$build/bin/webby-core.wasm" ] || fail "no $build/bin/webby-core.wasm after the build"
+    cp "$build/bin/webby-core.wasm" "$out/webby-core.wasm"
+    continue
+  fi
   [ -f "$build/bin/$t" ] || fail "no $build/bin/$t after the build"
   cp "$build/bin/$t" "$out/$t.wasm"
 done
@@ -99,7 +105,7 @@ if [[ " $targets " == *" js "* ]]; then
 fi
 # Programs that use sockets (webby-render links RequestServer) run as components: wasm-tools makes them, the wasmtime
 # CLI runs them with TCP (tools/wasi-run.py), latha-run runs latha:proc children. nandi-testing's packages, cached.
-if [[ " $targets " == *" webby-render "* ]]; then
+if [[ " $targets " == *" webby-render "* || " $targets " == *" webby-core "* ]]; then
   # latha:proc shared memory and spawn-with-env (wasm/compat) need latha-gui 0.4; a new version gets a new directory.
   tools=$C/tools-env-latha-0.4
   if [ ! -x "$tools/bin/latha-run" ]; then
@@ -185,6 +191,27 @@ if [[ " $targets " == *" webby-ui "* ]] && [ -n "${LATHA_RUN:-}" ]; then
     tail -40 "$out/webby-ui-bare.log"; fail "webby-ui with no arguments failed (exit $rc)"
   fi
   echo "webby.wasm ran in latha-gui"
+fi
+if [[ " $targets " == *" webby-core "* ]] && [ -n "${LATHA_RUN:-}" ]; then
+  # The UI component (wasm/ui/shell, Qt only) composed with this engine component, the way a local UI build does it,
+  # then the same headless check as webby.wasm: the page's script ran, so the screenshot differs from the blank one.
+  wac=$C/wac-0.8.1
+  [ -x "$wac" ] || { curl -fsSL -o "$wac.part" https://github.com/bytecodealliance/wac/releases/download/v0.8.1/wac-cli-x86_64-unknown-linux-musl \
+    && chmod +x "$wac.part" && mv "$wac.part" "$wac"; } || fail "downloading wac failed"
+  shell=$(mktemp -d)
+  WEBBY_QT_ENV=$qtenv WEBBY_CORE_WASM=$out/webby-core.wasm WAC=$wac bash "$w/wasm/ui/shell/build.sh" "$shell" > "$out/webby-ui-shell-build.log" 2>&1 \
+    || { tail -40 "$out/webby-ui-shell-build.log"; fail "building the UI component (wasm/ui/shell) failed"; }
+  cp "$shell/cmake/webby-ui-shell.wasm" "$out/webby-ui-shell.wasm"
+  ui=$(mktemp -d)
+  printf '<!doctype html><title>One</title><h1 style="color:#b03060">webby split UI test</h1><p id=p>no script</p><script>p.textContent = "script " + (6 * 7)</script>' > "$ui/one.html"
+  (cd "$ui" && QT_QPA_PLATFORM=offscreen timeout 1200 "$(dirname "$LATHA_RUN")/latha-gui" --dir "$lb/Base/res::/res" \
+    --size 1100x760 --screenshot "$ui/ui.png" --quit-after 20000 "$shell/webby.wasm" "$ui/one.html") > "$out/webby-split-test.log" 2>&1
+  rc=$?
+  [ -f "$ui/ui.png" ] && cp "$ui/ui.png" "$out/webby-split-test.png"
+  if [ $rc != 0 ] || [ "$(stat -c %s "$ui/ui.png" 2>/dev/null || echo 0)" -lt 10000 ]; then
+    tail -40 "$out/webby-split-test.log"; fail "composed webby.wasm (UI component + webby-core) test failed (exit $rc)"
+  fi
+  echo "webby-ui-shell.wasm + webby-core.wasm ran in latha-gui"
 fi
 (cd "$out" && sha256sum ./*.wasm > SHA256SUMS)
 status ok
