@@ -150,7 +150,11 @@ def upload(tag, files, title, notes, jobs=4):
         if any(codes):
             sys.exit(f"uploading to {tag} failed for {', '.join(p.name for p, c in zip(todo, codes) if c)}")
     say(f"uploads took {time.time() - t0:.0f} s")
-    status, out = api("PATCH", f"/releases/{tag}", {"name": title, "notes": notes, "draft": False, "prerelease": True})
+    # ref: a rolling release shows the commit its assets were built from (servers before fileapi 66e380b ignore it).
+    body = {"name": title, "notes": notes, "draft": False, "prerelease": True}
+    if os.environ.get("FORGE_SHA"):
+        body["ref"] = os.environ["FORGE_SHA"]
+    status, out = api("PATCH", f"/releases/{tag}", body)
     if status >= 300:
         sys.exit(f"updating the {tag} release failed: HTTP {status} {out}")
 
@@ -203,6 +207,11 @@ UPDATE_URL = (f"https://fileapi.fastapicloud.dev/api/forge/repos/{os.environ.get
               f"/releases/{ENGINE_TAG}/assets/webby-update.txt")
 
 
+# engine.sh asks this (anonymously) once it holds the build cache: a newer push means this run can stop.
+HEAD_URL = (f"https://fileapi.fastapicloud.dev/api/forge/repos/{os.environ.get('FORGE_REPO', 'nandi.uk/webby')}"
+            f"/commits?ref={os.environ.get('FORGE_BRANCH') or 'main'}&limit=1")
+
+
 def wasm_version():
     """webby.wasm's version: the built commit's time in UTC, 2026.11.12.173000 (later commits on main are newer).
     Empty when git can't say, and then the build carries no update info."""
@@ -212,7 +221,23 @@ def wasm_version():
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
+def branch_head():
+    """The commit the job's branch is at now ("" when the forge can't say)."""
+    branch = os.environ.get("FORGE_BRANCH") or "main"
+    status, out = api("GET", f"/commits?ref={urllib.parse.quote(branch)}&limit=1")
+    try:
+        return out["commits"][0]["sha"] if status == 200 else ""
+    except (TypeError, KeyError, IndexError):
+        return ""
+
+
 def engine():
+    # Every push to main starts this job. A run for a commit main has already moved past would only build what
+    # the newer run builds again (and both runs share one build directory), so it stops.
+    sha, head = os.environ.get("FORGE_SHA", ""), branch_head()
+    if sha and head and head != sha:
+        say(f"main is at {head[:12]} now, past {sha[:12]}: its own wasm-engine run builds it, so this one stops")
+        return
     listed = [ln.split("#")[0] for ln in (CI / "engine-targets").read_text().splitlines()]
     targets = " ".join((os.environ.get("WASM_TARGETS") or " ".join(listed)).split())
     name = asset_name(sysroot_key())
@@ -227,13 +252,18 @@ def engine():
     version = wasm_version()
     code = depot_build(CI / "engine.Dockerfile", out,
                        {"TARGETS": targets, "BUDGET": budget, "RUN_ID": f"{os.environ.get('FORGE_SHA', '')}-{time.time():.0f}",
-                        "WASM_VERSION": version, "WASM_UPDATE_URL": UPDATE_URL if version else ""},
+                        "WASM_VERSION": version, "WASM_UPDATE_URL": UPDATE_URL if version else "",
+                        "BUILD_SHA": os.environ.get("FORGE_SHA", ""), "HEAD_URL": HEAD_URL},
                        ROOT / "build" / "wasm-engine.log")
     status = (out / "status").read_text().strip() if (out / "status").exists() else ""
     if code != 0 or not status:
         sys.exit(f"the engine image build failed (exit {code})")
     say("--- build.log (tail)")
     say((out / "build.log").read_text("utf-8", "replace")[-12000:])
+    if status == "superseded":
+        say(f"--- main moved past {os.environ.get('FORGE_SHA', '')[:12]} while this run waited for the build cache: "
+            "the newer run builds it")
+        return
     if status == "partial":
         progress = (out / "progress").read_text().strip() if (out / "progress").exists() else "?"
         again(f"the build ran out of time at {progress}")

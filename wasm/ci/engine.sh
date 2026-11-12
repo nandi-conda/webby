@@ -14,6 +14,12 @@ targets=${TARGETS:-js}; budget=${BUDGET:-2700}
 status() { echo "$1" > "$out/status"; echo "status: $1"; }
 fail() { echo "$*" | tee -a "$out/build.log"; status failed; exit 0; }
 
+# The cache mount is locked (engine.Dockerfile): when this run had to wait for another, main may have moved on.
+if [ -n "${BUILD_SHA:-}" ] && [ -n "${HEAD_URL:-}" ]; then
+  head=$(curl -fsS --max-time 20 "$HEAD_URL" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["commits"][0]["sha"])' 2>/dev/null)
+  if [ -n "$head" ] && [ "$head" != "$BUILD_SHA" ]; then echo "main is at ${head:0:12}, past ${BUILD_SHA:0:12}"; status superseded; exit 0; fi
+fi
+
 lb=$C/ladybird; commit=$(cat "$w/LADYBIRD_COMMIT")
 stamp=$( (echo "$commit"; cat "$w"/patches/*.patch "$w"/wasm/patches/*.patch) | sha256sum | cut -d' ' -f1)
 if [ "$(cat "$lb/.git/webby-wasm-patches" 2>/dev/null)" != "$stamp" ]; then

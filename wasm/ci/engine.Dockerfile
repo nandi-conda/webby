@@ -34,9 +34,13 @@ ARG RUN_ID
 # webby.wasm's version and update manifest URL (latha:app version=, update=; latha-gui/latha-android update it).
 ARG WASM_VERSION=
 ARG WASM_UPDATE_URL=
-RUN --mount=type=cache,id=webby-wasm-engine,target=/cache \
+# The commit being built and where to ask what main is at: a run that waited behind another one stops if main moved.
+ARG BUILD_SHA=
+ARG HEAD_URL=
+# sharing=locked: one run at a time in the cache (one Ladybird tree, one build directory); the next push's run waits.
+RUN --mount=type=cache,id=webby-wasm-engine,target=/cache,sharing=locked \
     echo "run $RUN_ID" && TARGETS="$TARGETS" BUDGET="$BUDGET" WASM_VERSION="$WASM_VERSION" \
-    WASM_UPDATE_URL="$WASM_UPDATE_URL" bash /w/wasm/ci/engine.sh
+    WASM_UPDATE_URL="$WASM_UPDATE_URL" BUILD_SHA="$BUILD_SHA" HEAD_URL="$HEAD_URL" bash /w/wasm/ci/engine.sh
 
 FROM scratch AS out
 COPY --from=engine /export/ /

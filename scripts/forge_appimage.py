@@ -135,7 +135,7 @@ def main():
     subprocess.run(["forge-release", "upload", "--create", TAG, str(dist / "webby-x86_64.AppImage"),
                     str(dist / "webby-x86_64.AppImage.zsync")], check=True)
     status, out = forge("PATCH", f"/releases/{TAG}", {"name": f"webby AppImage {version}", "notes": notes,
-                                                      "draft": False, "prerelease": False})
+                                                      "draft": False, "prerelease": False, "ref": SHA})
     if status >= 300:
         sys.exit(f"updating the {TAG} release failed: HTTP {status} {out}")
     say(f"Published webby AppImage {version}: {FORGE_URL}/forge/{REPO}/-/releases/{TAG}")
