@@ -31,7 +31,7 @@ fetch() {
     nghttp2 | ngtcp2) git -C "$dir" submodule -q update --init --depth 1 third-party/urlparse ;;
     nghttp3) git -C "$dir" submodule -q update --init --depth 1 lib/sfparse ;;
     mupdf) git -C "$dir" submodule -q update --init --depth 1 thirdparty/freetype thirdparty/harfbuzz thirdparty/jbig2dec \
-      thirdparty/libjpeg thirdparty/openjpeg thirdparty/zlib thirdparty/lcms2 thirdparty/brotli thirdparty/gumbo-parser ;;
+      thirdparty/libjpeg thirdparty/openjpeg thirdparty/zlib thirdparty/lcms2 thirdparty/brotli thirdparty/gumbo-parser thirdparty/extract ;;
   esac
   echo "$ref" > "$dir/.git/webby-ref"
   echo "fetched $name $ref"

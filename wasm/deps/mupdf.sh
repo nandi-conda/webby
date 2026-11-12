@@ -16,7 +16,8 @@ set -euo pipefail
 src=$(realpath "$1"); mkdir -p "$2" "$3"; build=$(realpath "$2"); prefix=$(realpath "$3")
 : "${WASI_SDK_PREFIX:?}"
 sdk=$WASI_SDK_PREFIX
-for sub in freetype harfbuzz jbig2dec libjpeg openjpeg zlib lcms2 brotli gumbo-parser; do
+# extract: not built (extract=no), but the Makefile still lists its docx/odt templates as sources of generated files.
+for sub in freetype harfbuzz jbig2dec libjpeg openjpeg zlib lcms2 brotli gumbo-parser extract; do
   [ -n "$(ls -A "$src/thirdparty/$sub" 2>/dev/null)" ] || git -C "$src" submodule -q update --init --depth 1 "thirdparty/$sub"
 done
 flags="--target=wasm32-wasip1 --sysroot=$sdk/share/wasi-sysroot -O2 -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false"
