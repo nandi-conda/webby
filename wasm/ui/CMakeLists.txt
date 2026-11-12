@@ -48,6 +48,43 @@ add_custom_command(OUTPUT "${gen}/bindings/gui.c" "${gen}/bindings/gui.h" "${gen
     DEPENDS ${gui_wit} VERBATIM)
 
 set(compositor_dir ${LADYBIRD_SOURCE_DIR}/Services/Compositor)
+
+# WebGL on the host's GPU (../gl): the Compositor's WebGL code (CanvasHost down to OpenGLContext) runs in the module,
+# behind LibWeb's local WebGL transport (LocalWebGL.cpp), and its GLES and EGL calls go to latha:gui's gl interface.
+# A host without it (no LATHA_GUI_GL in the environment) gets no WebGL contexts, as before.
+set(webby_gl_dir "${CMAKE_CURRENT_SOURCE_DIR}/../gl")
+add_custom_command(OUTPUT "${gen}/gl/gl_guest.c" "${gen}/gl/gl_guest.h" "${gen}/gl/gl_guest_component_type.o"
+    COMMAND "${WIT_BINDGEN}" c "${webby_gl_dir}/wit" --world gl-guest --out-dir "${gen}/gl"
+    DEPENDS "${webby_gl_dir}/wit/gl.wit" VERBATIM)
+set(webgl_generated "${CMAKE_BINARY_DIR}/Libraries/LibCompositing/WebGL/GLFunctions.cpp" "${CMAKE_BINARY_DIR}/Services/Compositor/WebGLCommandReplayer.cpp")
+set_source_files_properties(${webgl_generated} PROPERTIES GENERATED TRUE)
+add_library(webby-webgl STATIC
+    LocalWebGL.cpp
+    ${compositor_dir}/BitmapExport.cpp
+    ${compositor_dir}/CanvasHost.cpp
+    ${compositor_dir}/HostWebGLContext.cpp
+    ${compositor_dir}/OpenGLContext.cpp
+    ${compositor_dir}/VideoFrameHolds.cpp
+    ${compositor_dir}/WebGLObjectMap.cpp
+    ${webgl_generated}
+    "${webby_gl_dir}/latha_gles.c"
+    "${webby_gl_dir}/latha_gles_custom.c"
+    "${webby_gl_dir}/latha_egl.c"
+    "${gen}/gl/gl_guest.c")
+add_dependencies(webby-webgl generate_GLFunctions.cpp generate_WebGLCommandReplayer.cpp)
+# EGL's native types are plain pointers here (eglplatform.h knows no WASI).
+set_source_files_properties("${CMAKE_BINARY_DIR}/Libraries/LibCompositing/WebGL/GLFunctions.cpp" PROPERTIES
+    COMPILE_OPTIONS "-include;${webby_gl_dir}/angle_compat.h")
+target_compile_definitions(webby-webgl PRIVATE EGL_NO_PLATFORM_SPECIFIC_TYPES)
+target_include_directories(webby-webgl PRIVATE ${LADYBIRD_SOURCE_DIR}/Services ${CMAKE_BINARY_DIR}/Services
+    "${CMAKE_CURRENT_SOURCE_DIR}" "${webby_gl_dir}" "${gen}/gl")
+# Only LibWeb (and ANGLE's headers): naming skia here would put it ahead of libpng in the link line, and Qt's PNG
+# handler would take skia's copy of libpng next to the engine's own.
+target_link_libraries(webby-webgl PUBLIC "${gen}/gl/gl_guest_component_type.o" ${ANGLE_TARGETS} LibWeb)
+target_include_directories(webby-webgl SYSTEM PRIVATE $<TARGET_PROPERTY:skia,INTERFACE_INCLUDE_DIRECTORIES>)
+target_compile_definitions(webby-webgl PRIVATE $<TARGET_PROPERTY:skia,INTERFACE_COMPILE_DEFINITIONS>)
+set_source_files_properties("${webby_gl_dir}/latha_gles.c" "${webby_gl_dir}/latha_gles_custom.c" "${webby_gl_dir}/latha_egl.c"
+    "${gen}/gl/gl_guest.c" PROPERTIES COMPILE_OPTIONS "-w;-Wno-error")
 add_executable(webby-ui
     BrowserWindow.cpp
     PageMenu.cpp
@@ -115,7 +152,7 @@ target_link_libraries(webby-ui PRIVATE
     "${qt}/lib/objects-Release/Gui_resources_1/.qt/rcc/qrc_qpdf_init.cpp.obj"
     "${qt}/lib/objects-Release/Gui_resources_2/.qt/rcc/qrc_gui_shaders_init.cpp.obj"
     "${qt}/lib/libQt6Gui.a" "${qt}/lib/libQt6Core.a" "${qt}/lib/libQt6BundledPcre2.a" "${qt}/lib/libQt6BundledZLIB.a"
-    LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibFileSystem LibURL skia requestserverservice LibRequests)
+    webby-webgl LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibFileSystem LibURL skia requestserverservice LibRequests)
 # A reactor: the host calls the exports; there is no main().
 target_link_options(webby-ui PRIVATE -mexec-model=reactor)
 
@@ -155,7 +192,7 @@ target_include_directories(webby-core PRIVATE ${LADYBIRD_SOURCE_DIR}/Services ${
     "${CMAKE_CURRENT_SOURCE_DIR}" "${gen}/engine")
 set_source_files_properties("${gen}/engine/engine.c" PROPERTIES COMPILE_OPTIONS "-w;-Wno-error")
 target_link_libraries(webby-core PRIVATE "${gen}/engine/engine_component_type.o"
-    LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibFileSystem LibURL skia requestserverservice LibRequests)
+    webby-webgl LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibFileSystem LibURL skia requestserverservice LibRequests)
 target_link_options(webby-core PRIVATE -mexec-model=reactor)
 add_custom_command(TARGET webby-core POST_BUILD
     COMMAND "${WASM_TOOLS}" component new "$<TARGET_FILE:webby-core>" --adapt "wasi_snapshot_preview1=${adapter}"

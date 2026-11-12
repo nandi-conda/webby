@@ -1,0 +1,103 @@
+WebGL on WASI (webby wasm/gl, wasm/ui/LocalWebGL.cpp): LibWeb asks a local WebGL transport factory when the page
+has no Compositor host, and OpenGLContext reads frames back into a CPU painting surface on WASI, the host's
+GL behind EGL_PLATFORM_ANGLE_TYPE_DEFAULT_ANGLE.
+
+diff --git a/Libraries/LibWeb/WebGL/LocalWebGLTransport.h b/Libraries/LibWeb/WebGL/LocalWebGLTransport.h
+new file mode 100644
+index 0000000000..ac09757e38
+--- /dev/null
++++ b/Libraries/LibWeb/WebGL/LocalWebGLTransport.h
+@@ -0,0 +1,20 @@
++/*
++ * Copyright (c) 2026, the webby developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/RefPtr.h>
++#include <LibWeb/Export.h>
++#include <LibWeb/Forward.h>
++
++namespace Web::WebGL {
++
++// A page with no Compositor host (webby's wasm UI runs LibWeb and the Compositor's canvas code in one module) can
++// still have WebGL contexts: when this is set, a context of such a page gets its transport from it. Null: no WebGL.
++using LocalWebGLTransportFactory = RefPtr<RemoteWebGLTransport> (*)(Page&);
++WEB_API void set_local_webgl_transport_factory(LocalWebGLTransportFactory);
++
++}
+diff --git a/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp b/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp
+index 5f7decf2d6..219727782b 100644
+--- a/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp
++++ b/Libraries/LibWeb/WebGL/WebGLRenderingContextBase.cpp
+@@ -31,6 +31,7 @@
+ #include <LibWeb/Page/Page.h>
+ #include <LibWeb/Platform/EventLoopPlugin.h>
+ #include <LibWeb/WebGL/EventNames.h>
++#include <LibWeb/WebGL/LocalWebGLTransport.h>
+ #include <LibWeb/WebGL/RemoteWebGLTransport.h>
+ #include <LibWeb/WebGL/WebGL2RenderingContext.h>
+ #include <LibWeb/WebGL/WebGLContextAttributes.h>
+@@ -218,12 +219,16 @@ struct RemoteWebGLContext {
+     }
+ };
+ 
++LocalWebGLTransportFactory s_local_webgl_transport_factory;
++
+ Optional<RemoteWebGLContext> create_remote_webgl_context(HTML::CanvasHost& canvas, WebGLVersion webgl_version, bool depth, bool stencil, bool antialias)
+ {
+     auto& page = canvas.canvas_page();
+-    if (!page.has_compositor_host())
+-        return {};
+-    auto transport = page.compositor_host().create_webgl_transport();
++    RefPtr<RemoteWebGLTransport> transport;
++    if (page.has_compositor_host())
++        transport = page.compositor_host().create_webgl_transport();
++    else if (s_local_webgl_transport_factory)
++        transport = s_local_webgl_transport_factory(page);
+     if (!transport)
+         return {};
+ 
+@@ -240,6 +245,11 @@ Optional<RemoteWebGLContext> create_remote_webgl_context(HTML::CanvasHost& canva
+ 
+ }
+ 
++void set_local_webgl_transport_factory(LocalWebGLTransportFactory factory)
++{
++    s_local_webgl_transport_factory = factory;
++}
++
+ JS::ThrowCompletionOr<WebGLRenderingContextBase*> WebGLRenderingContextBase::create(JS::Realm& realm, CanvasOwner canvas, JS::Value options, WebGLVersion webgl_version)
+ {
+     // We should be coming here from getContext being called on a wrapped <canvas> element or OffscreenCanvas.
+diff --git a/Services/Compositor/OpenGLContext.cpp b/Services/Compositor/OpenGLContext.cpp
+index 55a5ddcbb5..b597342f23 100644
+--- a/Services/Compositor/OpenGLContext.cpp
++++ b/Services/Compositor/OpenGLContext.cpp
+@@ -253,6 +253,9 @@ OwnPtr<OpenGLContext> OpenGLContext::create(RefPtr<Gfx::SkiaBackendContext> skia
+ #    elif defined(AK_OS_ANDROID)
+         // ANGLE's GLES backend on top of the system's EGL and GLES driver.
+         EGL_PLATFORM_ANGLE_TYPE_OPENGLES_ANGLE,
++#    elif defined(AK_OS_WASI)
++        // The host picks: ANGLE when it has it, else its own EGL and GLES driver (wasm/gl).
++        EGL_PLATFORM_ANGLE_TYPE_DEFAULT_ANGLE,
+ #    endif
+     };
+ #    ifdef USE_DIRECTX
+diff --git a/Services/Compositor/OpenGLContext.h b/Services/Compositor/OpenGLContext.h
+index 9a74aaffee..ea110380a8 100644
+--- a/Services/Compositor/OpenGLContext.h
++++ b/Services/Compositor/OpenGLContext.h
+@@ -18,7 +18,9 @@
+ 
+ class SkImage;
+ 
+-#if defined(AK_OS_MACOS) || defined(AK_OS_LINUX) || defined(AK_OS_WINDOWS)
++// On WASI the GL calls run on the host's GPU (latha:gui's gl interface, webby's wasm/gl) and the drawing buffer is
++// read back into a CPU painting surface.
++#if defined(AK_OS_MACOS) || defined(AK_OS_LINUX) || defined(AK_OS_WINDOWS) || defined(AK_OS_WASI)
+ #    define ENABLE_WEBGL_CPU_PAINTING_SURFACE
+ #endif
+ 

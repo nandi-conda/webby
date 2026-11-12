@@ -5,6 +5,7 @@
  */
 
 #include "WebView.h"
+#include "LocalWebGL.h"
 #include "Network.h"
 #include "Resources.h"
 #include "Storage.h"
@@ -12,6 +13,7 @@
 #include <AK/LexicalPath.h>
 #include <AK/Utf16String.h>
 #include <Compositor/DisplayListPlayerSkia.h>
+#include <Compositor/CanvasSurfaceRegistry.h>
 #include <Compositor/DisplayListRasterCache.h>
 #include <Compositor/PaintingSurface.h>
 #include <Compositor/SkiaBackendContext.h>
@@ -40,6 +42,7 @@
 #include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/HTML/CustomElements/CustomElementRegistry.h>
 #include <LibWeb/HTML/DocumentState.h>
+#include <LibWeb/HTML/EventLoop/EventLoop.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/MIME.h>
 #include <LibWeb/HTML/HTMLImageElement.h>
 #include <LibWeb/HTML/HTMLInputElement.h>
@@ -52,6 +55,7 @@
 #include <LibWeb/HTML/Parser/HTMLParser.h>
 #include <LibWeb/HTML/Parser/HTMLTokenizer.h>
 #include <LibWeb/HTML/Window.h>
+#include <LibWeb/HighResolutionTime/TimeOrigin.h>
 #include <LibWeb/Layout/RenderDocument.h>
 #include <LibWeb/Loader/FileRequest.h>
 #include <LibWeb/Loader/ResourceLoader.h>
@@ -146,6 +150,22 @@ public:
     {
         if (m_view)
             m_view->did_request_frame();
+        schedule_rendering_opportunity();
+    }
+
+    // The engine's rendering update (animation frame callbacks, canvases presenting, observers) runs on a rendering
+    // opportunity, which Ladybird's Compositor hands out at vsync. There is none here: a frame request gives one
+    // after a frame's time, at most 60 a second, so requestAnimationFrame animations (WebGL demos) run.
+    void schedule_rendering_opportunity()
+    {
+        if (!m_rendering_timer) {
+            m_rendering_timer = Core::Timer::create_single_shot(AK::Duration::from_milliseconds(16), [] {
+                Web::HTML::main_thread_event_loop().rendering_opportunity(Web::HighResolutionTime::unsafe_shared_current_time(),
+                    Web::HTML::EventLoop::RenderingOpportunitySource::LocalTimer);
+            });
+        }
+        if (!m_rendering_timer->is_active())
+            m_rendering_timer->start();
     }
 
     virtual void page_did_change_title(Utf16String const& title) override
@@ -332,6 +352,7 @@ private:
     Queue<Web::QueuedInputEvent> m_input_event_queue;
     u64 m_next_primary_paste { 0 };
     Web::HTML::CrossProcessIdAllocator m_cross_process_ids { .namespace_id = 1 };
+    RefPtr<Core::Timer> m_rendering_timer;
 };
 
 GC_DEFINE_ALLOCATOR(BrowserPageClient);
@@ -373,6 +394,8 @@ ErrorOr<void> initialize_engine()
     Web::ResourceLoader::initialize(Web::Bindings::main_thread_vm().heap());
     // localStorage and sessionStorage: LibWeb's mirrors need an owner, which is the browser process natively.
     Storage::initialize();
+    // WebGL on the host's GPU, when the host has latha:gui's gl (wasm/gl).
+    WebbyUI::install_local_webgl();
     // Fonts: the built-in Liberation faces, so there are always some (a host with no /usr/share/fonts, such as NixOS,
     // or nothing opened to the module), then whatever the system font directories hold.
     auto& font_provider = static_cast<Gfx::PathFontProvider&>(Gfx::FontDatabase::the().install_system_font_provider(make<Gfx::PathFontProvider>()));
@@ -775,6 +798,9 @@ void WebView::show_document(LoadedDocument loaded)
     client->set_zoom(m_zoom);
     auto page = Web::Page::create(*client);
     client->set_page(*page);
+    // A page starts hidden until its UI says otherwise; a hidden document gets no rendering updates (no
+    // requestAnimationFrame callbacks), and document.hidden is true.
+    page->set_system_visibility_state(Web::HTML::VisibilityState::Visible);
     page->set_top_level_traversable(Web::HTML::LocalTraversableNavigable::create_a_new_top_level_traversable(page, nullptr, {}));
     auto& navigable = *page->local_traversable();
     auto& window = *navigable.active_window();
@@ -783,6 +809,8 @@ void WebView::show_document(LoadedDocument loaded)
     auto document = Web::DOM::Document::create(*page, window, document_url);
     document->set_id(client->allocate_cross_process_id());
     document->set_origin(document_url.origin());
+    // As a navigation's "create and initialize a Document object" does: the document is visible when its page is.
+    document->set_initial_visibility_state(page->system_visibility_state());
     // What a navigation's "create and initialize a Document object" also gives it: customElements reads the registry
     // (and traps without one), and the parser reads the declarative shadow root flag.
     document->set_allow_declarative_shadow_roots(Web::HTML::HTMLParser::AllowDeclarativeShadowRoots::Yes);
@@ -866,7 +894,7 @@ static ErrorOr<void> rasterize(Compositing::DisplayList const& display_list, Com
     auto surface = Gfx::PaintingSurface::wrap_bitmap(target);
     Compositor::DisplayListPlayerSkia player { RefPtr<Gfx::SkiaBackendContext> {} };
     Compositor::DisplayListRasterCache raster_cache;
-    player.execute(display_list, visual_context_tree, resource_storage, raster_cache, scroll_state, surface, nullptr, nullptr);
+    player.execute(display_list, visual_context_tree, resource_storage, raster_cache, scroll_state, surface, WebbyUI::local_canvas_surfaces(), nullptr);
     player.flush(*surface);
     return {};
 }
@@ -906,6 +934,10 @@ uint8_t const* WebView::paint()
         return m_impl->bitmap->scanline_u8(0);
     }
     auto& resource_storage = navigable->display_list_resource_storage();
+
+    // Canvases present what they drew (WebGL contexts run their commands and read the frame back), as Ladybird's
+    // update-the-rendering does before it records: the display list then draws the presented frames.
+    document.page().prepare_canvas_contexts_for_compositing();
 
     Web::Layout::ForcedReadScope read { document };
     document.update_layout(Web::DOM::UpdateLayoutReason::SVGDecodedImageDataRender);
