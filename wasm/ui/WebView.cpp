@@ -52,6 +52,7 @@
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/DocumentObserver.h>
 #include <LibWeb/DOM/Element.h>
+#include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/HTML/CustomElements/CustomElementRegistry.h>
 #include <LibWeb/HTML/DocumentState.h>
@@ -1198,6 +1199,7 @@ static void scroll_scrollbar_to(WebView::Impl& impl, Compositing::AsyncScrollbar
         if (!impl.document || !impl.document->window())
             return;
         auto& window = *impl.document->window();
+        Web::HTML::TemporaryExecutionContext context(window.realm());
         if (bar.vertical)
             window.scroll(window.scroll_x(), css, nullptr);
         else
@@ -1211,6 +1213,8 @@ static void scroll_scrollbar_to(WebView::Impl& impl, Compositing::AsyncScrollbar
             return;
         auto* dom_node = Web::DOM::Node::from_unique_id(node.stable_node_id.node_id);
         if (auto* element = as_if<Web::DOM::Element>(dom_node)) {
+            // An element's scroll makes a promise, which needs a realm to run in (none is current outside a task).
+            Web::HTML::TemporaryExecutionContext context(element->realm());
             if (bar.vertical)
                 element->set_scroll_top(css);
             else
