@@ -35,6 +35,8 @@ using Web::StorageAPI::StorageEndpointType;
 namespace {
 
 struct Area {
+    AK_ALLOC_WITH_KMALLOC;
+
     StorageAreaId id;
     StorageEndpointType endpoint;
     OrderedHashMap<Utf16String, Utf16String> items;
@@ -152,7 +154,8 @@ public:
 
         // Written whole to a temporary file and renamed over the old one, so a crash mid-write keeps the last copy.
         auto result = [&]() -> ErrorOr<void> {
-            auto dir = LexicalPath { m_path }.dirname();
+            auto path = LexicalPath { m_path };
+            auto dir = path.dirname();
             if (!FileSystem::is_directory(dir))
                 (void)TRY(Core::Directory::create(ByteString { dir }, Core::Directory::CreateDirectories::Yes));
             auto temporary = ByteString::formatted("{}.tmp", m_path);

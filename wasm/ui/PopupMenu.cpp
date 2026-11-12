@@ -46,22 +46,37 @@ QColor const dim_color { 0x5f, 0x63, 0x68 };
 
 void PopupMenu::add(QString label, std::function<void()> action, bool enabled)
 {
-    m_items.push_back({ std::move(label), std::move(action), enabled });
+    Item item;
+    item.label = std::move(label);
+    item.action = std::move(action);
+    item.enabled = enabled;
+    m_items.push_back(std::move(item));
 }
 
 void PopupMenu::add(QString label, QString shortcut, std::function<void()> action, bool enabled)
 {
-    m_items.push_back({ std::move(label), std::move(action), enabled, std::move(shortcut) });
+    Item item;
+    item.label = std::move(label);
+    item.action = std::move(action);
+    item.enabled = enabled;
+    item.shortcut = std::move(shortcut);
+    m_items.push_back(std::move(item));
 }
 
 void PopupMenu::add_check(QString label, bool checked, QString shortcut, std::function<void()> action)
 {
-    m_items.push_back({ std::move(label), std::move(action), true, std::move(shortcut), checked ? 1 : 0 });
+    Item item;
+    item.label = std::move(label);
+    item.action = std::move(action);
+    item.shortcut = std::move(shortcut);
+    item.check = checked ? 1 : 0;
+    m_items.push_back(std::move(item));
 }
 
 PopupMenu& PopupMenu::add_submenu(QString label)
 {
-    Item item { std::move(label), {}, true };
+    Item item;
+    item.label = std::move(label);
     item.submenu = std::make_shared<PopupMenu>();
     item.submenu->m_parent = this;
     m_items.push_back(item);
@@ -70,7 +85,9 @@ PopupMenu& PopupMenu::add_submenu(QString label)
 
 void PopupMenu::add_heading(QString label)
 {
-    Item item { std::move(label), {}, false };
+    Item item;
+    item.label = std::move(label);
+    item.enabled = false;
     item.heading = true;
     m_items.push_back(std::move(item));
 }
