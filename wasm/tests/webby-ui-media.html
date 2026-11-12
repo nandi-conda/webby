@@ -1,0 +1,18 @@
+<!doctype html><title>Media</title>
+<h1 style="color:#b03060">webby media test</h1>
+<p id=v>video: waiting</p><p id=a>audio: waiting</p><p id=w>web audio: waiting</p>
+<video id=video src="media-tone.wav" preload=auto width=320 height=180 controls></video>
+<audio id=audio controls><source src="media-tone.wav" type="audio/wav"></audio>
+<script>
+// No media server in the wasm build yet: the elements must fail with an error event, never trap the app.
+function watch(el, out, label) {
+  el.addEventListener("error", () => out.textContent = label + ": error " + (el.error ? el.error.code : "?"));
+  el.addEventListener("loadedmetadata", () => out.textContent = label + ": metadata " + el.duration.toFixed(2) + " s");
+}
+watch(video, v, "video"); watch(audio, a, "audio");
+try {
+  const ctx = new AudioContext();
+  const osc = ctx.createOscillator(); osc.connect(ctx.destination); osc.start();
+  w.textContent = "web audio: " + ctx.state;
+} catch (e) { w.textContent = "web audio: " + e; }
+</script>

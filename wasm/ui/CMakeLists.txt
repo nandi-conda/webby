@@ -233,7 +233,7 @@ target_link_libraries(webby-ui PRIVATE
     "${qt}/lib/objects-Release/Gui_resources_1/.qt/rcc/qrc_qpdf_init.cpp.obj"
     "${qt}/lib/objects-Release/Gui_resources_2/.qt/rcc/qrc_gui_shaders_init.cpp.obj"
     "${qt}/lib/libQt6Gui.a" "${qt}/lib/libQt6Core.a" "${qt}/lib/libQt6BundledPcre2.a" "${qt}/lib/libQt6BundledZLIB.a"
-    webby-webgl LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibFileSystem LibURL skia requestserverservice LibRequests LibCrypto
+    webby-webgl LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibMediaClient LibAudio LibFileSystem LibURL skia requestserverservice LibRequests LibCrypto
     OpenSSL::Crypto)
 # A reactor: the host calls the exports; there is no main().
 target_link_options(webby-ui PRIVATE -mexec-model=reactor)
@@ -277,7 +277,7 @@ target_include_directories(webby-core PRIVATE ${LADYBIRD_SOURCE_DIR}/Services ${
     "${CMAKE_CURRENT_SOURCE_DIR}" "${gen}/engine" "${WEBBY_NATIVE_DIR}")
 set_source_files_properties("${gen}/engine/engine.c" PROPERTIES COMPILE_OPTIONS "-w;-Wno-error")
 target_link_libraries(webby-core PRIVATE "${gen}/engine/engine_component_type.o"
-    webby-webgl LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibFileSystem LibURL skia requestserverservice LibRequests LibCrypto)
+    webby-webgl LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibMediaClient LibAudio LibFileSystem LibURL skia requestserverservice LibRequests LibCrypto)
 target_link_options(webby-core PRIVATE -mexec-model=reactor)
 add_custom_command(TARGET webby-core POST_BUILD
     COMMAND "${WASM_TOOLS}" component new "$<TARGET_FILE:webby-core>" --adapt "wasi_snapshot_preview1=${adapter}"

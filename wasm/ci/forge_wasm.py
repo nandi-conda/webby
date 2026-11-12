@@ -288,7 +288,7 @@ def engine():
     wasms = sorted(out.glob("*.wasm"))
     # latha-gui's precompiled webby.wasm (engine.sh, latha-run --precompile): fetched by name on a first run.
     prebuilt = sorted(out.glob("*.cwasm.zst"))
-    files = [*wasms, *prebuilt, *out.glob("webby.wasm.zst"), *out.glob("webby-render-test.png"), *out.glob("webby-ui-test.png"),
+    files = [*wasms, *prebuilt, *out.glob("webby.wasm.zst"), *out.glob("webby-render-test.png"), *out.glob("webby-ui-test.png"), *out.glob("webby-ui-media-test.png"),
              *out.glob("webby-split-test.png"), *out.glob("webby-render-net-*.png"), out / "SHA256SUMS", out / "build.log"]
     notes = (f"Ladybird ({(ROOT / 'LADYBIRD_COMMIT').read_text().strip()[:10]}) with webby's patches for wasm32-wasip1, "
              f"from {sha}, built against {name}: {', '.join(p.name for p in wasms)}.\n\n"

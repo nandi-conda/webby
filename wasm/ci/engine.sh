@@ -212,6 +212,16 @@ if [[ " $targets " == *" webby-ui "* ]] && [ -n "${LATHA_RUN:-}" ]; then
   if [ $rc != 0 ] || [ "$(stat -c %s "$ui/ui.png" 2>/dev/null || echo 0)" -lt 10000 ]; then
     tail -40 "$out/webby-ui-test.log"; fail "webby-ui smoke test failed (exit $rc)"
   fi
+  # A page with <video>, <audio> and an AudioContext: without a media server the elements must fire "error" and the
+  # app keep running (it used to trap in PageClient::create_media_playback_manager).
+  cp "$w/wasm/tests/webby-ui-media.html" "$w/wasm/tests/media-tone.wav" "$ui/"
+  (cd "$ui" && QT_QPA_PLATFORM=offscreen timeout 1200 "$(dirname "$LATHA_RUN")/latha-gui" --dir "$lb/Base/res::/res" \
+    --size 1100x760 --screenshot "$ui/media.png" --quit-after 20000 "$out/webby.wasm" "$ui/webby-ui-media.html") > "$out/webby-ui-media.log" 2>&1
+  rc=$?
+  [ -f "$ui/media.png" ] && cp "$ui/media.png" "$out/webby-ui-media-test.png"
+  if [ $rc != 0 ] || grep -q "trapped\|VERIFICATION FAILED" "$out/webby-ui-media.log" || [ "$(stat -c %s "$ui/media.png" 2>/dev/null || echo 0)" -lt 10000 ]; then
+    tail -40 "$out/webby-ui-media.log"; fail "webby-ui media page failed (exit $rc)"
+  fi
   # And as `latha-gui webby.wasm` with nothing opened to it (built-in theme and fonts), past several idle GCs.
   (cd "$ui" && QT_QPA_PLATFORM=offscreen timeout 1200 "$(dirname "$LATHA_RUN")/latha-gui" --no-root \
     --size 1100x760 --screenshot "$ui/bare.png" --quit-after 20000 "$out/webby.wasm") > "$out/webby-ui-bare.log" 2>&1

@@ -43,6 +43,8 @@
 #include <LibGfx/Font/Typeface.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/SystemTheme.h>
+#include <LibMedia/Sinks/AudioOutputFactory.h>
+#include <LibMediaClient/RemotePlaybackManager.h>
 #include <LibTextCodec/Decoder.h>
 #include <LibURL/Parser.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
@@ -332,6 +334,23 @@ public:
             return;
         }
         m_view->did_request_webauthn(request_id, to_std(request.to_byte_string()));
+    }
+
+    // <video>/<audio> and AudioContext. There is no MediaServer or AudioServer in the wasm build yet, so a media
+    // element gets a playback manager without a server (it reports MEDIA_ERR and fires "error" on the next turn of
+    // the event loop instead of trapping in PageClient's VERIFY_NOT_REACHED), and Web Audio renders into a null
+    // output that drops samples at device pace. If a media server transport gets installed, create() uses it.
+    virtual NonnullOwnPtr<MediaClient::RemotePlaybackManager> create_media_playback_manager() override
+    {
+        return MediaClient::RemotePlaybackManager::create(Audio::PlaybackGroupId { 1 });
+    }
+    virtual void rebind_media_playback_manager(MediaClient::RemotePlaybackManager& playback_manager) override
+    {
+        playback_manager.set_audio_group(Audio::PlaybackGroupId { 1 });
+    }
+    virtual NonnullRefPtr<Media::AudioOutputFactory> create_audio_output_factory() override
+    {
+        return Media::AudioOutputFactory::create_null();
     }
 
     // The page's own loads of file: URLs (style sheets, images, scripts) open the file right here.
