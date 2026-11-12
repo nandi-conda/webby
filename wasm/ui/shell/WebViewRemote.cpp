@@ -209,6 +209,12 @@ void WebView::answer_clipboard(uint64_t request, std::string const& text)
     deliver_engine_events();
 }
 
+void WebView::did_download(Download download)
+{
+    if (on_download)
+        on_download(download);
+}
+
 void WebView::did_request_context_menu(ContextMenu menu)
 {
     if (on_context_menu)
@@ -303,6 +309,7 @@ void WebView::deliver_engine_events()
         bool flag;
         uint64_t id { 0 };
         ContextMenu menu {};
+        Download download {};
     };
     std::vector<Event> list;
     for (size_t i = 0; i < events.len; ++i) {
@@ -333,6 +340,12 @@ void WebView::deliver_engine_events()
             auto const& m = e.val.context_menu_requested;
             auto str = [](gui_string_t const& s) { return std::string(reinterpret_cast<char const*>(s.ptr), s.len); };
             out.menu = { m.x, m.y, str(m.link), str(m.link_text), str(m.image), str(m.selection), m.editable };
+            break;
+        }
+        case WEBBY_ENGINE_VIEWS_EVENT_DOWNLOAD_FINISHED: {
+            auto const& d = e.val.download_finished;
+            auto str = [](gui_string_t const& s) { return std::string(reinterpret_cast<char const*>(s.ptr), s.len); };
+            out.download = { str(d.url), str(d.path), d.size, str(d.mime), str(d.error) };
             break;
         }
         default:
@@ -374,6 +387,9 @@ void WebView::deliver_engine_events()
             break;
         case WEBBY_ENGINE_VIEWS_EVENT_CONTEXT_MENU_REQUESTED:
             did_request_context_menu(std::move(e.menu));
+            break;
+        case WEBBY_ENGINE_VIEWS_EVENT_DOWNLOAD_FINISHED:
+            did_download(std::move(e.download));
             break;
         }
     }

@@ -98,6 +98,18 @@ struct SavedTab {
 QList<SavedTab> read_open_tabs(int& active);
 void write_open_tabs(QList<SavedTab> const& tabs, int active);
 
+// Downloads: <profile>/download_history.jsonl, one {"url","path","size","mime","error","t"} per line, oldest first.
+struct DownloadRecord {
+    QString url;
+    QString path;
+    qint64 size { 0 };
+    QString mime;
+    QString error;
+    qint64 time { 0 }; // ms since the epoch
+};
+QList<DownloadRecord> read_downloads();
+void add_download(DownloadRecord const&);
+
 // Whether `url` is worth keeping in history or the open tabs (not blank, not webby's own pages).
 bool is_session_url(QString const& url);
 

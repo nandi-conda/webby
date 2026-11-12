@@ -54,6 +54,15 @@ struct ContextMenu {
     bool editable { false }; // the click was in a text field or contenteditable
 };
 
+// A navigation saved as a file (see WebView::on_download).
+struct Download {
+    std::string url;
+    std::string path;  // where it was saved, "" if it was not
+    uint64_t size { 0 };
+    std::string mime;
+    std::string error; // why it was not saved, "" if it was
+};
+
 class WebView {
 public:
     // The engine is set up the first time a view is made: LibWeb's JS VM, resource loader and fonts.
@@ -108,6 +117,9 @@ public:
     void answer_clipboard(uint64_t request, std::string const& text);
     // The page's own context menu was not cancelled (Shift skips the page's handler): the chrome shows its menu.
     std::function<void(ContextMenu const&)> on_context_menu;
+    // A navigation's response was saved to the downloads folder instead of shown ($WEBBY_DOWNLOAD_DIR, else
+    // $XDG_DOWNLOAD_DIR, else ~/Downloads): Content-Disposition: attachment, or a type the engine cannot show.
+    std::function<void(Download const&)> on_download;
 
     // Editing, for the context menu, in the focused frame.
     std::string selected_text() const;
@@ -140,6 +152,7 @@ public:
     void did_write_clipboard(std::string text, bool selection);
     void did_request_clipboard(uint64_t request, bool selection);
     void did_request_context_menu(ContextMenu);
+    void did_download(Download);
     // The UI component's WebView (shell/WebViewRemote.cpp) only: the engine component's queued events, as the
     // callbacks above.
     void deliver_engine_events();

@@ -103,6 +103,8 @@ private:
     QRectF find_button_rect(int index) const; // 0 previous, 1 next, 2 close
     QRectF zoom_rect() const;
     void paint_find(QPainter&);
+    void paint_toast(QPainter&);
+    void show_toast(QString const& text);
     void close_tab(int index);
     void activate_tab(int index);
     Tab* current();
@@ -167,6 +169,10 @@ private:
     int m_suggestion { -1 }; // the highlighted suggestion, -1 for none (Return loads the typed text)
     QString m_typed_text; // what was typed before Up/Down put a suggestion in the field
     QTimer m_save_timer;
+
+    // A short note at the bottom of the window ("Downloaded …"), gone after a few seconds.
+    QString m_toast;
+    QTimer m_toast_timer;
 
     // The find bar (Ctrl+F), over the page's top right corner.
     bool m_find_open { false };

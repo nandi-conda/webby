@@ -59,6 +59,10 @@
 #include <LibWebCommon/Page/ContextMenuForInputEventsTarget.h>
 #include <LibWebCommon/Page/NavigationTarget.h>
 #include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <string.h>
+#include <errno.h>
 #include <stdlib.h>
 
 namespace WebbyUI {
@@ -435,6 +439,132 @@ struct LoadedDocument {
     Optional<Web::MimeSniff::MimeType> mime_type;
 };
 
+// Downloads. A response is saved rather than shown when its Content-Disposition says attachment, or its type is one
+// the engine has no way to show (not HTML, XML, text, an image, JSON or JavaScript), as Ladybird's navigation does.
+
+static bool is_download(Network::Document const& document, Optional<Web::MimeSniff::MimeType> const& type)
+{
+    if (document.content_disposition.has_value()) {
+        auto disposition = document.content_disposition->view().trim_whitespace();
+        if (disposition.starts_with("attachment"sv, CaseSensitivity::CaseInsensitive))
+            return true;
+    }
+    if (!type.has_value())
+        return false;
+    auto essence = type->essence();
+    if (type->is_html() || type->is_xml() || type->is_image() || type->is_javascript() || type->is_json())
+        return false;
+    if (essence.bytes_as_string_view().starts_with("text/"sv))
+        return false;
+    return true;
+}
+
+static ByteString download_dir()
+{
+    for (auto const* name : { "WEBBY_DOWNLOAD_DIR", "XDG_DOWNLOAD_DIR" }) {
+        if (auto const* value = getenv(name); value && *value)
+            return ByteString { value };
+    }
+    auto const* home = getenv("HOME");
+    return ByteString::formatted("{}/Downloads", home && *home ? home : "/tmp");
+}
+
+// The file name: Content-Disposition's filename* (RFC 5987, UTF-8'') or filename, else the URL's last path segment.
+static ByteString download_name(Network::Document const& document)
+{
+    ByteString name;
+    if (document.content_disposition.has_value()) {
+        auto value = document.content_disposition->view();
+        for (auto part : value.split_view(';')) {
+            part = part.trim_whitespace();
+            if (part.starts_with("filename*="sv, CaseSensitivity::CaseInsensitive)) {
+                auto v = part.substring_view(10).trim("\""sv);
+                if (auto quote = v.find("''"sv); quote.has_value())
+                    v = v.substring_view(*quote + 2);
+                name = URL::percent_decode(v);
+                break;
+            }
+            if (part.starts_with("filename="sv, CaseSensitivity::CaseInsensitive))
+                name = ByteString { part.substring_view(9).trim("\" "sv) };
+        }
+    }
+    if (name.is_empty()) {
+        auto path = URL::percent_decode(document.url.serialize_path());
+        if (auto slash = path.find_last('/'); slash.has_value())
+            path = path.substring(*slash + 1);
+        name = path;
+    }
+    // No folders, no hidden or empty names.
+    name = name.replace("/"sv, "_"sv, ReplaceMode::All).replace("\\"sv, "_"sv, ReplaceMode::All);
+    while (name.starts_with('.'))
+        name = name.substring(1);
+    if (name.is_empty())
+        name = "download";
+    return name;
+}
+
+static bool make_dirs(ByteString const& path)
+{
+    for (size_t i = 1; i <= path.length(); ++i) {
+        if (i == path.length() || path[i] == '/') {
+            auto prefix = path.substring(0, i);
+            if (mkdir(prefix.characters(), 0755) < 0 && errno != EEXIST)
+                return false;
+        }
+    }
+    return true;
+}
+
+static Download save_download(Network::Document const& document, Optional<Web::MimeSniff::MimeType> const& type)
+{
+    Download download;
+    download.url = to_std(document.url.serialize().to_byte_string());
+    download.size = document.body.size();
+    if (type.has_value())
+        download.mime = to_std(type->essence().to_byte_string());
+    auto dir = download_dir();
+    if (!make_dirs(dir)) {
+        download.error = to_std(ByteString::formatted("cannot make {}: {}", dir, strerror(errno)));
+        return download;
+    }
+    auto name = download_name(document);
+    // "name.ext", then "name (1).ext", "name (2).ext", ... so nothing is overwritten.
+    auto stem = name;
+    ByteString ext;
+    if (auto dot = name.find_last('.'); dot.has_value() && *dot > 0) {
+        stem = name.substring(0, *dot);
+        ext = name.substring(*dot);
+    }
+    for (int i = 0; i < 1000; ++i) {
+        auto path = i == 0 ? ByteString::formatted("{}/{}", dir, name) : ByteString::formatted("{}/{} ({}){}", dir, stem, i, ext);
+        int fd = open(path.characters(), O_WRONLY | O_CREAT | O_EXCL, 0644);
+        if (fd < 0) {
+            if (errno == EEXIST)
+                continue;
+            download.error = to_std(ByteString::formatted("cannot write {}: {}", path, strerror(errno)));
+            return download;
+        }
+        auto bytes = document.body.bytes();
+        size_t written = 0;
+        while (written < bytes.size()) {
+            auto n = write(fd, bytes.data() + written, bytes.size() - written);
+            if (n <= 0)
+                break;
+            written += size_t(n);
+        }
+        close(fd);
+        if (written != bytes.size()) {
+            download.error = to_std(ByteString::formatted("cannot write {}: {}", path, strerror(errno)));
+            unlink(path.characters());
+            return download;
+        }
+        download.path = to_std(path);
+        return download;
+    }
+    download.error = "too many files with that name";
+    return download;
+}
+
 // A load makes a new Page with a new top-level traversable, and parses the document into it directly, in this module
 // (the document a navigation would have made, as webby-render and SVGDecodedImageData make theirs).
 void WebView::navigate(std::string const& requested_url, bool add_to_history)
@@ -478,8 +608,11 @@ void WebView::navigate(std::string const& requested_url, bool add_to_history)
         }
     } else if (url->scheme() == "http"sv || url->scheme() == "https"sv) {
         // The old page stays up while the document downloads; the new one replaces it when it arrives.
+        auto previous_url = m_url;
+        auto previous_history = m_history;
+        auto previous_index = m_history_index;
         set_location(to_std(url->serialize().to_byte_string()), add_to_history);
-        m_fetch_id = Network::fetch_document(*url, [this, requested = *url](ErrorOr<Network::Document> result) {
+        m_fetch_id = Network::fetch_document(*url, [this, requested = *url, previous_url = move(previous_url), previous_history = move(previous_history), previous_index](ErrorOr<Network::Document> result) mutable {
             m_fetch_id = 0;
             if (result.is_error()) {
                 auto html = error_page_html(requested.serialize(), ByteString::formatted("{}", result.error()));
@@ -490,6 +623,17 @@ void WebView::navigate(std::string const& requested_url, bool add_to_history)
             Optional<Web::MimeSniff::MimeType> mime_type;
             if (document.content_type.has_value())
                 mime_type = Web::MimeSniff::MimeType::parse(*document.content_type);
+            if (is_download(document, mime_type)) {
+                // Saved, not shown: the page, the address and the history stay as they were.
+                m_url = move(previous_url);
+                m_history = move(previous_history);
+                m_history_index = previous_index;
+                if (on_url_change)
+                    on_url_change(m_url);
+                did_finish_loading();
+                did_download(save_download(document, mime_type));
+                return;
+            }
             if (document.url != requested) {
                 // After a redirect the address bar and history show where the page came from.
                 m_url = to_std(document.url.serialize().to_byte_string());
@@ -517,6 +661,12 @@ void WebView::navigate(std::string const& requested_url, bool add_to_history)
         show_document({ document_url, file_body.release_value(), move(file_type) });
     else
         show_document({ document_url, MUST(ByteBuffer::copy(html.bytes())), {} });
+}
+
+void WebView::did_download(Download download)
+{
+    if (on_download)
+        on_download(download);
 }
 
 void WebView::set_location(std::string url, bool add_to_history)

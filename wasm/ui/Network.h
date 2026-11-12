@@ -26,6 +26,7 @@ struct Document {
     u32 status { 0 };
     ByteBuffer body;
     Optional<ByteString> content_type;
+    Optional<ByteString> content_disposition;
 };
 
 // Fetches a page's document from RequestServer, following redirects, and calls back on a later turn of the event loop.

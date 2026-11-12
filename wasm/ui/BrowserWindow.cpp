@@ -90,6 +90,12 @@ BrowserWindow::BrowserWindow(QStringList const& urls)
     m_save_timer.setSingleShot(true);
     m_save_timer.setInterval(500);
     QObject::connect(&m_save_timer, &QTimer::timeout, this, [this] { save_tabs(); });
+    m_toast_timer.setSingleShot(true);
+    m_toast_timer.setInterval(6000);
+    QObject::connect(&m_toast_timer, &QTimer::timeout, this, [this] {
+        m_toast.clear();
+        update();
+    });
 
     // With no URLs given, last time's tabs come back, asleep until they come to the front (as in the Nim front end).
     int active = 0;
@@ -180,6 +186,14 @@ void BrowserWindow::wake(Tab& tab)
     };
     raw->on_clipboard_request = [raw](uint64_t request, bool selection) {
         raw->answer_clipboard(request, to_std(selection ? qt2wasm::gui::primaryText() : qt2wasm::gui::clipboardText()));
+    };
+    raw->on_download = [this](WebbyUI::Download const& d) {
+        Profile::DownloadRecord record { from_std(d.url), from_std(d.path), qint64(d.size), from_std(d.mime), from_std(d.error), Profile::now_ms() };
+        Profile::add_download(record);
+        if (d.error.empty())
+            show_toast(QStringLiteral("Downloaded %1 to %2  ·  Ctrl+J").arg(record.path.section(u'/', -1), record.path.section(u'/', 0, -2)));
+        else
+            show_toast(QStringLiteral("Download failed: %1").arg(record.error));
     };
     raw->on_context_menu = [this, raw](WebbyUI::ContextMenu const& menu) { show_page_menu(raw, menu); };
     raw->load(to_std(Pages::is_own_page(url) ? Pages::refresh(url) : url));
@@ -494,6 +508,7 @@ void BrowserWindow::paintEvent(QPaintEvent*)
     paint_bookmarks_bar(painter);
     paint_status(painter);
     paint_find(painter);
+    paint_toast(painter);
     paint_suggestions(painter);
     m_menu.paint(painter);
 }
@@ -1363,6 +1378,10 @@ void BrowserWindow::keyPressEvent(QKeyEvent* event)
         open_own_page(Pages::history_page());
         return;
     }
+    if (ctrl && key == Qt::Key_J) {
+        open_own_page(Pages::downloads_page());
+        return;
+    }
     if (ctrl_shift && key == Qt::Key_O) {
         open_own_page(Pages::bookmarks_page());
         return;
@@ -1719,5 +1738,31 @@ QRectF BrowserWindow::zoom_rect() const
         return {};
     auto star = star_rect();
     return { star.left() - 52, star.top() + 6, 50, star.height() - 12 };
+}
+
+// The toast: one line over the bottom left of the page, like the link status bubble but taller.
+
+void BrowserWindow::show_toast(QString const& text)
+{
+    m_toast = text;
+    m_toast_timer.start();
+    update();
+}
+
+void BrowserWindow::paint_toast(QPainter& p)
+{
+    if (m_toast.isEmpty())
+        return;
+    QFont font = p.font();
+    font.setPixelSize(13);
+    p.setFont(font);
+    QFontMetricsF metrics(font);
+    auto text = metrics.elidedText(m_toast, Qt::ElideMiddle, width() - 64);
+    QRectF box((width() - metrics.horizontalAdvance(text) - 32) / 2, height() - 56, metrics.horizontalAdvance(text) + 32, 36);
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(0x30, 0x31, 0x34));
+    p.drawRoundedRect(box, 8, 8);
+    p.setPen(Qt::white);
+    p.drawText(box, Qt::AlignCenter, text);
 }
 

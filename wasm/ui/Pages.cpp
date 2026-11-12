@@ -105,6 +105,40 @@ QString bookmarks_page()
     return write_page(u"bookmarks.html"_s, u"Bookmarks"_s, body);
 }
 
+static QString human_size(qint64 bytes)
+{
+    if (bytes < 1024)
+        return QStringLiteral("%1 B").arg(bytes);
+    if (bytes < 1024 * 1024)
+        return QStringLiteral("%1 KB").arg(bytes / 1024.0, 0, 'f', 1);
+    return QStringLiteral("%1 MB").arg(bytes / (1024.0 * 1024.0), 0, 'f', 1);
+}
+
+QString downloads_page()
+{
+    auto downloads = Profile::read_downloads();
+    QString body;
+    for (auto i = downloads.size() - 1; i >= 0; --i) {
+        auto const& d = downloads[i];
+        auto when = QDateTime::fromMSecsSinceEpoch(d.time).toString(u"d MMM HH:mm"_s);
+        auto name = d.path.isEmpty() ? QUrl(d.url).fileName() : d.path.section(u'/', -1);
+        body += u"<li><span class=\"time\">"_s + when + u"</span>"_s;
+        if (d.error.isEmpty())
+            body += u"<a href=\""_s + QUrl::fromLocalFile(d.path).toString(QUrl::FullyEncoded).toHtmlEscaped() + u"\" title=\""_s
+                + d.path.toHtmlEscaped() + u"\">"_s + name.toHtmlEscaped() + u"</a><span class=\"host\">"_s
+                + human_size(d.size) + u" · "_s + QUrl(d.url).host().toHtmlEscaped() + u"</span>"_s;
+        else
+            body += u"<span>"_s + name.toHtmlEscaped() + u"</span><span class=\"host\">Failed: "_s + d.error.toHtmlEscaped()
+                + u"</span>"_s;
+        body += u"</li>"_s;
+    }
+    if (body.isEmpty())
+        body = u"<p class=\"empty\">Files you download show up here.</p>"_s;
+    else
+        body = u"<ul>"_s + body + u"</ul>"_s;
+    return write_page(u"downloads.html"_s, u"Downloads"_s, body);
+}
+
 bool is_own_page(QString const& url)
 {
     return url.startsWith(QUrl::fromLocalFile(pages_dir() + u'/').toString(QUrl::FullyEncoded));
@@ -116,6 +150,8 @@ QString refresh(QString const& url)
         return history_page();
     if (url.endsWith(u"/bookmarks.html"_s))
         return bookmarks_page();
+    if (url.endsWith(u"/downloads.html"_s))
+        return downloads_page();
     return url;
 }
 

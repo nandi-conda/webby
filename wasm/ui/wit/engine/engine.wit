@@ -39,6 +39,16 @@ interface views {
         editable: bool,
     }
 
+    /// A navigation the engine saved as a file instead of showing it (Content-Disposition: attachment, or a type it
+    /// cannot show): `path` where it went, or `error` why not ("" when saved). The page stays as it was.
+    record download {
+        url: string,
+        path: string,
+        size: u64,
+        mime: string,
+        error: string,
+    }
+
     /// What a page did since the last `take-events`, for the chrome.
     variant event {
         /// The page changed: `paint` it again.
@@ -51,6 +61,7 @@ interface views {
         clipboard-written(clipboard-write),
         clipboard-requested(clipboard-request),
         context-menu-requested(context-menu),
+        download-finished(download),
     }
 
     record find-result {

@@ -17,6 +17,8 @@ namespace WebbyUI::Pages {
 QString history_page();
 // The file:// URL of a freshly written Bookmarks page (bar, then other bookmarks).
 QString bookmarks_page();
+// The file:// URL of a freshly written Downloads page (newest first, each a link to the saved file).
+QString downloads_page();
 // Whether `url` is one of these pages, and so is written again when reloaded.
 bool is_own_page(QString const& url);
 QString refresh(QString const& url);

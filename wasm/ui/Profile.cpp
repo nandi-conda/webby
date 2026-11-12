@@ -359,4 +359,33 @@ void write_open_tabs(QList<SavedTab> const& tabs, int active)
         written = data;
 }
 
+// Downloads.
+
+QList<DownloadRecord> read_downloads()
+{
+    QList<DownloadRecord> out;
+    QFile f(file(QStringLiteral("download_history.jsonl")));
+    if (!f.open(QIODevice::ReadOnly))
+        return out;
+    while (!f.atEnd()) {
+        auto j = QJsonDocument::fromJson(f.readLine().trimmed()).object();
+        if (j.isEmpty())
+            continue;
+        out.append({ j.value(u"url").toString(), j.value(u"path").toString(), j.value(u"size").toInteger(),
+            j.value(u"mime").toString(), j.value(u"error").toString(), j.value(u"t").toInteger() });
+    }
+    return out;
+}
+
+void add_download(DownloadRecord const& d)
+{
+    QDir().mkpath(dir());
+    QFile f(file(QStringLiteral("download_history.jsonl")));
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Append))
+        return;
+    QJsonObject j { { u"url"_s, d.url }, { u"path"_s, d.path }, { u"size"_s, d.size }, { u"mime"_s, d.mime },
+        { u"error"_s, d.error }, { u"t"_s, d.time } };
+    f.write(QJsonDocument(j).toJson(QJsonDocument::Compact) + '\n');
+}
+
 }

@@ -221,7 +221,7 @@ void start(u64 id)
                 finish(id, body.release_error());
                 return;
             }
-            finish(id, Document { fetch.url, status, body.release_value(), headers->get("Content-Type"sv) });
+            finish(id, Document { fetch.url, status, body.release_value(), headers->get("Content-Type"sv), headers->get("Content-Disposition"sv) });
         });
 }
 

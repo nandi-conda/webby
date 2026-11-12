@@ -23,6 +23,7 @@ struct EventRecord {
     bool flag { false };
     uint64_t id { 0 };
     WebbyUI::ContextMenu menu {};
+    WebbyUI::Download download {};
 };
 
 struct exports_webby_engine_views_view_t {
@@ -74,6 +75,11 @@ exports_webby_engine_views_own_view_t exports_webby_engine_views_constructor_vie
     };
     view.on_context_menu = [&events](WebbyUI::ContextMenu const& menu) {
         events.push_back({ EXPORTS_WEBBY_ENGINE_VIEWS_EVENT_CONTEXT_MENU_REQUESTED, {}, false, 0, menu });
+    };
+    view.on_download = [&events](WebbyUI::Download const& d) {
+        EventRecord e { EXPORTS_WEBBY_ENGINE_VIEWS_EVENT_DOWNLOAD_FINISHED, {} };
+        e.download = d;
+        events.push_back(std::move(e));
     };
     return exports_webby_engine_views_view_new(record);
 }
@@ -184,6 +190,16 @@ void exports_webby_engine_views_method_view_take_events(Borrow self, exports_web
             give_string(&o.image, m.image);
             give_string(&o.selection, m.selection);
             o.editable = m.editable;
+            break;
+        }
+        case EXPORTS_WEBBY_ENGINE_VIEWS_EVENT_DOWNLOAD_FINISHED: {
+            auto const& d = events[i].download;
+            auto& o = out.val.download_finished;
+            give_string(&o.url, d.url);
+            give_string(&o.path, d.path);
+            o.size = d.size;
+            give_string(&o.mime, d.mime);
+            give_string(&o.error, d.error);
             break;
         }
         default:
