@@ -8,6 +8,7 @@
 #include "KeyMap.h"
 #include "Pages.h"
 #include "Passwords.h"
+#include "Sync.h"
 
 #include <QDir>
 #include <QFile>
@@ -18,6 +19,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPolygonF>
+#include <QUrl>
 #include <QWheelEvent>
 #include <QtMath>
 #include <cmath>
@@ -116,6 +118,38 @@ BrowserWindow::BrowserWindow(QStringList const& urls)
     activate_tab(active);
     if (blank)
         focus_address(true);
+
+    // Sync (Sync.h): its pages follow its state, and the bookmarks bar follows bookmarks that sync brings in.
+    WebbyUI::Sync::on_status([this] { refresh_sync_pages(); });
+    WebbyUI::Sync::on_devices([this] { refresh_sync_pages(); });
+    Profile::Bookmarks::the().on_change([this] {
+        resizeEvent(nullptr);
+        update();
+    });
+    // Once the first page has set the network up.
+    QTimer::singleShot(3000, this, [] { WebbyUI::Sync::start(); });
+}
+
+void BrowserWindow::refresh_sync_pages()
+{
+    for (auto& tab : m_tabs) {
+        if (!tab.view)
+            continue;
+        auto url = from_std(tab.view->url());
+        if (url != Pages::sync_page_url() && url != Pages::devices_page_url())
+            continue;
+        // Written again; loaded again only when it says something new (a reload would empty a form being filled in).
+        auto path = QUrl(url).toLocalFile();
+        QByteArray before;
+        if (QFile f(path); f.open(QIODevice::ReadOnly))
+            before = f.readAll();
+        Pages::refresh(url);
+        QByteArray after;
+        if (QFile f(path); f.open(QIODevice::ReadOnly))
+            after = f.readAll();
+        if (after != before)
+            tab.view->load(to_std(url));
+    }
 }
 
 int BrowserWindow::chrome_height() const
@@ -214,6 +248,21 @@ void BrowserWindow::wake(Tab& tab)
     raw->on_context_menu = [this, raw](WebbyUI::ContextMenu const& menu) { show_page_menu(raw, menu); };
     raw->on_pdf = [this, raw](WebbyUI::PdfDocument& pdf) { open_pdf(raw, pdf); };
     PasswordManager::the().attach(*raw);
+    raw->on_navigation_request = [this, raw](std::string const& u) {
+        auto url = from_std(u);
+        if (!Pages::is_sync_action(url))
+            return false;
+        auto action = Pages::run_sync_action(url);
+        if (!action.copy.isEmpty()) {
+            qt2wasm::gui::setClipboardText(action.copy);
+            show_toast(QStringLiteral("Copied"));
+        }
+        for (auto const& open : action.open)
+            open_in_new_tab(open, false);
+        if (!action.load.isEmpty())
+            raw->load(to_std(Pages::refresh(action.load)));
+        return true;
+    };
     raw->load(to_std(Pages::is_own_page(url) ? Pages::refresh(url) : url));
 }
 
@@ -241,6 +290,11 @@ void BrowserWindow::save_tabs()
     for (auto const& tab : m_tabs)
         tabs.append({ tab.title, tab.url, tab.created });
     Profile::write_open_tabs(tabs, m_current);
+    // Other devices see them under Tabs from other devices.
+    QList<WebbyUI::Sync::DeviceTab> shared;
+    for (auto const& tab : m_tabs)
+        shared.append({ tab.title, tab.url });
+    WebbyUI::Sync::set_tabs(shared);
 }
 
 void BrowserWindow::close_tab(int index)

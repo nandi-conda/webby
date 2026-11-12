@@ -131,6 +131,9 @@ public:
     // its history and shows an empty page with the file's name as its title, and hands the bytes to the chrome,
     // whose PDF viewer shows it while the view's URL stays `url` (wasm/ui/PdfView.h). `data` may be moved from.
     std::function<void(PdfDocument&)> on_pdf;
+    // A link, form or script of the page navigates it: return true to take the URL instead of loading it (the
+    // chrome's own pages' actions, Pages::is_sync_action).
+    std::function<bool(std::string const&)> on_navigation_request;
 
     // The browser's own page scripts. Every hook runs for every document the view shows, before the document is
     // parsed (a hook returns "" to skip it); the scripts talk back with prompt(message_prefix() + text), which never

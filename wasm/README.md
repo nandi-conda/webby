@@ -408,6 +408,16 @@ Right of the address field are the Nim toolbar's Bookmarks, History and Download
 Bookmarks; Downloads; Passwords and passkeys; Find, Zoom, Reload; Settings (restore tabs, colour tabs by age, bookmarks bar, search
 engine, kept in `wasm_ui.json` and the Nim `tabs.json`); Help (Keyboard shortcuts, About Webby).
 
+Sync (`ui/Sync.cpp`, `ui/SyncDoc.cpp`, `ui/SyncKeys.cpp`, `ui/SyncPages.cpp`) is the Nim front end's
+(`nim/src/features/sync*`): the same sync code, webby-sync server (`sync-worker/`) or WebDAV folder, encrypted blobs and
+merge rules, so wasm webby syncs with the desktop and Android webby. Bookmarks and this device's open tabs sync (the
+device is `<profile>/wasm_device.json`, apart from a desktop webby sharing the profile folder); the vault registers the
+passwords, passkeys and secrets blobs (`Sync::register_blob`) and keeps the settings, which live in `<profile>/sync.json`
+without it. ⋮ › Settings › Sync and ⋮ › History › Tabs from other devices open the two pages; their links and forms go to
+`<pages>/sync-do?op=…`, which the UI runs instead of loading. Requests go through the module's RequestServer
+(`ui/HttpClient.h`), so only the in-tree `webby.wasm` syncs (the composed shell build says it can't).
+`tests/sync.sh OUT` checks the C++ against the Nim code (encodings, merges, codes, keys, and each opens the other's blobs).
+
 It builds inside Ladybird's WASI build (`patches/0014-webby-ui.patch` adds the directory when `WEBBY_UI_DIR` names it),
 with Qt for WASI, qt2wasm, wit-bindgen, wasm-tools and the preview1 reactor adapter from this pixi env:
 

@@ -11,6 +11,7 @@
 #include "BrowserWindow.h"
 #include "Omnibox.h"
 #include "Pages.h"
+#include "Sync.h"
 
 #include <QPainter>
 #include <QPainterPath>
@@ -139,6 +140,9 @@ void BrowserWindow::open_more_menu()
         }
     }
 
+    history.add_separator();
+    history.add(QStringLiteral("Tabs from other devices"), [this] { open_own_page(Pages::devices_page()); });
+
     auto& bookmarks = menu.add_submenu(QStringLiteral("Bookmarks"));
     bool marked = has_page && Profile::Bookmarks::the().contains(url);
     bookmarks.add(marked ? QStringLiteral("Remove this bookmark") : QStringLiteral("Bookmark this page"), QStringLiteral("Ctrl+D"),
@@ -167,6 +171,8 @@ void BrowserWindow::open_more_menu()
     menu.add_separator();
 
     auto& settings = menu.add_submenu(QStringLiteral("Settings"));
+    settings.add(WebbyUI::Sync::enabled() ? QStringLiteral("Sync (on)") : QStringLiteral("Sync"), [this] { open_own_page(Pages::sync_page()); });
+    settings.add_separator();
     settings.add_check(QStringLiteral("Restore tabs at start"), Profile::ui_setting(QStringLiteral("restoreTabs")).toBool(true), {}, [] {
         Profile::set_ui_setting(QStringLiteral("restoreTabs"), !Profile::ui_setting(QStringLiteral("restoreTabs")).toBool(true));
     });

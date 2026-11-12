@@ -5,6 +5,7 @@
  */
 
 #include "Network.h"
+#include "HttpClient.h"
 
 #include <AK/HashMap.h>
 #include <LibCore/EventLoop.h>
@@ -29,6 +30,7 @@
 #include <RequestServer/Resolver.h>
 #include <RequestServer/ResourceSubstitutionMap.h>
 #include <stdlib.h>
+#include <strings.h>
 
 namespace RequestServer {
 
@@ -276,6 +278,99 @@ void cancel(u64 id)
         return;
     if (auto fetch = s_state->fetches.take(id); fetch.has_value() && (*fetch)->request)
         (void)(*fetch)->request->stop();
+}
+
+}
+
+namespace WebbyUI::Http {
+
+std::string Response::header(std::string const& name) const
+{
+    for (auto const& [k, v] : headers) {
+        if (k.size() == name.size() && strncasecmp(k.data(), name.data(), k.size()) == 0)
+            return v;
+    }
+    return {};
+}
+
+namespace {
+
+struct Pending {
+    AK_ALLOC_WITH_KMALLOC;
+
+    RefPtr<Requests::Request> request;
+    std::function<void(Response)> on_done;
+};
+HashMap<u64, NonnullOwnPtr<Pending>> s_pending;
+u64 s_next_request { 1 };
+
+void answer(u64 id, Response response)
+{
+    // Not from inside RequestClient's callback (the caller may start its next request right away).
+    Core::deferred_invoke([id, response = move(response)]() mutable {
+        auto pending = s_pending.take(id);
+        if (pending.has_value())
+            (*pending)->on_done(move(response));
+    });
+}
+
+}
+
+void request(std::string const& method, std::string const& url, Headers const& headers, std::string const& body,
+    std::function<void(Response)> on_done)
+{
+    auto id = s_next_request++;
+    auto pending = make<Pending>();
+    pending->on_done = move(on_done);
+    s_pending.set(id, move(pending));
+    auto fail = [id](char const* why) {
+        Response r;
+        r.error = why;
+        answer(id, move(r));
+    };
+    if (!Network::s_state) {
+        fail("The network did not start");
+        return;
+    }
+    auto parsed = URL::Parser::basic_parse(StringView { url.data(), url.size() });
+    if (!parsed.has_value()) {
+        fail("Not a URL");
+        return;
+    }
+    auto list = HTTP::HeaderList::create();
+    list->append(HTTP::Header::isomorphic_encode("User-Agent"sv, Web::default_user_agent));
+    for (auto const& [k, v] : headers)
+        list->append(HTTP::Header::isomorphic_encode(StringView { k.data(), k.size() }, StringView { v.data(), v.size() }));
+    auto req = Network::s_state->client->start_request(ByteString { method.data(), method.size() }, *parsed, *list,
+        ReadonlyBytes { reinterpret_cast<u8 const*>(body.data()), body.size() }, HTTP::CacheMode::NoStore,
+        HTTP::Cookie::IncludeCredentials::No);
+    if (!req) {
+        fail("RequestServer did not start the request");
+        return;
+    }
+    if (auto it = s_pending.find(id); it != s_pending.end())
+        it->value->request = req;
+    req->set_buffered_request_finished_callback(
+        [id](u64, Requests::RequestTimingInfo const&, Optional<Requests::NetworkError> const& network_error,
+            NonnullRefPtr<HTTP::HeaderList> response_headers, Optional<u32> response_code, Optional<String> reason_phrase,
+            Optional<Core::ImmutableBytes>, Optional<u64>, Requests::CacheState, Core::ImmutableBytes payload) {
+            Response r;
+            if (network_error.has_value()) {
+                auto why = Requests::network_error_to_string(*network_error);
+                r.error.assign(why.characters_without_null_termination(), why.length());
+            } else if (!response_code.has_value()) {
+                r.error = "No HTTP status";
+            } else {
+                r.status = int(*response_code);
+                if (reason_phrase.has_value())
+                    r.reason = reason_phrase->to_byte_string().characters();
+
+                for (auto const& header : *response_headers)
+                    r.headers.emplace_back(std::string { header.name.characters(), header.name.length() }, std::string { header.value.characters(), header.value.length() });
+                r.body.assign(reinterpret_cast<char const*>(payload.bytes().data()), payload.bytes().size());
+            }
+            answer(id, move(r));
+        });
 }
 
 }

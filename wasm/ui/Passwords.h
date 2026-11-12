@@ -83,6 +83,7 @@ private:
     void page_message(WebView&, QString const& text, QString const& document_url);
     void vault_page_message(WebView&, QJsonObject const& message);
     void send_vault_page_data(WebView&);
+    void hook_sync(Vault&);
     void use_vault_passkeys();
     void open_vault();
     void vault_opened();

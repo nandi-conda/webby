@@ -173,6 +173,10 @@ add_executable(webby-ui
     PdfView.cpp
     Profile.cpp
     Resources.c
+    Sync.cpp
+    SyncDoc.cpp
+    SyncKeys.cpp
+    SyncPages.cpp
     WebView.cpp
     main.cpp
     qt_wasi_shims.c
@@ -209,9 +213,9 @@ target_include_directories(webby-ui PRIVATE
 target_compile_definitions(webby-ui PRIVATE QT_CORE_LIB QT_GUI_LIB QT_NO_DEBUG QT_STATIC QT_STATICPLUGIN
     QT2WASM_GUI QT2WASM_QPA_PLATFORM="qt2wasmgui" QT2WASM_GUI_BINDINGS_H="gui.h")
 # This UI's own sources share files with Ladybird's headers, which use Qt's keywords (emit, signals) as names.
-set_source_files_properties(BrowserWindow.cpp Dialog.cpp Keyring.cpp PageMenu.cpp PasswordBar.cpp Passwords.cpp PopupMenu.cpp KeyMap.cpp MoreMenu.cpp Network.cpp Omnibox.cpp PageFrame.cpp Pages.cpp PdfView.cpp Profile.cpp Vault.cpp WebView.cpp main.cpp PROPERTIES COMPILE_DEFINITIONS QT_NO_KEYWORDS)
+set_source_files_properties(BrowserWindow.cpp Dialog.cpp Keyring.cpp PageMenu.cpp PasswordBar.cpp Passwords.cpp PopupMenu.cpp KeyMap.cpp MoreMenu.cpp Network.cpp Omnibox.cpp PageFrame.cpp Pages.cpp PdfView.cpp Profile.cpp Sync.cpp SyncDoc.cpp SyncKeys.cpp SyncPages.cpp Vault.cpp WebView.cpp main.cpp PROPERTIES COMPILE_DEFINITIONS QT_NO_KEYWORDS)
 # Qt's headers (QJsonValue's bit fields) trip Ladybird's -Wpadded-bitfield in the sources that include them.
-set_source_files_properties(BrowserWindow.cpp Dialog.cpp Keyring.cpp PageMenu.cpp PasswordBar.cpp Passwords.cpp PopupMenu.cpp KeyMap.cpp MoreMenu.cpp Omnibox.cpp PageFrame.cpp Pages.cpp PdfView.cpp Profile.cpp Vault.cpp main.cpp
+set_source_files_properties(BrowserWindow.cpp Dialog.cpp Keyring.cpp PageMenu.cpp PasswordBar.cpp Passwords.cpp PopupMenu.cpp KeyMap.cpp MoreMenu.cpp Omnibox.cpp PageFrame.cpp Pages.cpp PdfView.cpp Profile.cpp Sync.cpp SyncDoc.cpp SyncKeys.cpp SyncPages.cpp Vault.cpp main.cpp
     PROPERTIES COMPILE_OPTIONS "-Wno-padded-bitfield")
 # Qt's and qt2wasm's own sources are not written to Ladybird's warning flags.
 set_source_files_properties(qt_wasi_shims.c ${moc_outputs} "${gen}/bindings/gui.c" "${qt2wasm_data}/runtime/runtime.cpp"
@@ -227,7 +231,8 @@ target_link_libraries(webby-ui PRIVATE
     "${qt}/lib/objects-Release/Gui_resources_1/.qt/rcc/qrc_qpdf_init.cpp.obj"
     "${qt}/lib/objects-Release/Gui_resources_2/.qt/rcc/qrc_gui_shaders_init.cpp.obj"
     "${qt}/lib/libQt6Gui.a" "${qt}/lib/libQt6Core.a" "${qt}/lib/libQt6BundledPcre2.a" "${qt}/lib/libQt6BundledZLIB.a"
-    webby-webgl LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibFileSystem LibURL skia requestserverservice LibRequests LibCrypto)
+    webby-webgl LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibFileSystem LibURL skia requestserverservice LibRequests LibCrypto
+    OpenSSL::Crypto)
 # A reactor: the host calls the exports; there is no main().
 target_link_options(webby-ui PRIVATE -mexec-model=reactor)
 

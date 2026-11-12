@@ -1157,7 +1157,11 @@ void WebView::did_change_title(std::string title)
 void WebView::did_request_navigation(std::string url)
 {
     // Not inside the old page's own call stack: the load replaces that page.
-    Core::deferred_invoke([this, url = move(url)] { load(url); });
+    Core::deferred_invoke([this, url = move(url)] {
+        if (on_navigation_request && on_navigation_request(url))
+            return;
+        load(url);
+    });
 }
 
 void WebView::did_finish_loading()

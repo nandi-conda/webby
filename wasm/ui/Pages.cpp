@@ -30,7 +30,7 @@ a { color: #1a0dab; text-decoration: none; overflow: hidden; text-overflow: elli
 
 static QString pages_dir() { return Profile::dir() + u"/pages"_s; }
 
-static QString write_page(QString const& name, QString const& title, QString const& body)
+QString write_page(QString const& name, QString const& title, QString const& body)
 {
     auto path = pages_dir() + u'/' + name;
     auto html = u"<!doctype html><html><head><meta charset=\"utf-8\"><title>"_s + title + u"</title><style>"_s + style
@@ -283,6 +283,10 @@ QString refresh(QString const& url)
         return downloads_page();
     if (url.endsWith(u"/passwords.html"_s))
         return passwords_page();
+    if (url.endsWith(u"/sync.html"_s))
+        return sync_page();
+    if (url.endsWith(u"/devices.html"_s))
+        return devices_page();
     return url;
 }
 

@@ -10,6 +10,7 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
 
 namespace WebbyUI::Pages {
 
@@ -25,6 +26,23 @@ QString shortcuts_page();
 QString passwords_page();
 // The file:// URL of the About Webby page.
 QString about_page();
+// The Sync page and Tabs from other devices (SyncPages.cpp), freshly written; and where they are.
+QString sync_page();
+QString devices_page();
+QString sync_page_url();
+QString devices_page_url();
+// A link or form on those pages: <pages>/sync-do?op=…, which the chrome runs instead of loading.
+bool is_sync_action(QString const& url);
+struct SyncAction {
+    QString load;       // the page to show next in that tab ("" for none)
+    QStringList open;   // URLs to open in new tabs
+    QString copy;       // text for the clipboard
+};
+SyncAction run_sync_action(QString const& url);
+
+// Writes pages/<name> with the own pages' look and returns its file:// URL ("" if it could not be written).
+QString write_page(QString const& name, QString const& title, QString const& body);
+
 // Whether `url` is one of these pages, and so is written again when reloaded.
 bool is_own_page(QString const& url);
 QString refresh(QString const& url);

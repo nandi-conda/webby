@@ -13,7 +13,9 @@
 #include <QJsonArray>
 #include <QSet>
 #include <QUrl>
+#include <QMap>
 #include <algorithm>
+#include <limits>
 
 using namespace Qt::StringLiterals;
 
@@ -158,6 +160,8 @@ void Bookmarks::save()
     j.insert(u"showBar"_s, m_show_bar);
     j.insert(u"roots"_s, QJsonObject { { u"bar"_s, bookmark_to_json(m_bar) }, { u"other"_s, bookmark_to_json(m_other) } });
     write_atomic(file(QStringLiteral("bookmarks.json")), QJsonDocument(j).toJson(QJsonDocument::Indented));
+    for (auto const& listener : m_listeners)
+        listener();
 }
 
 void Bookmarks::set_show_bar(bool on)
@@ -248,6 +252,117 @@ QList<Bookmark const*> Bookmarks::all() const
     collect(m_bar, out);
     collect(m_other, out);
     return out;
+}
+
+// Bookmarks sync.
+
+static void sync_walk(Bookmark const& folder, QJsonObject& records)
+{
+    for (auto const& n : folder.children) {
+        QJsonObject r { { u"parent"_s, folder.id }, { u"pos"_s, n.pos }, { u"title"_s, n.title } };
+        if (n.folder)
+            r.insert(u"folder"_s, true);
+        else
+            r.insert(u"url"_s, n.url);
+        r.insert(u"addedAt"_s, n.added_at);
+        r.insert(u"updatedAt"_s, n.updated_at);
+        records.insert(n.id, r);
+        if (n.folder)
+            sync_walk(n, records);
+    }
+}
+
+QJsonObject Bookmarks::to_sync_records() const
+{
+    QJsonObject records = m_rest.value(u"deleted").toObject();
+    sync_walk(m_bar, records);
+    sync_walk(m_other, records);
+    return records;
+}
+
+static qint64 record_time(QJsonValue const& v)
+{
+    if (!v.isDouble())
+        return 0;
+    auto i = v.toInteger(std::numeric_limits<qint64>::min());
+    return i != std::numeric_limits<qint64>::min() ? i : qint64(v.toDouble());
+}
+
+bool Bookmarks::apply_sync_records(QJsonObject const& records)
+{
+    if (to_sync_records() == records)
+        return false;
+    struct Node {
+        Bookmark b;
+        QString parent;
+    };
+    QMap<QString, Node> nodes; // by id, sorted
+    QJsonObject deleted;
+    for (auto it = records.begin(); it != records.end(); ++it) {
+        auto r = it.value().toObject();
+        if (r.value(u"deleted").toBool(false)) {
+            deleted.insert(it.key(), r);
+            continue;
+        }
+        Node n;
+        n.b.id = it.key();
+        n.b.title = r.value(u"title").toString();
+        bool has_url = r.value(u"url").isString();
+        n.b.folder = r.value(u"folder").toBool(false) || !has_url;
+        n.b.url = n.b.folder ? QString() : r.value(u"url").toString();
+        n.b.added_at = record_time(r.value(u"addedAt"));
+        n.b.updated_at = record_time(r.value(u"updatedAt"));
+        n.b.pos = r.value(u"pos").toDouble(0);
+        n.parent = r.value(u"parent").isString() ? r.value(u"parent").toString() : u"other"_s;
+        nodes.insert(n.b.id, n);
+    }
+    // Each node's parent, where it can hang: a root, or a folder there is a record for; anything else (and records that
+    // loop) goes to Other bookmarks rather than being lost.
+    auto parent_of = [&](QString const& id) {
+        auto const& p = nodes[id].parent;
+        if (p == u"bar" || p == u"other")
+            return p;
+        auto it = nodes.find(p);
+        return it != nodes.end() && it->b.folder ? p : u"other"_s;
+    };
+    QMap<QString, QString> parents;
+    for (auto it = nodes.begin(); it != nodes.end(); ++it)
+        parents.insert(it.key(), parent_of(it.key()));
+    for (auto it = parents.begin(); it != parents.end(); ++it) {
+        QSet<QString> seen;
+        QString at = it.key();
+        while (at != u"bar" && at != u"other") {
+            if (seen.contains(at)) {
+                it.value() = u"other"_s;
+                break;
+            }
+            seen.insert(at);
+            at = parents.value(at, u"other"_s);
+        }
+    }
+    QMap<QString, QStringList> children;
+    for (auto it = parents.begin(); it != parents.end(); ++it)
+        children[it.value()].append(it.key());
+    std::function<void(Bookmark&)> fill = [&](Bookmark& folder) {
+        folder.children.clear();
+        for (auto const& id : children.value(folder.id)) {
+            auto b = nodes[id].b;
+            if (b.folder)
+                fill(b);
+            folder.children.append(b);
+        }
+        std::stable_sort(folder.children.begin(), folder.children.end(), [](Bookmark const& a, Bookmark const& b) {
+            return a.pos != b.pos ? a.pos < b.pos : a.id < b.id;
+        });
+    };
+    fill(m_bar);
+    fill(m_other);
+    if (deleted.isEmpty())
+        m_rest.remove(u"deleted"_s);
+    else
+        m_rest.insert(u"deleted"_s, deleted);
+    save();
+    return true;
 }
 
 // History.

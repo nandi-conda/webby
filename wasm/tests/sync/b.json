@@ -1,0 +1,8 @@
+{"passwords":{"p1":{"id":"p1","origin":"https://a.com","username":"me","password":"z","updatedAt":200},
+ "p4":{"id":"p4","origin":"https://c.com","username":"u","updatedAt":200}},
+ "bookmarks":{"l1":{"parent":"f1","pos":4.0,"title":"One moved","url":"https://one.com","addedAt":1,"updatedAt":30},
+  "gone":{"parent":"bar","pos":9.0,"title":"Gone","url":"https://gone.com","addedAt":1,"updatedAt":19},
+  "x😀":{"parent":"other","pos":0.0,"title":"Emoji","url":"https://e.com","addedAt":1,"updatedAt":1},
+  "x":{"parent":"other","pos":100.0,"title":"PUA","url":"https://p.com","addedAt":1,"updatedAt":1}},
+ "summaries":{"u1":{"updatedAt":5,"text":"s"}},
+ "sessions":{"s":{"updatedAt":5,"deleted":true}}}

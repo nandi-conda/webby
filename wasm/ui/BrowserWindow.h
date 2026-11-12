@@ -56,6 +56,9 @@ protected:
     bool event(QEvent*) override;
 
 private:
+    // Loads the Sync and Tabs from other devices pages again where they are open and have changed.
+    void refresh_sync_pages();
+
     struct Tab {
         // Null while a restored tab sleeps: it gets a view (and loads `url`) when it first comes to the front.
         std::unique_ptr<WebbyUI::WebView> view;

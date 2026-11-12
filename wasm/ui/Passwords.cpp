@@ -8,6 +8,7 @@
 #include "Pages.h"
 #include "Passkeys.h"
 #include "Resources.h"
+#include "Sync.h"
 #include "WebView.h"
 
 #include <QJsonArray>
@@ -98,6 +99,7 @@ void PasswordManager::vault_opened()
             }
         });
         use_vault_passkeys();
+        hook_sync(*vault);
     }
     for (auto& [view, agent] : m_agents) {
         if (is_page(from_std(view->url())))
@@ -105,6 +107,33 @@ void PasswordManager::vault_opened()
     }
     if (on_vault_state)
         on_vault_state();
+}
+
+// Sync keeps its settings in the vault from now on, and syncs the passwords, passkeys and synced secrets with it.
+void PasswordManager::hook_sync(Vault& vault)
+{
+    namespace Sync = WebbyUI::Sync;
+    Sync::set_settings_store([] { auto* v = Vault::the(); return v ? v->sync_settings() : QJsonObject {}; },
+        [](QJsonObject const& s) {
+            if (auto* v = Vault::the())
+                v->set_sync_settings(s);
+        });
+    Sync::register_blob(Sync::Blob::Vault, [] { auto* v = Vault::the(); return v ? v->to_sync_doc() : QJsonObject {}; },
+        [](QJsonObject const& merged) {
+            if (auto* v = Vault::the())
+                v->apply_sync_doc(merged);
+        });
+    Sync::register_blob(Sync::Blob::Secrets, [] { auto* v = Vault::the(); return v ? v->secrets_sync_doc() : QJsonObject {}; },
+        [](QJsonObject const& merged) {
+            if (auto* v = Vault::the())
+                v->apply_secrets_sync_doc(merged);
+        });
+    vault.on_change([] {
+        Sync::local_changed(Sync::Blob::Vault);
+        Sync::local_changed(Sync::Blob::Secrets);
+    });
+    // The vault may hold the settings sync was waiting for: a round soon (once sync has started).
+    Sync::local_changed(Sync::Blob::Vault);
 }
 
 void PasswordManager::use_vault_passkeys()

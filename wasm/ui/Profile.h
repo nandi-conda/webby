@@ -17,6 +17,7 @@
 #include <QList>
 #include <QString>
 #include <QStringList>
+#include <functional>
 
 namespace WebbyUI::Profile {
 
@@ -57,11 +58,20 @@ public:
     // Every bookmarked page, depth first.
     QList<Bookmark const*> all() const;
 
+    // Sync (SyncDoc bookmarks section, nim bookmarks/store.nim): a record per bookmark and folder by id
+    // ({parent, pos, title, url | folder, addedAt, updatedAt}), plus the tombstones of deleted ones.
+    QJsonObject to_sync_records() const;
+    // Replaces the bookmarks with merged sync records. Returns whether anything changed.
+    bool apply_sync_records(QJsonObject const& records);
+    // Called after every change (here or from sync).
+    void on_change(std::function<void()> listener) { m_listeners.append(std::move(listener)); }
+
 private:
     Bookmarks();
     void load();
     void save();
     QJsonObject m_rest; // fields this UI does not use ("deleted" sync tombstones), kept as they were
+    QList<std::function<void()>> m_listeners;
     Bookmark m_bar;
     Bookmark m_other;
     bool m_show_bar { true };
