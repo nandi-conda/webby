@@ -39,12 +39,15 @@
 #include <LibWeb/DOM/DocumentObserver.h>
 #include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/HTML/CustomElements/CustomElementRegistry.h>
+#include <LibWeb/HTML/DocumentState.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/MIME.h>
 #include <LibWeb/HTML/HTMLImageElement.h>
 #include <LibWeb/HTML/HTMLInputElement.h>
 #include <LibWeb/HTML/HTMLTextAreaElement.h>
 #include <LibWeb/HTML/LocalNavigable.h>
 #include <LibWeb/HTML/LocalTraversableNavigable.h>
+#include <LibWeb/HTML/Navigation.h>
+#include <LibWeb/HTML/SessionHistoryEntry.h>
 #include <LibWeb/HTML/Parser/HTMLEncodingDetection.h>
 #include <LibWeb/HTML/Parser/HTMLParser.h>
 #include <LibWeb/HTML/Parser/HTMLTokenizer.h>
@@ -794,6 +797,17 @@ void WebView::show_document(LoadedDocument loaded)
     // this it stays the initial about:blank, whose opaque origin matches no page (every location access threw).
     navigable.active_browsing_context()->set_active_document(*document);
     document->set_ready_to_run_scripts();
+
+    // The session history entry and the Navigation API's entries, as activating a navigated-to document sets them:
+    // the traversable's one entry still names the initial about:blank, and with no Navigation API entries
+    // history.pushState/replaceState trapped (Navigation.cpp's current entry index VERIFY).
+    if (auto entry = navigable.active_session_history_entry()) {
+        entry->set_url(document_url);
+        if (auto state = entry->document_state())
+            state->set_origin(document_url.origin());
+        Vector<NonnullRefPtr<Web::HTML::SessionHistoryEntry>> entries { *entry };
+        window.navigation()->initialize_the_navigation_api_entries_for_reconstructed_session_history(entries, *entry);
+    }
 
     auto observer = Web::DOM::DocumentObserver::create(*document);
     observer->set_document_completely_loaded([this] { did_finish_loading(); });
