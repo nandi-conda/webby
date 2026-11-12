@@ -40,7 +40,7 @@ static void add_chrome_fonts()
 // Test input, so that the UI can be driven headless (latha-gui --screenshot only types): --click=X,Y@MS clicks the
 // left button at X,Y (window pixels) MS milliseconds after start (--rclick= the right one), --wheel=DY@MS scrolls by DY pixels over the page,
 // --key=ctrl+c@MS presses a key with modifiers (ctrl, shift, alt; a letter, a digit, or Home, End, Left, Right,
-// Insert, Delete, Return, Tab, Escape, Up, Down).
+// Insert, Delete, Return, Tab, Escape, Up, Down, Equal, Minus, F3).
 static bool schedule_test_input(QWindow* window, QString const& arg)
 {
     auto at = arg.lastIndexOf(u'@');
@@ -91,6 +91,7 @@ static bool schedule_test_input(QWindow* window, QString const& arg)
             { QStringLiteral("insert"), Qt::Key_Insert }, { QStringLiteral("delete"), Qt::Key_Delete },
             { QStringLiteral("return"), Qt::Key_Return }, { QStringLiteral("tab"), Qt::Key_Tab },
             { QStringLiteral("escape"), Qt::Key_Escape }, { QStringLiteral("down"), Qt::Key_Down }, { QStringLiteral("up"), Qt::Key_Up },
+            { QStringLiteral("equal"), Qt::Key_Equal }, { QStringLiteral("minus"), Qt::Key_Minus }, { QStringLiteral("f3"), Qt::Key_F3 },
         };
         if (name.size() == 1 && name.at(0).isLetterOrNumber()) {
             key = name.at(0).toUpper().unicode();

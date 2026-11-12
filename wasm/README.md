@@ -388,6 +388,9 @@ page); `open_tabs.json` brings the last tabs back at start, asleep until they co
 (`WEBBY_RESTORE_TABS=0` turns that off); tabs drag to new places and carry the age dot; middle-click or Ctrl+click on
 a link opens it in a new tab; Ctrl+Shift+T reopens a closed tab; Ctrl+1..9, Ctrl+PgUp/PgDn, Ctrl+Shift+Tab, F6,
 Alt+D, Ctrl+K and Alt+Home work.
+Ctrl+F opens a find bar (every match highlighted, "n of m", Return/F3 for the next, Shift for the previous) over
+the engine's `find`, `find-next`, `find-previous` and `find-end`; Ctrl +/-/0 and Ctrl+wheel zoom the page
+(`set-zoom`, the page client's device pixels per CSS pixel), with a percentage pill in the address field that resets it.
 
 It builds inside Ladybird's WASI build (`patches/0014-webby-ui.patch` adds the directory when `WEBBY_UI_DIR` names it),
 with Qt for WASI, qt2wasm, wit-bindgen, wasm-tools and the preview1 reactor adapter from this pixi env:
