@@ -1,8 +1,8 @@
 diff --git a/Libraries/LibCompositing/DisplayList/DisplayListDamage.cpp b/Libraries/LibCompositing/DisplayList/DisplayListDamage.cpp
-index 400eddb3d1..8dcbde2b0a 100644
+index 400eddb3d1..7f2dc3cb80 100644
 --- a/Libraries/LibCompositing/DisplayList/DisplayListDamage.cpp
 +++ b/Libraries/LibCompositing/DisplayList/DisplayListDamage.cpp
-@@ -37,6 +37,35 @@ Optional<Gfx::IntRect> compute_display_list_damage(
+@@ -37,6 +37,39 @@ Optional<Gfx::IntRect> compute_display_list_damage(
      return damage_rect;
  }
  
@@ -27,9 +27,13 @@ index 400eddb3d1..8dcbde2b0a 100644
 +            live_content_changes.video_sinks.data(), live_content_changes.video_sinks.size(),
 +            &damage))
 +        return {};
++    Vector<Gfx::IntRect> content_pieces;
++    for (size_t i = 0; i < min(damage.content_piece_count, array_size(damage.content_pieces)); ++i)
++        content_pieces.append(damage.content_pieces[i]);
 +    return ViewportScrollDamage {
 +        .scroll = damage.scroll,
 +        .content = damage.content,
++        .content_pieces = move(content_pieces),
 +        .unscrolled_new = damage.unscrolled_new,
 +        .unscrolled_old = damage.unscrolled_old,
 +    };
@@ -39,10 +43,18 @@ index 400eddb3d1..8dcbde2b0a 100644
      DisplayList const& display_list,
      AccumulatedVisualContextTree const& visual_context_tree,
 diff --git a/Libraries/LibCompositing/DisplayList/DisplayListDamage.h b/Libraries/LibCompositing/DisplayList/DisplayListDamage.h
-index c9140e375f..4b226567ad 100644
+index c9140e375f..7722a0db60 100644
 --- a/Libraries/LibCompositing/DisplayList/DisplayListDamage.h
 +++ b/Libraries/LibCompositing/DisplayList/DisplayListDamage.h
-@@ -36,6 +36,28 @@ COMPOSITING_API Optional<Gfx::IntRect> compute_display_list_damage(
+@@ -8,6 +8,7 @@
+ 
+ #include <AK/Optional.h>
+ #include <AK/Span.h>
++#include <AK/Vector.h>
+ #include <LibCompositing/DisplayList/DisplayListResourceIds.h>
+ #include <LibCompositing/Export.h>
+ #include <LibCompositing/Forward.h>
+@@ -36,6 +37,30 @@ COMPOSITING_API Optional<Gfx::IntRect> compute_display_list_damage(
      Gfx::IntRect viewport_rect,
      LiveContentChanges);
  
@@ -54,6 +66,8 @@ index c9140e375f..4b226567ad 100644
 +struct ViewportScrollDamage {
 +    Gfx::FloatPoint scroll;
 +    Gfx::IntRect content;
++    // `content` as a few rects that can leave out much of it (a sticky sidebar on each side of the page).
++    Vector<Gfx::IntRect> content_pieces;
 +    Gfx::IntRect unscrolled_new;
 +    Gfx::IntRect unscrolled_old;
 +};
@@ -72,10 +86,82 @@ index c9140e375f..4b226567ad 100644
      bool may_affect_viewport { true };
      // The answer holds until the scene changes: no finite animation is still running, so none can stop
 diff --git a/Libraries/LibCompositing/Rust/src/display_list/damage.rs b/Libraries/LibCompositing/Rust/src/display_list/damage.rs
-index 1b36ba1b66..eb2b3822bc 100644
+index 1b36ba1b66..9a8d9ebbfb 100644
 --- a/Libraries/LibCompositing/Rust/src/display_list/damage.rs
 +++ b/Libraries/LibCompositing/Rust/src/display_list/damage.rs
-@@ -1682,6 +1682,286 @@ pub fn compute_display_list_damage(
+@@ -26,7 +26,9 @@ use crate::visual_context::{
+     ClipNodeData, EffectNodeData, IncludeVisualViewportTransform, SpatialData, VisualContextTree,
+     device_offset_for_index,
+ };
+-use libgfx_rust::{AffineTransform, FloatMatrix4x4, FloatPoint, FloatRect, IntRect, enclosing_int_rect};
++use libgfx_rust::{
++    AffineTransform, CompositingAndBlendingOperator, FloatMatrix4x4, FloatPoint, FloatRect, IntRect, enclosing_int_rect,
++};
+ use std::cell::{Cell, OnceCell, RefCell};
+ use std::mem::offset_of;
+ 
+@@ -851,6 +853,8 @@ struct DamageAccumulator {
+     damage_rect: Option<IntRect>,
+     changed_unbounded_command: bool,
+     viewport_rect: IntRect,
++    // Each command's damage on its own, when the caller wants more than the bounds of all of it.
++    pieces: Option<Vec<IntRect>>,
+ }
+ 
+ impl DamageAccumulator {
+@@ -964,6 +968,9 @@ impl DamageAccumulator {
+         if command_damage.is_empty() {
+             return;
+         }
++        if let Some(pieces) = &mut self.pieces {
++            pieces.push(command_damage);
++        }
+         self.damage_rect = Some(match self.damage_rect {
+             Some(damage_rect) => damage_rect.united(command_damage),
+             None => command_damage,
+@@ -1514,6 +1521,18 @@ pub fn compute_display_list_damage(
+     new_frame: DisplayListFrame<'_>,
+     viewport_rect: IntRect,
+     live_content_changes: LiveContentChanges<'_>,
++) -> Option<IntRect> {
++    compute_display_list_damage_in_pieces(old_frame, new_frame, viewport_rect, live_content_changes, None)
++}
++
++// The damage, and with `pieces` each changed command's part of it (inflated and limited to the viewport as the
++// damage is), for a caller that repaints several small areas rather than their bounds.
++fn compute_display_list_damage_in_pieces(
++    old_frame: DisplayListFrame<'_>,
++    new_frame: DisplayListFrame<'_>,
++    viewport_rect: IntRect,
++    live_content_changes: LiveContentChanges<'_>,
++    pieces: Option<&mut Vec<IntRect>>,
+ ) -> Option<IntRect> {
+     let old_tape = Tape {
+         bytes: old_frame.command_bytes,
+@@ -1600,6 +1619,7 @@ pub fn compute_display_list_damage(
+         damage_rect: None,
+         changed_unbounded_command: false,
+         viewport_rect,
++        pieces: pieces.as_ref().map(|_| Vec::new()),
+     };
+     let identical_run_pairs = old_command_runs[..identical_prefix_run_count]
+         .iter()
+@@ -1673,6 +1693,14 @@ pub fn compute_display_list_damage(
+     if damage.changed_unbounded_command {
+         return None;
+     }
++    if let (Some(out), Some(collected)) = (pieces, damage.pieces.take()) {
++        out.extend(
++            collected
++                .into_iter()
++                .map(|piece| intersect_like_gfx_int_rect(piece.inflated_edges(1, 1, 1, 1), viewport_rect))
++                .filter(|piece| !piece.is_empty()),
++        );
++    }
+     let Some(damage_rect) = damage.damage_rect else {
+         return Some(IntRect::default());
+     };
+@@ -1682,6 +1710,371 @@ pub fn compute_display_list_damage(
      ))
  }
  
@@ -91,6 +177,9 @@ index 1b36ba1b66..eb2b3822bc 100644
 +    pub viewport_scroll_node: SpatialNodeIndex,
 +    pub scroll: FloatPoint,
 +    pub content: IntRect,
++    // `content` as at most MAX_CONTENT_PIECES rects, which can leave out much of it: a sticky sidebar on either side
++    // of a page is two strips, not the page between them.
++    pub content_pieces: Vec<IntRect>,
 +    pub unscrolled_new: IntRect,
 +    pub unscrolled_old: IntRect,
 +}
@@ -260,6 +349,7 @@ index 1b36ba1b66..eb2b3822bc 100644
 +        damage_rect: None,
 +        changed_unbounded_command: false,
 +        viewport_rect,
++        pieces: None,
 +    };
 +    let tape = Tape {
 +        bytes: frame.command_bytes,
@@ -271,9 +361,9 @@ index 1b36ba1b66..eb2b3822bc 100644
 +            break;
 +        }
 +        let context = run.context;
-+        let context_moves = spatial_moves(context.spatial)
-+            && clip_is_ok(context.clip, &mut clip_verdicts)
-+            && effect_is_ok(context.effect, &mut effect_verdicts, &mut clip_verdicts);
++        let context_cuts_and_effects_are_ok =
++            clip_is_ok(context.clip, &mut clip_verdicts) && effect_is_ok(context.effect, &mut effect_verdicts, &mut clip_verdicts);
++        let context_moves = spatial_moves(context.spatial) && context_cuts_and_effects_are_ok;
 +        commands.clear();
 +        tape.collect_commands_of_runs(std::slice::from_ref(run), &mut commands);
 +        for command in &commands {
@@ -281,6 +371,12 @@ index 1b36ba1b66..eb2b3822bc 100644
 +            let is_viewport_scrollbar = command.header.command_type == DisplayListCommandType::PaintScrollBar
 +                && read_command::<PaintScrollBar>(command.payload).scroll_node_index == viewport_scroll_node;
 +            if context_moves && !is_viewport_scrollbar {
++                continue;
++            }
++            // A plain color over the whole viewport looks the same wherever it moves to, above or below what moves:
++            // the canvas background a page in the viewport's own space draws (Wikipedia's, once it follows the
++            // color scheme). A change of its color is the content damage's.
++            if context_cuts_and_effects_are_ok && fills_the_viewport(command, side, viewport) {
 +                continue;
 +            }
 +            damage.add_command_damage(command, side);
@@ -293,6 +389,69 @@ index 1b36ba1b66..eb2b3822bc 100644
 +        return Some(IntRect::default());
 +    };
 +    Some(intersect_like_gfx_int_rect(damage_rect.inflated_edges(1, 1, 1, 1), viewport_rect))
++}
++
++// Whether `command` fills all of the viewport with one color, blending normally.
++fn fills_the_viewport(command: &CommandReference<'_>, side: TreeSide<'_>, viewport: FloatRect) -> bool {
++    if command.header.command_type != DisplayListCommandType::FillRect
++        || command.header.inline_clip_count != 0
++        || command.header.has_inline_transform
++    {
++        return false;
++    }
++    let fill = read_command::<FillRect>(command.payload);
++    if fill.compositing_and_blending_operator != CompositingAndBlendingOperator::Normal
++        || !fill.background_color_animation_effect.is_none()
++    {
++        return false;
++    }
++    side.tree
++        .transform_rect_to_viewport(
++            command.context.spatial,
++            fill.rect.to_float(),
++            side.scroll_offsets,
++            IncludeVisualViewportTransform::Yes,
++        )
++        .contains_rect(viewport)
++}
++
++pub const MAX_CONTENT_PIECES: usize = 8;
++
++// Few rects that hold all of `pieces`: those that touch or nearly touch are joined, then the pair whose join adds
++// the least area, until there are few enough.
++fn merge_damage_pieces(mut pieces: Vec<IntRect>, bounds: IntRect) -> Vec<IntRect> {
++    const NEAR: i32 = 32;
++    if pieces.len() > 512 {
++        return vec![bounds];
++    }
++    let area = |rect: IntRect| rect.width as i64 * rect.height as i64;
++    let mut merged: Vec<IntRect> = Vec::new();
++    while let Some(mut piece) = pieces.pop() {
++        // Joining can make a rect reach others already kept: take them back in.
++        loop {
++            let near = piece.inflated_edges(NEAR, NEAR, NEAR, NEAR);
++            let Some(index) = merged.iter().position(|kept| !kept.intersected(near).is_empty()) else {
++                break;
++            };
++            piece = piece.united(merged.swap_remove(index));
++        }
++        merged.push(piece);
++    }
++    while merged.len() > MAX_CONTENT_PIECES {
++        let mut best = (0, 1, i64::MAX);
++        for i in 0..merged.len() {
++            for j in i + 1..merged.len() {
++                let cost = area(merged[i].united(merged[j])) - area(merged[i]) - area(merged[j]);
++                if cost < best.2 {
++                    best = (i, j, cost);
++                }
++            }
++        }
++        let joined = merged[best.0].united(merged[best.1]);
++        merged.swap_remove(best.1);
++        merged[best.0] = joined;
++    }
++    merged
 +}
 +
 +// None when the change cannot be told as a move plus damage: the trees disagree on the viewport's scroll node, or a
@@ -314,11 +473,19 @@ index 1b36ba1b66..eb2b3822bc 100644
 +        y: new_offset.y - old_offset.y,
 +    };
 +    if scroll.x == 0.0 && scroll.y == 0.0 {
-+        let content = compute_display_list_damage(old_frame, new_frame, viewport_rect, live_content_changes)?;
++        let mut pieces = Vec::new();
++        let content = compute_display_list_damage_in_pieces(
++            old_frame,
++            new_frame,
++            viewport_rect,
++            live_content_changes,
++            Some(&mut pieces),
++        )?;
 +        return Some(ViewportScrollDamage {
 +            viewport_scroll_node,
 +            scroll,
 +            content,
++            content_pieces: merge_damage_pieces(pieces, content),
 +            unscrolled_new: IntRect::default(),
 +            unscrolled_old: IntRect::default(),
 +        });
@@ -328,7 +495,8 @@ index 1b36ba1b66..eb2b3822bc 100644
 +        old_offsets_after_scroll.resize(viewport_scroll_node.0 as usize + 1, FloatPoint::default());
 +    }
 +    old_offsets_after_scroll[viewport_scroll_node.0 as usize] = new_offset;
-+    let content = compute_display_list_damage(
++    let mut pieces = Vec::new();
++    let content = compute_display_list_damage_in_pieces(
 +        DisplayListFrame {
 +            scroll_offsets: &old_offsets_after_scroll,
 +            ..old_frame
@@ -336,7 +504,9 @@ index 1b36ba1b66..eb2b3822bc 100644
 +        new_frame,
 +        viewport_rect,
 +        live_content_changes,
++        Some(&mut pieces),
 +    )?;
++    let content_pieces = merge_damage_pieces(pieces, content);
 +    let unscrolled_new = unscrolled_bounds(new_frame, viewport_scroll_node, viewport_rect)?;
 +    // Where the moved pixels put the old drawing: a device offset is where the scrolled content's origin is drawn, so
 +    // the content moves by the offset's change (up, negative, as the page scrolls down).
@@ -353,6 +523,7 @@ index 1b36ba1b66..eb2b3822bc 100644
 +        viewport_scroll_node,
 +        scroll,
 +        content,
++        content_pieces,
 +        unscrolled_new,
 +        unscrolled_old,
 +    })
@@ -362,7 +533,16 @@ index 1b36ba1b66..eb2b3822bc 100644
  #[cfg(test)]
  mod tests {
      use super::*;
-@@ -2194,6 +2474,81 @@ mod tests {
+@@ -1707,7 +2100,7 @@ mod tests {
+     use libgfx_rust::filter::Filter;
+     use libgfx_rust::path::Path;
+     use libgfx_rust::{
+-        Color, ColorFilterType, CompositingAndBlendingOperator, CornerRadii, FloatMatrix4x4, FloatPoint, IntPoint,
++        Color, ColorFilterType, CornerRadii, FloatMatrix4x4, FloatPoint, IntPoint,
+         MaskKind, Orientation, ScalingMode, WindingRule, translation_matrix,
+     };
+ 
+@@ -2194,6 +2587,112 @@ mod tests {
          );
      }
  
@@ -391,6 +571,24 @@ index 1b36ba1b66..eb2b3822bc 100644
 +            IntRect::new(0, 0, 100, 100),
 +            LiveContentChanges::default(),
 +        )
++    }
++
++    #[test]
++    fn damage_pieces_merge_what_is_near_and_keep_what_is_apart() {
++        let bounds = IntRect::new(0, 0, 1000, 1000);
++        let merged = merge_damage_pieces(
++            vec![IntRect::new(0, 0, 10, 10), IntRect::new(20, 0, 10, 10), IntRect::new(500, 500, 10, 10)],
++            bounds,
++        );
++        assert_eq!(merged.len(), 2);
++        assert!(merged.contains(&IntRect::new(0, 0, 30, 10)));
++        assert!(merged.contains(&IntRect::new(500, 500, 10, 10)));
++        let many: Vec<IntRect> = (0..20).map(|i| IntRect::new(i * 100, i * 100, 5, 5)).collect();
++        let merged = merge_damage_pieces(many.clone(), bounds);
++        assert_eq!(merged.len(), MAX_CONTENT_PIECES);
++        for piece in many {
++            assert!(merged.iter().any(|rect| rect.intersected(piece) == piece));
++        }
 +    }
 +
 +    #[test]
@@ -423,6 +621,12 @@ index 1b36ba1b66..eb2b3822bc 100644
 +            list.extend_from_slice(&fill(IntRect::new(0, 50, 100, 10), BLUE, ContextRef::default()));
 +            list
 +        };
++        // The canvas background, in the viewport's own space, over all of it.
++        let with_background = |changed_color: Color| {
++            let mut with_background = fill(IntRect::new(0, 0, 100, 100), CYAN, ContextRef::default());
++            with_background.extend_from_slice(&list(changed_color));
++            with_background
++        };
 +        let old_offsets = [FloatPoint::default(), FloatPoint::default()];
 +        // The page scrolled down by 40 device pixels.
 +        let new_offsets = [FloatPoint::default(), FloatPoint { x: 0.0, y: -40.0 }];
@@ -433,8 +637,15 @@ index 1b36ba1b66..eb2b3822bc 100644
 +        assert_eq!(damage.unscrolled_new, IntRect::new(0, 49, 100, 12));
 +        assert_eq!(damage.unscrolled_old, IntRect::new(0, 9, 100, 12));
 +
++        let damage =
++            viewport_scroll_damage(&with_background(GREEN), &with_background(GREEN), &tree, &old_offsets, &new_offsets).unwrap();
++        assert!(damage.content.is_empty());
++        assert_eq!(damage.unscrolled_new, IntRect::new(0, 49, 100, 12));
++
 +        let damage = viewport_scroll_damage(&list(GREEN), &list(YELLOW), &tree, &old_offsets, &new_offsets).unwrap();
 +        assert_eq!(damage.content, IntRect::new(0, 19, 100, 12));
++
++        assert_eq!(damage.content_pieces, vec![IntRect::new(0, 19, 100, 12)]);
 +
 +        let damage = viewport_scroll_damage(&list(GREEN), &list(YELLOW), &tree, &old_offsets, &old_offsets).unwrap();
 +        assert_eq!(damage.scroll, FloatPoint::default());
@@ -445,10 +656,10 @@ index 1b36ba1b66..eb2b3822bc 100644
      fn a_child_stored_below_its_parent_damages_like_the_in_order_tree() {
          let mut in_order = identity_tree();
 diff --git a/Libraries/LibCompositing/Rust/src/ffi.rs b/Libraries/LibCompositing/Rust/src/ffi.rs
-index bb9e1b6680..8e760f6560 100644
+index bb9e1b6680..e990e5a4d1 100644
 --- a/Libraries/LibCompositing/Rust/src/ffi.rs
 +++ b/Libraries/LibCompositing/Rust/src/ffi.rs
-@@ -109,6 +109,90 @@ pub unsafe extern "C" fn display_list_compute_damage(
+@@ -109,6 +109,100 @@ pub unsafe extern "C" fn display_list_compute_damage(
      }
  }
  
@@ -459,9 +670,13 @@ index bb9e1b6680..8e760f6560 100644
 +pub struct FfiViewportScrollDamage {
 +    pub scroll: libgfx_rust::FloatPoint,
 +    pub content: libgfx_rust::IntRect,
++    pub content_pieces: [libgfx_rust::IntRect; 8],
++    pub content_piece_count: usize,
 +    pub unscrolled_new: libgfx_rust::IntRect,
 +    pub unscrolled_old: libgfx_rust::IntRect,
 +}
++
++const _: () = assert!(crate::display_list::damage::MAX_CONTENT_PIECES == 8);
 +
 +/// # Safety
 +///
@@ -523,9 +738,15 @@ index bb9e1b6680..8e760f6560 100644
 +        Some(damage) => {
 +            // SAFETY: The caller guarantees `out_damage` is writable.
 +            unsafe {
++                let mut content_pieces = [libgfx_rust::IntRect::default(); 8];
++                for (slot, piece) in content_pieces.iter_mut().zip(&damage.content_pieces) {
++                    *slot = *piece;
++                }
 +                *out_damage = FfiViewportScrollDamage {
 +                    scroll: damage.scroll,
 +                    content: damage.content,
++                    content_pieces,
++                    content_piece_count: damage.content_pieces.len().min(crate::display_list::damage::MAX_CONTENT_PIECES),
 +                    unscrolled_new: damage.unscrolled_new,
 +                    unscrolled_old: damage.unscrolled_old,
 +                }

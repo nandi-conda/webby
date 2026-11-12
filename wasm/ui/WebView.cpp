@@ -1390,6 +1390,12 @@ uint8_t const* WebView::paint()
         auto change = Compositing::compute_viewport_scroll_damage(*last->display_list, last->visual_context_tree, last->scroll_state,
             *display_list, visual_context_tree, scroll_state, viewport, { .canvases = canvases, .video_sinks = video_sinks });
         auto const dy = change.has_value() ? change->scroll.y() : 0.f;
+        if (debug) {
+            if (!change.has_value())
+                warnln("webby raster: no scroll damage (an unbounded change)");
+            else
+                warnln("webby raster: scroll {} content {} in {} pieces, unscrolled {} / {}", change->scroll, change->content, change->content_pieces.size(), change->unscrolled_new, change->unscrolled_old);
+        }
         if (change.has_value() && change->scroll.x() == 0 && dy == truncf(dy) && fabsf(dy) < size.height()) {
             moved = static_cast<int>(dy);
             Vector<Gfx::IntRect> rects;
@@ -1398,13 +1404,22 @@ uint8_t const* WebView::paint()
                 if (!rect.is_empty())
                     rects.append(rect);
             };
+            // The rows the move uncovers, and a few rows along both edges: the recording leaves out what lies off the
+            // frame, ink of text whose box is off it included, so the rows near an edge differ from the same content
+            // drawn away from it.
+            constexpr int edge = 16;
             if (moved < 0)
-                add({ 0, size.height() + moved, size.width(), -moved });
+                add({ 0, size.height() + moved - edge, size.width(), -moved + edge });
             else if (moved > 0)
-                add({ 0, 0, size.width(), moved });
+                add({ 0, 0, size.width(), moved + edge });
+            if (moved != 0) {
+                add({ 0, 0, size.width(), edge });
+                add({ 0, size.height() - edge, size.width(), edge });
+            }
             // With a margin: the damage of some changes comes out a few pixels short of what they draw (Wikipedia's
             // pulsing "watch" dot, a ring around a dot, left its old ring a few rows above the damage).
-            add(change->content.is_empty() ? change->content : change->content.inflated(32, 32));
+            for (auto const& piece : change->content_pieces)
+                add(piece.inflated(32, 32));
             add(change->unscrolled_new);
             add(change->unscrolled_old);
             // Everything to repaint anyway (a page under a fixed full-window layer): no move, no clip.
@@ -1413,6 +1428,9 @@ uint8_t const* WebView::paint()
         }
     }
 
+    if (debug && !damage.has_value() && last.has_value())
+        warnln("webby raster: whole frame (same document {}, visual animations {}, same clear color {})", last->document == &document,
+            visual_context_tree.has_visual_animations(), last->display_list->surface_clear_color() == display_list->surface_clear_color());
     auto const start = debug ? AK::MonotonicTime::now() : AK::MonotonicTime {};
     if (damage.has_value()) {
         move_rows(*m_impl->bitmap, moved);
