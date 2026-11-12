@@ -16,10 +16,44 @@ using namespace Qt::StringLiterals;
 
 namespace WebbyUI::Omnibox {
 
+QList<Engine> engines()
+{
+    return {
+        { "Google", "https://www.google.com/search?q=%s" },
+        { "DuckDuckGo", "https://duckduckgo.com/?q=%s" },
+        { "Bing", "https://www.bing.com/search?q=%s" },
+        { "Brave", "https://search.brave.com/search?q=%s" },
+        { "Ecosia", "https://ecosia.org/search?q=%s" },
+        { "Kagi", "https://kagi.com/search?q=%s" },
+        { "Mojeek", "https://www.mojeek.com/search?q=%s" },
+        { "Startpage", "https://startpage.com/search?q=%s" },
+        { "Yahoo", "https://search.yahoo.com/search?p=%s" },
+    };
+}
+
+QString engine_name()
+{
+    auto name = Profile::ui_setting(u"searchEngine"_s).toString();
+    for (auto const& e : engines()) {
+        if (name == QLatin1StringView(e.name))
+            return name;
+    }
+    return u"Google"_s;
+}
+
+void set_engine(QString const& name) { Profile::set_ui_setting(u"searchEngine"_s, name); }
+
 QString query_url()
 {
     auto env = qEnvironmentVariable("WEBBY_SEARCH_URL");
-    return env.contains(QStringLiteral("%s")) ? env : QStringLiteral("https://www.google.com/search?q=%s");
+    if (env.contains(QStringLiteral("%s")))
+        return env;
+    auto name = engine_name();
+    for (auto const& e : engines()) {
+        if (name == QLatin1StringView(e.name))
+            return QString::fromLatin1(e.query_url);
+    }
+    return QStringLiteral("https://www.google.com/search?q=%s");
 }
 
 static int scheme_length(QString const& text)

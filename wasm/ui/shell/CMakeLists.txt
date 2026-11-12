@@ -48,6 +48,7 @@ add_executable(webby-ui-shell
     ${ui}/PageMenu.cpp
     ${ui}/PopupMenu.cpp
     ${ui}/KeyMap.cpp
+    ${ui}/MoreMenu.cpp
     ${ui}/Omnibox.cpp
     ${ui}/PageFrame.cpp
     ${ui}/Pages.cpp

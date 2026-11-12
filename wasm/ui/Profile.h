@@ -110,6 +110,12 @@ struct DownloadRecord {
 QList<DownloadRecord> read_downloads();
 void add_download(DownloadRecord const&);
 
+// The UI's own settings, <profile>/wasm_ui.json (restoreTabs, searchEngine), and the Nim strip's tabs.json ageColors.
+QJsonValue ui_setting(QString const& key);
+void set_ui_setting(QString const& key, QJsonValue const& value);
+bool age_colors();
+void set_age_colors(bool);
+
 // Whether `url` is worth keeping in history or the open tabs (not blank, not webby's own pages).
 bool is_session_url(QString const& url);
 

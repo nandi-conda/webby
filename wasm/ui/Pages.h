@@ -19,6 +19,10 @@ QString history_page();
 QString bookmarks_page();
 // The file:// URL of a freshly written Downloads page (newest first, each a link to the saved file).
 QString downloads_page();
+// The file:// URL of the Keyboard shortcuts page.
+QString shortcuts_page();
+// The file:// URL of the About Webby page.
+QString about_page();
 // Whether `url` is one of these pages, and so is written again when reloaded.
 bool is_own_page(QString const& url);
 QString refresh(QString const& url);

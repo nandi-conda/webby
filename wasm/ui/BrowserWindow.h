@@ -72,6 +72,7 @@ private:
         Address,
         Star,
         Zoom,
+        Toolbar, // a button right of the address field; `tab` is its index (ToolbarButton)
         FindField,
         FindPrevious,
         FindNext,
@@ -104,6 +105,14 @@ private:
     QRectF zoom_rect() const;
     void paint_find(QPainter&);
     void paint_toast(QPainter&);
+
+    // The buttons right of the address field, as the Nim front end's toolbar has them (right to left).
+    enum ToolbarButton { ButtonMore, ButtonDownloads, ButtonHistory, ButtonBookmarks, ButtonCount };
+    QRectF toolbar_button_rect(int button) const;
+    void paint_toolbar_buttons(QPainter&);
+    void toolbar_button(int button);
+    // The ⋮ menu, built each time it opens, grouped as the Nim front end's (nim/src/browser.nim MenuGroup).
+    void open_more_menu();
     void show_toast(QString const& text);
     void close_tab(int index);
     void activate_tab(int index);

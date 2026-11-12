@@ -14,6 +14,7 @@
 #include <QSize>
 #include <QString>
 #include <functional>
+#include <memory>
 #include <vector>
 
 class QKeyEvent;
@@ -23,11 +24,20 @@ class PopupMenu {
 public:
     struct Item {
         QString label;
-        std::function<void()> action; // none: a separator
+        std::function<void()> action; // none (and no submenu): a separator
         bool enabled { true };
+        QString shortcut;              // shown at the right, as "Ctrl+H"
+        int check { -1 };              // -1: no check box, else whether it is ticked
+        std::shared_ptr<PopupMenu> submenu; // opens beside the row when the pointer rests on it
+        bool heading { false };        // a dim label only
     };
 
     void add(QString label, std::function<void()> action, bool enabled = true);
+    void add(QString label, QString shortcut, std::function<void()> action, bool enabled = true);
+    void add_check(QString label, bool checked, QString shortcut, std::function<void()> action);
+    // A submenu, filled by the caller; an empty one is left out.
+    PopupMenu& add_submenu(QString label);
+    void add_heading(QString label);
     void add_separator();
     bool empty() const { return m_items.empty(); }
 
@@ -47,6 +57,10 @@ public:
     bool key_press(QKeyEvent*);
 
 private:
+    bool contains(QPointF) const; // this menu or an open submenu
+    void open_submenu(int index);
+    void close_submenu();
+    PopupMenu& root();
     int item_at(QPointF) const;
     QRectF item_rect(int index) const;
     void activate(int index);
@@ -58,4 +72,8 @@ private:
     QPointF m_opened_at;
     bool m_moved { false };
     int m_hover { -1 };
+    QSize m_window;
+    PopupMenu* m_parent { nullptr };
+    std::shared_ptr<PopupMenu> m_child; // the open submenu
+    int m_child_index { -1 };
 };

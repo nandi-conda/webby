@@ -388,4 +388,41 @@ void add_download(DownloadRecord const& d)
     f.write(QJsonDocument(j).toJson(QJsonDocument::Compact) + '\n');
 }
 
+// Settings.
+
+static QJsonObject& ui_settings()
+{
+    static QJsonObject settings = read_json(file(QStringLiteral("wasm_ui.json")));
+    return settings;
+}
+
+QJsonValue ui_setting(QString const& key) { return ui_settings().value(key); }
+
+void set_ui_setting(QString const& key, QJsonValue const& value)
+{
+    ui_settings().insert(key, value);
+    write_atomic(file(QStringLiteral("wasm_ui.json")), QJsonDocument(ui_settings()).toJson(QJsonDocument::Indented));
+}
+
+static int s_age_colors = -1;
+
+bool age_colors()
+{
+    if (s_age_colors < 0) {
+        auto v = read_json(file(QStringLiteral("tabs.json"))).value(u"ageColors");
+        s_age_colors = v.isBool() ? v.toBool() : 1;
+    }
+    return s_age_colors;
+}
+
+void set_age_colors(bool on)
+{
+    s_age_colors = on;
+    auto path = file(QStringLiteral("tabs.json"));
+    auto j = read_json(path);
+    j.insert(u"version"_s, 1);
+    j.insert(u"ageColors"_s, on);
+    write_atomic(path, QJsonDocument(j).toJson(QJsonDocument::Indented));
+}
+
 }

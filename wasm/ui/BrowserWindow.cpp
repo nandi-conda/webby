@@ -99,7 +99,7 @@ BrowserWindow::BrowserWindow(QStringList const& urls)
 
     // With no URLs given, last time's tabs come back, asleep until they come to the front (as in the Nim front end).
     int active = 0;
-    if (urls.isEmpty() && qEnvironmentVariable("WEBBY_RESTORE_TABS") != u"0") {
+    if (urls.isEmpty() && qEnvironmentVariable("WEBBY_RESTORE_TABS") != u"0" && Profile::ui_setting(QStringLiteral("restoreTabs")).toBool(true)) {
         auto saved = Profile::read_open_tabs(active);
         for (auto const& tab : saved)
             new_tab(tab.url, -1, true, tab.title, tab.created);
@@ -414,7 +414,8 @@ QRectF BrowserWindow::button_rect(int index) const
 QRectF BrowserWindow::address_rect() const
 {
     auto left = button_rect(3).left() + 4;
-    return { left, tab_strip_height + 6.0, qMax<qreal>(80, width() - left - 12), toolbar_height - 12.0 };
+    qreal right = toolbar_button_rect(ButtonCount - 1).left() - 6;
+    return { left, tab_strip_height + 6.0, qMax<qreal>(80, right - left), toolbar_height - 12.0 };
 }
 
 QRectF BrowserWindow::star_rect() const
@@ -479,6 +480,10 @@ BrowserWindow::HitResult BrowserWindow::hit_test(QPointF p) const
         if (find_rect().contains(p))
             return { Hit::FindField };
     }
+    for (int i = 0; i < ButtonCount; ++i) {
+        if (toolbar_button_rect(i).contains(p))
+            return { Hit::Toolbar, i };
+    }
     if (star_rect().contains(p))
         return { Hit::Star };
     if (zoom_rect().contains(p))
@@ -505,6 +510,7 @@ void BrowserWindow::paintEvent(QPaintEvent*)
     paint_page(painter);
     paint_tabs(painter);
     paint_toolbar(painter);
+    paint_toolbar_buttons(painter);
     paint_bookmarks_bar(painter);
     paint_status(painter);
     paint_find(painter);
@@ -539,7 +545,7 @@ void BrowserWindow::paint_tabs(QPainter& p)
         auto title = m_tabs[i].loading ? QStringLiteral("Loading…") : m_tabs[i].title;
         // A young tab gets a small orange dot before its close button, fainter at each step (the Nim strip's).
         int step = -1;
-        for (int k = 0; k < int(std::size(age_steps)); ++k) {
+        for (int k = 0; k < int(std::size(age_steps)) && Profile::age_colors(); ++k) {
             if (m_tabs[i].created > 0 && now - m_tabs[i].created < age_steps[k]) {
                 step = k;
                 break;
@@ -853,6 +859,8 @@ QRegion BrowserWindow::page_overlays() const
         overlays += m_status_painted;
     if (m_find_open)
         overlays += find_rect().toAlignedRect().adjusted(-2, -2, 2, 2);
+    if (!m_toast.isEmpty())
+        overlays += QRect(0, height() - 60, width(), 44);
     return overlays;
 }
 
@@ -964,6 +972,12 @@ void BrowserWindow::mousePressEvent(QMouseEvent* event)
             activate_tab(hit.tab);
             m_press_x = event->position().x();
             m_drag_offset = 0;
+        }
+        break;
+    case Hit::Toolbar:
+        if (hit.tab == ButtonMore && event->button() == Qt::LeftButton) {
+            m_pressed = {};
+            open_more_menu();
         }
         break;
     case Hit::Bookmark:
@@ -1090,6 +1104,10 @@ void BrowserWindow::mouseReleaseEvent(QMouseEvent* event)
         break;
     case Hit::Star:
         toggle_bookmark();
+        break;
+    case Hit::Toolbar:
+        if (hit.tab != ButtonMore)
+            toolbar_button(hit.tab);
         break;
     case Hit::Zoom:
         zoom_by(0);

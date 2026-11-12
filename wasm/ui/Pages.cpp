@@ -139,6 +139,35 @@ QString downloads_page()
     return write_page(u"downloads.html"_s, u"Downloads"_s, body);
 }
 
+QString shortcuts_page()
+{
+    static char const* const rows[][2] = {
+        { "Ctrl+T", "New tab" }, { "Ctrl+W", "Close tab" }, { "Ctrl+Shift+T", "Reopen closed tab" },
+        { "Ctrl+Tab, Ctrl+PgDn", "Next tab" }, { "Ctrl+Shift+Tab, Ctrl+PgUp", "Previous tab" }, { "Ctrl+1 … Ctrl+8", "Go to tab" },
+        { "Ctrl+9", "Last tab" }, { "Ctrl+L, Alt+D, F6", "Address bar" }, { "Ctrl+K", "Search from the address bar" },
+        { "Alt+Left, Alt+Right", "Back, forward" }, { "Ctrl+R, F5", "Reload" }, { "Alt+Home", "Home page" },
+        { "Ctrl+F, F3, Ctrl+G", "Find in page, next match" }, { "Ctrl+=, Ctrl+-, Ctrl+0", "Zoom in, out, reset" },
+        { "Ctrl+D", "Bookmark this page" }, { "Ctrl+Shift+B", "Show bookmarks bar" }, { "Ctrl+Shift+O", "Bookmark manager" },
+        { "Ctrl+H", "History" }, { "Ctrl+J", "Downloads" }, { "Middle-click, Ctrl+click a link", "Open link in new tab" },
+    };
+    QString body = u"<ul>"_s;
+    for (auto const& r : rows)
+        body += u"<li><span class=\"key\">"_s + QString::fromUtf8(r[0]).toHtmlEscaped() + u"</span><span>"_s
+            + QString::fromUtf8(r[1]).toHtmlEscaped() + u"</span></li>"_s;
+    body += u"</ul><style>.key { min-width: 260px; color: #5f6368; font-family: monospace; }</style>"_s;
+    return write_page(u"shortcuts.html"_s, u"Keyboard shortcuts"_s, body);
+}
+
+QString about_page()
+{
+    auto body = u"<p>Webby, built to WebAssembly: the Ladybird engine and this Qt interface run as wasm components under "
+                "latha-gui.</p><ul><li><span class=\"time\">Profile</span><span>"_s
+        + Profile::dir().toHtmlEscaped()
+        + u"</span></li><li><span class=\"time\">Source</span><a href=\"https://github.com/nandi-conda/webby\">"
+          "github.com/nandi-conda/webby</a></li></ul>"_s;
+    return write_page(u"about.html"_s, u"About Webby"_s, body);
+}
+
 bool is_own_page(QString const& url)
 {
     return url.startsWith(QUrl::fromLocalFile(pages_dir() + u'/').toString(QUrl::FullyEncoded));

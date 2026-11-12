@@ -16,6 +16,14 @@ namespace WebbyUI::Omnibox {
 
 // The search engine's query URL, %s for the words: $WEBBY_SEARCH_URL, else Google (the Nim front end's default).
 QString query_url();
+// The engines the Settings menu offers (Ladybird's built-in ones), and the one chosen (wasm_ui.json searchEngine).
+struct Engine {
+    char const* name;
+    char const* query_url;
+};
+QList<Engine> engines();
+QString engine_name();
+void set_engine(QString const& name);
 bool looks_like_address(QString const& text);
 // What the address bar loads for `input`.
 QString address_to_url(QString const& input);
