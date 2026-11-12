@@ -234,6 +234,16 @@ def wasm_version():
     return r.stdout.strip()
 
 
+def branch_head():
+    """The commit the job's branch is at now ("" when the forge can't say)."""
+    branch = os.environ.get("FORGE_BRANCH") or "main"
+    status, out = api("GET", f"/commits?ref={urllib.parse.quote(branch)}&limit=1")
+    try:
+        return out["commits"][0]["sha"] if status == 200 else ""
+    except (TypeError, KeyError, IndexError):
+        return ""
+
+
 def engine():
     # Every push to main starts this job. A run for a commit main has already moved past would only build what
     # the newer run builds again (and both runs share one build directory), so it stops.
