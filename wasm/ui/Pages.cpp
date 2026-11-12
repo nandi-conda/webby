@@ -32,8 +32,10 @@ a { color: #1a0dab; text-decoration: none; overflow: hidden; text-overflow: elli
 static QString const dark_style = uR"css(
 @media (prefers-color-scheme: dark) {
 body { background: #202124; color: #e8eaed; }
-h2, .time, .host, .empty, .key, p.dim { color: #9aa0a6; }
-a { color: #8ab4f8; }
+h2, .time, .host, .empty, .key, p.dim, .dim, .count { color: #9aa0a6; }
+a, .links a { color: #8ab4f8; }
+a.destructive { color: #f28b82; }
+.session { border-top-color: #3c4043; }
 li:hover, .row:hover { background: #35363a; }
 .user, .secret { color: #bdc1c6; }
 #search, .edit input, input[type=text], input[type=password] { background: #303134; color: #e8eaed; border-color: #5f6368; }
@@ -43,7 +45,7 @@ button.danger, button.destructive { color: #f28b82; }
 button.suggested, a.suggested { background: #8ab4f8; color: #202124; border-color: #8ab4f8; }
 .warn { background: #3c3418; color: #fdd663; }
 .banner { background: #3c1f1e; color: #f28b82; }
-.note { background: #1f2a3c; color: #aecbfa; }
+.note { background: #303134; color: #e8eaed; }
 .mono { background: #303134; }
 hr { border-top-color: #3c4043; }
 }
