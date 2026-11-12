@@ -1,0 +1,272 @@
+diff --git a/AK/Math.h b/AK/Math.h
+index ad15455c..52c31086 100644
+--- a/AK/Math.h
++++ b/AK/Math.h
+@@ -161,6 +161,25 @@ ALWAYS_INLINE I round_to(T value)
+ template<Integral I, typename T>
+ constexpr I clamp_to(T value)
+ {
++    // NB: Integers compare by value, not after a cast to T: a T narrower than I (size_t into i64 on 32-bit targets)
++    //     would turn I's limits into other numbers (i64's minimum into 0).
++    if constexpr (IsIntegral<T>) {
++        if constexpr (IsSigned<T>) {
++            if (value < 0) {
++                if constexpr (IsSigned<I>) {
++                    if (static_cast<i64>(value) < static_cast<i64>(NumericLimits<I>::min()))
++                        return NumericLimits<I>::min();
++                    return static_cast<I>(value);
++                } else {
++                    return 0;
++                }
++            }
++        }
++        if (static_cast<u64>(value) > static_cast<u64>(NumericLimits<I>::max()))
++            return NumericLimits<I>::max();
++        return static_cast<I>(value);
++    }
++
+     constexpr auto max = static_cast<T>(NumericLimits<I>::max());
+     if constexpr (max > 0) {
+         if (value >= static_cast<T>(NumericLimits<I>::max()))
+diff --git a/AK/ThreadID.cpp b/AK/ThreadID.cpp
+index 010ca9e7..ac32547a 100644
+--- a/AK/ThreadID.cpp
++++ b/AK/ThreadID.cpp
+@@ -16,6 +16,10 @@
+ #    include <pthread_np.h>
+ #endif
+ 
++#if defined(AK_OS_WASI)
++extern "C" __attribute__((weak)) unsigned long long webby_coop_current_thread_id();
++#endif
++
+ namespace AK {
+ 
+ static u64 query_current_thread_id()
+@@ -31,7 +35,9 @@ static u64 query_current_thread_id()
+ #elif defined(AK_OS_FREEBSD)
+     return static_cast<u64>(pthread_getthreadid_np());
+ #elif defined(AK_OS_WASI)
+-    // A WASI instance has one thread.
++    // A WASI instance has one thread, unless it links the cooperative threads (wasm/ui/coop).
++    if (&webby_coop_current_thread_id)
++        return webby_coop_current_thread_id();
+     return 1;
+ #else
+     return 0;
+@@ -40,6 +46,11 @@ static u64 query_current_thread_id()
+ 
+ ThreadID ThreadID::current()
+ {
++#if defined(AK_OS_WASI)
++    // thread_local is one global without wasm threads: no cache.
++    if (&webby_coop_current_thread_id)
++        return ThreadID { query_current_thread_id() };
++#endif
+     static thread_local ThreadID const s_current_thread_id { query_current_thread_id() };
+     return s_current_thread_id;
+ }
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index f25f475f..fddf20dd 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -144,6 +144,10 @@ if (ENABLE_GUI_TARGETS AND WASI)
+     add_subdirectory(Services/ImageDecoder)
+     add_subdirectory(Services/Compositor)
+     add_subdirectory(Services/WebContent)
++    # MediaServer and AudioServer run inside the UI's module (wasm/ui/LocalMedia.cpp), on cooperative threads.
++    add_subdirectory(Services/MediaServer)
++    add_subdirectory(Services/AudioServer)
++    set_target_properties(MediaServer AudioServer PROPERTIES EXCLUDE_FROM_ALL TRUE)
+ endif()
+ 
+ if (ENABLE_GUI_TARGETS AND NOT WASI)
+diff --git a/Libraries/LibCore/EventLoopImplementationUnix.cpp b/Libraries/LibCore/EventLoopImplementationUnix.cpp
+index d16bf5d7..6a03fd5d 100644
+--- a/Libraries/LibCore/EventLoopImplementationUnix.cpp
++++ b/Libraries/LibCore/EventLoopImplementationUnix.cpp
+@@ -37,6 +37,9 @@ static Atomic<int> s_signal_wake_pipe_write_fd { -1 };
+ // NB: A WASI module has one thread and no pipes, so wake() and signals (which only raise() sends) set this flag
+ //     instead of writing to a wake pipe, and the next wait does not block.
+ static bool s_wake_pending { false };
++// Cooperative threads (wasm/ui/coop), in the programs that link them: their ready threads run whenever the event
++// loop waits.
++extern "C" __attribute__((weak)) int webby_coop_run(int budget_ms);
+ #endif
+ static Atomic<pid_t> s_signal_wake_pipe_pid { 0 };
+ static Atomic<unsigned> s_pending_signal_counts[NSIG];
+@@ -269,6 +272,12 @@ void EventLoopImplementationUnix::wake()
+ 
+ void EventLoopManagerUnix::wait_for_events(EventLoopImplementation::PumpMode mode)
+ {
++#if defined(AK_OS_WASI)
++    // Before the event loop's lock is taken: a worker may post events (and so take it) while it runs.
++    int coop_timeout = -1;
++    if (&webby_coop_run)
++        coop_timeout = webby_coop_run(mode == EventLoopImplementation::PumpMode::WaitForEvents ? 16 : 6);
++#endif
+     auto& thread_data = ThreadData::the();
+     MutexLocker locker(thread_data.mutex);
+ 
+@@ -299,6 +308,11 @@ void EventLoopManagerUnix::wait_for_events(EventLoopImplementation::PumpMode mod
+         timeout = 0;
+         should_wait_forever = false;
+     }
++    // A worker is ready (0) or one's timed wait ends in coop_timeout ms.
++    if (coop_timeout >= 0 && (should_wait_forever || coop_timeout < timeout)) {
++        timeout = coop_timeout;
++        should_wait_forever = false;
++    }
+     // NB: With no descriptors to watch and nothing to time out, no event can come: there are no other threads.
+     auto descriptors_to_poll = thread_data.poll_fds.span().slice(1);
+     bool nothing_can_wake_us = descriptors_to_poll.is_empty() && should_wait_forever;
+diff --git a/Libraries/LibThreading/Thread.cpp b/Libraries/LibThreading/Thread.cpp
+index 46d29894..22a4b0ef 100644
+--- a/Libraries/LibThreading/Thread.cpp
++++ b/Libraries/LibThreading/Thread.cpp
+@@ -54,8 +54,13 @@ bool Threading::Thread::has_exited() const
+ }
+ 
+ #if defined(AK_OS_WASI)
++// Programs that link the cooperative threads (wasm/ui/coop) start real threads; the rest run a thread's action
++// inline, in start().
++extern "C" __attribute__((weak)) int webby_coop_available();
++
+ // Threads that start() ran inline keep their exit code in their pthread_t (wasi-libc's thread stubs fail here).
+-extern "C" int pthread_join(pthread_t thread, void** exit_code)
++// Weak: the cooperative threads' pthread_join takes its place.
++extern "C" __attribute__((weak)) int pthread_join(pthread_t thread, void** exit_code)
+ {
+     if (exit_code)
+         *exit_code = bit_cast<void*>(thread);
+@@ -71,6 +76,7 @@ void Thread::start()
+     m_state = Threading::ThreadState::Running;
+ 
+ #if defined(AK_OS_WASI)
++    if (!&webby_coop_available) {
+     // wasm webby runs each process on one thread, so the action runs here, to the end. That suits the browser
+     // process's one-shot workers (the font catalog, autocomplete requests); a thread that would loop forever has to
+     // become event loop work on WASI instead.
+@@ -78,6 +84,7 @@ void Thread::start()
+     m_tid = bit_cast<pthread_t>(m_action());
+     m_state = Threading::ThreadState::Exited;
+     return;
++    }
+ #endif
+ 
+     pthread_attr_t attr;
+diff --git a/Services/AudioServer/PlatformAudio.cpp b/Services/AudioServer/PlatformAudio.cpp
+index 87c0cdac..82834fb8 100644
+--- a/Services/AudioServer/PlatformAudio.cpp
++++ b/Services/AudioServer/PlatformAudio.cpp
+@@ -6,9 +6,84 @@
+ 
+ #include <AudioServer/PlatformAudio.h>
+ 
++#if defined(AK_OS_WASI)
++#    include <AK/AtomicRefCounted.h>
++#    include <LibAudio/NullPlaybackStream.h>
++
++// webby's wasm build: the host's sound output (latha:gui's audio interface, wasm/ui/LocalAudio.cpp), when the module
++// has one.
++extern "C" __attribute__((weak)) int webby_audio_open(unsigned sample_rate, unsigned channels);
++extern "C" __attribute__((weak)) void webby_audio_write(int id, float const* samples, size_t count);
++extern "C" __attribute__((weak)) void webby_audio_flush(int id);
++extern "C" __attribute__((weak)) void webby_audio_close(int id);
++#endif
++
+ namespace Audio {
+ 
+-#if !defined(AUDIOSERVER_PLAYBACK_BACKEND)
++#if defined(AK_OS_WASI)
++
++// The host plays what it is given and keeps no clock we can read, so the stream is a null stream (which keeps the
++// device's pace by the wall clock) that also hands every buffer it mixed to the host. The host's short queue absorbs
++// the difference between the two clocks.
++class HostOutput final : public AtomicRefCounted<HostOutput> {
++public:
++    explicit HostOutput(int id)
++        : m_id(id)
++    {
++    }
++    ~HostOutput() { webby_audio_close(m_id); }
++    int id() const { return m_id; }
++
++private:
++    int m_id { 0 };
++};
++
++class HostPlaybackStream final : public PlaybackStream {
++public:
++    HostPlaybackStream(NonnullRefPtr<PlaybackStream> inner, NonnullRefPtr<HostOutput> output)
++        : m_inner(move(inner))
++        , m_output(move(output))
++    {
++    }
++
++    virtual SampleSpecification sample_specification() const override { return m_inner->sample_specification(); }
++    virtual NonnullRefPtr<Core::ThreadedPromise<void>> resume() override { return m_inner->resume(); }
++    virtual NonnullRefPtr<Core::ThreadedPromise<void>> drain_buffer_and_suspend() override { return m_inner->drain_buffer_and_suspend(); }
++    virtual NonnullRefPtr<Core::ThreadedPromise<void>> discard_buffer_and_suspend() override
++    {
++        webby_audio_flush(m_output->id());
++        return m_inner->discard_buffer_and_suspend();
++    }
++    virtual void notify_data_available() override { m_inner->notify_data_available(); }
++    virtual NonnullRefPtr<Core::ThreadedPromise<void>> set_volume(double volume) override { return m_inner->set_volume(volume); }
++
++private:
++    NonnullRefPtr<PlaybackStream> m_inner;
++    NonnullRefPtr<HostOutput> m_output;
++};
++
++NonnullRefPtr<PlaybackStream::CreatePromise> create_platform_playback_stream(OutputState initial_output_state, u32 target_latency_ms, PlaybackStream::AudioDataRequestCallback data_request_callback)
++{
++    if (!&webby_audio_open)
++        return PlaybackStream::CreatePromise::rejected(Error::from_string_literal("No platform audio backend"));
++    // NullPlaybackStream's format: 44.1 kHz stereo.
++    auto id = webby_audio_open(44100, 2);
++    if (id <= 0)
++        return PlaybackStream::CreatePromise::rejected(Error::from_string_literal("The host has no sound output"));
++    auto output = make_ref_counted<HostOutput>(id);
++    auto inner = NullPlaybackStream::create(initial_output_state, target_latency_ms,
++        [output, callback = move(data_request_callback)](Span<float> buffer, MonotonicTime buffer_starts_playing_at) {
++            auto samples = callback(buffer, buffer_starts_playing_at);
++            if (!samples.is_empty())
++                webby_audio_write(output->id(), samples.data(), samples.size());
++            return samples;
++        });
++    auto promise = PlaybackStream::CreatePromise::construct();
++    promise->resolve(adopt_ref(*new HostPlaybackStream(move(inner), move(output))));
++    return promise;
++}
++
++#elif !defined(AUDIOSERVER_PLAYBACK_BACKEND)
+ 
+ NonnullRefPtr<PlaybackStream::CreatePromise> create_platform_playback_stream(OutputState, u32, PlaybackStream::AudioDataRequestCallback)
+ {
+diff --git a/Services/MediaServer/ConnectionFromClient.cpp b/Services/MediaServer/ConnectionFromClient.cpp
+index ffc93df0..37f38222 100644
+--- a/Services/MediaServer/ConnectionFromClient.cpp
++++ b/Services/MediaServer/ConnectionFromClient.cpp
+@@ -8,6 +8,7 @@
+ #include <AK/HashMap.h>
+ #include <AK/NeverDestroyed.h>
+ #include <AK/NumericLimits.h>
++#include <LibCore/EventLoop.h>
+ #include <LibCore/Process.h>
+ #include <LibMedia/DecodeAudioStream.h>
+ #include <LibMedia/IncrementallyPopulatedStream.h>
+@@ -45,6 +46,12 @@ ConnectionFromClient::~ConnectionFromClient() = default;
+ 
+ void ConnectionFromClient::die()
+ {
++#if defined(AK_OS_WASI)
++    // The server lives in the browser's own module (wasm/ui/LocalMedia.cpp): a renderer connection that goes away
++    // (LibMediaClient drops an idle one) takes only its sessions with it, once the connection is done with this call.
++    Core::deferred_invoke([client_id = client_id()] { s_connections->remove(client_id); });
++    return;
++#endif
+     s_connections->remove(client_id());
+     Core::Process::terminate_immediately(0);
+ }

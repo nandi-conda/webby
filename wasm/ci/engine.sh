@@ -78,10 +78,15 @@ if [[ " $targets " == *" webby-ui "* || " $targets " == *" webby-core "* ]]; the
   fi
   export WEBBY_QT_ENV=$qtenv
   # wac composes webby.wasm from the UI and the PDF component (webby-pdf.wasm, MuPDF) in the build itself.
-  wac=$C/wac-0.8.1
-  [ -x "$wac" ] || { curl -fsSL -o "$wac.part" https://github.com/bytecodealliance/wac/releases/download/v0.8.1/wac-cli-x86_64-unknown-linux-musl \
+  wac=$C/wac-0.12.0
+  [ -x "$wac" ] || { curl -fsSL -o "$wac.part" https://github.com/bytecodealliance/wac/releases/download/v0.12.0/wac-cli-x86_64-unknown-linux-musl \
     && chmod +x "$wac.part" && mv "$wac.part" "$wac"; } || fail "downloading wac failed"
   export WAC=$wac
+  # wasm-tools new enough for the component model's thread built-ins (ui/coop): the env's 1.239 is not.
+  wt=$C/wasm-tools-1.261.0
+  [ -x "$wt/wasm-tools" ] || { mkdir -p "$wt.part" && curl -fsSL https://github.com/bytecodealliance/wasm-tools/releases/download/v1.261.0/wasm-tools-1.261.0-x86_64-linux.tar.gz \
+    | tar -xz -C "$wt.part" --strip-components=1 && rm -rf "$wt" && mv "$wt.part" "$wt"; } || fail "downloading wasm-tools failed"
+  export WEBBY_WASM_TOOLS=$wt/wasm-tools
 fi
 
 # wasm/ui is compiled straight from the job's copy of the repo, whose files carry the commit's time, not the time
@@ -135,12 +140,13 @@ fi
 # Programs that use sockets (webby-render links RequestServer) run as components: wasm-tools makes them, the wasmtime
 # CLI runs them with TCP (tools/wasi-run.py), latha-run runs latha:proc children. nandi-testing's packages, cached.
 if [[ " $targets " == *" webby-render "* || " $targets " == *" webby-core "* ]]; then
-  # latha:proc shared memory and spawn-with-env (wasm/compat) need latha-gui 0.4; a new version gets a new directory.
-  tools=$C/tools-env-latha-0.4
+  # latha:proc shared memory and spawn-with-env (wasm/compat) need latha-gui 0.4, the cooperative threads (ui/coop)
+  # 0.8; a new version gets a new directory.
+  tools=$C/tools-env-latha-0.8
   if [ ! -x "$tools/bin/latha-run" ]; then
     (cd /tmp && curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj bin/micromamba) \
       && /tmp/bin/micromamba create -y -q -r /tmp/mamba -p "$tools" -c https://prefix.dev/nandi-testing -c conda-forge \
-         wasmtime wasm-tools 'latha-gui>=0.4' > /dev/null || fail "installing wasmtime, wasm-tools and latha-run failed"
+         wasmtime wasm-tools 'latha-gui>=0.8' > /dev/null || fail "installing wasmtime, wasm-tools and latha-run failed"
   fi
   adapter=$C/wasi_snapshot_preview1.command.wasm
   [ -s "$adapter" ] || curl -fsSL -o "$adapter" \
@@ -212,16 +218,21 @@ if [[ " $targets " == *" webby-ui "* ]] && [ -n "${LATHA_RUN:-}" ]; then
   if [ $rc != 0 ] || [ "$(stat -c %s "$ui/ui.png" 2>/dev/null || echo 0)" -lt 10000 ]; then
     tail -40 "$out/webby-ui-test.log"; fail "webby-ui smoke test failed (exit $rc)"
   fi
-  # A page with <video>, <audio> and an AudioContext: without a media server the elements must fire "error" and the
-  # app keep running (it used to trap in PageClient::create_media_playback_manager).
-  cp "$w/wasm/tests/webby-ui-media.html" "$w/wasm/tests/media-tone.wav" "$ui/"
-  (cd "$ui" && QT_QPA_PLATFORM=offscreen timeout 1200 "$(dirname "$LATHA_RUN")/latha-gui" --dir "$lb/Base/res::/res" \
+  # A page with <video> (VP9 + Opus: a green picture and a tone), <audio> and an AudioContext, played by the
+  # MediaServer and AudioServer in the module on cooperative threads: the video must advance past a second and its
+  # green show in the screenshot (and nothing trap). No sound device here: the host's open fails and the mix plays
+  # into nothing.
+  cp "$w/wasm/tests/webby-ui-media.html" "$w/wasm/tests/media-tone.wav" "$w/wasm/tests/media-green.webm" "$ui/"
+  (cd "$ui" && WEBBY_CONSOLE=1 QT_QPA_PLATFORM=offscreen timeout 1200 "$(dirname "$LATHA_RUN")/latha-gui" --dir "$lb/Base/res::/res" \
     --size 1100x760 --screenshot "$ui/media.png" --quit-after 20000 "$out/webby.wasm" "$ui/webby-ui-media.html") > "$out/webby-ui-media.log" 2>&1
   rc=$?
   [ -f "$ui/media.png" ] && cp "$ui/media.png" "$out/webby-ui-media-test.png"
-  if [ $rc != 0 ] || grep -q "trapped\|VERIFICATION FAILED" "$out/webby-ui-media.log" || [ "$(stat -c %s "$ui/media.png" 2>/dev/null || echo 0)" -lt 10000 ]; then
-    tail -40 "$out/webby-ui-media.log"; fail "webby-ui media page failed (exit $rc)"
+  green=$(python3 "$w/wasm/tests/png-pixel.py" --count "$ui/media.png" 20c040 24 2>/dev/null || echo 0)
+  if [ $rc != 0 ] || grep -q "trapped\|VERIFICATION FAILED" "$out/webby-ui-media.log" || [ "$(stat -c %s "$ui/media.png" 2>/dev/null || echo 0)" -lt 10000 ] \
+      || ! grep -q "webby-media: video: at 1 s" "$out/webby-ui-media.log" || [ "$green" -lt 20000 ]; then
+    tail -40 "$out/webby-ui-media.log"; fail "webby-ui media page failed (exit $rc, $green green pixels)"
   fi
+  echo "webby.wasm played the test video ($green green pixels): $(grep -o 'webby-media: .*' "$out/webby-ui-media.log" | tr '\n' ';')"
   # Scrollbars (the viewport's are drawn by the UI, an inner box's by the page): drag the inner box's thumb, then
   # the page's, and check both scrolled (the page writes where they are; it is read off the screenshot by hand too).
   cp "$w/wasm/tests/webby-ui-scrollbars.html" "$ui/"
@@ -244,11 +255,11 @@ if [[ " $targets " == *" webby-ui "* ]] && [ -n "${LATHA_RUN:-}" ]; then
   # webby.wasm compiled ahead of time (x86-64-v3) for latha-gui's first run: it fetches <key>.cwasm.zst from this
   # release instead of compiling 200 MB of wasm (35-50 s). Needs latha-gui >= 0.6 (--precompile); the key has
   # latha-gui's host version in it, so each latha-gui release needs its own file (forge_wasm.py keeps a few).
-  pre=$C/tools-env-latha-0.6
+  pre=$C/tools-env-latha-0.8
   if [ ! -x "$pre/bin/latha-run" ]; then
     [ -x /tmp/bin/micromamba ] || (cd /tmp && curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj bin/micromamba)
     /tmp/bin/micromamba create -y -q -r /tmp/mamba -p "$pre" -c https://prefix.dev/nandi-testing -c conda-forge \
-      'latha-gui>=0.6' > /dev/null 2>&1 || echo "latha-gui 0.6 not installable yet: no precompiled webby.wasm"
+      'latha-gui>=0.8' > /dev/null 2>&1 || echo "latha-gui 0.8 not installable yet: no precompiled webby.wasm"
   fi
   if [ -x "$pre/bin/latha-run" ]; then
     "$pre/bin/latha-run" --precompile "$out" "$out/webby.wasm" > "$out/webby-precompile.log" 2>&1 \

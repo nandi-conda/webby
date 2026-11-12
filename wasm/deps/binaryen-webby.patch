@@ -127,10 +127,10 @@ index cfa432a..c9ac330 100644
      }
      // add the (modified) call
 diff --git a/src/passes/StackCheck.cpp b/src/passes/StackCheck.cpp
-index 31bf791..d736f1c 100644
+index 31bf791..a943591 100644
 --- a/src/passes/StackCheck.cpp
 +++ b/src/passes/StackCheck.cpp
-@@ -153,16 +153,29 @@ struct StackCheck : public Pass {
+@@ -153,16 +153,42 @@ struct StackCheck : public Pass {
      // Add the globals.
      Type addressType =
        module->memories.empty() ? Type::i32 : module->memories[0]->addressType;
@@ -157,16 +157,29 @@ index 31bf791..d736f1c 100644
 +        Fatal() << "stack-check-size needs a constant __stack_pointer";
 +      }
 +    }
-+    auto stackBase = module->addGlobal(
-+      builder.makeGlobal(stackBaseName,
-+                         stackPointer->type,
-+                         builder.makeConstPtr(initialBase, addressType),
-+                         Builder::Mutable));
-+    auto stackLimit = module->addGlobal(
-+      builder.makeGlobal(stackLimitName,
-+                         stackPointer->type,
-+                         builder.makeConstPtr(initialLimit, addressType),
-+                         Builder::Mutable));
++    // webby: a module that defines __webby_stack_base and __webby_stack_limit
++    // (its cooperative threads switch stacks and set them) gets those checked.
++    Global* stackBase = module->getGlobalOrNull("__webby_stack_base");
++    Global* stackLimit = module->getGlobalOrNull("__webby_stack_limit");
++    if (stackBase && stackLimit) {
++      stackBase->mutable_ = true;
++      stackLimit->mutable_ = true;
++      stackBase->init = builder.makeConstPtr(initialBase, addressType);
++      stackLimit->init = builder.makeConstPtr(initialLimit, addressType);
++      stackBaseName = stackBase->name;
++      stackLimitName = stackLimit->name;
++    } else {
++      stackBase = module->addGlobal(
++        builder.makeGlobal(stackBaseName,
++                           stackPointer->type,
++                           builder.makeConstPtr(initialBase, addressType),
++                           Builder::Mutable));
++      stackLimit = module->addGlobal(
++        builder.makeGlobal(stackLimitName,
++                           stackPointer->type,
++                           builder.makeConstPtr(initialLimit, addressType),
++                           Builder::Mutable));
++    }
  
      // Instrument all the code.
      EnforceStackLimits(stackPointer, stackBase, stackLimit, builder, handler)

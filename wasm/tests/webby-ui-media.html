@@ -1,18 +1,32 @@
 <!doctype html><title>Media</title>
 <h1 style="color:#b03060">webby media test</h1>
 <p id=v>video: waiting</p><p id=a>audio: waiting</p><p id=w>web audio: waiting</p>
-<video id=video src="media-tone.wav" preload=auto width=320 height=180 controls></video>
-<audio id=audio controls><source src="media-tone.wav" type="audio/wav"></audio>
+<video id=video src="media-green.webm" preload=auto width=320 height=180 loop></video>
+<audio id=audio><source src="media-tone.wav" type="audio/wav"></audio>
 <script>
-// No media server in the wasm build yet: the elements must fail with an error event, never trap the app.
+// The video (VP9 + Opus, a green picture and a 440 Hz tone) and the audio must load, play and advance; the app checks
+// the green in the screenshot and the log's "webby-media:" lines (ci/engine.sh).
 function watch(el, out, label) {
-  el.addEventListener("error", () => out.textContent = label + ": error " + (el.error ? el.error.code : "?"));
-  el.addEventListener("loadedmetadata", () => out.textContent = label + ": metadata " + el.duration.toFixed(2) + " s");
+  const say = text => { out.textContent = label + ": " + text; console.log("webby-media: " + label + ": " + text); };
+  el.addEventListener("error", () => say("error " + (el.error ? el.error.code + " " + el.error.message : "?")));
+  el.addEventListener("loadedmetadata", () => say("metadata " + el.duration.toFixed(2) + " s"));
+  el.addEventListener("playing", () => say("playing"));
+  let reported = 0;
+  el.addEventListener("timeupdate", () => {
+    if (el.currentTime >= reported + 1) {
+      reported = Math.floor(el.currentTime);
+      say("at " + reported + " s");
+    }
+  });
+  el.addEventListener("ended", () => say("ended"));
+  el.play().catch(e => say("play: " + e));
 }
 watch(video, v, "video"); watch(audio, a, "audio");
 try {
   const ctx = new AudioContext();
-  const osc = ctx.createOscillator(); osc.connect(ctx.destination); osc.start();
+  const osc = ctx.createOscillator(); const gain = ctx.createGain(); gain.gain.value = 0.2;
+  osc.connect(gain).connect(ctx.destination); osc.start(); osc.stop(ctx.currentTime + 1);
   w.textContent = "web audio: " + ctx.state;
+  ctx.onstatechange = () => { w.textContent = "web audio: " + ctx.state; console.log("webby-media: web audio: " + ctx.state); };
 } catch (e) { w.textContent = "web audio: " + e; }
 </script>

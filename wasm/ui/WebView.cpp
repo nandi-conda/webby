@@ -6,6 +6,7 @@
 
 #include "WebView.h"
 #include "LocalWebGL.h"
+#include "LocalMedia.h"
 #include "Network.h"
 #include "Resources.h"
 #include "Storage.h"
@@ -44,6 +45,7 @@
 #include <LibGfx/Font/Typeface.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/SystemTheme.h>
+#include <LibAudio/OutputSession.h>
 #include <LibMedia/Sinks/AudioOutputFactory.h>
 #include <LibMediaClient/RemotePlaybackManager.h>
 #include <LibTextCodec/Decoder.h>
@@ -54,6 +56,8 @@
 #include <LibWeb/DOM/Element.h>
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/HTML/BrowsingContext.h>
+#include <LibWeb/HTML/WorkerDebugConsoleClient.h>
+#include <LibJS/Runtime/ConsoleObject.h>
 #include <LibWeb/HTML/CustomElements/CustomElementRegistry.h>
 #include <LibWeb/HTML/DocumentState.h>
 #include <LibWeb/HTML/EventLoop/EventLoop.h>
@@ -339,10 +343,10 @@ public:
         m_view->did_request_webauthn(request_id, to_std(request.to_byte_string()));
     }
 
-    // <video>/<audio> and AudioContext. There is no MediaServer or AudioServer in the wasm build yet, so a media
-    // element gets a playback manager without a server (it reports MEDIA_ERR and fires "error" on the next turn of
-    // the event loop instead of trapping in PageClient's VERIFY_NOT_REACHED), and Web Audio renders into a null
-    // output that drops samples at device pace. If a media server transport gets installed, create() uses it.
+    // <video>/<audio> and AudioContext, played by the MediaServer and AudioServer in this module (LocalMedia.cpp) as
+    // playback group 1. Without them (a build with no threads for media) a media element gets a playback manager
+    // without a server, which reports MEDIA_ERR and fires "error", and Web Audio renders into a null output that drops
+    // samples at device pace.
     virtual NonnullOwnPtr<MediaClient::RemotePlaybackManager> create_media_playback_manager() override
     {
         return MediaClient::RemotePlaybackManager::create(Audio::PlaybackGroupId { 1 });
@@ -353,7 +357,9 @@ public:
     }
     virtual NonnullRefPtr<Media::AudioOutputFactory> create_audio_output_factory() override
     {
-        return Media::AudioOutputFactory::create_null();
+        if (!LocalMedia::is_available())
+            return Media::AudioOutputFactory::create_null();
+        return Media::AudioOutputFactory::create(Audio::OutputSession::create(Audio::PlaybackGroupId { 1 }));
     }
 
     // The page's own loads of file: URLs (style sheets, images, scripts) open the file right here.
@@ -529,6 +535,13 @@ ErrorOr<void> initialize_engine()
     // http(s) pages and their subresources go through RequestServer, in this module. Without it, file: pages still open.
     if (auto result = Network::initialize(); result.is_error())
         warnln("webby: the network could not start: {}", result.error());
+    // <video>, <audio> and Web Audio: MediaServer and AudioServer, in this module. Without them media fails to load.
+    if (auto result = LocalMedia::initialize(); result.is_error())
+        warnln("webby: media could not start: {}", result.error());
+    LocalMedia::set_new_frame_handler([] {
+        for (auto* view : s_views)
+            view->did_request_frame();
+    });
     return {};
 }
 
@@ -975,6 +988,8 @@ static ByteString image_document_html(URL::URL const& url)
 // The document's bytes are decoded as for a navigation: Content-Type's charset, a BOM or a <meta charset>, else UTF-8.
 // Text types (text/plain, JSON, JavaScript, CSS) are shown as text and images on a page of their own, as a navigation
 // would load them; everything else is parsed as HTML.
+static void attach_debug_console(Web::DOM::Document&);
+
 void WebView::show_document(LoadedDocument loaded)
 {
     auto const& document_url = loaded.url;
@@ -1049,6 +1064,7 @@ void WebView::show_document(LoadedDocument loaded)
     m_impl->page = page;
     m_impl->document = document;
     m_impl->observer = observer;
+    attach_debug_console(*document);
 
     m_title.clear();
     if (on_link_hover)
@@ -1290,6 +1306,21 @@ static void update_scrollbars(WebView::Impl& impl, Compositing::DisplayList cons
     }
 }
 
+// WEBBY_CONSOLE=1: the page's console on stderr (tests read it), as a worker's goes to the debug log.
+static void attach_debug_console(Web::DOM::Document& document)
+{
+    static bool const enabled = [] {
+        auto const* value = getenv("WEBBY_CONSOLE");
+        return value && *value && strcmp(value, "0") != 0;
+    }();
+    if (!enabled || document.console_client())
+        return;
+    auto& console = document.relevant_settings_object().realm().intrinsics().console_object()->console();
+    auto client = GC::Heap::the().allocate<Web::HTML::WorkerDebugConsoleClient>(console);
+    console.set_client(*client);
+    document.set_console_client(client);
+}
+
 static bool env_flag(char const* name)
 {
     auto const* value = getenv(name);
@@ -1363,6 +1394,8 @@ uint8_t const* WebView::paint()
         return m_impl->bitmap->scanline_u8(0);
     }
     frame_resources.apply_transaction(transaction.release_value());
+    // The videos it draws, each the frame its sink shows now.
+    LocalMedia::resolve_video_sinks(frame_resources);
     if (frame_resources.validate_for_replay(*display_list, visual_context_tree).is_error()) {
         fill_white(*m_impl->bitmap);
         m_impl->last_frame.clear();

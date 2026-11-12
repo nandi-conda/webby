@@ -205,8 +205,13 @@ def again(reason):
 
 
 # webby.wasm's update manifest (engine.sh writes it, latha-gui and latha-android read it; qt2wasm update.rs).
+# webby-update-2.txt since webby.wasm uses the component model's threads (wasm/ui/coop), which latha-gui 0.8 and
+# latha-android 0.4 run and older hosts refuse: they keep reading webby-update.txt, which stays on the last build
+# they can run (never written again, never removed).
+MANIFEST = "webby-update-2.txt"
+OLD_MANIFESTS = {"webby-update.txt"}
 UPDATE_URL = (f"https://fileapi.fastapicloud.dev/api/forge/repos/{os.environ.get('FORGE_REPO', 'nandi.uk/webby')}"
-              f"/releases/{ENGINE_TAG}/assets/webby-update.txt")
+              f"/releases/{ENGINE_TAG}/assets/{MANIFEST}")
 
 
 # engine.sh asks this (anonymously) once it holds the build cache: a newer push means this run can stop.
@@ -303,29 +308,32 @@ def engine():
     say(f"Released {tag}: {os.environ.get('FORGE_URL', 'https://fileapi.fastapicloud.dev')}/forge/"
         f"{os.environ.get('FORGE_REPO', 'nandi.uk/webby')}/-/releases/{tag}")
     # The rolling release holds only what is read at its fixed address: webby-core.wasm and webby-pdf.wasm
-    # (wasm/ui/shell/build.sh), the precompiled *.cwasm.zst (latha-gui's lookup) and webby-update.txt (below).
+    # (wasm/ui/shell/build.sh), the precompiled *.cwasm.zst (latha-gui's lookup) and the update manifests (below).
     # Sending all 1.4 GB twice per build is what the forge server fell over during (19:04 and 19:48 today).
     pointers = [p for p in files if p.name in ENGINE_POINTERS or p.name.endswith(".cwasm.zst")]
     upload(ENGINE_TAG, pointers, f"webby wasm engine {sha[:12]} ({tag})",
            f"The newest wasm engine build's fixed address. Every build's full set of programs is its own release: "
            f"this one is {tag}.\n\n" + notes)
-    keep = {p.name for p in pointers} | {"webby-update.txt"}
+    keep = {p.name for p in pointers} | {MANIFEST} | OLD_MANIFESTS
     for a in assets(ENGINE_TAG):
         n = a.get("name", "")
         if n not in keep and not n.endswith(".cwasm.zst"):
             s, _ = api("DELETE", f"/releases/{ENGINE_TAG}/assets/{urllib.parse.quote(n)}")
             say(f"{ENGINE_TAG}: removed {n}, which is in {tag} (HTTP {s})")
     say(f"Published {', '.join(p.name for p in pointers)} on the {ENGINE_TAG} release")
-    manifest = out / "webby-update.txt"
+    written = out / "webby-update.txt"  # engine.sh's name for it
+    manifest = out / MANIFEST
+    if written.exists():
+        written.rename(manifest)
     if manifest.exists():
         # The update points into this build's own release, so a download never mixes two builds' files.
-        zst = UPDATE_URL.replace(f"/releases/{ENGINE_TAG}/", f"/releases/{tag}/").replace("webby-update.txt", "webby.wasm.zst")
+        zst = UPDATE_URL.replace(f"/releases/{ENGINE_TAG}/", f"/releases/{tag}/").replace(MANIFEST, "webby.wasm.zst")
         manifest.write_text("".join(f"url={zst}\n" if ln.startswith("url=") else ln + "\n"
                                     for ln in manifest.read_text().splitlines()))
         # Last, once webby.wasm.zst is up: latha-gui and latha-android see the new version from now on.
         for t in (tag, ENGINE_TAG):
             if subprocess.run(["forge-release", "upload", t, str(manifest)]).returncode != 0:
-                sys.exit(f"uploading webby-update.txt to {t} failed")
+                sys.exit(f"uploading {MANIFEST} to {t} failed")
         say(f"webby.wasm {version} is the update for latha-gui / latha-android ({UPDATE_URL})")
     if prebuilt:
         # Keep this build's precompiled files and the 4 newest others (other latha-gui versions, older webby.wasm

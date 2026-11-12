@@ -27,7 +27,12 @@ if (NOT EXISTS "${qt}/lib/libQt6Gui.a" OR NOT qt2wasm_data)
 endif()
 set(moc "${WEBBY_QT_ENV}/opt/qt6-wasi/host/libexec/moc")
 find_program(WIT_BINDGEN wit-bindgen HINTS "${WEBBY_QT_ENV}/bin" REQUIRED)
-find_program(WASM_TOOLS wasm-tools HINTS "${WEBBY_QT_ENV}/bin" REQUIRED)
+# wasm-tools new enough for the component model's thread built-ins (coop/): $WEBBY_WASM_TOOLS, else the env's.
+if (DEFINED ENV{WEBBY_WASM_TOOLS} AND EXISTS "$ENV{WEBBY_WASM_TOOLS}")
+    set(WASM_TOOLS "$ENV{WEBBY_WASM_TOOLS}")
+else()
+    find_program(WASM_TOOLS wasm-tools HINTS "${WEBBY_QT_ENV}/bin" REQUIRED)
+endif()
 set(adapter "${WEBBY_QT_ENV}/share/wasi-preview1-adapter/wasi_snapshot_preview1.reactor.wasm")
 set(gen "${CMAKE_CURRENT_BINARY_DIR}/gen")
 file(MAKE_DIRECTORY "${gen}/bindings")
@@ -88,9 +93,9 @@ else()
     find_program(WAC wac)
 endif()
 if (NOT WAC)
-    set(WAC "${CMAKE_BINARY_DIR}/tools/wac-0.8.1")
+    set(WAC "${CMAKE_BINARY_DIR}/tools/wac-0.12.0")
     if (NOT EXISTS "${WAC}")
-        file(DOWNLOAD https://github.com/bytecodealliance/wac/releases/download/v0.8.1/wac-cli-x86_64-unknown-linux-musl "${WAC}")
+        file(DOWNLOAD https://github.com/bytecodealliance/wac/releases/download/v0.12.0/wac-cli-x86_64-unknown-linux-musl "${WAC}")
         file(CHMOD "${WAC}" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
     endif()
 endif()
@@ -146,6 +151,11 @@ endif()
 add_custom_command(OUTPUT "${gen}/pty/pty_guest.c" "${gen}/pty/pty_guest.h" "${gen}/pty/pty_guest_component_type.o"
     COMMAND "${WIT_BINDGEN}" c "${CMAKE_CURRENT_SOURCE_DIR}/wit/pty" --world pty-guest --out-dir "${gen}/pty"
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/wit/pty/pty.wit" VERBATIM)
+# Sound: latha:gui's audio interface (wit/audio, latha-gui 0.8), which the AudioServer in the module plays into
+# (LocalAudio.cpp).
+add_custom_command(OUTPUT "${gen}/audio/audio_guest.c" "${gen}/audio/audio_guest.h" "${gen}/audio/audio_guest_component_type.o"
+    COMMAND "${WIT_BINDGEN}" c "${CMAKE_CURRENT_SOURCE_DIR}/wit/audio" --world audio-guest --out-dir "${gen}/audio"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/wit/audio/audio.wit" VERBATIM)
 set_source_files_properties(PageScripts.c PROPERTIES COMPILE_OPTIONS "-std=c23;--embed-dir=${WEBBY_SCRIPTS_DIR}"
     OBJECT_DEPENDS "${WEBBY_SCRIPTS_DIR}/passwords.js")
 # ccache does not see #embed's files: a hash of them in the command line makes a change to one a cache miss
@@ -160,7 +170,7 @@ set_source_files_properties(PageScripts.c SummaryScripts.c PROPERTIES COMPILE_DE
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/summary-panel.html" "${WEBBY_SCRIPTS_DIR}/page_text.js" "${WEBBY_SCRIPTS_DIR}/jump_to_text.js" "${WEBBY_SCRIPTS_DIR}/ask_selection.js" "${WEBBY_SCRIPTS_DIR}/passwords.js")
 set_source_files_properties(SummaryScripts.c PROPERTIES COMPILE_OPTIONS "-std=c23;--embed-dir=${WEBBY_SCRIPTS_DIR};--embed-dir=${CMAKE_CURRENT_SOURCE_DIR}"
     OBJECT_DEPENDS "${WEBBY_SCRIPTS_DIR}/page_text.js;${WEBBY_SCRIPTS_DIR}/jump_to_text.js;${WEBBY_SCRIPTS_DIR}/ask_selection.js;${CMAKE_CURRENT_SOURCE_DIR}/summary-panel.html")
-set_source_files_properties("${gen}/pty/pty_guest.c" "${WEBBY_NATIVE_DIR}/Authenticator.cpp" PROPERTIES COMPILE_OPTIONS "-w;-Wno-error")
+set_source_files_properties("${gen}/pty/pty_guest.c" "${gen}/audio/audio_guest.c" "${WEBBY_NATIVE_DIR}/Authenticator.cpp" PROPERTIES COMPILE_OPTIONS "-w;-Wno-error")
 
 add_executable(webby-ui
     BrowserWindow.cpp
@@ -173,9 +183,12 @@ add_executable(webby-ui
     Vault.cpp
     "${WEBBY_NATIVE_DIR}/Authenticator.cpp"
     "${gen}/pty/pty_guest.c"
+    "${gen}/audio/audio_guest.c"
+    LocalAudio.cpp
     PageMenu.cpp
     PopupMenu.cpp
     KeyMap.cpp
+    LocalMedia.cpp
     Network.cpp
     MoreMenu.cpp
     Storage.cpp
@@ -202,6 +215,7 @@ add_executable(webby-ui
     "${qt2wasm_data}/runtime/runtime.cpp"
     "${qt2wasm_data}/runtime/wasieventdispatcher.cpp"
     "${qt2wasm_data}/gui/qt2wasmgui.cpp"
+    coop/Coop.cpp
     ${compositor_dir}/Canvas2DCommandPlayer.cpp
     ${compositor_dir}/ColorSpaceSkia.cpp
     ${compositor_dir}/DisplayListPlayer.cpp
@@ -222,7 +236,7 @@ set_source_files_properties(Resources.c PROPERTIES COMPILE_OPTIONS
 set_target_properties(webby-ui PROPERTIES SUFFIX ".core.wasm" RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 target_include_directories(webby-ui PRIVATE
     ${LADYBIRD_SOURCE_DIR}/Services ${CMAKE_BINARY_DIR}/Services
-    "${CMAKE_CURRENT_SOURCE_DIR}" "${gen}/bindings" "${gen}/pty" "${WEBBY_NATIVE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}" "${gen}/bindings" "${gen}/pty" "${gen}/audio" "${WEBBY_NATIVE_DIR}"
     "${qt2wasm_data}/include" "${qt2wasm_data}/runtime" "${qt2wasm_data}/gui"
     "${qt}/include" "${qt}/include/QtCore" "${qt}/include/QtGui" "${qt}/mkspecs/wasi-clang"
     "${qt}/include/QtCore/${qt_version}" "${qt}/include/QtCore/${qt_version}/QtCore"
@@ -230,10 +244,13 @@ target_include_directories(webby-ui PRIVATE
 target_compile_definitions(webby-ui PRIVATE QT_CORE_LIB QT_GUI_LIB QT_NO_DEBUG QT_STATIC QT_STATICPLUGIN
     QT2WASM_GUI QT2WASM_QPA_PLATFORM="qt2wasmgui" QT2WASM_GUI_BINDINGS_H="gui.h")
 # This UI's own sources share files with Ladybird's headers, which use Qt's keywords (emit, signals) as names.
-set_source_files_properties(BrowserWindow.cpp Dialog.cpp Keyring.cpp PageMenu.cpp PasswordBar.cpp Passwords.cpp PopupMenu.cpp KeyMap.cpp MoreMenu.cpp Network.cpp Omnibox.cpp PageFrame.cpp Pages.cpp PdfView.cpp Profile.cpp Sessions.cpp SessionsPage.cpp Summarize.cpp SummaryPanel.cpp Sync.cpp SyncDoc.cpp SyncKeys.cpp SyncPages.cpp Vault.cpp WebView.cpp main.cpp PROPERTIES COMPILE_DEFINITIONS QT_NO_KEYWORDS)
+set_source_files_properties(BrowserWindow.cpp Dialog.cpp Keyring.cpp LocalMedia.cpp PageMenu.cpp PasswordBar.cpp Passwords.cpp PopupMenu.cpp KeyMap.cpp MoreMenu.cpp Network.cpp Omnibox.cpp PageFrame.cpp Pages.cpp PdfView.cpp Profile.cpp Sessions.cpp SessionsPage.cpp Summarize.cpp SummaryPanel.cpp Sync.cpp SyncDoc.cpp SyncKeys.cpp SyncPages.cpp Vault.cpp WebView.cpp main.cpp PROPERTIES COMPILE_DEFINITIONS QT_NO_KEYWORDS)
 # Qt's headers (QJsonValue's bit fields) trip Ladybird's -Wpadded-bitfield in the sources that include them.
 set_source_files_properties(BrowserWindow.cpp Dialog.cpp Keyring.cpp PageMenu.cpp PasswordBar.cpp Passwords.cpp PopupMenu.cpp KeyMap.cpp MoreMenu.cpp Omnibox.cpp PageFrame.cpp Pages.cpp PdfView.cpp Profile.cpp Sessions.cpp SessionsPage.cpp Summarize.cpp SummaryPanel.cpp Sync.cpp SyncDoc.cpp SyncKeys.cpp SyncPages.cpp Vault.cpp main.cpp
     PROPERTIES COMPILE_OPTIONS "-Wno-padded-bitfield")
+# The C entry points of the cooperative threads (coop/) and of the sound hooks are called from other files' own
+# declarations (weak, in Ladybird's patched sources) and asm.
+set_source_files_properties(coop/Coop.cpp LocalAudio.cpp PROPERTIES COMPILE_OPTIONS "-Wno-missing-prototypes")
 # Qt's and qt2wasm's own sources are not written to Ladybird's warning flags.
 set_source_files_properties(qt_wasi_shims.c ${moc_outputs} "${gen}/bindings/gui.c" "${qt2wasm_data}/runtime/runtime.cpp"
     "${qt2wasm_data}/runtime/wasieventdispatcher.cpp" "${qt2wasm_data}/gui/qt2wasmgui.cpp"
@@ -241,17 +258,19 @@ set_source_files_properties(qt_wasi_shims.c ${moc_outputs} "${gen}/bindings/gui.
 target_compile_options(webby-ui PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wno-error=deprecated-declarations>)
 
 # Qt's static archives, in the order its .prl files give, with the resource initialisers its object libraries keep.
+# libpng ahead of skia (whose own copy of libpng has no APNG) wherever the libraries after it would put it later.
 # Qt's bundled FreeType, HarfBuzz and libpng are left out: the engine's own (newer, same ABI) serve both. Its zlib
 # stays, as its symbols carry a z_ prefix.
 target_link_libraries(webby-ui PRIVATE
-    "${gen}/bindings/gui_component_type.o" "${gen}/pty/pty_guest_component_type.o"
+    "${gen}/bindings/gui_component_type.o" "${gen}/pty/pty_guest_component_type.o" "${gen}/audio/audio_guest_component_type.o"
     "${qt}/lib/objects-Release/Gui_resources_1/.qt/rcc/qrc_qpdf_init.cpp.obj"
     "${qt}/lib/objects-Release/Gui_resources_2/.qt/rcc/qrc_gui_shaders_init.cpp.obj"
     "${qt}/lib/libQt6Gui.a" "${qt}/lib/libQt6Core.a" "${qt}/lib/libQt6BundledPcre2.a" "${qt}/lib/libQt6BundledZLIB.a"
-    webby-webgl LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibMediaClient LibAudio LibFileSystem LibURL skia requestserverservice LibRequests LibCrypto
+    webby-webgl LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibMediaClient LibAudio LibFileSystem LibURL PNG::PNG skia requestserverservice LibRequests LibCrypto mediaserverservice audioserverservice
     OpenSSL::Crypto)
-# A reactor: the host calls the exports; there is no main().
-target_link_options(webby-ui PRIVATE -mexec-model=reactor)
+# A reactor: the host calls the exports; there is no main(). The function table is exported for the cooperative
+# threads (coop/): thread.new-indirect names a thread's start function by its index in it.
+target_link_options(webby-ui PRIVATE -mexec-model=reactor -Wl,--export-table)
 
 add_dependencies(webby-ui webby-pdf)
 add_custom_command(TARGET webby-ui POST_BUILD
@@ -268,11 +287,13 @@ add_custom_command(OUTPUT "${gen}/engine/engine.c" "${gen}/engine/engine.h" "${g
     DEPENDS "${engine_wit}" VERBATIM)
 add_executable(webby-core
     "${WEBBY_NATIVE_DIR}/Authenticator.cpp"
+    LocalMedia.cpp
     Network.cpp
     Storage.cpp
     WebView.cpp
     Resources.c
     engine/EngineExports.cpp
+    coop/Coop.cpp
     "${gen}/engine/engine.c"
     ${compositor_dir}/Canvas2DCommandPlayer.cpp
     ${compositor_dir}/ColorSpaceSkia.cpp
@@ -292,8 +313,8 @@ target_include_directories(webby-core PRIVATE ${LADYBIRD_SOURCE_DIR}/Services ${
     "${CMAKE_CURRENT_SOURCE_DIR}" "${gen}/engine" "${WEBBY_NATIVE_DIR}")
 set_source_files_properties("${gen}/engine/engine.c" PROPERTIES COMPILE_OPTIONS "-w;-Wno-error")
 target_link_libraries(webby-core PRIVATE "${gen}/engine/engine_component_type.o"
-    webby-webgl LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibMediaClient LibAudio LibFileSystem LibURL skia requestserverservice LibRequests LibCrypto)
-target_link_options(webby-core PRIVATE -mexec-model=reactor)
+    webby-webgl LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibMediaClient LibAudio LibFileSystem LibURL PNG::PNG skia requestserverservice LibRequests LibCrypto mediaserverservice audioserverservice)
+target_link_options(webby-core PRIVATE -mexec-model=reactor -Wl,--export-table)
 add_custom_command(TARGET webby-core POST_BUILD
     COMMAND "${WASM_TOOLS}" component new "$<TARGET_FILE:webby-core>" --adapt "wasi_snapshot_preview1=${adapter}"
         -o "${CMAKE_BINARY_DIR}/bin/webby-core.wasm"

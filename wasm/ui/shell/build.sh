@@ -8,7 +8,7 @@
 #   WEBBY_CORE_WASM  the engine component (default: webby-core.wasm from the forge's wasm-engine release, downloaded
 #                    into BUILD_DIR once; WEBBY_CORE_REFRESH=1 downloads it again)
 #   WEBBY_PDF_WASM   the PDF component (default: webby-pdf.wasm from the same release, the same way)
-#   WAC              wac (default: on PATH, else wac-cli 0.8.1 downloaded into BUILD_DIR)
+#   WAC              wac (default: on PATH, else wac-cli 0.12.0 downloaded into BUILD_DIR)
 # Output: BUILD_DIR/webby.wasm. Run: latha-gui BUILD_DIR/webby.wasm [URL...]
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -32,7 +32,7 @@ fi
 wac=${WAC:-$(command -v wac || true)}
 if [ -z "$wac" ]; then
   wac=$build/wac
-  [ -x "$wac" ] || { curl -fsSL -o "$wac" https://github.com/bytecodealliance/wac/releases/download/v0.8.1/wac-cli-x86_64-unknown-linux-musl && chmod +x "$wac"; }
+  [ -x "$wac" ] || { curl -fsSL -o "$wac" https://github.com/bytecodealliance/wac/releases/download/v0.12.0/wac-cli-x86_64-unknown-linux-musl && chmod +x "$wac"; }
 fi
 if [ ! -f "$build/cmake/build.ninja" ]; then
   cmake -S "$here" -B "$build/cmake" -G Ninja -DCMAKE_BUILD_TYPE=Release \

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """png-pixel.py FILE.png X Y [X Y]...: prints the RGBA (hex) of each pixel; or png-pixel.py --make W H RRGGBB OUT.png
-makes a solid PNG. Standard library only: 8-bit RGB/RGBA, non-interlaced PNGs (what LibGfx's PNGWriter writes)."""
+makes a solid PNG; or png-pixel.py --count FILE.png RRGGBB TOLERANCE
+prints how many pixels are within TOLERANCE of RRGGBB in every channel. Standard library only: 8-bit RGB/RGBA, non-interlaced PNGs (what LibGfx's PNGWriter writes)."""
 import struct, sys, zlib
 
 
@@ -55,6 +56,11 @@ def make(width, height, rgb, out):
 
 if sys.argv[1] == "--make":
     make(int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], sys.argv[5])
+elif sys.argv[1] == "--count":
+    width, height, bpp, rows = read(sys.argv[2])
+    want, tolerance = bytes.fromhex(sys.argv[3]), int(sys.argv[4])
+    print(sum(1 for line in rows for x in range(width)
+              if all(abs(line[x * bpp + i] - want[i]) <= tolerance for i in range(3))))
 else:
     width, height, bpp, rows = read(sys.argv[1])
     coords = list(map(int, sys.argv[2:]))
