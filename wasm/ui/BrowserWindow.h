@@ -194,6 +194,10 @@ private:
     // What the window paints over the page (the hovered link's box, the find bar): a scroll moves it along with the
     // page, so it is painted again where it is. Anything new drawn over the page goes here too.
     QRegion page_overlays() const;
+    // The page's viewport scrollbars, drawn over it (in Ladybird its Compositor draws them): those of the frame on
+    // screen, and the window area they cover.
+    void paint_page_scrollbars(QPainter&);
+    QRegion scrollbar_region(std::vector<WebbyUI::WebView::Scrollbar> const&) const;
     void paint_bookmarks_bar(QPainter&);
     void paint_suggestions(QPainter&);
     QRect suggestions_box() const;
@@ -252,6 +256,7 @@ private:
     QImage m_page_image; // the frame on screen (the view's own pixels, valid until its next paint)
     bool m_page_dirty { true };
     QRect m_status_painted;
+    std::vector<WebbyUI::WebView::Scrollbar> m_page_scrollbars;
     QRect m_suggestions_painted; // where paint_suggestions last drew its box
     QRegion m_paint_region;      // what the paint in progress repaints (needs_paint skips the rest)
 };

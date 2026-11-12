@@ -114,6 +114,20 @@ public:
         std::vector<std::array<int, 4>> rects; // x, y, width, height
     };
     PaintChange const& last_paint_change() const { return m_last_change; }
+    // The viewport's scrollbars, as of the last paint(), for the chrome to draw over the page: in Ladybird the
+    // Compositor process draws them, and there is none here. Viewport pixels. A scrollbar is thin until the pointer is
+    // over it or drags it (`expanded`), when its gutter is drawn too. Inner scroll containers' scrollbars are in the
+    // page's own pixels. The view takes the presses, drags and hovers on all of them (mouse_down and so on).
+    struct Scrollbar {
+        bool vertical { true };
+        bool expanded { false };
+        std::array<int, 4> gutter {}; // x, y, width, height
+        std::array<int, 4> thumb {};
+        uint32_t thumb_color { 0 }; // ARGB, not premultiplied
+        uint32_t track_color { 0 };
+        bool operator==(Scrollbar const&) const = default;
+    };
+    std::vector<Scrollbar> const& scrollbars() const { return m_scrollbars; }
 
     // Input, in viewport coordinates. `button` is the one that changed, `buttons` those held after the event.
     void mouse_down(int x, int y, unsigned button, unsigned buttons, unsigned modifiers, int clicks);
@@ -214,6 +228,10 @@ private:
     void set_location(std::string url, bool add_to_history);
     void show_document(LoadedDocument);
     void show_pdf(LoadedDocument); // the document's bytes are the PDF's
+    // A press, drag or release the viewport's or an inner scroll container's scrollbar takes (not the page).
+    bool scrollbar_mouse_down(int x, int y, unsigned button);
+    bool scrollbar_mouse_move(int x, int y);
+    bool scrollbar_mouse_up(unsigned button);
 
     std::unique_ptr<Impl> m_impl;
     int m_width { 0 };
@@ -223,6 +241,7 @@ private:
     bool m_loading { false };
     bool m_needs_paint { true };
     PaintChange m_last_change;
+    std::vector<Scrollbar> m_scrollbars;
     double m_zoom { 1.0 };
     std::vector<std::string> m_history;
     size_t m_history_index { 0 };

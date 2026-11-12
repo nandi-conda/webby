@@ -712,6 +712,7 @@ void BrowserWindow::paintEvent(QPaintEvent* event)
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
     paint_page(painter);
+    paint_page_scrollbars(painter);
     paint_tabs(painter);
     paint_toolbar(painter);
     paint_toolbar_buttons(painter);
@@ -1089,9 +1090,18 @@ void BrowserWindow::prepare_page_frame()
     if (!pixels) {
         m_page_image = {};
         m_page_frame.invalidate();
+        m_page_scrollbars.clear();
         update(page);
         return;
     }
+    // The viewport's scrollbars move with a scroll, grow under the pointer and change with the page's length: repaint
+    // where they were and where they are now whenever they changed (and on any scroll, which moves their pixels).
+    std::vector<WebbyUI::WebView::Scrollbar> bars;
+    if (!pdf)
+        bars = tab->view->scrollbars();
+    QRegion bar_region = scrollbar_region(m_page_scrollbars) + scrollbar_region(bars);
+    bool bars_changed = bars != m_page_scrollbars;
+    m_page_scrollbars = std::move(bars);
     m_page_image = QImage(pixels, size.width(), size.height(), size.width() * 4, QImage::Format_ARGB32_Premultiplied);
     // The engine says what it repainted (it rasters only damage): no need to compare the whole frame.
     WebbyUI::PageFrame::Change change;
@@ -1116,7 +1126,7 @@ void BrowserWindow::prepare_page_frame()
             moved = qt2wasm::gui::scrollWindow(this, area, 0, -change.scroll * d);
         }
         if (moved) {
-            auto overlays = page_overlays();
+            auto overlays = page_overlays() + bar_region;
             damage += overlays;
             damage += overlays.translated(0, -change.scroll);
             damage &= page;
@@ -1126,6 +1136,8 @@ void BrowserWindow::prepare_page_frame()
     }
     if (size != page.size())
         damage += page;
+    if (bars_changed)
+        damage += bar_region;
     // WEBBY_DAMAGE_DEBUG=1: each frame's scroll and damage on stderr.
     if (getenv("WEBBY_DAMAGE_DEBUG")) {
         QString out;
@@ -1146,7 +1158,50 @@ QRegion BrowserWindow::page_overlays() const
         overlays += find_rect().toAlignedRect().adjusted(-2, -2, 2, 2);
     if (!m_toast.isEmpty())
         overlays += QRect(0, height() - 60, width(), 44);
+    overlays += scrollbar_region(m_page_scrollbars);
     return overlays;
+}
+
+QRegion BrowserWindow::scrollbar_region(std::vector<WebbyUI::WebView::Scrollbar> const& bars) const
+{
+    auto page = page_rect();
+    QRegion region;
+    for (auto const& bar : bars) {
+        QRect gutter(bar.gutter[0], bar.gutter[1], bar.gutter[2], bar.gutter[3]);
+        QRect thumb(bar.thumb[0], bar.thumb[1], bar.thumb[2], bar.thumb[3]);
+        region += gutter.united(thumb).adjusted(-2, -2, 2, 2).translated(page.topLeft());
+    }
+    return region & page;
+}
+
+// As Ladybird's Compositor paints them (DisplayListPlayerSkia's paint_scrollbar_into_surface): the gutter in the track
+// color, then the thumb, a rounded bar with a lighter edge.
+void BrowserWindow::paint_page_scrollbars(QPainter& p)
+{
+    if (m_page_scrollbars.empty() || m_page_image.isNull() || current_pdf())
+        return;
+    auto page = page_rect();
+    p.save();
+    p.setClipRect(page);
+    for (auto const& bar : m_page_scrollbars) {
+        QRectF gutter(bar.gutter[0], bar.gutter[1], bar.gutter[2], bar.gutter[3]);
+        QRectF thumb(bar.thumb[0], bar.thumb[1], bar.thumb[2], bar.thumb[3]);
+        gutter.translate(page.topLeft());
+        thumb.translate(page.topLeft());
+        auto track = QColor::fromRgba(bar.track_color);
+        if (bar.expanded && track.alpha() > 0)
+            p.fillRect(gutter, track);
+        if (thumb.isEmpty())
+            continue;
+        auto color = QColor::fromRgba(bar.thumb_color);
+        auto edge = color.lighter(120);
+        edge.setAlpha(color.alpha());
+        qreal radius = (bar.vertical ? thumb.width() : thumb.height()) / 2;
+        p.setPen(QPen(edge, 1));
+        p.setBrush(color);
+        p.drawRoundedRect(thumb.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius);
+    }
+    p.restore();
 }
 
 void BrowserWindow::apply_color_scheme()

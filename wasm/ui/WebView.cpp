@@ -27,6 +27,7 @@
 #include <Compositor/SkiaBackendContext.h>
 #include <LibCompositing/DisplayList/DisplayListDamage.h>
 #include <LibCompositing/DisplayList/DisplayListResourceStorage.h>
+#include <LibCompositing/Scrolling/AsyncScrollingState.h>
 #include <LibCore/ConfigFile.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/File.h>
@@ -50,6 +51,7 @@
 #include <LibWeb/Bindings/MainThreadVM.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/DocumentObserver.h>
+#include <LibWeb/DOM/Element.h>
 #include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/HTML/CustomElements/CustomElementRegistry.h>
 #include <LibWeb/HTML/DocumentState.h>
@@ -462,6 +464,21 @@ struct WebView::Impl {
     };
     Optional<RasterizedFrame> last_frame;
     Compositor::DisplayListRasterCache raster_cache;
+    // The scrollbars of the last recorded display list, which Ladybird's Compositor process presents, hovers and drags
+    // (ScrollbarController). Here the view takes their pointer input and the chrome draws the viewport's (scrollbars()).
+    struct Scrollbars {
+        Vector<Compositing::AsyncScrollbar> bars;
+        Vector<Compositing::AsyncScrollNode> nodes;
+        Optional<Compositing::AccumulatedVisualContextTree> visual_context_tree;
+        Compositing::ScrollStateSnapshot scroll_state;
+        float device_pixels_per_css_pixel { 1 };
+        Optional<size_t> hovered;
+        struct Drag {
+            size_t index { 0 };
+            float grab { 0 }; // where on the (expanded) thumb it was taken, along the bar
+        };
+        Optional<Drag> drag;
+    } scrollbars;
 };
 
 namespace {
@@ -1108,6 +1125,167 @@ static void move_rows(Gfx::Bitmap& bitmap, int dy)
         memmove(base + size_t(dy) * pitch, base, size_t(rows) * pitch);
 }
 
+// Scrollbars, as Ladybird's Compositor (Services/Compositor/ScrollbarController.cpp) presents and drags them: a bar is
+// recorded at scroll offset 0, and its thumb moves by the scroller's device offset times the bar's scroll size.
+static Gfx::IntRect scrollbar_thumb(Compositing::AsyncScrollbar const& bar, Compositing::ScrollStateSnapshot const& scroll_state, bool expanded)
+{
+    auto thumb = expanded ? bar.expanded_thumb_rect : bar.thumb_rect;
+    auto scroll_size = expanded ? bar.expanded_scroll_size : bar.scroll_size;
+    auto offset = scroll_state.device_offset_for_index(bar.scroll_node_index);
+    if (bar.vertical)
+        thumb.translate_by(0, static_cast<int>(-offset.y() * scroll_size));
+    else
+        thumb.translate_by(static_cast<int>(-offset.x() * scroll_size), 0);
+    // Past an end of the scroll range (an overscroll) the thumb is cut short at its track's end.
+    auto track = expanded && !bar.expanded_gutter_rect.is_empty() ? bar.expanded_gutter_rect : bar.track_rect;
+    if (bar.vertical) {
+        auto top = max(thumb.top(), track.top());
+        auto bottom = min(thumb.bottom(), track.bottom());
+        thumb.set_y(top);
+        thumb.set_height(max(0, bottom - top));
+    } else {
+        auto left = max(thumb.left(), track.left());
+        auto right = min(thumb.right(), track.right());
+        thumb.set_x(left);
+        thumb.set_width(max(0, right - left));
+    }
+    return thumb;
+}
+
+static float along(Gfx::FloatPoint point, bool vertical) { return vertical ? point.y() : point.x(); }
+static int start_along(Gfx::IntRect const& rect, bool vertical) { return vertical ? rect.y() : rect.x(); }
+static int end_along(Gfx::IntRect const& rect, bool vertical) { return vertical ? rect.bottom() : rect.right(); }
+
+// The pointer in the space a bar's rects are in: the viewport's for the viewport's bars, else its context's.
+static Optional<Gfx::FloatPoint> point_in_scrollbar_space(WebView::Impl const& impl, Compositing::AsyncScrollbar const& bar, Gfx::FloatPoint point,
+    Compositing::AccumulatedVisualContextTree::ClipBehavior clip = Compositing::AccumulatedVisualContextTree::ClipBehavior::Respect)
+{
+    if (bar.is_painted_by_compositor)
+        return point;
+    auto const& tree = impl.scrollbars.visual_context_tree;
+    if (!tree.has_value() || !tree->context_is_valid(bar.context))
+        return {};
+    return tree->transform_point_for_hit_test(bar.context, point, impl.scrollbars.scroll_state, clip);
+}
+
+// The bar under the pointer: the last painted of those it is over (Ladybird hit tests them with a few pixels' slop).
+static Optional<size_t> scrollbar_at(WebView::Impl const& impl, Gfx::FloatPoint point)
+{
+    auto const& state = impl.scrollbars;
+    for (size_t i = state.bars.size(); i-- > 0;) {
+        auto const& bar = state.bars[i];
+        auto position = point_in_scrollbar_space(impl, bar, point);
+        if (!position.has_value())
+            continue;
+        auto rect = scrollbar_thumb(bar, state.scroll_state, false).united(scrollbar_thumb(bar, state.scroll_state, true));
+        rect.unite(bar.track_rect);
+        if (!bar.expanded_gutter_rect.is_empty())
+            rect.unite(bar.expanded_gutter_rect);
+        rect.inflate(4, 4);
+        if (rect.to_type<float>().contains(*position))
+            return i;
+    }
+    return {};
+}
+
+// Scrolls a bar's scroller to `offset` device pixels along the bar (0 at the start of its scroll range).
+static void scroll_scrollbar_to(WebView::Impl& impl, Compositing::AsyncScrollbar const& bar, float offset)
+{
+    auto const& state = impl.scrollbars;
+    offset = clamp(offset, min(bar.min_scroll_offset, bar.max_scroll_offset), max(bar.min_scroll_offset, bar.max_scroll_offset));
+    double css = offset / (state.device_pixels_per_css_pixel > 0 ? state.device_pixels_per_css_pixel : 1.0f);
+    if (bar.is_painted_by_compositor) {
+        if (!impl.document || !impl.document->window())
+            return;
+        auto& window = *impl.document->window();
+        if (bar.vertical)
+            window.scroll(window.scroll_x(), css, nullptr);
+        else
+            window.scroll(css, window.scroll_y(), nullptr);
+        return;
+    }
+    for (auto const& node : state.nodes) {
+        if (node.scroll_node_index != bar.scroll_node_index)
+            continue;
+        if (node.stable_node_id.kind != Web::AsyncScrollNodeKind::Element)
+            return;
+        auto* dom_node = Web::DOM::Node::from_unique_id(node.stable_node_id.node_id);
+        if (auto* element = as_if<Web::DOM::Element>(dom_node)) {
+            if (bar.vertical)
+                element->set_scroll_top(css);
+            else
+                element->set_scroll_left(css);
+        }
+        return;
+    }
+}
+
+static float scrollbar_offset(WebView::Impl const& impl, Compositing::AsyncScrollbar const& bar)
+{
+    return -along(impl.scrollbars.scroll_state.device_offset_for_index(bar.scroll_node_index), bar.vertical);
+}
+
+// Takes the scrollbars of a newly recorded display list (keeping the hovered and the dragged one where the list still
+// has them), and gives the chrome the viewport's as it draws them.
+static void update_scrollbars(WebView::Impl& impl, Compositing::DisplayList const* display_list,
+    Compositing::AccumulatedVisualContextTree const* visual_context_tree, Compositing::ScrollStateSnapshot const* scroll_state,
+    std::vector<WebView::Scrollbar>& presented)
+{
+    auto& state = impl.scrollbars;
+    auto identity = [&](Optional<size_t> index) -> Optional<Compositing::AsyncScrollbar> {
+        if (!index.has_value() || *index >= state.bars.size())
+            return {};
+        return state.bars[*index];
+    };
+    auto find = [&](Optional<Compositing::AsyncScrollbar> const& old) -> Optional<size_t> {
+        if (!old.has_value())
+            return {};
+        for (size_t i = 0; i < state.bars.size(); ++i) {
+            if (state.bars[i].scroll_node_index == old->scroll_node_index && state.bars[i].vertical == old->vertical
+                && state.bars[i].is_painted_by_compositor == old->is_painted_by_compositor)
+                return i;
+        }
+        return {};
+    };
+    auto hovered = identity(state.hovered);
+    auto dragged = identity(state.drag.has_value() ? Optional<size_t> { state.drag->index } : Optional<size_t> {});
+    if (!display_list) {
+        state.bars.clear();
+        state.nodes.clear();
+        state.visual_context_tree.clear();
+    } else {
+        auto async_state = Compositing::async_scrolling_state_from_display_list(*display_list);
+        state.bars = move(async_state.scrollbars);
+        state.nodes = move(async_state.scroll_nodes);
+        state.device_pixels_per_css_pixel = static_cast<float>(async_state.device_pixels_per_css_pixel);
+        state.visual_context_tree = *visual_context_tree;
+        state.scroll_state = *scroll_state;
+    }
+    state.hovered = find(hovered);
+    if (auto index = find(dragged); index.has_value())
+        state.drag->index = *index;
+    else
+        state.drag.clear();
+
+    presented.clear();
+    for (size_t i = 0; i < state.bars.size(); ++i) {
+        auto const& bar = state.bars[i];
+        if (!bar.is_painted_by_compositor)
+            continue;
+        bool expanded = (state.hovered.has_value() && *state.hovered == i) || (state.drag.has_value() && state.drag->index == i);
+        auto thumb = scrollbar_thumb(bar, state.scroll_state, expanded);
+        auto gutter = expanded && !bar.expanded_gutter_rect.is_empty() ? bar.expanded_gutter_rect : bar.track_rect;
+        presented.push_back({
+            .vertical = bar.vertical,
+            .expanded = expanded,
+            .gutter = { gutter.x(), gutter.y(), gutter.width(), gutter.height() },
+            .thumb = { thumb.x(), thumb.y(), thumb.width(), thumb.height() },
+            .thumb_color = bar.thumb_color.value(),
+            .track_color = bar.track_color.value(),
+        });
+    }
+}
+
 static bool env_flag(char const* name)
 {
     auto const* value = getenv(name);
@@ -1160,16 +1338,19 @@ uint8_t const* WebView::paint()
 
     Web::Layout::ForcedReadScope read { document };
     document.update_layout(Web::DOM::UpdateLayoutReason::SVGDecodedImageDataRender);
-    auto display_list = document.record_display_list(read, {}, resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite);
+    // With the overlay phase, as Ladybird's own frames: it paints inner scroll containers' scrollbars and resizers.
+    auto display_list = document.record_display_list(read, { .paint_overlay = true }, resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite);
     if (!display_list) {
         fill_white(*m_impl->bitmap);
         m_impl->last_frame.clear();
+        update_scrollbars(*m_impl, nullptr, nullptr, nullptr, m_scrollbars);
         return m_impl->bitmap->scanline_u8(0);
     }
     document.update_paint_and_hit_testing_properties_if_needed();
     auto& paint_state = document.paint_state();
     auto visual_context_tree = paint_state.visual_context_tree(document);
     auto const& scroll_state = paint_state.scroll_state_snapshot();
+    update_scrollbars(*m_impl, display_list.ptr(), &visual_context_tree, &scroll_state, m_scrollbars);
     auto transaction = resource_storage.create_self_contained_transaction(*display_list, visual_context_tree);
     Compositing::DisplayListResourceStorage frame_resources;
     if (transaction.is_error()) {
@@ -1299,8 +1480,82 @@ uint8_t const* WebView::paint()
 
 static Web::DevicePixelPoint point(int x, int y) { return { x, y }; }
 
+// A press on a thumb takes it (a drag moves the scroller with it); a press beside the thumb pages toward the pointer.
+bool WebView::scrollbar_mouse_down(int x, int y, unsigned button)
+{
+    auto& state = m_impl->scrollbars;
+    if (button != ButtonPrimary)
+        return false;
+    Gfx::FloatPoint pointer { static_cast<float>(x), static_cast<float>(y) };
+    auto index = scrollbar_at(*m_impl, pointer);
+    if (!index.has_value())
+        return false;
+    auto const bar = state.bars[*index];
+    auto position = point_in_scrollbar_space(*m_impl, bar, pointer);
+    if (!position.has_value())
+        return false;
+    auto primary = along(*position, bar.vertical);
+    auto thumb = scrollbar_thumb(bar, state.scroll_state, true);
+    auto thin_thumb = scrollbar_thumb(bar, state.scroll_state, false);
+    auto const lo = min(start_along(thumb, bar.vertical), start_along(thin_thumb, bar.vertical));
+    auto const hi = max(end_along(thumb, bar.vertical), end_along(thin_thumb, bar.vertical));
+    if (primary >= lo && primary <= hi) {
+        state.drag = Impl::Scrollbars::Drag { .index = *index, .grab = primary - start_along(thumb, bar.vertical) };
+    } else {
+        // A page is most of the scroller's visible length, as in Ladybird.
+        float page = 0;
+        for (auto const& node : state.nodes) {
+            if (node.scroll_node_index == bar.scroll_node_index)
+                page = bar.vertical ? node.scrollport_rect.height() : node.scrollport_rect.width();
+        }
+        if (page <= 0)
+            page = bar.vertical ? m_height : m_width;
+        page *= 0.875f;
+        scroll_scrollbar_to(*m_impl, bar, scrollbar_offset(*m_impl, bar) + (primary < lo ? -page : page));
+    }
+    state.hovered = index;
+    did_request_frame();
+    return true;
+}
+
+bool WebView::scrollbar_mouse_move(int x, int y)
+{
+    auto& state = m_impl->scrollbars;
+    Gfx::FloatPoint pointer { static_cast<float>(x), static_cast<float>(y) };
+    if (state.drag.has_value() && state.drag->index < state.bars.size()) {
+        auto const bar = state.bars[state.drag->index];
+        auto position = point_in_scrollbar_space(*m_impl, bar, pointer, Compositing::AccumulatedVisualContextTree::ClipBehavior::Ignore);
+        if (position.has_value() && bar.expanded_scroll_size > 0) {
+            auto thumb_start = along(*position, bar.vertical) - state.drag->grab;
+            auto offset = (thumb_start - start_along(bar.expanded_thumb_rect, bar.vertical)) / static_cast<float>(bar.expanded_scroll_size);
+            scroll_scrollbar_to(*m_impl, bar, offset);
+            did_request_frame();
+        }
+        return true;
+    }
+    auto hovered = scrollbar_at(*m_impl, pointer);
+    if (hovered != state.hovered) {
+        state.hovered = hovered;
+        did_request_frame();
+    }
+    // Over the viewport's bars the page gets no move (it would hover what is under them); over an inner bar it does.
+    return hovered.has_value() && state.bars[*hovered].is_painted_by_compositor;
+}
+
+bool WebView::scrollbar_mouse_up(unsigned button)
+{
+    auto& state = m_impl->scrollbars;
+    if (button != ButtonPrimary || !state.drag.has_value())
+        return false;
+    state.drag.clear();
+    did_request_frame();
+    return true;
+}
+
 void WebView::mouse_down(int x, int y, unsigned button, unsigned buttons, unsigned modifiers, int clicks)
 {
+    if (scrollbar_mouse_down(x, y, button))
+        return;
     if (m_impl->page)
         m_impl->page->handle_mousedown(point(x, y), point(x, y), button, buttons, modifiers, clicks);
     did_request_frame();
@@ -1308,6 +1563,8 @@ void WebView::mouse_down(int x, int y, unsigned button, unsigned buttons, unsign
 
 void WebView::mouse_up(int x, int y, unsigned button, unsigned buttons, unsigned modifiers)
 {
+    if (scrollbar_mouse_up(button))
+        return;
     if (m_impl->page)
         m_impl->page->handle_mouseup(point(x, y), point(x, y), button, buttons, modifiers);
     did_request_frame();
@@ -1315,6 +1572,8 @@ void WebView::mouse_up(int x, int y, unsigned button, unsigned buttons, unsigned
 
 void WebView::mouse_move(int x, int y, unsigned buttons, unsigned modifiers)
 {
+    if (scrollbar_mouse_move(x, y))
+        return;
     if (m_impl->page)
         m_impl->page->handle_mousemove(point(x, y), point(x, y), buttons, modifiers);
     did_request_frame();
@@ -1322,6 +1581,10 @@ void WebView::mouse_move(int x, int y, unsigned buttons, unsigned modifiers)
 
 void WebView::mouse_leave()
 {
+    if (m_impl->scrollbars.hovered.has_value() && !m_impl->scrollbars.drag.has_value()) {
+        m_impl->scrollbars.hovered.clear();
+        did_request_frame();
+    }
     if (m_impl->page)
         m_impl->page->handle_mouseleave();
 }
