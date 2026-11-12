@@ -1,0 +1,16 @@
+diff --git a/Libraries/LibWeb/HTML/HTMLMediaElement.cpp b/Libraries/LibWeb/HTML/HTMLMediaElement.cpp
+index 2e4a67bf..2d18a661 100644
+--- a/Libraries/LibWeb/HTML/HTMLMediaElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLMediaElement.cpp
+@@ -2490,7 +2490,10 @@ void HTMLMediaElement::handle_playback_manager_error(Media::DecoderError&& error
+         }
+ 
+         // -> If the media data can be fetched but is found by inspection to be in an unsupported format, or can otherwise not be rendered at all
+-        VERIFY(self.m_playback_manager_failure_callback);
++        // NB: A playback manager without a media server (webby's wasm build) reports the lost server and then each
++        //     source it is given: only the first failure runs the steps, the later ones find the callback taken.
++        if (!self.m_playback_manager_failure_callback)
++            return;
+         auto failure_callback = move(self.m_playback_manager_failure_callback);
+         failure_callback(Utf16String::from_utf8(error.description()));
+     });
