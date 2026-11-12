@@ -250,3 +250,4 @@ void exports_webby_engine_views_method_view_find_end(Borrow self) { self->view->
 void exports_webby_engine_views_method_view_set_zoom(Borrow self, double level) { self->view->set_zoom(level); }
 
 void exports_webby_engine_views_pump(void) { WebbyUI::WebView::pump(); }
+void exports_webby_engine_views_set_color_scheme(bool dark) { WebbyUI::WebView::set_color_scheme(dark); }

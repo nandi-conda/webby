@@ -78,6 +78,9 @@ public:
 
     // Runs the engine's event loop until nothing is due right now (timers, tasks, deferred work). Never blocks.
     static void pump();
+    // Pages' prefers-color-scheme for every view, now and later: the desktop's light or dark (BrowserWindow follows
+    // it). Pages restyle at once.
+    static void set_color_scheme(bool dark);
 
     void load(std::string const& url);
     void reload();

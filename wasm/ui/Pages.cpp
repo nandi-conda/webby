@@ -28,13 +28,35 @@ a { color: #1a0dab; text-decoration: none; overflow: hidden; text-overflow: elli
 .empty { color: #5f6368; }
 )css"_s;
 
+// The pages' dark look (Chrome's dark colors), after every page's own styles so that it wins over them.
+static QString const dark_style = uR"css(
+@media (prefers-color-scheme: dark) {
+body { background: #202124; color: #e8eaed; }
+h2, .time, .host, .empty, .key, p.dim { color: #9aa0a6; }
+a { color: #8ab4f8; }
+li:hover, .row:hover { background: #35363a; }
+.user, .secret { color: #bdc1c6; }
+#search, .edit input, input[type=text], input[type=password] { background: #303134; color: #e8eaed; border-color: #5f6368; }
+button, a.button { background: #303134; color: #8ab4f8; border-color: #5f6368; }
+button:hover { background: #394457; }
+button.danger, button.destructive { color: #f28b82; }
+button.suggested, a.suggested { background: #8ab4f8; color: #202124; border-color: #8ab4f8; }
+.warn { background: #3c3418; color: #fdd663; }
+.banner { background: #3c1f1e; color: #f28b82; }
+.note { background: #1f2a3c; color: #aecbfa; }
+.mono { background: #303134; }
+hr { border-top-color: #3c4043; }
+}
+)css"_s;
+
 static QString pages_dir() { return Profile::dir() + u"/pages"_s; }
 
 QString write_page(QString const& name, QString const& title, QString const& body)
 {
     auto path = pages_dir() + u'/' + name;
-    auto html = u"<!doctype html><html><head><meta charset=\"utf-8\"><title>"_s + title + u"</title><style>"_s + style
-        + u"</style></head><body><main><h1>"_s + title + u"</h1>"_s + body + u"</main></body></html>"_s;
+    auto html = u"<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light dark\"><title>"_s
+        + title + u"</title><style>"_s + style + u"</style></head><body><main><h1>"_s + title + u"</h1>"_s + body
+        + u"</main><style>"_s + dark_style + u"</style></body></html>"_s;
     if (!Profile::write_atomic(path, html.toUtf8()))
         return {};
     return QUrl::fromLocalFile(path).toString(QUrl::FullyEncoded);

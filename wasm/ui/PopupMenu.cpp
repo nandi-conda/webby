@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include "Theme.h"
 #include "PopupMenu.h"
 
 #include <QFontMetricsF>
@@ -22,11 +23,11 @@ constexpr qreal min_width = 180;
 constexpr qreal max_width = 420;
 constexpr int font_size = 13;
 
-QColor const menu_color { 0xff, 0xff, 0xff };
-QColor const border_color { 0xda, 0xdc, 0xe0 };
-QColor const hover_color { 0xe8, 0xf0, 0xfe };
-QColor const text_color { 0x20, 0x21, 0x24 };
-QColor const disabled_color { 0xa0, 0xa4, 0xa8 };
+QColor const& menu_color = WebbyUI::theme().menu;
+QColor const& border_color = WebbyUI::theme().border;
+QColor const& hover_color = WebbyUI::theme().selected;
+QColor const& text_color = WebbyUI::theme().text;
+QColor const& disabled_color = WebbyUI::theme().menu_disabled;
 
 QFont menu_font()
 {
@@ -40,7 +41,7 @@ bool is_active(PopupMenu::Item const& item) { return !is_separator(item) && !ite
 
 constexpr qreal check_gutter = 26;
 constexpr qreal shortcut_gap = 32;
-QColor const dim_color { 0x5f, 0x63, 0x68 };
+QColor const& dim_color = WebbyUI::theme().dim_text;
 
 }
 
@@ -251,11 +252,11 @@ void PopupMenu::paint(QPainter& p) const
         }
         if (item.check >= 0) {
             QRectF box(r.left() + padding_x - 4, r.center().y() - 7, 14, 14);
-            p.setPen(QPen(item.check ? QColor(0x1a, 0x73, 0xe8) : dim_color, 1.3));
-            p.setBrush(item.check ? QColor(0x1a, 0x73, 0xe8) : Qt::transparent);
+            p.setPen(QPen(item.check ? WebbyUI::theme().focus : dim_color, 1.3));
+            p.setBrush(item.check ? WebbyUI::theme().focus : Qt::transparent);
             p.drawRoundedRect(box, 3, 3);
             if (item.check) {
-                p.setPen(QPen(Qt::white, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                p.setPen(QPen(WebbyUI::theme().on_focus, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
                 p.drawLine(box.center() + QPointF(-4, 0), box.center() + QPointF(-1, 3));
                 p.drawLine(box.center() + QPointF(-1, 3), box.center() + QPointF(4, -3));
             }

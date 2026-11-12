@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include "Theme.h"
 #include "Dialog.h"
 
 #include <QFontMetricsF>
@@ -13,10 +14,10 @@
 
 namespace {
 
-QColor const text_color { 0x20, 0x21, 0x24 };
-QColor const dim_text_color { 0x5f, 0x63, 0x68 };
-QColor const accent { 0x1a, 0x73, 0xe8 };
-QColor const hover { 0xf1, 0xf3, 0xf4 };
+QColor const& text_color = WebbyUI::theme().text;
+QColor const& dim_text_color = WebbyUI::theme().dim_text;
+QColor const& accent = WebbyUI::theme().focus;
+QColor const& hover = WebbyUI::theme().hover;
 
 constexpr qreal width = 420;
 constexpr qreal padding = 24;
@@ -100,7 +101,7 @@ void ModalDialog::paint(QPainter& p, QSize window) const
     p.fillRect(QRectF(0, 0, window.width(), window.height()), QColor(0, 0, 0, 80));
     auto b = box(window);
     p.setPen(Qt::NoPen);
-    p.setBrush(Qt::white);
+    p.setBrush(WebbyUI::theme().menu);
     p.drawRoundedRect(b, 12, 12);
     p.setPen(text_color);
     p.setFont(font_of(18, true));
@@ -120,7 +121,7 @@ void ModalDialog::paint(QPainter& p, QSize window) const
         // An account's circle with its initial.
         QRectF circle(r.left() + 10, r.center().y() - 15, 30, 30);
         p.setPen(Qt::NoPen);
-        p.setBrush(QColor(0xe8, 0xf0, 0xfe));
+        p.setBrush(WebbyUI::theme().selected);
         p.drawEllipse(circle);
         p.setPen(accent);
         p.setFont(font_of(14, true));
@@ -144,12 +145,12 @@ void ModalDialog::paint(QPainter& p, QSize window) const
         QPainterPath path;
         path.addRoundedRect(r, r.height() / 2, r.height() / 2);
         if (primary) {
-            p.fillPath(path, i == m_hover_button ? accent.darker(115) : accent);
-            p.setPen(Qt::white);
+            p.fillPath(path, i == m_hover_button ? WebbyUI::theme().deeper(accent) : accent);
+            p.setPen(WebbyUI::theme().on_focus);
         } else {
             if (i == m_hover_button)
                 p.fillPath(path, hover);
-            p.setPen(QPen(QColor(0xda, 0xdc, 0xe0), 1));
+            p.setPen(QPen(WebbyUI::theme().border, 1));
             p.setBrush(Qt::NoBrush);
             p.drawPath(path);
             p.setPen(accent);

@@ -183,6 +183,7 @@ private:
     void paint_tabs(QPainter&);
     void paint_toolbar(QPainter&);
     void paint_page(QPainter&);
+    void apply_color_scheme();
     void paint_status(QPainter&);
     QRect status_rect() const;
 

@@ -95,14 +95,24 @@ namespace {
 
 std::string to_std(ByteString const& s) { return std::string(s.characters(), s.length()); }
 
+// The desktop's light or dark, for pages' prefers-color-scheme (WebView::set_color_scheme).
+bool s_prefers_dark = false;
+// Live views, so that a color scheme change reaches every page.
+std::vector<WebbyUI::WebView*> s_views;
+
 // The start page, and the page a load shows when it cannot fetch what it was asked for.
 constexpr char start_page_html[] = R"html(<!doctype html>
-<html><head><title>New Tab</title><style>
+<html><head><title>New Tab</title><meta name="color-scheme" content="light dark"><style>
 body { font-family: sans-serif; margin: 0; background: #f4f1ea; color: #222; }
 main { max-width: 640px; margin: 80px auto; padding: 0 24px; }
 h1 { color: #2d5a88; font-size: 40px; margin-bottom: 8px; }
 p { line-height: 1.5; }
 code { background: #e8e2d6; padding: 1px 4px; border-radius: 4px; }
+@media (prefers-color-scheme: dark) {
+body { background: #1f1e1b; color: #e6e1d6; }
+h1 { color: #8ab4f8; }
+code { background: #3a362f; }
+}
 </style></head><body><main>
 <h1>webby</h1>
 <p>This browser runs entirely in WebAssembly: Ladybird's LibWeb lays out and paints the page, and the window around it
@@ -115,8 +125,9 @@ ByteString error_page_html(StringView url, StringView reason)
     auto escape = [](StringView s) {
         return s.replace("&"sv, "&amp;"sv, ReplaceMode::All).replace("<"sv, "&lt;"sv, ReplaceMode::All);
     };
-    return ByteString::formatted(R"html(<!doctype html><html><head><title>Can't open this page</title><style>
+    return ByteString::formatted(R"html(<!doctype html><html><head><title>Can't open this page</title><meta name="color-scheme" content="light dark"><style>
 body {{ font-family: sans-serif; margin: 0; background: #f6f6f6; color: #333; }}
+@media (prefers-color-scheme: dark) {{ body {{ background: #202124; color: #e8eaed; }} }}
 main {{ max-width: 640px; margin: 80px auto; padding: 0 24px; }}
 h1 {{ font-size: 28px; }} code {{ word-break: break-all; }}
 </style></head><body><main><h1>Can't open this page</h1><p><code>{}</code></p><p>{}</p></main></body></html>)html",
@@ -151,7 +162,7 @@ public:
     virtual double zoom_level() const override { return m_zoom; }
     virtual double device_pixel_ratio() const override { return 1.0; }
     virtual double device_pixels_per_css_pixel() const override { return m_zoom; }
-    virtual Web::CSS::PreferredColorScheme preferred_color_scheme() const override { return Web::CSS::PreferredColorScheme::Light; }
+    virtual Web::CSS::PreferredColorScheme preferred_color_scheme() const override { return s_prefers_dark ? Web::CSS::PreferredColorScheme::Dark : Web::CSS::PreferredColorScheme::Light; }
     virtual Web::CSS::PreferredContrast preferred_contrast() const override { return Web::CSS::PreferredContrast::NoPreference; }
     virtual Web::CSS::PreferredMotion preferred_motion() const override { return Web::CSS::PreferredMotion::NoPreference; }
     virtual size_t screen_count() const override { return 1; }
@@ -512,10 +523,23 @@ WebView::WebView(int width, int height)
     for (int i = 0; i < 16; ++i)
         m_message_prefix += chars[get_random_uniform(sizeof(chars) - 1)];
     m_message_prefix += ':';
+    s_views.push_back(this);
+}
+
+void WebView::set_color_scheme(bool dark)
+{
+    if (dark == s_prefers_dark)
+        return;
+    s_prefers_dark = dark;
+    for (auto* view : s_views) {
+        if (view->m_impl->page)
+            view->m_impl->page->invalidate_style_for_preference_change();
+    }
 }
 
 WebView::~WebView()
 {
+    std::erase(s_views, this);
     if (m_fetch_id)
         Network::cancel(m_fetch_id);
     if (m_impl->webauthn.has_value())

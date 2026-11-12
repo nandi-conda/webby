@@ -128,6 +128,8 @@ interface views {
 
     /// Run the engine's event loop until nothing is due right now (timers, tasks). Never blocks.
     pump: func();
+    /// Pages' prefers-color-scheme in every view (the desktop's light or dark); pages restyle at once.
+    set-color-scheme: func(dark: bool);
 }
 
 world engine {

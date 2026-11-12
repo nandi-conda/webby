@@ -7,6 +7,7 @@
 // The window's side of passwords and passkeys (Passwords.h): the bar under the toolbar that offers to save, fill or
 // generate a password for the current tab's page, and the passkey dialog, as the Nim front end's passwords.nim.
 
+#include "Theme.h"
 #include "BrowserWindow.h"
 #include "Pages.h"
 #include "Passwords.h"
@@ -24,10 +25,10 @@ using Offer = PasswordManager::Offer;
 
 namespace {
 
-QColor const bar_color { 0xf8, 0xf9, 0xfa };
-QColor const text_color { 0x20, 0x21, 0x24 };
-QColor const accent { 0x1a, 0x73, 0xe8 };
-QColor const hover { 0xe8, 0xea, 0xed };
+QColor const& bar_color = WebbyUI::theme().panel;
+QColor const& text_color = WebbyUI::theme().text;
+QColor const& accent = WebbyUI::theme().focus;
+QColor const& hover = WebbyUI::theme().button_hover;
 
 QFont bar_font(bool bold = false)
 {
@@ -145,7 +146,7 @@ void BrowserWindow::paint_password_bar(QPainter& p)
     p.save();
     p.fillRect(bar, bar_color);
     p.fillRect(QRectF(bar.left(), bar.top(), 3, bar.height()), accent);
-    p.setPen(QPen(QColor(0xda, 0xdc, 0xe0), 1));
+    p.setPen(QPen(WebbyUI::theme().border, 1));
     p.drawLine(QPointF(0, bar.bottom() - 0.5), QPointF(width(), bar.bottom() - 0.5));
     auto buttons = password_bar_buttons();
     qreal text_right = buttons.empty() ? bar.right() - 12 : buttons.front().rect.left() - 12;
@@ -169,11 +170,11 @@ void BrowserWindow::paint_password_bar(QPainter& p)
         QPainterPath path;
         path.addRoundedRect(b.rect, b.rect.height() / 2, b.rect.height() / 2);
         if (b.primary) {
-            p.fillPath(path, hovered ? accent.darker(115) : accent);
-            p.setPen(Qt::white);
+            p.fillPath(path, hovered ? WebbyUI::theme().deeper(accent) : accent);
+            p.setPen(WebbyUI::theme().on_focus);
         } else {
-            p.fillPath(path, hovered ? hover : Qt::white);
-            p.setPen(QPen(QColor(0xda, 0xdc, 0xe0), 1));
+            p.fillPath(path, hovered ? hover : WebbyUI::theme().tab);
+            p.setPen(QPen(WebbyUI::theme().border, 1));
             p.drawPath(path);
             p.setPen(accent);
         }

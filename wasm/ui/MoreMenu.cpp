@@ -8,6 +8,7 @@
 // save as session, Sessions, Bookmarks, History and Downloads buttons, then ⋮ with Chrome's grouping (nim/src/browser.nim moreMenuItems: windows, history,
 // bookmarks, downloads, this page, settings, help).
 
+#include "Theme.h"
 #include "BrowserWindow.h"
 #include "Omnibox.h"
 #include "Pages.h"
@@ -24,8 +25,8 @@ using namespace WebbyUI;
 
 namespace {
 
-QColor const text_color { 0x20, 0x21, 0x24 };
-QColor const button_hover_color { 0xe8, 0xea, 0xed };
+QColor const& text_color = WebbyUI::theme().text;
+QColor const& button_hover_color = WebbyUI::theme().button_hover;
 constexpr int toolbar_button_size = 32;
 
 QString from_std(std::string const& s) { return QString::fromUtf8(s.data(), qsizetype(s.size())); }

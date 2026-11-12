@@ -64,6 +64,11 @@ void WebView::pump()
     }
 }
 
+void WebView::set_color_scheme(bool dark)
+{
+    webby_engine_views_set_color_scheme(dark);
+}
+
 void WebView::load(std::string const& url)
 {
     auto s = borrow_string(url);

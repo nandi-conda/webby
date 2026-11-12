@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include "Theme.h"
 #include "BrowserWindow.h"
 #include "KeyMap.h"
 #include "Pages.h"
@@ -20,6 +21,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPolygonF>
+#include <QStyleHints>
 #include <QUrl>
 #include <QWheelEvent>
 #include <QtMath>
@@ -32,17 +34,17 @@ using namespace WebbyUI;
 namespace {
 
 // Light chrome, close to the Nim desktop front end's.
-QColor const strip_color { 0xde, 0xe1, 0xe6 };
-QColor const tab_color { 0xff, 0xff, 0xff };
-QColor const tab_hover_color { 0xec, 0xee, 0xf1 };
-QColor const text_color { 0x20, 0x21, 0x24 };
-QColor const dim_text_color { 0x5f, 0x63, 0x68 };
-QColor const field_color { 0xf1, 0xf3, 0xf4 };
-QColor const focus_color { 0x1a, 0x73, 0xe8 };
-QColor const button_hover_color { 0xe8, 0xea, 0xed };
-QColor const disabled_color { 0xbd, 0xc1, 0xc6 };
-QColor const star_color { 0x1a, 0x73, 0xe8 };
-QColor const age_color { 0xf2, 0x8b, 0x1e };
+QColor const& strip_color = WebbyUI::theme().strip;
+QColor const& tab_color = WebbyUI::theme().tab;
+QColor const& tab_hover_color = WebbyUI::theme().tab_hover;
+QColor const& text_color = WebbyUI::theme().text;
+QColor const& dim_text_color = WebbyUI::theme().dim_text;
+QColor const& field_color = WebbyUI::theme().field;
+QColor const& focus_color = WebbyUI::theme().focus;
+QColor const& button_hover_color = WebbyUI::theme().button_hover;
+QColor const& disabled_color = WebbyUI::theme().disabled;
+QColor const& star_color = WebbyUI::theme().star;
+QColor const& age_color = WebbyUI::theme().age;
 
 // The age dot's steps (seconds), as the Nim strip's ageSteps: strongest when just opened, gone after 12 hours.
 constexpr qint64 age_steps[] = { 5 * 60, 20 * 60, 3600, 3 * 3600, 12 * 3600 };
@@ -103,6 +105,11 @@ BrowserWindow::BrowserWindow(QStringList const& urls)
         update();
     });
     setup_passwords();
+
+    // Light or dark as the desktop is, and again whenever it changes (latha:gui's app.color-scheme): the chrome's
+    // colors and pages' prefers-color-scheme.
+    apply_color_scheme();
+    QObject::connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this, [this] { apply_color_scheme(); });
 
     // With no URLs given, last time's tabs come back, asleep until they come to the front (as in the Nim front end).
     int active = 0;
@@ -762,7 +769,7 @@ void BrowserWindow::paint_tabs(QPainter& p)
         auto c = tab_close_rect(i).translated(r.left() - tab_rect(i).left(), 0);
         if (m_hover.hit == Hit::TabClose && m_hover.tab == i) {
             p.setPen(Qt::NoPen);
-            p.setBrush(button_hover_color.darker(105));
+            p.setBrush(WebbyUI::theme().deeper(button_hover_color));
             p.drawEllipse(c);
         }
         p.setPen(QPen(dim_text_color, 1.4));
@@ -786,7 +793,7 @@ void BrowserWindow::paint_toolbar(QPainter& p)
 {
     QRectF bar(0, tab_strip_height, width(), toolbar_height);
     p.fillRect(bar, tab_color);
-    p.setPen(QPen(QColor(0xda, 0xdc, 0xe0), 1));
+    p.setPen(QPen(WebbyUI::theme().border, 1));
     p.drawLine(QPointF(0, chrome_height() - 0.5), QPointF(width(), chrome_height() - 0.5));
 
     auto* tab = current();
@@ -866,7 +873,7 @@ void BrowserWindow::paint_toolbar(QPainter& p)
         p.setFont(small);
         QPainterPath pill;
         pill.addRoundedRect(zoom, zoom.height() / 2, zoom.height() / 2);
-        p.fillPath(pill, m_hover.hit == Hit::Zoom ? button_hover_color.darker(105) : button_hover_color);
+        p.fillPath(pill, m_hover.hit == Hit::Zoom ? WebbyUI::theme().deeper(button_hover_color) : button_hover_color);
         p.setPen(text_color);
         p.drawText(zoom, Qt::AlignCenter, QStringLiteral("%1%").arg(qRound(tab->view->zoom() * 100)));
         p.restore();
@@ -885,7 +892,7 @@ void BrowserWindow::paint_toolbar(QPainter& p)
             int b = qMax(m_address_anchor, m_address_cursor);
             qreal x0 = text_rect.left() + metrics.horizontalAdvance(m_address_text.left(a));
             qreal x1 = text_rect.left() + metrics.horizontalAdvance(m_address_text.left(b));
-            p.fillRect(QRectF(x0, text_rect.center().y() - metrics.height() / 2, x1 - x0, metrics.height()), QColor(0xc2, 0xdb, 0xff));
+            p.fillRect(QRectF(x0, text_rect.center().y() - metrics.height() / 2, x1 - x0, metrics.height()), WebbyUI::theme().selection);
         }
         p.setPen(text_color);
         p.drawText(QPointF(text_rect.left(), baseline), m_address_text);
@@ -904,7 +911,7 @@ void BrowserWindow::paint_bookmarks_bar(QPainter& p)
         return;
     QRectF bar(0, tab_strip_height + toolbar_height, width(), bookmarks_bar_height);
     p.fillRect(bar, tab_color);
-    p.setPen(QPen(QColor(0xda, 0xdc, 0xe0), 1));
+    p.setPen(QPen(WebbyUI::theme().border, 1));
     p.drawLine(QPointF(0, bar.bottom() - 0.5), QPointF(width(), bar.bottom() - 0.5));
     QFont font = p.font();
     font.setPixelSize(12);
@@ -935,7 +942,7 @@ void BrowserWindow::paint_suggestions(QPainter& p)
         return;
     auto first = suggestion_rect(0);
     QRectF box(first.left(), first.top() - 4, first.width(), m_suggestions.size() * first.height() + 8);
-    p.setPen(QPen(QColor(0xda, 0xdc, 0xe0), 1));
+    p.setPen(QPen(WebbyUI::theme().border, 1));
     p.setBrush(tab_color);
     p.drawRoundedRect(box, 10, 10);
     QFont font = p.font();
@@ -946,7 +953,7 @@ void BrowserWindow::paint_suggestions(QPainter& p)
         auto r = suggestion_rect(i);
         auto const& s = m_suggestions[i];
         if (i == m_suggestion || (m_hover.hit == Hit::Suggestion && m_hover.tab == i))
-            p.fillRect(r, i == m_suggestion ? QColor(0xe8, 0xf0, 0xfe) : button_hover_color);
+            p.fillRect(r, i == m_suggestion ? WebbyUI::theme().selected : button_hover_color);
         // An icon: a magnifier for a search, a star for a bookmark, a clock for history.
         auto c = QPointF(r.left() + 22, r.center().y());
         p.setPen(QPen(dim_text_color, 1.5));
@@ -1074,11 +1081,23 @@ QRegion BrowserWindow::page_overlays() const
     return overlays;
 }
 
+void BrowserWindow::apply_color_scheme()
+{
+    // WEBBY_THEME=dark|light overrides the desktop (LATHA_GUI_THEME does the same for every latha:gui app).
+    auto forced = qEnvironmentVariable("WEBBY_THEME");
+    bool dark = forced == QStringLiteral("dark") || (forced != QStringLiteral("light") && QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark);
+    bool changed = dark != theme().dark;
+    theme().set_dark(dark);
+    WebView::set_color_scheme(dark);
+    if (changed)
+        update();
+}
+
 void BrowserWindow::paint_page(QPainter& p)
 {
     auto r = page_rect();
     if (m_page_image.isNull()) {
-        p.fillRect(r, Qt::white);
+        p.fillRect(r, WebbyUI::theme().page_blank);
         return;
     }
     auto const& image = m_page_image;
@@ -1088,9 +1107,9 @@ void BrowserWindow::paint_page(QPainter& p)
     p.drawImage(r.topLeft(), image);
     p.restore();
     if (image.width() < r.width())
-        p.fillRect(QRect(r.left() + image.width(), r.top(), r.width() - image.width(), r.height()), Qt::white);
+        p.fillRect(QRect(r.left() + image.width(), r.top(), r.width() - image.width(), r.height()), WebbyUI::theme().page_blank);
     if (image.height() < r.height())
-        p.fillRect(QRect(r.left(), r.top() + image.height(), r.width(), r.height() - image.height()), Qt::white);
+        p.fillRect(QRect(r.left(), r.top() + image.height(), r.width(), r.height() - image.height()), WebbyUI::theme().page_blank);
 }
 
 QRect BrowserWindow::status_rect() const
@@ -1112,8 +1131,8 @@ void BrowserWindow::paint_status(QPainter& p)
     QFontMetricsF metrics(font);
     auto text = metrics.elidedText(m_hovered_link, Qt::ElideMiddle, width() * 0.6);
     QRectF box(0, height() - 24, metrics.horizontalAdvance(text) + 16, 24);
-    p.setPen(QPen(QColor(0xda, 0xdc, 0xe0), 1));
-    p.setBrush(QColor(0xf8, 0xf9, 0xfa));
+    p.setPen(QPen(WebbyUI::theme().border, 1));
+    p.setBrush(WebbyUI::theme().panel);
     p.drawRect(box.adjusted(-1, 0, 0, 1));
     p.setPen(text_color);
     p.drawText(box.adjusted(8, 0, 0, 0), Qt::AlignVCenter | Qt::AlignLeft, text);
@@ -1937,7 +1956,7 @@ void BrowserWindow::paint_find(QPainter& p)
     if (!m_find_open)
         return;
     auto r = find_rect();
-    p.setPen(QPen(QColor(0xda, 0xdc, 0xe0), 1));
+    p.setPen(QPen(WebbyUI::theme().border, 1));
     p.setBrush(tab_color);
     p.drawRoundedRect(r, 10, 10);
     QFont font = p.font();
@@ -1971,7 +1990,7 @@ void BrowserWindow::paint_find(QPainter& p)
     p.drawLine(QPointF(caret, text.center().y() - metrics.height() / 2), QPointF(caret, text.center().y() + metrics.height() / 2));
     p.restore();
     if (!count.isEmpty()) {
-        p.setPen(m_find_result.total == 0 ? QColor(0xd9, 0x30, 0x25) : dim_text_color);
+        p.setPen(m_find_result.total == 0 ? WebbyUI::theme().error : dim_text_color);
         p.drawText(QRectF(text.right() + 6, r.top(), count_width, r.height()), Qt::AlignVCenter | Qt::AlignLeft, count);
     }
     Hit hits[] = { Hit::FindPrevious, Hit::FindNext, Hit::FindClose };
