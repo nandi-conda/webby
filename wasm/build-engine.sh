@@ -12,6 +12,7 @@ if [ -x "${CARGO_HOME:-$HOME/.cargo}/bin/rustup" ]; then export PATH="${CARGO_HO
 export CC_wasm32_wasip1="${CC_wasm32_wasip1:-$WASI_SDK_PREFIX/bin/clang}" AR_wasm32_wasip1="${AR_wasm32_wasip1:-$WASI_SDK_PREFIX/bin/llvm-ar}"
 # Configured every time (cheap when nothing changed), so a change to these options reaches an existing build directory.
 # ccache, when there is one, wraps the compilers (ci/engine.sh keeps its directory in the job's cache).
+mkdir -p "$build"
 launcher=()
 if command -v ccache > /dev/null && [ "${WEBBY_CCACHE:-1}" != 0 ]; then
   launcher=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
