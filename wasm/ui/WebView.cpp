@@ -18,6 +18,7 @@
 #include <LibCore/ConfigFile.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/File.h>
+#include <LibCore/MimeData.h>
 #include <LibCore/ResourceImplementation.h>
 #include <LibCore/ResourceImplementationFile.h>
 #include <LibCore/System.h>
@@ -30,13 +31,17 @@
 #include <LibGfx/Font/Typeface.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/SystemTheme.h>
+#include <LibTextCodec/Decoder.h>
 #include <LibURL/Parser.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/DocumentObserver.h>
+#include <LibWeb/Fetch/Infrastructure/HTTP/MIME.h>
 #include <LibWeb/HTML/LocalNavigable.h>
 #include <LibWeb/HTML/LocalTraversableNavigable.h>
+#include <LibWeb/HTML/Parser/HTMLEncodingDetection.h>
 #include <LibWeb/HTML/Parser/HTMLParser.h>
+#include <LibWeb/HTML/Parser/HTMLTokenizer.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/Layout/RenderDocument.h>
 #include <LibWeb/Loader/FileRequest.h>
@@ -370,6 +375,8 @@ void WebView::navigate(std::string const& requested_url, bool add_to_history)
     }
 
     ByteString html;
+    Optional<ByteBuffer> file_body;
+    Optional<Web::MimeSniff::MimeType> file_type;
     URL::URL document_url = url.has_value() ? *url : URL::Parser::basic_parse("about:blank"sv).value();
     if (!url.has_value()) {
         html = error_page_html(input, "This is not a URL."sv);
@@ -383,8 +390,11 @@ void WebView::navigate(std::string const& requested_url, bool add_to_history)
             html = error_page_html(url->serialize(), ByteString::formatted("{}", contents.error()));
         else if (FileSystem::is_directory(path))
             html = error_page_html(url->serialize(), "This is a folder."sv);
-        else
-            html = ByteString { contents.value().bytes() };
+        else {
+            // A file's type comes from its name, as Ladybird's file: loads do (a .txt shows as text, not as HTML).
+            file_type = Web::MimeSniff::MimeType::parse(Core::guess_mime_type_based_on_filename(path));
+            file_body = contents.release_value();
+        }
     } else if (url->scheme() == "http"sv || url->scheme() == "https"sv) {
         // The old page stays up while the document downloads; the new one replaces it when it arrives.
         set_location(to_std(url->serialize().to_byte_string()), add_to_history);
@@ -422,7 +432,10 @@ void WebView::navigate(std::string const& requested_url, bool add_to_history)
         if (on_url_change)
             on_url_change(m_url);
     }
-    show_document({ document_url, MUST(ByteBuffer::copy(html.bytes())), {} });
+    if (file_body.has_value())
+        show_document({ document_url, file_body.release_value(), move(file_type) });
+    else
+        show_document({ document_url, MUST(ByteBuffer::copy(html.bytes())), {} });
 }
 
 void WebView::set_location(std::string url, bool add_to_history)
@@ -441,10 +454,64 @@ void WebView::set_location(std::string url, bool add_to_history)
         on_loading_change(true);
 }
 
+// The types a navigation loads as a text document (HTML's "load a text document"): shown as they are in a <pre>.
+static bool is_text_document_type(Web::MimeSniff::MimeType const& type)
+{
+    return type.is_javascript() || type.is_json() || type.essence() == "text/css"sv || type.essence() == "text/plain"sv
+        || type.essence() == "text/vtt"sv;
+}
+
+// What DocumentLoading.cpp's load_text_document does with a navigation's body: the parser is fed "<pre>\n", then the
+// body decoded as one run of text in the PLAINTEXT state, so none of it is markup and its line breaks stay.
+static void parse_text_document(Web::DOM::Document& document, ByteBuffer const& body, Web::MimeSniff::MimeType const& type, URL::URL const& url)
+{
+    document.set_parser_cannot_change_the_mode(true);
+    document.set_quirks_mode(Web::DOM::QuirksMode::No);
+
+    // JSON is UTF-8 unless a BOM or the charset parameter says otherwise; other text sniffs as HTML does.
+    ByteString encoding;
+    if (type.is_json())
+        encoding = Web::HTML::run_bom_sniff(body).value_or(Web::Fetch::Infrastructure::legacy_extract_an_encoding(type, "UTF-8"sv));
+    else
+        encoding = Web::HTML::run_encoding_sniffing_algorithm(document, body, type).encoding;
+    auto decoder = TextCodec::decoder_for(encoding);
+    if (!decoder.has_value())
+        decoder = TextCodec::decoder_for("UTF-8"sv);
+
+    auto parser = Web::HTML::HTMLParser::create_with_open_input_stream(document);
+    parser->tokenizer().update_insertion_point();
+    parser->tokenizer().insert_input_at_insertion_point(u"<pre>\n"sv);
+    parser->run();
+    parser->tokenizer().switch_to(Web::HTML::HTMLTokenizer::State::PLAINTEXT);
+    auto decoded = TextCodec::decode_to_utf16(body, *decoder).release_value_but_fixme_should_propagate_errors();
+    parser->tokenizer().insert_input_at_insertion_point(decoded);
+    parser->tokenizer().insert_eof();
+    parser->run(url);
+    document.set_encoding(Utf16String::from_ascii_without_validation(encoding.bytes()));
+}
+
+// An image opened on its own: a page that shows it, as Ladybird's media documents do.
+static ByteString image_document_html(URL::URL const& url)
+{
+    auto src = url.serialize().to_byte_string().replace("&"sv, "&amp;"sv, ReplaceMode::All).replace("\""sv, "&quot;"sv, ReplaceMode::All);
+    return ByteString::formatted(R"html(<!doctype html><html><head><meta name="color-scheme" content="light dark"></head>
+<body style="margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #0e0e0e">
+<img src="{}" style="max-width: 100%; max-height: 100vh; display: block; margin: auto"></body></html>)html",
+        src);
+}
+
 // The document's bytes are decoded as for a navigation: Content-Type's charset, a BOM or a <meta charset>, else UTF-8.
+// Text types (text/plain, JSON, JavaScript, CSS) are shown as text and images on a page of their own, as a navigation
+// would load them; everything else is parsed as HTML.
 void WebView::show_document(LoadedDocument loaded)
 {
     auto const& document_url = loaded.url;
+    bool as_text = loaded.mime_type.has_value() && is_text_document_type(*loaded.mime_type);
+    if (loaded.mime_type.has_value() && loaded.mime_type->is_image()) {
+        auto html = image_document_html(document_url);
+        loaded.html = MUST(ByteBuffer::copy(html.bytes()));
+        loaded.mime_type = Web::MimeSniff::MimeType::parse("text/html"sv);
+    }
     if (m_impl->client)
         m_impl->client->detach();
 
@@ -461,7 +528,7 @@ void WebView::show_document(LoadedDocument loaded)
     document->set_id(client->allocate_cross_process_id());
     document->set_origin(document_url.origin());
     document->set_document_type(Web::DOM::Document::Type::HTML);
-    document->set_content_type("text/html"_utf16_fly_string);
+    document->set_content_type(as_text ? Utf16FlyString::from_utf8(loaded.mime_type->essence()) : "text/html"_utf16_fly_string);
     document->set_browsing_context(navigable.active_browsing_context());
     document->set_window(window);
     window.set_associated_document(*document);
@@ -483,8 +550,12 @@ void WebView::show_document(LoadedDocument loaded)
     if (on_link_hover)
         on_link_hover({});
 
-    auto parser = Web::HTML::HTMLParser::create_with_uncertain_encoding(*document, loaded.html, loaded.mime_type);
-    parser->run(document_url);
+    if (as_text) {
+        parse_text_document(*document, loaded.html, *loaded.mime_type, document_url);
+    } else {
+        auto parser = Web::HTML::HTMLParser::create_with_uncertain_encoding(*document, loaded.html, loaded.mime_type);
+        parser->run(document_url);
+    }
     did_request_frame();
 }
 
