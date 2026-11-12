@@ -34,6 +34,10 @@ public:
     // `pixels`: the new frame, premultiplied BGRA, `size` pixels, rows packed. `owner` tells frames of different views
     // apart: a new owner or size damages everything.
     Change take(uint8_t const* pixels, QSize size, void const* owner);
+    // The same when the page already knows what it changed (WebView::last_paint_change): the content moved up by
+    // `scroll`, then `damage` was drawn again. Only the damaged rows are hashed (a page that animates a dot used to
+    // hash and sort every row of the frame for each of its frames).
+    Change take_known(uint8_t const* pixels, QSize size, void const* owner, int scroll, QRegion const& damage);
 
     // The next frame is compared with nothing (the screen no longer shows the last one).
     void invalidate() { m_size = {}; }
@@ -42,6 +46,7 @@ public:
 
 private:
     void hash_rows(uint8_t const* pixels, QSize size, std::vector<uint64_t>& out) const;
+    uint64_t hash_band_row(uint8_t const* pixels, int width, int y, int band) const;
     int find_scroll(std::vector<uint64_t> const& now) const;
 
     QSize m_size;

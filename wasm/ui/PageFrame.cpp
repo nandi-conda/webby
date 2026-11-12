@@ -8,41 +8,44 @@
 
 #include <QRect>
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <unordered_map>
 #include <utility>
 
 namespace WebbyUI {
 
+uint64_t PageFrame::hash_band_row(uint8_t const* pixels, int width, int y, int band) const
+{
+    int const x0 = band * band_width;
+    int const x1 = std::min(width, x0 + band_width);
+    uint8_t const* p = pixels + size_t(y) * size_t(width) * 4 + size_t(x0) * 4;
+    size_t const bytes = size_t(x1 - x0) * 4;
+    // A multiply-xorshift over 8-byte words; the seed keeps an all-zero band from hashing to 0.
+    uint64_t hash = 0x9e3779b97f4a7c15ull ^ uint64_t(band);
+    size_t i = 0;
+    for (; i + 8 <= bytes; i += 8) {
+        uint64_t word;
+        memcpy(&word, p + i, 8);
+        hash = (hash ^ word) * 0xff51afd7ed558ccdull;
+        hash ^= hash >> 29;
+    }
+    if (i < bytes) {
+        uint64_t word = 0;
+        memcpy(&word, p + i, bytes - i);
+        hash = (hash ^ word) * 0xff51afd7ed558ccdull;
+        hash ^= hash >> 29;
+    }
+    return hash;
+}
+
 void PageFrame::hash_rows(uint8_t const* pixels, QSize size, std::vector<uint64_t>& out) const
 {
     int const w = size.width(), h = size.height();
     out.resize(size_t(m_bands) * size_t(h));
-    for (int y = 0; y < h; ++y) {
-        uint8_t const* row = pixels + size_t(y) * size_t(w) * 4;
-        for (int b = 0; b < m_bands; ++b) {
-            int const x0 = b * band_width;
-            int const x1 = std::min(w, x0 + band_width);
-            uint8_t const* p = row + size_t(x0) * 4;
-            size_t const bytes = size_t(x1 - x0) * 4;
-            // A multiply-xorshift over 8-byte words; the seed keeps an all-zero band from hashing to 0.
-            uint64_t hash = 0x9e3779b97f4a7c15ull ^ uint64_t(b);
-            size_t i = 0;
-            for (; i + 8 <= bytes; i += 8) {
-                uint64_t word;
-                memcpy(&word, p + i, 8);
-                hash = (hash ^ word) * 0xff51afd7ed558ccdull;
-                hash ^= hash >> 29;
-            }
-            if (i < bytes) {
-                uint64_t word = 0;
-                memcpy(&word, p + i, bytes - i);
-                hash = (hash ^ word) * 0xff51afd7ed558ccdull;
-                hash ^= hash >> 29;
-            }
-            out[size_t(b) * size_t(h) + size_t(y)] = hash;
-        }
-    }
+    for (int y = 0; y < h; ++y)
+        for (int b = 0; b < m_bands; ++b)
+            out[size_t(b) * size_t(h) + size_t(y)] = hash_band_row(pixels, w, y, b);
 }
 
 // The scroll most band rows agree on: a row that appears once in its band on screen and once in the new frame votes
@@ -100,6 +103,33 @@ int PageFrame::find_scroll(std::vector<uint64_t> const& now) const
     if (best_votes < 8 || best_votes <= still_votes)
         return 0;
     return best;
+}
+
+PageFrame::Change PageFrame::take_known(uint8_t const* pixels, QSize size, void const* owner, int scroll, QRegion const& damage)
+{
+    int const w = size.width(), h = size.height();
+    if (!pixels || size != m_size || owner != m_owner || std::abs(scroll) >= h)
+        return take(pixels, size, owner);
+    // The row hashes follow the move, then the damaged rows are hashed again (the strip a move uncovers is damage).
+    if (scroll != 0) {
+        for (int b = 0; b < m_bands; ++b) {
+            auto* rows = m_rows.data() + size_t(b) * size_t(h);
+            if (scroll > 0)
+                memmove(rows, rows + scroll, size_t(h - scroll) * sizeof(uint64_t));
+            else
+                memmove(rows - scroll, rows, size_t(h + scroll) * sizeof(uint64_t));
+        }
+    }
+    Change change;
+    change.scroll = scroll;
+    change.damage = damage & QRect(0, 0, w, h);
+    for (auto const& r : change.damage) {
+        int const b0 = r.left() / band_width, b1 = r.right() / band_width;
+        for (int y = r.top(); y <= r.bottom(); ++y)
+            for (int b = b0; b <= b1; ++b)
+                m_rows[size_t(b) * size_t(h) + size_t(y)] = hash_band_row(pixels, w, y, b);
+    }
+    return change;
 }
 
 PageFrame::Change PageFrame::take(uint8_t const* pixels, QSize size, void const* owner)

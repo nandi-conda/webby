@@ -45,6 +45,8 @@ void BrowserWindow::paint_toolbar_buttons(QPainter& p)
     p.save();
     for (int k = 0; k < ButtonCount; ++k) {
         auto r = toolbar_button_rect(k);
+        if (!needs_paint(r))
+            continue;
         if (m_hover.hit == Hit::Toolbar && m_hover.tab == k) {
             p.setPen(Qt::NoPen);
             p.setBrush(button_hover_color);

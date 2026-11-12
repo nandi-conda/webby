@@ -13,6 +13,9 @@
 
 #pragma once
 
+#include <array>
+#include <vector>
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -102,6 +105,15 @@ public:
     // anew when the page changed since the last call. Null before the first load.
     uint8_t const* paint();
     bool needs_paint() const { return m_needs_paint; }
+    // What the last paint() changed in the pixels it returned, when it knows (it repainted only damage): the rows
+    // moved by `moved` (negative: the content moved up, the page scrolled down), then `rects` drawn again. When not
+    // known, compare the frames.
+    struct PaintChange {
+        bool known { false };
+        int moved { 0 };
+        std::vector<std::array<int, 4>> rects; // x, y, width, height
+    };
+    PaintChange const& last_paint_change() const { return m_last_change; }
 
     // Input, in viewport coordinates. `button` is the one that changed, `buttons` those held after the event.
     void mouse_down(int x, int y, unsigned button, unsigned buttons, unsigned modifiers, int clicks);
@@ -210,6 +222,7 @@ private:
     std::string m_title;
     bool m_loading { false };
     bool m_needs_paint { true };
+    PaintChange m_last_change;
     double m_zoom { 1.0 };
     std::vector<std::string> m_history;
     size_t m_history_index { 0 };

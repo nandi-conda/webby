@@ -5,6 +5,6 @@
 package webby:app@0.1.0;
 
 world gui {
-    include latha:gui/gui@0.2.1;
+    include latha:gui/gui@0.2.3;
     import webby:pdf/documents@0.1.0;
 }

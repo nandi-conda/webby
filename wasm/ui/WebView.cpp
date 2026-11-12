@@ -1099,9 +1099,12 @@ uint8_t const* WebView::paint()
 {
     if (!m_impl->document)
         return nullptr;
-    if (!m_needs_paint && m_impl->bitmap)
+    if (!m_needs_paint && m_impl->bitmap) {
+        m_last_change = { .known = true, .moved = 0, .rects = {} };
         return m_impl->bitmap->scanline_u8(0);
+    }
     m_needs_paint = false;
+    m_last_change = {};
 
     Gfx::IntSize size { m_width, m_height };
     if (!m_impl->bitmap || m_impl->bitmap->size() != size) {
@@ -1264,6 +1267,12 @@ uint8_t const* WebView::paint()
             }
             memcpy(m_impl->bitmap->scanline_u8(0), full.value()->scanline_u8(0), m_impl->bitmap->size_in_bytes());
         }
+    }
+    if (damage.has_value() && !verify) {
+        m_last_change.known = true;
+        m_last_change.moved = moved;
+        for (auto const& rect : *damage)
+            m_last_change.rects.push_back({ rect.x(), rect.y(), rect.width(), rect.height() });
     }
     last = Impl::RasterizedFrame { display_list.release_nonnull(), move(visual_context_tree), scroll_state, &document };
     return m_impl->bitmap->scanline_u8(0);

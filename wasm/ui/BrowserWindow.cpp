@@ -468,7 +468,7 @@ void BrowserWindow::sync_from_view()
     }
     if (auto* tab = current())
         setTitle(tab->title + QStringLiteral(" - webby"));
-    update();
+    update_chrome();
 }
 
 void BrowserWindow::pump()
@@ -553,7 +553,7 @@ void BrowserWindow::update_suggestions()
         m_suggestions.clear();
     m_suggestion = -1;
     m_typed_text = m_address_text;
-    update();
+    update_address();
 }
 
 void BrowserWindow::hide_suggestions()
@@ -562,7 +562,7 @@ void BrowserWindow::hide_suggestions()
         return;
     m_suggestions.clear();
     m_suggestion = -1;
-    update();
+    update_address();
 }
 
 void BrowserWindow::focus_address(bool focus)
@@ -576,7 +576,7 @@ void BrowserWindow::focus_address(bool focus)
         if (auto* tab = current(); tab && tab->view)
             m_address_text = from_std(tab->view->url());
     }
-    update();
+    update_chrome();
 }
 
 // Geometry, in logical pixels.
@@ -706,8 +706,9 @@ BrowserWindow::HitResult BrowserWindow::hit_test(QPointF p) const
 
 // Painting.
 
-void BrowserWindow::paintEvent(QPaintEvent*)
+void BrowserWindow::paintEvent(QPaintEvent* event)
 {
+    m_paint_region = event->region();
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
     paint_page(painter);
@@ -736,6 +737,8 @@ void BrowserWindow::paint_tabs(QPainter& p)
         auto r = tab_rect(i);
         if (m_dragging_tab && i == m_current)
             r.translate(m_drag_offset, 0);
+        if (!needs_paint(r))
+            continue;
         bool active = i == m_current;
         bool hovered = m_hover.tab == i && (m_hover.hit == Hit::Tab || m_hover.hit == Hit::TabClose);
         if (active || hovered) {
@@ -778,6 +781,8 @@ void BrowserWindow::paint_tabs(QPainter& p)
         p.drawLine(x.topRight(), x.bottomLeft());
     }
     auto n = new_tab_rect();
+    if (!needs_paint(n))
+        return;
     if (m_hover.hit == Hit::NewTab) {
         p.setPen(Qt::NoPen);
         p.setBrush(button_hover_color);
@@ -803,6 +808,8 @@ void BrowserWindow::paint_toolbar(QPainter& p)
     bool enabled[] = { can_back, can_forward, tab != nullptr };
     for (int i = 0; i < 3; ++i) {
         auto r = button_rect(i);
+        if (!needs_paint(r))
+            continue;
         if (m_hover.hit == buttons[i] && enabled[i]) {
             p.setPen(Qt::NoPen);
             p.setBrush(button_hover_color);
@@ -830,6 +837,8 @@ void BrowserWindow::paint_toolbar(QPainter& p)
     }
 
     auto field = address_rect();
+    if (!needs_paint(field))
+        return;
     QPainterPath path;
     path.addRoundedRect(field, field.height() / 2, field.height() / 2);
     p.fillPath(path, m_address_focused ? tab_color : field_color);
@@ -936,8 +945,57 @@ void BrowserWindow::paint_bookmarks_bar(QPainter& p)
     }
 }
 
+QRect BrowserWindow::suggestions_box() const
+{
+    if (m_suggestions.isEmpty())
+        return {};
+    auto first = suggestion_rect(0);
+    return QRectF(first.left(), first.top() - 4, first.width(), m_suggestions.size() * first.height() + 8).toAlignedRect().adjusted(-2, -2, 2, 2);
+}
+
+// What a change to the chrome alone repaints: the tab strip, toolbar and bars above the page, the find bar, and the
+// address suggestions as they are now and as they were last drawn. A full update() repaints the page under them too
+// and is several times the work. With a menu or a dialog open (either can cover any of it), the whole window.
+QRegion BrowserWindow::chrome_region() const
+{
+    if (m_menu.is_open() || m_dialog.is_open())
+        return QRegion(0, 0, width(), height());
+    QRegion region(0, 0, width(), chrome_height());
+    region += m_suggestions_painted;
+    region += suggestions_box();
+    if (m_find_open)
+        region += find_rect().toAlignedRect().adjusted(-2, -2, 2, 2);
+    return region;
+}
+
+void BrowserWindow::update_chrome()
+{
+    update(chrome_region());
+}
+
+// A change to the address field alone (typing, the caret, the selection, focus): the field and the suggestions.
+void BrowserWindow::update_address()
+{
+    if (m_menu.is_open() || m_dialog.is_open()) {
+        update();
+        return;
+    }
+    QRegion region(address_rect().toAlignedRect().adjusted(-3, -3, 3, 3));
+    region += m_suggestions_painted;
+    region += suggestions_box();
+    update(region);
+}
+
+// Whether `r` is in what this paint repaints. Clipped drawing is not free: Qt still turns every curve, rounded
+// rect and round-capped line into polygons, and in wasm the toolbar's icons cost more than the pixels they touch.
+bool BrowserWindow::needs_paint(QRectF const& r) const
+{
+    return m_paint_region.intersects(r.toAlignedRect().adjusted(-2, -2, 2, 2));
+}
+
 void BrowserWindow::paint_suggestions(QPainter& p)
 {
+    m_suggestions_painted = suggestions_box();
     if (m_suggestions.isEmpty())
         return;
     auto first = suggestion_rect(0);
@@ -1035,7 +1093,17 @@ void BrowserWindow::prepare_page_frame()
         return;
     }
     m_page_image = QImage(pixels, size.width(), size.height(), size.width() * 4, QImage::Format_ARGB32_Premultiplied);
-    auto change = m_page_frame.take(pixels, size, owner);
+    // The engine says what it repainted (it rasters only damage): no need to compare the whole frame.
+    WebbyUI::PageFrame::Change change;
+    if (!pdf && tab->view->last_paint_change().known) {
+        auto const& known = tab->view->last_paint_change();
+        QRegion region;
+        for (auto const& r : known.rects)
+            region += QRect(r[0], r[1], r[2], r[3]);
+        change = m_page_frame.take_known(pixels, size, owner, -known.moved, region);
+    } else {
+        change = m_page_frame.take(pixels, size, owner);
+    }
     QRegion damage = change.damage.translated(page.topLeft());
     if (change.scroll) {
         // The host moves whole device pixels. Under an open menu or the address suggestions (they can cover most of
@@ -1396,12 +1464,16 @@ void BrowserWindow::mouseMoveEvent(QMouseEvent* event)
 {
     auto hit = hit_test(event->position());
     if (hit.hit != m_hover.hit || hit.tab != m_hover.tab) {
+        // Only the chrome draws hovers; moving within the page (or off everything) changes nothing on screen.
+        auto quiet = [](Hit h) { return h == Hit::None || h == Hit::Page; };
+        bool repaint = !quiet(hit.hit) || !quiet(m_hover.hit);
         m_hover = hit;
-        update();
+        if (repaint)
+            update_chrome();
     }
     if (m_pressed.hit == Hit::Address && (event->buttons() & Qt::LeftButton)) {
         m_address_cursor = address_index_at(event->position().x());
-        update();
+        update_address();
         return;
     }
     if (m_pressed.hit == Hit::Tab && (event->buttons() & Qt::LeftButton) && m_current >= 0) {
@@ -1516,7 +1588,7 @@ bool BrowserWindow::address_key(QKeyEvent* event)
             if (cut)
                 remove_selection();
         }
-        update();
+        update_address();
         return true;
     }
     if (paste_key) {
@@ -1551,7 +1623,7 @@ bool BrowserWindow::address_key(QKeyEvent* event)
             : m_suggestions[m_suggestion].kind == Omnibox::Suggestion::Kind::Search ? m_suggestions[m_suggestion].title
                                                                                      : m_suggestions[m_suggestion].url;
         m_address_cursor = m_address_anchor = int(m_address_text.size());
-        update();
+        update_address();
         return true;
     }
     case Qt::Key_Left:
@@ -1600,7 +1672,7 @@ bool BrowserWindow::address_key(QKeyEvent* event)
         update_primary_selection();
     if (m_address_text != before)
         update_suggestions();
-    update();
+    update_address();
     return true;
 }
 

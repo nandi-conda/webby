@@ -196,6 +196,11 @@ private:
     QRegion page_overlays() const;
     void paint_bookmarks_bar(QPainter&);
     void paint_suggestions(QPainter&);
+    QRect suggestions_box() const;
+    QRegion chrome_region() const;
+    void update_chrome();
+    void update_address();
+    bool needs_paint(QRectF const&) const;
 
     bool address_key(QKeyEvent*);
     int address_index_at(qreal x) const;
@@ -247,4 +252,6 @@ private:
     QImage m_page_image; // the frame on screen (the view's own pixels, valid until its next paint)
     bool m_page_dirty { true };
     QRect m_status_painted;
+    QRect m_suggestions_painted; // where paint_suggestions last drew its box
+    QRegion m_paint_region;      // what the paint in progress repaints (needs_paint skips the rest)
 };
