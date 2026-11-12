@@ -121,7 +121,20 @@ def launch_check(dist):
         subprocess.run(["pkill", "-f", "squashfs-root"], stdout=subprocess.DEVNULL)
 
 
+def superseded():
+    """Whether main has moved past this run's commit: its own run builds that, so this one need not."""
+    status, out = forge("GET", f"/commits?ref={os.environ.get('FORGE_BRANCH') or 'main'}&limit=1")
+    try:
+        head = out["commits"][0]["sha"] if status == 200 else ""
+    except (TypeError, KeyError, IndexError):
+        head = ""
+    return bool(head) and head != SHA
+
+
 def main():
+    if superseded():
+        say(f"main has moved past {SHA[:12]}: its newer run builds the AppImage, so this one stops")
+        return
     now = time.gmtime()
     version = time.strftime("%Y.%m.%d.", now) + str(now.tm_hour * 10000 + now.tm_min * 100 + now.tm_sec)
     build_number = now.tm_hour * 10000 + now.tm_min * 100 + now.tm_sec
