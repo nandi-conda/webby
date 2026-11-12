@@ -5,6 +5,7 @@
  */
 
 #include "WebView.h"
+#include "Resources.h"
 
 #include <AK/LexicalPath.h>
 #include <AK/Utf16String.h>
@@ -13,6 +14,7 @@
 #include <Compositor/PaintingSurface.h>
 #include <Compositor/SkiaBackendContext.h>
 #include <LibCompositing/DisplayList/DisplayListResourceStorage.h>
+#include <LibCore/ConfigFile.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/File.h>
 #include <LibCore/ResourceImplementation.h>
@@ -21,6 +23,9 @@
 #include <LibFileSystem/FileSystem.h>
 #include <LibGC/Root.h>
 #include <LibGfx/Bitmap.h>
+#include <LibGfx/Font/FontDatabase.h>
+#include <LibGfx/Font/PathFontProvider.h>
+#include <LibGfx/Font/Typeface.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/SystemTheme.h>
 #include <LibURL/Parser.h>
@@ -193,6 +198,16 @@ namespace {
 Core::EventLoop* s_event_loop;
 RefPtr<Gfx::PaletteImpl> s_palette;
 
+// The theme: Base/res's file when the host opens one to the module, else the one built in.
+static ErrorOr<Core::AnonymousBuffer> load_theme(StringView resources)
+{
+    auto path = ByteString::formatted("{}/themes/Default.ini", resources);
+    if (FileSystem::exists(path))
+        return Gfx::load_system_theme(path);
+    auto config = TRY(Core::ConfigFile::open_from_text("Default.ini", { reinterpret_cast<char const*>(webby_builtin_theme.data), webby_builtin_theme.size }));
+    return Gfx::load_system_theme(*config);
+}
+
 ErrorOr<void> initialize_engine()
 {
     if (s_event_loop)
@@ -204,9 +219,20 @@ ErrorOr<void> initialize_engine()
     Core::ResourceImplementation::install(make<Core::ResourceImplementationFile>(MUST(String::from_utf8(resources))));
     Web::Bindings::initialize_main_thread_vm(Web::HTML::AgentType::SimilarOriginWindow);
     Web::ResourceLoader::initialize(Web::Bindings::main_thread_vm().heap());
-    Web::Platform::FontPlugin::install(*new Web::Platform::FontPlugin(false));
-    auto theme = TRY(Gfx::load_system_theme(ByteString::formatted("{}/themes/Default.ini", resources)));
-    s_palette = Gfx::PaletteImpl::create_with_anonymous_buffer(theme);
+    // Fonts: the built-in Liberation faces, so there are always some (a host with no /usr/share/fonts, such as NixOS,
+    // or nothing opened to the module), then whatever the system font directories hold.
+    auto& font_provider = static_cast<Gfx::PathFontProvider&>(Gfx::FontDatabase::the().install_system_font_provider(make<Gfx::PathFontProvider>()));
+    for (size_t i = 0; i < webby_builtin_font_count; ++i) {
+        auto const& font = webby_builtin_fonts[i];
+        auto typeface = Gfx::Typeface::try_load_from_temporary_memory({ font.data, font.size });
+        if (typeface.is_error()) {
+            warnln("webby: built-in font {}: {}", font.name, typeface.error());
+            continue;
+        }
+        font_provider.add_typeface(typeface.release_value());
+    }
+    Web::Platform::FontPlugin::install(*new Web::Platform::FontPlugin(false, &font_provider));
+    s_palette = Gfx::PaletteImpl::create_with_anonymous_buffer(TRY(load_theme(resources)));
     return {};
 }
 

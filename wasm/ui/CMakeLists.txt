@@ -50,6 +50,7 @@ set(compositor_dir ${LADYBIRD_SOURCE_DIR}/Services/Compositor)
 add_executable(webby-ui
     BrowserWindow.cpp
     KeyMap.cpp
+    Resources.c
     WebView.cpp
     main.cpp
     qt_wasi_shims.c
@@ -71,6 +72,10 @@ add_executable(webby-ui
     ${compositor_dir}/SkiaBackendContext.cpp
     ${compositor_dir}/SkiaUtils.cpp
     ${compositor_dir}/VideoFrameSkia.cpp)
+# Built in (Resources.c, #embed): Ladybird's default theme and the Liberation fonts.
+set_source_files_properties(Resources.c PROPERTIES COMPILE_OPTIONS
+    "-std=c23;--embed-dir=${CMAKE_CURRENT_SOURCE_DIR}/fonts;--embed-dir=${LADYBIRD_SOURCE_DIR}/Base/res/themes"
+    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/fonts/LiberationSans-Regular.ttf;${LADYBIRD_SOURCE_DIR}/Base/res/themes/Default.ini")
 set_target_properties(webby-ui PROPERTIES SUFFIX ".core.wasm" RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 target_include_directories(webby-ui PRIVATE
     ${LADYBIRD_SOURCE_DIR}/Services ${CMAKE_BINARY_DIR}/Services

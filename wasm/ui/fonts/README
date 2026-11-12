@@ -1,0 +1,3 @@
+Liberation Sans, Serif and Mono (Debian fonts-liberation, https://github.com/liberationfonts), SIL OFL 1.1 (LICENSE).
+Built into webby.wasm (Resources.c) so pages and the chrome have fonts on any host, NixOS included, and with no
+directories opened to the module.

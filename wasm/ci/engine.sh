@@ -167,6 +167,13 @@ if [[ " $targets " == *" webby-ui "* ]] && [ -n "${LATHA_RUN:-}" ]; then
   if [ $rc != 0 ] || [ "$(stat -c %s "$ui/ui.png" 2>/dev/null || echo 0)" -lt 10000 ]; then
     tail -40 "$out/webby-ui-test.log"; fail "webby-ui smoke test failed (exit $rc)"
   fi
+  # And as `latha-gui webby.wasm` with nothing opened to it (built-in theme and fonts), past several idle GCs.
+  (cd "$ui" && QT_QPA_PLATFORM=offscreen timeout 1200 "$(dirname "$LATHA_RUN")/latha-gui" --no-root \
+    --size 1100x760 --screenshot "$ui/bare.png" --quit-after 20000 "$out/webby.wasm") > "$out/webby-ui-bare.log" 2>&1
+  rc=$?
+  if [ $rc != 0 ] || grep -q "trapped\|could not start" "$out/webby-ui-bare.log" || [ "$(stat -c %s "$ui/bare.png" 2>/dev/null || echo 0)" -lt 10000 ]; then
+    tail -40 "$out/webby-ui-bare.log"; fail "webby-ui with no arguments failed (exit $rc)"
+  fi
   echo "webby.wasm ran in latha-gui"
 fi
 (cd "$out" && sha256sum ./*.wasm > SHA256SUMS)

@@ -8,9 +8,9 @@
 // frames. Arguments are URLs (or paths) to open, one tab each, and test input (--click, --wheel; see below).
 
 #include "BrowserWindow.h"
+#include "Resources.h"
 
-#include <QDir>
-#include <QFile>
+#include <QByteArray>
 #include <QFontDatabase>
 #include <QGuiApplication>
 #include <QMouseEvent>
@@ -20,27 +20,19 @@
 
 static void add_chrome_fonts()
 {
-    // The chrome uses the host's fonts, which the host opens to the module (latha-gui opens / by default).
-    char const* candidates[] = {
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/noto/NotoSans-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-    };
-    for (auto const* path : candidates) {
-        if (!QFile::exists(QString::fromUtf8(path)))
-            continue;
-        int id = QFontDatabase::addApplicationFont(QString::fromUtf8(path));
-        if (id >= 0) {
+    // The chrome uses the Liberation Sans built into the module (Resources.c), the same on every host.
+    QString family;
+    for (size_t i = 0; i < webby_builtin_font_count; ++i) {
+        auto const& font = webby_builtin_fonts[i];
+        int id = QFontDatabase::addApplicationFontFromData(QByteArray::fromRawData(reinterpret_cast<char const*>(font.data), qsizetype(font.size)));
+        if (id >= 0 && family.isEmpty() && QByteArray(font.name).startsWith("LiberationSans")) {
             auto families = QFontDatabase::applicationFontFamilies(id);
             if (!families.isEmpty())
-                QGuiApplication::setFont(QFont(families.first()));
-            return;
+                family = families.first();
         }
     }
+    if (!family.isEmpty())
+        QGuiApplication::setFont(QFont(family));
 }
 
 // Test input, so that the UI can be driven headless (latha-gui --screenshot only types): --click=X,Y@MS clicks the

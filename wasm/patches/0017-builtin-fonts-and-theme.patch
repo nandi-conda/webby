@@ -1,0 +1,187 @@
+diff --git a/Libraries/LibCore/ConfigFile.cpp b/Libraries/LibCore/ConfigFile.cpp
+index 5efd20f0..b415e333 100644
+--- a/Libraries/LibCore/ConfigFile.cpp
++++ b/Libraries/LibCore/ConfigFile.cpp
+@@ -43,6 +43,52 @@ ConfigFile::ConfigFile(ByteString const& filename, OwnPtr<InputBufferedFile> ope
+ 
+ ConfigFile::~ConfigFile() = default;
+ 
++void ConfigFile::parse_line(StringView line, HashMap<ByteString, ByteString>*& current_group)
++{
++    size_t i = 0;
++
++    while (i < line.length() && (line[i] == ' ' || line[i] == '\t' || line[i] == '\n'))
++        ++i;
++
++    if (i >= line.length())
++        return;
++
++    switch (line[i]) {
++    case '#': // Comment, skip entire line.
++    case ';': // -||-
++        return;
++    case '[': { // Start of new group.
++        StringBuilder builder;
++        ++i; // Skip the '['
++        while (i < line.length() && (line[i] != ']')) {
++            builder.append(line[i]);
++            ++i;
++        }
++        current_group = &m_groups.ensure(builder.to_byte_string());
++        break;
++    }
++    default: { // Start of key
++        StringBuilder key_builder;
++        StringBuilder value_builder;
++        while (i < line.length() && (line[i] != '=')) {
++            key_builder.append(line[i]);
++            ++i;
++        }
++        ++i; // Skip the '='
++        while (i < line.length() && (line[i] != '\n')) {
++            value_builder.append(line[i]);
++            ++i;
++        }
++        if (!current_group) {
++            // We're not in a group yet, create one with the name ""...
++            current_group = &m_groups.ensure("");
++        }
++        auto value_string = value_builder.to_byte_string();
++        current_group->set(key_builder.to_byte_string(), value_string.trim_whitespace(TrimMode::Right));
++    }
++    }
++}
++
+ ErrorOr<void> ConfigFile::parse()
+ {
+     VERIFY(m_file);
+@@ -53,52 +99,21 @@ ErrorOr<void> ConfigFile::parse()
+     auto buffer = TRY(ByteBuffer::create_uninitialized(4096));
+     while (TRY(m_file->can_read_line())) {
+         auto line = TRY(m_file->read_line(buffer));
+-        size_t i = 0;
+-
+-        while (i < line.length() && (line[i] == ' ' || line[i] == '\t' || line[i] == '\n'))
+-            ++i;
+-
+-        if (i >= line.length())
+-            continue;
+-
+-        switch (line[i]) {
+-        case '#': // Comment, skip entire line.
+-        case ';': // -||-
+-            continue;
+-        case '[': { // Start of new group.
+-            StringBuilder builder;
+-            ++i; // Skip the '['
+-            while (i < line.length() && (line[i] != ']')) {
+-                builder.append(line[i]);
+-                ++i;
+-            }
+-            current_group = &m_groups.ensure(builder.to_byte_string());
+-            break;
+-        }
+-        default: { // Start of key
+-            StringBuilder key_builder;
+-            StringBuilder value_builder;
+-            while (i < line.length() && (line[i] != '=')) {
+-                key_builder.append(line[i]);
+-                ++i;
+-            }
+-            ++i; // Skip the '='
+-            while (i < line.length() && (line[i] != '\n')) {
+-                value_builder.append(line[i]);
+-                ++i;
+-            }
+-            if (!current_group) {
+-                // We're not in a group yet, create one with the name ""...
+-                current_group = &m_groups.ensure("");
+-            }
+-            auto value_string = value_builder.to_byte_string();
+-            current_group->set(key_builder.to_byte_string(), value_string.trim_whitespace(TrimMode::Right));
+-        }
+-        }
++        parse_line(line, current_group);
+     }
+     return {};
+ }
+ 
++ErrorOr<NonnullRefPtr<ConfigFile>> ConfigFile::open_from_text(ByteString const& filename, StringView text)
++{
++    auto config_file = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) ConfigFile(filename, nullptr)));
++    HashMap<ByteString, ByteString>* current_group = nullptr;
++    text.for_each_split_view('\n', SplitBehavior::KeepEmpty, [&](StringView line) {
++        config_file->parse_line(line, current_group);
++    });
++    return config_file;
++}
++
+ Optional<ByteString> ConfigFile::read_entry_optional(AK::ByteString const& group, AK::ByteString const& key) const
+ {
+     if (!has_key(group, key))
+diff --git a/Libraries/LibCore/ConfigFile.h b/Libraries/LibCore/ConfigFile.h
+index e5b8cc87..6bac9e63 100644
+--- a/Libraries/LibCore/ConfigFile.h
++++ b/Libraries/LibCore/ConfigFile.h
+@@ -24,6 +24,8 @@ class CORE_API ConfigFile : public RefCounted<ConfigFile> {
+ public:
+     static ErrorOr<NonnullRefPtr<ConfigFile>> open(ByteString const& filename);
+     static ErrorOr<NonnullRefPtr<ConfigFile>> open(ByteString const& filename, NonnullOwnPtr<Core::File>);
++    // The INI text itself, from no file (a configuration built into a program).
++    static ErrorOr<NonnullRefPtr<ConfigFile>> open_from_text(ByteString const& filename, StringView text);
+     ~ConfigFile();
+ 
+     bool has_key(ByteString const& group, ByteString const& key) const;
+@@ -51,6 +53,7 @@ private:
+     ConfigFile(ByteString const& filename, OwnPtr<InputBufferedFile> open_file);
+ 
+     ErrorOr<void> parse();
++    void parse_line(StringView line, HashMap<ByteString, ByteString>*& current_group);
+ 
+     ByteString m_filename;
+     OwnPtr<InputBufferedFile> m_file;
+diff --git a/Libraries/LibGfx/Font/PathFontProvider.cpp b/Libraries/LibGfx/Font/PathFontProvider.cpp
+index 7e11fc63..b5dad5fd 100644
+--- a/Libraries/LibGfx/Font/PathFontProvider.cpp
++++ b/Libraries/LibGfx/Font/PathFontProvider.cpp
+@@ -51,6 +51,14 @@ void PathFontProvider::load_all_fonts_from_uri(StringView uri)
+     });
+ }
+ 
++void PathFontProvider::add_typeface(NonnullRefPtr<Typeface> typeface)
++{
++    auto& family = m_typeface_by_family.ensure(typeface->family(), [] {
++        return Vector<NonnullRefPtr<Typeface>> {};
++    });
++    family.append(move(typeface));
++}
++
+ void PathFontProvider::for_each_typeface_in_uri(StringView uri, HashTable<String>& loaded_paths, Function<void(String const&, u32, FontFileFormat, NonnullRefPtr<Typeface>)> callback)
+ {
+     auto root_or_error = Core::Resource::load_from_uri(uri);
+@@ -58,6 +66,12 @@ void PathFontProvider::for_each_typeface_in_uri(StringView uri, HashTable<String
+         if (root_or_error.error().is_errno() && root_or_error.error().code() == ENOENT) {
+             return;
+         }
++#ifdef AK_OS_WASI
++        // A directory outside what the host opens to the module (or behind a symlink that leaves it) is refused, not
++        // missing: there are no fonts to load from it either.
++        if (root_or_error.error().is_errno() && (root_or_error.error().code() == EPERM || root_or_error.error().code() == ENOTCAPABLE || root_or_error.error().code() == EACCES))
++            return;
++#endif
+         dbgln("PathFontProvider::load_all_fonts_from_uri('{}'): {}", uri, root_or_error.error());
+         return;
+     }
+diff --git a/Libraries/LibGfx/Font/PathFontProvider.h b/Libraries/LibGfx/Font/PathFontProvider.h
+index dfbe644a..0a2cf900 100644
+--- a/Libraries/LibGfx/Font/PathFontProvider.h
++++ b/Libraries/LibGfx/Font/PathFontProvider.h
+@@ -27,6 +27,8 @@ public:
+     virtual ~PathFontProvider() override;
+ 
+     void load_all_fonts_from_uri(StringView);
++    // A typeface that comes from no file (fonts built into a program).
++    void add_typeface(NonnullRefPtr<Typeface>);
+     static void for_each_typeface_in_uri(StringView, HashTable<String>& loaded_paths, Function<void(String const& path, u32 ttc_index, FontFileFormat, NonnullRefPtr<Typeface>)>);
+ 
+     virtual RefPtr<Gfx::Font> get_font(FlyString const& family, float point_size, unsigned weight, unsigned width, unsigned slope, Optional<FontVariationSettings> const& font_variation_settings = {}, Optional<Gfx::ShapeFeatures> const& shape_features = {}) override;

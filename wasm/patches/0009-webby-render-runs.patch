@@ -105,9 +105,9 @@ index 6a5b2323..8da3b3dd 100644
 +        #[cfg(target_os = "wasi")]
 +        {
 +            let _ = name;
-+            if let Some(setup) = THREAD_SETUP.get() {
-+                setup();
-+            }
++            // No THREAD_SETUP here: it would run on the calling thread, the main thread, and LibWeb's setup forbids
++            // GC heap access on its thread (the next collection traps). The jobs run on the main thread, where heap
++            // access stays allowed.
 +            return Self {
 +                thread: std::thread::current(),
 +                shared,

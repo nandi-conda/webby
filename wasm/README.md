@@ -353,9 +353,10 @@ without a Compositor), wheel scrolling of inner scroll containers.
     QT_QPA_PLATFORM=offscreen latha-gui --dir <ladybird>/Base/res::/res --size 1100x760 --screenshot out.png \
       --quit-after 12000 build/ladybird/bin/webby.wasm page.html --click=95,315@5000
 
-The engine reads its resources from `/res` (or `WEBBY_RESOURCES`); the chrome font is the host's DejaVu, Liberation
-or Noto Sans. The module must not use wasm atomics, since latha-gui runs without the threads proposal: the meson
-wrapper (`tools/meson-wasi-cc`) drops `-pthread`, which dav1d's build used to add.
+`latha-gui webby.wasm` needs nothing else: Ladybird's default theme and the Liberation fonts are built in
+(`ui/Resources.c`, `#embed`; `patches/0017-builtin-fonts-and-theme.patch` adds `PathFontProvider::add_typeface` and
+`ConfigFile::open_from_text`, and skips font directories the sandbox refuses). A `/res` (or `WEBBY_RESOURCES`) with
+Ladybird's Base/res takes over the theme, and system font directories add their fonts.
 
 ## Building what exists
 
