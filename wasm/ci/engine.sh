@@ -155,6 +155,16 @@ if [[ " $targets " == *" webby-render-latha "* ]]; then
   if [ $rc != 0 ]; then tail -60 "$out/webby-render-net.log" >> "$out/build.log"; fail "webby-render network test failed (exit $rc)"; fi
   echo "webby-render loaded pages over the network"
 fi
+if [[ " $targets " == *" webby-headless "* ]] && [ -n "${LATHA_RUN:-}" ]; then
+  # webby-headless with WebContent, Compositor, RequestServer and ImageDecoder as child instances: screenshots of a
+  # file: page, the same page over HTTP, and https://example.com/ (tests/multiprocess.sh).
+  mp=$(mktemp -d)
+  HTTPS=1 timeout 1800 bash "$w/wasm/tests/multiprocess.sh" "$build" "$lb" "$mp" > "$out/multiprocess.log" 2>&1
+  rc=$?
+  for f in file.png http.png https.png; do [ -f "$mp/$f" ] && cp "$mp/$f" "$out/multiprocess-$f"; done
+  if [ $rc != 0 ]; then tail -60 "$out/multiprocess.log" >> "$out/build.log"; fail "multi-process test failed (exit $rc)"; fi
+  echo "webby-headless ran its helpers as separate instances"
+fi
 if [[ " $targets " == *" webby-ui "* ]] && [ -n "${LATHA_RUN:-}" ]; then
   # The UI in latha-gui, headless: open a page with a script, screenshot it. Needs the tools env above.
   ui=$(mktemp -d)

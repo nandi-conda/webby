@@ -59,7 +59,12 @@ typedef struct {
     lobj *obj;       /* E_LOCAL: holds a reference */
     int fd;          /* E_FOREIGN: shared descriptor number */
     uint32_t handle; /* E_HANDLE: a latha:proc endpoint we own */
+    int nonblock;    /* the sender's O_NONBLOCK, which on Linux belongs to the open file and goes with it */
 } lent;
+
+/* A latha:proc message that passes descriptors ends with one flags byte per descriptor and this tag, as a channel
+   carries only bytes and handles. */
+static const unsigned char fd_flags_tag[4] = { 'w', 'b', 'f', 'd' };
 
 typedef struct lmsg {
     struct lmsg *next;
@@ -626,8 +631,11 @@ static int real_fstat(int fd, struct stat *st) { return __real_fstat ? __real_fs
 static int snapshot_file(int fd, uint32_t *h)
 {
     struct stat st;
-    if (real_fstat(fd, &st) < 0 || !S_ISREG(st.st_mode))
+    if (real_fstat(fd, &st) < 0 || !S_ISREG(st.st_mode)) {
+        if (getenv("WEBBY_LOCAL_DEBUG"))
+            fprintf(stderr, "webby compat: fd %d can't go to another instance (not a regular file, mode %o)\n", fd, (unsigned)st.st_mode);
         return fail(EOPNOTSUPP);
+    }
     size_t size = (size_t)st.st_size;
     int r = webby_latha_ops->mem_create(size, h);
     if (r < 0)
@@ -736,9 +744,28 @@ ssize_t webby_local_sendmsg(int fd, const struct msghdr *message, int flags)
                 copy[i] = 0;
             } else {
                 err = EOPNOTSUPP;
+                if (getenv("WEBBY_LOCAL_DEBUG"))
+                    fprintf(stderr, "webby compat: fd %d can't go to another instance (%s)\n", passed[i],
+                        !p ? "a local fd with no object" : p == o ? "the socket it is sent on"
+                        : p->kind == K_LATHA ? "a channel endpoint that already moved"
+                        : p->kind == K_SHM ? "in-memory shared memory" : "an in-memory socket");
+                if (getenv("WEBBY_LOCAL_DEBUG_TRAP"))
+                    __builtin_trap();
             }
             if (!err)
                 made = i + 1;
+        }
+        if (!err && npassed) {
+            unsigned char *grown = realloc(m->data, m->len + npassed + sizeof fd_flags_tag);
+            if (!grown) {
+                err = ENOMEM;
+            } else {
+                m->data = grown;
+                for (size_t i = 0; i < npassed; i++)
+                    m->data[m->len + i] = WEBBY_IS_LOCAL_FD(passed[i]) && ftab[passed[i] - WEBBY_LOCAL_FD_BASE].nonblock;
+                memcpy(m->data + m->len + npassed, fd_flags_tag, sizeof fd_flags_tag);
+                m->len += npassed + sizeof fd_flags_tag;
+            }
         }
         int r = err ? -err : webby_latha_ops->send(o->handle, m->data, m->len, hs, npassed);
         free_msg(m, 0);
@@ -760,6 +787,7 @@ ssize_t webby_local_sendmsg(int fd, const struct msghdr *message, int flags)
             p->refs++;
             m->ents[i].kind = E_LOCAL;
             m->ents[i].obj = p;
+            m->ents[i].nonblock = ftab[passed[i] - WEBBY_LOCAL_FD_BASE].nonblock;
         } else {
             share_fd(passed[i]);
             m->ents[i].kind = E_FOREIGN;
@@ -809,9 +837,15 @@ static int latha_fetch(lobj *o, int timeout_ms)
     }
     m->data = data;
     m->len = len;
+    const unsigned char *fd_flags = NULL;
+    if (nh && len >= nh + sizeof fd_flags_tag && !memcmp((unsigned char *)data + len - sizeof fd_flags_tag, fd_flags_tag, sizeof fd_flags_tag)) {
+        m->len = len - nh - sizeof fd_flags_tag;
+        fd_flags = (unsigned char *)data + m->len;
+    }
     for (size_t i = 0; i < nh; i++) {
         m->ents[i].kind = E_HANDLE;
         m->ents[i].handle = hs[i];
+        m->ents[i].nonblock = fd_flags && (fd_flags[i] & 1);
     }
     m->nents = nh;
     free(hs);
@@ -903,6 +937,8 @@ ssize_t webby_local_recvmsg(int fd, struct msghdr *message, int flags)
         for (size_t i = 0; i < m->nents; i++) {
             if (given < room) {
                 int nfd = receive_entry(&m->ents[i]);
+                if (nfd >= 0 && WEBBY_IS_LOCAL_FD(nfd) && m->ents[i].kind != E_FOREIGN)
+                    ftab[nfd - WEBBY_LOCAL_FD_BASE].nonblock = m->ents[i].nonblock;
                 if (nfd >= 0)
                     out[given++] = nfd;
             } else {
@@ -1078,8 +1114,11 @@ int __wrap_fstat(int fd, struct stat *st)
 
 ssize_t sendmsg(int fd, const struct msghdr *message, int flags)
 {
-    if (!WEBBY_IS_LOCAL_FD(fd))
+    if (!WEBBY_IS_LOCAL_FD(fd)) {
+        if (getenv("WEBBY_LOCAL_DEBUG_TRAP"))
+            __builtin_trap();
         return fail(ENOTSUP); /* no descriptor passing over wasi:sockets */
+    }
     return webby_local_sendmsg(fd, message, flags);
 }
 
@@ -1168,8 +1207,29 @@ int webby_local_poll(struct pollfd *fds, nfds_t n, int timeout, int (*rest_poll)
     }
 
     int64_t deadline = timeout > 0 ? now_ms() + timeout : 0;
+    /* WEBBY_LOCAL_DEBUG_HANG_MS=N: a poll that has waited N ms traps, which prints where every instance waits. */
+    static int hang_ms = -2;
+    if (hang_ms == -2) {
+        char const *e = getenv("WEBBY_LOCAL_DEBUG_HANG_MS");
+        hang_ms = e ? atoi(e) : -1;
+    }
+    int64_t hang_at = hang_ms > 0 ? now_ms() + hang_ms : 0;
+    /* WEBBY_LOCAL_DEBUG_TRAP_AT_MS=N: the first poll N ms after this instance's first one traps, busy or not. */
+    static int64_t trap_at = -2;
+    if (trap_at == -2) {
+        char const *e = getenv("WEBBY_LOCAL_DEBUG_TRAP_AT_MS");
+        trap_at = e ? now_ms() + atoi(e) : -1;
+    }
+    if (trap_at > 0 && now_ms() >= trap_at)
+        __builtin_trap();
     for (;;) {
         int wait = count ? 0 : timeout;
+        if (hang_at) {
+            if (now_ms() >= hang_at)
+                __builtin_trap();
+            if (wait < 0 || wait > 100)
+                wait = 100;
+        }
         int got = 0;
         if (nh) {
             int slice = wait;
@@ -1423,6 +1483,11 @@ void webby_spawn_bootstrap(void)
     if (r < 0)
         return;
     int32_t *targets = data;
+    const unsigned char *fd_flags = NULL;
+    if (nh && len >= nh + sizeof fd_flags_tag && !memcmp((unsigned char *)data + len - sizeof fd_flags_tag, fd_flags_tag, sizeof fd_flags_tag)) {
+        len -= nh + sizeof fd_flags_tag;
+        fd_flags = (unsigned char *)data + len;
+    }
     for (size_t i = 0; i < nh; i++) {
         int fd = i < len / sizeof *targets ? targets[i] : -1;
         lobj *o;
@@ -1446,7 +1511,7 @@ void webby_spawn_bootstrap(void)
             continue;
         }
         ftab[fd - WEBBY_LOCAL_FD_BASE].obj = o;
-        ftab[fd - WEBBY_LOCAL_FD_BASE].nonblock = 0;
+        ftab[fd - WEBBY_LOCAL_FD_BASE].nonblock = fd_flags && (fd_flags[i] & 1);
         ftab[fd - WEBBY_LOCAL_FD_BASE].cloexec = 0;
     }
     free(data);

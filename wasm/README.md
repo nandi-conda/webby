@@ -297,9 +297,7 @@ instance under latha-run and talks to it over a channel. `tests/ipc.sh BUILD OUT
 both ways (`HTTPS=1` adds https://example.com/), and `tests/local-sockets.sh OUT` checks the sockets themselves, in
 memory under wasmtime and over channels with a child instance under latha-run.
 
-Not yet: shared memory (`Core::AnonymousBuffer`, which bitmaps between WebContent and the UI use; latha:proc has none
-either), files passed to another instance (only channel endpoints can move), and spawning Ladybird's helpers from
-LibWebView (`Core::Process` on WASI).
+Shared memory and spawning Ladybird's helpers came after: see "Multi-process webby" below.
 
 ## Pages over the network
 
@@ -326,6 +324,49 @@ pixels both ways under latha-run; `HTTPS=1` also renders https://example.com/ bo
       -o webby-render.wasm
     latha-run --dir /usr/share/fonts --dir $PWD/Base/res::/res --dir /etc/ssl webby-render.wasm \
       --theme /res/themes/Default.ini -C /etc/ssl/certs/ca-certificates.crt -o out.png https://example.com/
+
+## Multi-process webby
+
+`patches/0018-multiprocess-wasi.patch` runs Ladybird's process model in wasm: `webby-headless` (Utilities/, LibWebView's
+`Application` with no window) is the browser process, and it starts WebContent, Compositor, RequestServer and
+ImageDecoder as it does natively. Each helper is its own `.wasm`, a latha:proc child instance of the same latha-run.
+
+- **Spawning**: compat's `posix_spawn()` runs `PATH.wasm` (the helper path is the process name, found next to the
+  parent in its "."), with its argv and environment (latha-gui 0.4 `spawn-env`). The descriptors the child should have
+  (`adddup2` actions, or inherited non-`CLOEXEC` ones) go over in a first message on its parent channel, and
+  `webby_spawn_bootstrap()` (LibMain, before `main`) puts them in place, so `SOCKET_TAKEOVER` and LibCore's takeover
+  work as natively.
+- **Shared memory**: latha-gui 0.4 has memory objects (`latha:proc/memory`: create, resize, dup, and map into the
+  instance's own linear memory, copy-on-write off, so both sides see the same pages). compat's `anon_create`,
+  `ftruncate`, `mmap(MAP_SHARED)` and `munmap` give `Core::AnonymousBuffer` (page bitmaps, fonts, ...) such an
+  object, and passing its descriptor to another instance sends a new handle to the same memory. A regular file passed
+  to another instance goes as a memory object with a copy of its bytes.
+- **Descriptors keep `O_NONBLOCK`** when they move to another instance (a flags trailer on the channel message), as
+  the flag belongs to the open file on Linux.
+- **No threads**: `Threading::Thread::start()` runs the thread's function right away; the ones that run an event loop
+  of their own (FontService's host and clients, the Compositor's `RenderClock`) live on the main loop instead, and the
+  autocomplete thread isn't started. LibWeb's stage threads run inline (patch 0009).
+- **RequestServer**: natively a response's pipe reader is dup'd to each new owner (a navigation response goes from
+  WebContent to the UI, to the site's RequestServer and on to the page's WebContent). A channel endpoint can only be
+  in one instance, so on WASI each new owner gets a new pipe, with what the previous owner was sent while it held
+  the transfer lease replayed into it.
+- Compositor has no WebGL (no GL in wasm: `WebGLUnsupported.cpp`), LibWebView no gamepads, no SQLite (history and
+  cookies stay in memory), and ImageDecoder links dav1d (AVIF) built without atomics.
+
+`tests/multiprocess.sh BUILD LADYBIRD OUT` screenshots a page as a file: URL and over a local HTTP server (style sheet,
+PNG and `fetch()` all through RequestServer) and checks pixels; `HTTPS=1` adds https://example.com/. The wasm-engine
+job runs it. By hand:
+
+    for p in webby-headless WebContent Compositor RequestServer ImageDecoder; do
+      wasm-tools component new build/bin/$p --adapt wasi_snapshot_preview1=wasi_snapshot_preview1.command.wasm -o $p.wasm
+    done
+    mkdir -p home && HOME=/home XDG_RUNTIME_DIR=/home/run XDG_CONFIG_HOME=/home/config XDG_DATA_HOME=/home/data \
+      XDG_CACHE_HOME=/home/cache latha-run --dir /usr/share/fonts --dir $PWD/Base/res::/res --dir $PWD::/out \
+      --dir $PWD/home::/home --dir /etc/ssl webby-headless.wasm --headless=screenshot --screenshot-path /out/out.png \
+      --screenshot-delay 5 -C /etc/ssl/certs/ca-certificates.crt https://example.com/
+
+`--headless=text` and `layout-tree` print the page instead. The first run compiles every module (about 40 s); latha-run
+caches them after.
 
 ## The Qt UI
 

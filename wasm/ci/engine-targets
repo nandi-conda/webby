@@ -9,3 +9,9 @@ requestserver-ipc-latha
 RequestServer
 # The Qt UI (wasm/ui, patches/0014): published as webby.wasm, the latha:gui component.
 webby-ui
+# Multi-process webby (patches/0018): the browser process without a window, and the helpers it starts as latha:proc
+# child instances (RequestServer is above).
+webby-headless
+WebContent
+Compositor
+ImageDecoder

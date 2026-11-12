@@ -1,0 +1,906 @@
+diff --git a/AK/Format.cpp b/AK/Format.cpp
+index 7d0c408a7cd..a38b3000f15 100644
+--- a/AK/Format.cpp
++++ b/AK/Format.cpp
+@@ -1106,6 +1106,13 @@ void vout(LogLevel log_level, StringView fmtstr, TypeErasedFormatParams& params,
+ 
+ #endif
+ 
++#if defined(AK_OS_WASI)
++}
++// LibMain sets this to argv[0] (WASI has no process name of its own).
++extern "C" char const* webby_wasi_progname = nullptr;
++namespace AK {
++#endif
++
+ // FIXME: Deduplicate with Core::Process:get_name()
+ [[gnu::used]] static ByteString process_name_helper()
+ {
+@@ -1124,6 +1131,10 @@ void vout(LogLevel log_level, StringView fmtstr, TypeErasedFormatParams& params,
+     char path[MAX_PATH] = {};
+     auto length = GetModuleFileName(NULL, path, MAX_PATH);
+     return { path, length };
++#elif defined(AK_OS_WASI)
++    if (!webby_wasi_progname)
++        return ByteString {};
++    return StringView { webby_wasi_progname, strlen(webby_wasi_progname) };
+ #else
+     // FIXME: Implement process_name_helper() for other platforms.
+     return StringView {};
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 60236fc6187..f25f475f7ee 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -138,8 +138,12 @@ if (NOT (ENABLE_FUZZERS OR ENABLE_COMPILER_EXPLORER_BUILD OR ANDROID OR IOS))
+ endif()
+ 
+ if (ENABLE_GUI_TARGETS AND WASI)
+-    # One service so far: RequestServer, whose curl runs on wasi:sockets (wasm/compat/webby_wasi_net.c).
++    # The helper processes, each a wasm program that LibWebView starts as a latha:proc process: RequestServer (curl on
++    # wasi:sockets, wasm/compat/webby_wasi_net.c), WebContent, the Compositor (CPU Skia) and ImageDecoder.
+     add_subdirectory(Services/RequestServer)
++    add_subdirectory(Services/ImageDecoder)
++    add_subdirectory(Services/Compositor)
++    add_subdirectory(Services/WebContent)
+ endif()
+ 
+ if (ENABLE_GUI_TARGETS AND NOT WASI)
+diff --git a/Libraries/CMakeLists.txt b/Libraries/CMakeLists.txt
+index 92fb99d4a30..dd4d5b04c86 100644
+--- a/Libraries/CMakeLists.txt
++++ b/Libraries/CMakeLists.txt
+@@ -1,6 +1,6 @@
+ if (WASI)
+-    # The engine for one WebAssembly module: what JavaScript needs, and with ENABLE_GUI_TARGETS what LibWeb needs to
+-    # parse, lay out and paint a page in the same module (no processes, no LibWebView).
++    # The engine for WebAssembly: what JavaScript needs, and with ENABLE_GUI_TARGETS what LibWeb needs to parse, lay out
++    # and paint a page, and LibWebView with its helper processes as latha:proc instances.
+     set(LIBJS_FOLDED_INTO_LIBWEB ${ENABLE_GUI_TARGETS})
+     set(wasi_libraries LibCore LibCrypto LibFileSystem LibGC LibJS LibMain LibRegex LibSyntax LibTextCodec LibThreading LibURL LibUnicode)
+     if (ENABLE_GUI_TARGETS)
+@@ -9,6 +9,8 @@ if (WASI)
+             LibCompositing LibWeb)
+         # RequestServer (Services/RequestServer) in a module of its own: curl over wasi:sockets.
+         list(APPEND wasi_libraries LibSandbox LibWebSocket)
++        # The browser side (LibWebView) and the helper processes it starts as wasm instances over latha:proc.
++        list(APPEND wasi_libraries LibDevTools LibWebView)
+     endif()
+     foreach(lib IN LISTS wasi_libraries)
+         add_subdirectory(${lib})
+diff --git a/Libraries/LibCompositing/FontServiceClient.cpp b/Libraries/LibCompositing/FontServiceClient.cpp
+index f81dee0699b..bd85bfbb406 100644
+--- a/Libraries/LibCompositing/FontServiceClient.cpp
++++ b/Libraries/LibCompositing/FontServiceClient.cpp
+@@ -31,9 +31,26 @@ private:
+     virtual void die() override { Core::Process::terminate_immediately(0); }
+ };
+ 
++#if defined(AK_OS_WASI)
++// One thread per process in wasm webby: each client's connection lives on the main event loop, and a question is a
++// synchronous request on it from the asking code (whose wait reads the socket).
++static HashMap<FontServiceClient const*, NonnullRefPtr<FontServiceConnectionToServer>>& wasi_connections()
++{
++    static HashMap<FontServiceClient const*, NonnullRefPtr<FontServiceConnectionToServer>> connections;
++    return connections;
++}
++#endif
++
+ ErrorOr<NonnullRefPtr<FontServiceClient>> FontServiceClient::create(IPC::TransportHandle handle)
+ {
+     auto client = adopt_ref(*new FontServiceClient(move(handle)));
++#if defined(AK_OS_WASI)
++    auto transport = TRY(client->m_transport_handle->create_transport());
++    client->m_transport_handle.clear();
++    wasi_connections().set(client.ptr(), FontServiceConnectionToServer::construct(move(transport)));
++    client->m_connected = client->m_initialized = true;
++    return client;
++#endif
+ 
+     MutexLocker locker(client->m_mutex);
+     client->m_condition.wait_while([&] { return !client->m_initialized; });
+@@ -48,11 +65,17 @@ FontServiceClient::FontServiceClient(IPC::TransportHandle handle)
+         return thread_main();
+     }))
+ {
++#if !defined(AK_OS_WASI)
+     m_thread->start();
++#endif
+ }
+ 
+ FontServiceClient::~FontServiceClient()
+ {
++#if defined(AK_OS_WASI)
++    if (auto connection = wasi_connections().take(this); connection.has_value() && (*connection)->is_open())
++        (*connection)->transport().close();
++#endif
+     {
+         MutexLocker locker(m_mutex);
+         m_should_quit = true;
+@@ -64,6 +87,11 @@ FontServiceClient::~FontServiceClient()
+ 
+ void FontServiceClient::ask(Question const& question)
+ {
++#if defined(AK_OS_WASI)
++    if (auto connection = wasi_connections().get(this); connection.has_value())
++        question(**connection);
++    return;
++#endif
+     MutexLocker caller_locker(m_caller_mutex);
+     MutexLocker locker(m_mutex);
+     m_question = &question;
+diff --git a/Libraries/LibCore/AnonymousBuffer.cpp b/Libraries/LibCore/AnonymousBuffer.cpp
+index 4f2d7a25bc1..86f37023e7b 100644
+--- a/Libraries/LibCore/AnonymousBuffer.cpp
++++ b/Libraries/LibCore/AnonymousBuffer.cpp
+@@ -10,6 +10,9 @@
+ #include <fcntl.h>
+ #include <sys/mman.h>
+ #include <unistd.h>
++#if defined(AK_OS_WASI)
++#    include <webby_wasi_local.h>
++#endif
+ 
+ #if defined(AK_OS_MACOS)
+ #    include <mach/mach.h>
+@@ -20,11 +23,6 @@ namespace Core {
+ 
+ ErrorOr<AnonymousBuffer> AnonymousBuffer::create_with_size(size_t size)
+ {
+-#if defined(AK_OS_WASI)
+-    // A WASI module is one process with no shared memory objects (anon_create has nothing to make), and nothing
+-    // outside it to share the buffer with: back it with private anonymous memory and no fd.
+-    return create_from_anon_fd(-1, size);
+-#endif
+     auto fd = TRY(Core::System::anon_create(size, O_CLOEXEC, Core::System::AllowSealing::Yes));
+     return create_from_anon_fd(fd, size);
+ }
+@@ -69,6 +67,10 @@ ErrorOr<AnonymousBuffer> AnonymousBuffer::snapshot(size_t offset, size_t size) c
+     if (size == 0)
+         return copy;
+ 
++#if defined(AK_OS_WASI)
++    // compat's objects never shrink (latha:proc refuses it), so the mapping can be read directly.
++    is_size_sealed = true;
++#endif
+     if (is_size_sealed) {
+         bytes().slice(offset, size).copy_to({ copy.data<u8>(), copy.size() });
+         return copy;
+@@ -133,6 +135,9 @@ void AnonymousBuffer::populate_for_reading() const
+ #if defined(AK_OS_LINUX) && defined(MADV_POPULATE_READ)
+     // Kernels before 5.14 refuse this advice.
+     (void)madvise(data, size(), MADV_POPULATE_READ);
++#elif defined(AK_OS_WASI)
++    // Linear memory has no paging advice.
++    (void)data;
+ #else
+     (void)madvise(data, size(), MADV_WILLNEED);
+ #endif
+@@ -144,15 +149,17 @@ ErrorOr<NonnullRefPtr<AnonymousBufferImpl>> AnonymousBufferImpl::create(int fd,
+     // POSIX mmap rejects a zero length with EINVAL, so leave m_data null for zero-size buffers.
+     if (size > 0) {
+ #if defined(AK_OS_WASI)
+-        if (fd == -1)
+-            data = mmap(nullptr, round_up_to_power_of_two(size, PAGE_SIZE), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+-        else
++        // anon_create's objects are compat's shared memory (webby_wasi_local.h): mapped there, so that other wasm
++        // instances that map the same object see the same bytes.
++        data = webby_shm_map(fd, 0, round_up_to_power_of_two(size, PAGE_SIZE));
++        if (!data)
++            data = MAP_FAILED;
++#else
++        data = mmap(nullptr, round_up_to_power_of_two(size, PAGE_SIZE), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+ #endif
+-            data = mmap(nullptr, round_up_to_power_of_two(size, PAGE_SIZE), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+         if (data == MAP_FAILED) {
+             auto error = Error::from_errno(errno);
+-            if (fd != -1)
+-                close(fd);
++            close(fd);
+             return error;
+         }
+     }
+@@ -160,7 +167,7 @@ ErrorOr<NonnullRefPtr<AnonymousBufferImpl>> AnonymousBufferImpl::create(int fd,
+     if (impl_or_error.is_error()) {
+         close(fd);
+         if (data != nullptr)
+-            munmap(data, round_up_to_power_of_two(size, PAGE_SIZE));
++            (void)Core::System::munmap(data, round_up_to_power_of_two(size, PAGE_SIZE));
+     }
+     return impl_or_error;
+ }
+@@ -171,10 +178,8 @@ AnonymousBufferImpl::~AnonymousBufferImpl()
+         auto rc = close(m_fd);
+         VERIFY(rc == 0);
+     }
+-    if (m_data) {
+-        auto rc = munmap(m_data, round_up_to_power_of_two(m_size, PAGE_SIZE));
+-        VERIFY(rc == 0);
+-    }
++    if (m_data)
++        MUST(Core::System::munmap(m_data, round_up_to_power_of_two(m_size, PAGE_SIZE)));
+ }
+ 
+ AnonymousBufferImpl::AnonymousBufferImpl(int fd, size_t size, void* data)
+diff --git a/Libraries/LibCore/System.cpp b/Libraries/LibCore/System.cpp
+index 71ac10a01f2..deba6c80a45 100644
+--- a/Libraries/LibCore/System.cpp
++++ b/Libraries/LibCore/System.cpp
+@@ -15,6 +15,9 @@
+ #include <AK/StdLibExtras.h>
+ #include <AK/Vector.h>
+ #include <LibCore/System.h>
++#if defined(AK_OS_WASI)
++#    include <webby_wasi_local.h>
++#endif
+ #include <limits.h>
+ #include <stdarg.h>
+ #include <stdlib.h>
+@@ -138,6 +141,16 @@ ErrorOr<void*> mmap(void* address, size_t size, int protection, int flags, int f
+ {
+     // NOTE: Regular POSIX mmap() doesn't support custom alignment requests.
+     VERIFY(!alignment);
++#if defined(AK_OS_WASI)
++    // A shared memory object (anon_create, or a file another process passed us) is mapped by compat.
++    if (fd >= 0 && webby_is_shm_fd(fd) && !(flags & MAP_FIXED) && !address) {
++        (void)protection;
++        auto* shared = webby_shm_map(fd, offset, size);
++        if (!shared)
++            return Error::from_syscall("mmap"sv, errno);
++        return shared;
++    }
++#endif
+     auto* ptr = ::mmap(address, size, protection, flags, fd, offset);
+     if (ptr == MAP_FAILED)
+         return Error::from_syscall("mmap"sv, errno);
+@@ -146,6 +159,10 @@ ErrorOr<void*> mmap(void* address, size_t size, int protection, int flags, int f
+ 
+ ErrorOr<void> munmap(void* address, size_t size)
+ {
++#if defined(AK_OS_WASI)
++    if (webby_shm_unmap(address, size) == 0)
++        return {};
++#endif
+     if (::munmap(address, size) < 0)
+         return Error::from_syscall("munmap"sv, errno);
+     return {};
+@@ -270,6 +287,14 @@ ErrorOr<void> release_address_space(void* address, size_t size)
+ 
+ ErrorOr<int> anon_create([[maybe_unused]] size_t size, [[maybe_unused]] int options, [[maybe_unused]] AllowSealing allow_sealing)
+ {
++#if defined(AK_OS_WASI)
++    // compat's shared memory objects: host memory that other wasm instances (latha:proc processes) map too, or
++    // plain memory in a program without the latha:proc backend.
++    int shm_fd = webby_shm_create(size);
++    if (shm_fd < 0)
++        return Error::from_syscall("anon_create"sv, errno);
++    return shm_fd;
++#endif
+     int fd = -1;
+ #if defined(AK_OS_LINUX) || defined(AK_OS_FREEBSD)
+     auto linux_options = ((options & O_CLOEXEC) > 0) ? MFD_CLOEXEC : 0;
+@@ -367,6 +392,13 @@ ErrorOr<void> close(int fd)
+ 
+ ErrorOr<void> ftruncate(int fd, off_t length)
+ {
++#if defined(AK_OS_WASI)
++    if (webby_is_shm_fd(fd)) {
++        if (webby_shm_resize(fd, length) < 0)
++            return Error::from_syscall("ftruncate"sv, errno);
++        return {};
++    }
++#endif
+     if (::ftruncate(fd, length) < 0)
+         return Error::from_syscall("ftruncate"sv, errno);
+     return {};
+@@ -538,6 +570,14 @@ ErrorOr<pid_t> posix_spawnp(StringView path, posix_spawn_file_actions_t* const f
+ 
+ ErrorOr<off_t> lseek(int fd, off_t offset, int whence)
+ {
++#if defined(AK_OS_WASI)
++    if (webby_is_shm_fd(fd)) {
++        auto position = webby_shm_lseek(fd, offset, whence);
++        if (position < 0)
++            return Error::from_syscall("lseek"sv, errno);
++        return position;
++    }
++#endif
+     off_t rc = ::lseek(fd, offset, whence);
+     if (rc < 0)
+         return Error::from_syscall("lseek"sv, errno);
+diff --git a/Libraries/LibImageDecoders/CMakeLists.txt b/Libraries/LibImageDecoders/CMakeLists.txt
+index 2cff07ee7d0..090f8cba410 100644
+--- a/Libraries/LibImageDecoders/CMakeLists.txt
++++ b/Libraries/LibImageDecoders/CMakeLists.txt
+@@ -42,6 +42,10 @@ target_link_libraries(LibImageDecoders PRIVATE
+ )
+ 
+ target_include_directories(LibImageDecoders PRIVATE ${WUFFS_INCLUDE_DIR})
++if (WASI)
++    # The sysroot's libavif is static, and its AV1 decoder (dav1d) is a library of its own.
++    target_link_libraries(LibImageDecoders PRIVATE dav1d)
++endif()
+ 
+ set(generated_sources TIFFMetadata.h TIFFTagHandler.cpp)
+ list(TRANSFORM generated_sources PREPEND "${CMAKE_BINARY_DIR}/Libraries/LibGfx/ImageFormats/")
+diff --git a/Libraries/LibMain/Main.cpp b/Libraries/LibMain/Main.cpp
+index 797bd0a899a..ef776ef8063 100644
+--- a/Libraries/LibMain/Main.cpp
++++ b/Libraries/LibMain/Main.cpp
+@@ -14,6 +14,9 @@
+ #if defined(AK_OS_WINDOWS)
+ #    include <AK/Windows.h>
+ #endif
++#if defined(AK_OS_WASI)
++#    include <webby_wasi_local.h>
++#endif
+ 
+ namespace Main {
+ 
+@@ -26,8 +29,19 @@ int return_code_for_errors()
+ 
+ }
+ 
++#if defined(AK_OS_WASI)
++extern "C" char const* webby_wasi_progname;
++#endif
++
+ int main(int argc, char** argv)
+ {
++#if defined(AK_OS_WASI)
++    // A process started with posix_spawn() over latha:proc gets its descriptors (its IPC socket, ...) in a first
++    // message from its parent; put them in place before anything looks for them.
++    webby_spawn_bootstrap();
++    if (argc > 0)
++        webby_wasi_progname = argv[0];
++#endif
+     tzset();
+ 
+ #if defined(AK_OS_WINDOWS)
+diff --git a/Libraries/LibThreading/Thread.cpp b/Libraries/LibThreading/Thread.cpp
+index b2a9d922f0b..46d29894938 100644
+--- a/Libraries/LibThreading/Thread.cpp
++++ b/Libraries/LibThreading/Thread.cpp
+@@ -53,6 +53,16 @@ bool Threading::Thread::has_exited() const
+     return state == ThreadState::Joined || state == ThreadState::Exited || state == ThreadState::DetachedExited;
+ }
+ 
++#if defined(AK_OS_WASI)
++// Threads that start() ran inline keep their exit code in their pthread_t (wasi-libc's thread stubs fail here).
++extern "C" int pthread_join(pthread_t thread, void** exit_code)
++{
++    if (exit_code)
++        *exit_code = bit_cast<void*>(thread);
++    return 0;
++}
++#endif
++
+ void Thread::start()
+ {
+     VERIFY(!is_started());
+@@ -60,6 +70,16 @@ void Thread::start()
+     // Set this first so that the other thread starts out seeing m_state == Running.
+     m_state = Threading::ThreadState::Running;
+ 
++#if defined(AK_OS_WASI)
++    // wasm webby runs each process on one thread, so the action runs here, to the end. That suits the browser
++    // process's one-shot workers (the font catalog, autocomplete requests); a thread that would loop forever has to
++    // become event loop work on WASI instead.
++    // The exit code waits in m_tid for join(), whose pthread_join() is the one below.
++    m_tid = bit_cast<pthread_t>(m_action());
++    m_state = Threading::ThreadState::Exited;
++    return;
++#endif
++
+     pthread_attr_t attr;
+     pthread_attr_init(&attr);
+     if (m_stack_size > 0)
+diff --git a/Libraries/LibWeb/Compositor/RenderClock.cpp b/Libraries/LibWeb/Compositor/RenderClock.cpp
+index 814fbda5cb2..1fa0bbee27e 100644
+--- a/Libraries/LibWeb/Compositor/RenderClock.cpp
++++ b/Libraries/LibWeb/Compositor/RenderClock.cpp
+@@ -95,6 +95,12 @@ RenderClock::RenderClock()
+         return thread_main();
+     }))
+ {
++#if defined(AK_OS_WASI)
++    // One thread per process in wasm webby: the clock's channel lives on the main event loop.
++    m_event_loop = Core::EventLoop::current_weak();
++    m_started = true;
++    return;
++#endif
+     m_thread->start();
+     MutexLocker locker(m_mutex);
+     m_condition.wait_while([&] { return !m_started; });
+@@ -125,6 +131,11 @@ intptr_t RenderClock::thread_main()
+ 
+ bool RenderClock::invoke_on_clock_thread(Function<void()> function)
+ {
++#if defined(AK_OS_WASI)
++    // The clock "thread" is this one, and callers wait for the result right after.
++    function();
++    return true;
++#endif
+     RefPtr<Core::WeakEventLoopReference> event_loop;
+     {
+         MutexLocker locker(m_mutex);
+diff --git a/Libraries/LibWebCommon/WebView/Utilities.cpp b/Libraries/LibWebCommon/WebView/Utilities.cpp
+index 1afa64a0498..23ac5ede138 100644
+--- a/Libraries/LibWebCommon/WebView/Utilities.cpp
++++ b/Libraries/LibWebCommon/WebView/Utilities.cpp
+@@ -53,6 +53,10 @@ static ErrorOr<ByteString> application_directory()
+ {
+     if (s_ladybird_binary_path.has_value())
+         return *s_ladybird_binary_path;
++#if defined(AK_OS_WASI)
++    // A wasm program has no path of its own; latha:proc resolves helper names next to our module.
++    return ByteString { "."sv };
++#endif
+ 
+     auto current_executable_path = TRY(Core::System::current_executable_path());
+     return LexicalPath::dirname(current_executable_path);
+@@ -82,6 +86,10 @@ void platform_init(Optional<ByteString> ladybird_binary_path)
+             if (FileSystem::is_directory(home_lagom))
+                 return home_lagom;
+         }
++#if defined(AK_OS_WASI)
++        // Base/res, preopened where WEBBY_RESOURCE_ROOT says (/res by default).
++        return Core::Environment::get("WEBBY_RESOURCE_ROOT"sv).map([](auto v) { return ByteString { v }; }).value_or("/res"sv);
++#endif
+         auto app_dir = MUST(application_directory());
+ #ifdef AK_OS_MACOS
+         return LexicalPath(app_dir).parent().append("Resources"sv).string();
+@@ -95,8 +103,13 @@ void platform_init(Optional<ByteString> ladybird_binary_path)
+ 
+ ErrorOr<Vector<ByteString>> get_paths_for_helper_process(StringView process_name)
+ {
+-    auto application_path = TRY(application_directory());
+     Vector<ByteString> paths;
++#if defined(AK_OS_WASI)
++    // latha:proc starts "<name>.wasm" from our own module's directory (compat's posix_spawn adds the extension).
++    TRY(paths.try_append(process_name));
++    return paths;
++#endif
++    auto application_path = TRY(application_directory());
+ 
+ #if !defined(AK_OS_MACOS) && !defined(AK_OS_WINDOWS)
+     auto prefix = find_prefix(LexicalPath(application_path));
+diff --git a/Libraries/LibWebView/AutocompleteService.cpp b/Libraries/LibWebView/AutocompleteService.cpp
+index 9b681c168cc..53e57665c6e 100644
+--- a/Libraries/LibWebView/AutocompleteService.cpp
++++ b/Libraries/LibWebView/AutocompleteService.cpp
+@@ -22,7 +22,10 @@ AutocompleteService::AutocompleteService(Core::EventLoop& main_event_loop, Optio
+         return worker_main(move(history_database_directory));
+     }))
+ {
++#if !defined(AK_OS_WASI)
++    // The worker waits for queries forever, which one thread can't do: wasm webby has no omnibox suggestions yet.
+     m_worker->start();
++#endif
+ }
+ 
+ AutocompleteService::~AutocompleteService()
+@@ -36,7 +39,8 @@ AutocompleteService::~AutocompleteService()
+         m_worker_condition.signal();
+     }
+ 
+-    [[maybe_unused]] auto result = m_worker->join();
++    if (m_worker->needs_to_be_joined())
++        [[maybe_unused]] auto result = m_worker->join();
+ }
+ 
+ AutocompleteService::ClientID AutocompleteService::register_client(OnQueryComplete on_query_complete)
+diff --git a/Libraries/LibWebView/CMakeLists.txt b/Libraries/LibWebView/CMakeLists.txt
+index f787a76336c..eed180ff6cb 100644
+--- a/Libraries/LibWebView/CMakeLists.txt
++++ b/Libraries/LibWebView/CMakeLists.txt
+@@ -37,7 +37,6 @@ set(SOURCES
+     FileDownloader.cpp
+     FontService.cpp
+     FontServiceHost.cpp
+-    GamepadManager.cpp
+     HeadlessWebView.cpp
+     HelperProcess.cpp
+     HistoryDebug.cpp
+@@ -97,6 +96,13 @@ set(SOURCES
+     WorkerProcessManager.cpp
+ )
+ 
++if (WASI)
++    # No SDL in a wasm module: no gamepads.
++    list(APPEND SOURCES GamepadManagerUnsupported.cpp)
++else()
++    list(APPEND SOURCES GamepadManager.cpp)
++endif()
++
+ if (APPLE)
+     list(APPEND SOURCES
+         CrashReportPOSIX.cpp
+@@ -163,7 +169,10 @@ add_custom_target(generate_build_information DEPENDS ${build_information_stamp})
+ ladybird_lib(LibWebView webview EXPLICIT_SYMBOL_EXPORT)
+ add_dependencies(LibWebView generate_build_information)
+ target_link_libraries(LibWebView PUBLIC LibCompositing LibSandbox LibWebCommon)
+-target_link_libraries(LibWebView PRIVATE LibCore LibCrypto LibDatabase LibDevTools LibFileSystem LibGfx LibHTTP LibImageDecoderClient LibIPC LibRequests LibMedia LibMediaClient LibUnicode LibURL LibTextCodec LibThreading SDL3::SDL3)
++target_link_libraries(LibWebView PRIVATE LibCore LibCrypto LibDatabase LibDevTools LibFileSystem LibGfx LibHTTP LibImageDecoderClient LibIPC LibRequests LibMedia LibMediaClient LibUnicode LibURL LibTextCodec LibThreading)
++if (NOT WASI)
++    target_link_libraries(LibWebView PRIVATE SDL3::SDL3)
++endif()
+ 
+ if (LINUX)
+     # The connect broker asks the audio library where the daemon is before connecting a helper to it.
+diff --git a/Libraries/LibWebView/FontService.cpp b/Libraries/LibWebView/FontService.cpp
+index 131422cba8e..05505ba2e64 100644
+--- a/Libraries/LibWebView/FontService.cpp
++++ b/Libraries/LibWebView/FontService.cpp
+@@ -162,7 +162,8 @@ ErrorOr<IPC::File> FontService::create_immutable_font_data(ReadonlyBytes bytes)
+     if (::fcntl(file.fd(), F_ADD_SEALS, F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_WRITE | F_SEAL_SEAL) < 0)
+         return Error::from_errno(errno);
+     return file;
+-#elif defined(AK_OS_WINDOWS)
++#elif defined(AK_OS_WINDOWS) || defined(AK_OS_WASI)
++    // WASI: a compat shared memory object, which other instances get as their own copy of the handle.
+     auto buffer = TRY(Core::AnonymousBuffer::create_with_size(bytes.size()));
+     bytes.copy_to({ buffer.data<u8>(), buffer.size() });
+     return IPC::File::clone_fd(buffer.fd());
+diff --git a/Libraries/LibWebView/FontServiceHost.cpp b/Libraries/LibWebView/FontServiceHost.cpp
+index 8f332910bf5..8ea780d201f 100644
+--- a/Libraries/LibWebView/FontServiceHost.cpp
++++ b/Libraries/LibWebView/FontServiceHost.cpp
+@@ -71,6 +71,11 @@ private:
+ NonnullOwnPtr<FontServiceHost> FontServiceHost::create(FontService& font_service)
+ {
+     auto host = adopt_own(*new FontServiceHost(font_service));
++#if defined(AK_OS_WASI)
++    // One thread per process in wasm webby: the connections are answered on the main event loop.
++    host->m_event_loop = Core::EventLoop::current_weak();
++    return host;
++#endif
+ 
+     MutexLocker locker(host->m_mutex);
+     host->m_condition.wait_while([&] { return !host->m_event_loop; });
+@@ -83,11 +88,20 @@ FontServiceHost::FontServiceHost(FontService& font_service)
+         return thread_main();
+     }))
+ {
++#if !defined(AK_OS_WASI)
+     m_thread->start();
++#endif
+ }
+ 
+ FontServiceHost::~FontServiceHost()
+ {
++#if defined(AK_OS_WASI)
++    for (auto& connection : exchange(m_connections, {})) {
++        if (connection->is_open())
++            connection->shutdown();
++    }
++    return;
++#endif
+     if (auto event_loop = m_event_loop->take()) {
+         event_loop->quit(0);
+         event_loop->wake();
+@@ -97,6 +111,9 @@ FontServiceHost::~FontServiceHost()
+ 
+ ErrorOr<IPC::TransportHandle> FontServiceHost::connect()
+ {
++#if defined(AK_OS_WASI)
++    return open_connection();
++#endif
+     // NB: A connection belongs to the thread that constructs it, so the host thread opens it.
+     IGNORE_USE_IN_ESCAPING_LAMBDA Optional<ErrorOr<IPC::TransportHandle>> result;
+     MutexLocker locker(m_mutex);
+diff --git a/Libraries/LibWebView/GamepadManagerUnsupported.cpp b/Libraries/LibWebView/GamepadManagerUnsupported.cpp
+new file mode 100644
+index 00000000000..62684a9b84a
+--- /dev/null
++++ b/Libraries/LibWebView/GamepadManagerUnsupported.cpp
+@@ -0,0 +1,37 @@
++/*
++ * Copyright (c) 2026, the webby authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++// GamepadManager without SDL (WASI): there are never any gamepads, and virtual ones cannot be made.
++
++#include <AK/NeverDestroyed.h>
++#include <LibCore/Timer.h>
++#include <LibWebCommon/Gamepad/GamepadInput.h>
++#include <LibWebView/GamepadManager.h>
++#include <LibWebView/WebContentClient.h>
++
++namespace WebView {
++
++GamepadManager& GamepadManager::the()
++{
++    static NeverDestroyed<GamepadManager> s_the;
++    return *s_the;
++}
++
++void GamepadManager::page_did_start_using_gamepads(WebContentPage&) { }
++void GamepadManager::page_closed(WebContentPage&) { }
++void GamepadManager::client_disconnected(WebContentClient&) { }
++void GamepadManager::play_effect(WebContentClient&, Web::Gamepad::GamepadHandle, Web::Gamepad::GamepadEffect const&) { }
++void GamepadManager::stop_effects(WebContentClient&, Web::Gamepad::GamepadHandle) { }
++Optional<Web::Gamepad::VirtualGamepad> GamepadManager::create_virtual_gamepad(WebContentClient&) { return {}; }
++void GamepadManager::set_virtual_gamepad_button(WebContentClient&, Web::Gamepad::GamepadHandle, i32, bool) { }
++void GamepadManager::set_virtual_gamepad_axis(WebContentClient&, Web::Gamepad::GamepadHandle, i32, i16) { }
++void GamepadManager::disconnect_virtual_gamepad(WebContentClient&, Web::Gamepad::GamepadHandle) { }
++Vector<Web::Gamepad::GamepadChangeEvent> GamepadManager::pump_gamepad_events(WebContentClient&) { return {}; }
++void GamepadManager::reset_access_for_testing(WebContentPage&) { }
++Vector<Web::Gamepad::ReceivedDualRumbleEffect> GamepadManager::virtual_gamepad_received_rumble_effects(WebContentClient&, Web::Gamepad::GamepadHandle) { return {}; }
++Vector<Web::Gamepad::ReceivedTriggerRumbleEffect> GamepadManager::virtual_gamepad_received_trigger_rumble_effects(WebContentClient&, Web::Gamepad::GamepadHandle) { return {}; }
++
++}
+diff --git a/Services/Compositor/CMakeLists.txt b/Services/Compositor/CMakeLists.txt
+index 5eaf310ad9e..f098d877351 100644
+--- a/Services/Compositor/CMakeLists.txt
++++ b/Services/Compositor/CMakeLists.txt
+@@ -63,6 +63,13 @@ set(GENERATED_SOURCES
+     WebGLCommandReplayer.cpp
+ )
+ 
++if (WASI)
++    # No GL driver on WASI: no WebGL contexts (WebGLUnsupported.cpp), and none of the GL code behind them.
++    list(REMOVE_ITEM SOURCES HostWebGLContext.cpp OpenGLContext.cpp WebGLObjectMap.cpp)
++    list(APPEND SOURCES WebGLUnsupported.cpp)
++    list(REMOVE_ITEM GENERATED_SOURCES ${CMAKE_BINARY_DIR}/Libraries/LibCompositing/WebGL/GLFunctions.cpp WebGLCommandReplayer.cpp)
++endif()
++
+ add_library(compositorservice STATIC ${SOURCES} ${GENERATED_SOURCES})
+ ladybird_generated_sources(compositorservice)
+ 
+@@ -103,3 +110,8 @@ if (WIN32)
+ endif()
+ 
+ ladybird_sign_helper_process(Compositor)
++
++if (WASI)
++    # A latha:proc process: its IPC socket and shared memory come from the latha:proc backend.
++    target_link_options(Compositor PRIVATE ${WEBBY_WASI_LATHA_LINK_OPTIONS})
++endif()
+diff --git a/Services/Compositor/WebGLUnsupported.cpp b/Services/Compositor/WebGLUnsupported.cpp
+new file mode 100644
+index 00000000000..3b41d4d1bb4
+--- /dev/null
++++ b/Services/Compositor/WebGLUnsupported.cpp
+@@ -0,0 +1,40 @@
++/*
++ * Copyright (c) 2026, the webby authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++// WASI has no GL driver (ANGLE is headers only there), so the Compositor makes no WebGL contexts: create() fails,
++// which WebContent reports to the page as a failed getContext("webgl"). Nothing else here can be reached.
++
++#include <Compositor/HostWebGLContext.h>
++#include <Compositor/OpenGLContext.h>
++#include <LibGfx/ShareableBitmap.h>
++#include <Compositor/PaintingSurface.h>
++
++namespace Compositor {
++
++struct OpenGLContext::Impl { };
++struct OpenGLContext::ColorBuffer { };
++
++OwnPtr<OpenGLContext> OpenGLContext::create(RefPtr<Gfx::SkiaBackendContext>, WebGLVersion, DrawingBufferOptions) { return {}; }
++OpenGLContext::~OpenGLContext() = default;
++Vector<String> OpenGLContext::get_supported_opengl_extensions() { return {}; }
++
++OwnPtr<HostWebGLContext> HostWebGLContext::create(RefPtr<Gfx::SkiaBackendContext>, OpenGLContext::WebGLVersion, OpenGLContext::DrawingBufferOptions, Gfx::IntSize)
++{
++    dbgln("Compositor: no WebGL on WASI");
++    return {};
++}
++
++ErrorOr<void> HostWebGLContext::execute_commands(ReadonlyBytes, Vector<UploadSource> const&) { VERIFY_NOT_REACHED(); }
++Optional<ReadonlyBytes> HostWebGLContext::shared_command_buffer_range(u64, u64) const { VERIFY_NOT_REACHED(); }
++ErrorOr<ByteBuffer> HostWebGLContext::execute_sync_call(ReadonlyBytes) { VERIFY_NOT_REACHED(); }
++Gfx::ShareableBitmap HostWebGLContext::read_back_drawing_buffer(Gfx::IntRect) { VERIFY_NOT_REACHED(); }
++Compositing::WebGL::ReadPixelsResult HostWebGLContext::read_pixels_robust_angle(Compositing::WebGL::GLint, Compositing::WebGL::GLint, Compositing::WebGL::GLsizei, Compositing::WebGL::GLsizei, Compositing::WebGL::GLenum, Compositing::WebGL::GLenum, Compositing::WebGL::GLsizei, Core::AnonymousBuffer) { VERIFY_NOT_REACHED(); }
++bool HostWebGLContext::read_buffer_sub_data(Compositing::WebGL::GLenum, Compositing::WebGL::GLintptr, Compositing::WebGL::GLintptr, Core::AnonymousBuffer) { VERIFY_NOT_REACHED(); }
++ErrorOr<NonnullRefPtr<Gfx::PaintingSurface>> HostWebGLContext::prepare_for_compositing(bool) { VERIFY_NOT_REACHED(); }
++void HostWebGLContext::clear_drawing_buffer() { VERIFY_NOT_REACHED(); }
++RefPtr<Gfx::PaintingSurface> HostWebGLContext::presented_surface() { VERIFY_NOT_REACHED(); }
++
++}
+diff --git a/Services/ImageDecoder/CMakeLists.txt b/Services/ImageDecoder/CMakeLists.txt
+index 82461c76127..d122bc47e29 100644
+--- a/Services/ImageDecoder/CMakeLists.txt
++++ b/Services/ImageDecoder/CMakeLists.txt
+@@ -38,3 +38,8 @@ if (WIN32)
+ endif()
+ 
+ ladybird_sign_helper_process(ImageDecoder)
++
++if (WASI)
++    # A latha:proc process: its IPC socket and shared memory come from the latha:proc backend.
++    target_link_options(ImageDecoder PRIVATE ${WEBBY_WASI_LATHA_LINK_OPTIONS})
++endif()
+diff --git a/Services/RequestServer/Request.cpp b/Services/RequestServer/Request.cpp
+index 26f609b717f..35e8c9c1646 100644
+--- a/Services/RequestServer/Request.cpp
++++ b/Services/RequestServer/Request.cpp
+@@ -1816,6 +1816,10 @@ ErrorOr<Requests::ExportedRequest> Request::export_response()
+     TRY(Core::System::set_socket_blocking(status_fds[0], false));
+     TRY(Core::System::set_socket_blocking(status_fds[1], false));
+     auto status = IPC::File::adopt_fd(status_fds[1]);
++#if defined(AK_OS_WASI)
++    TRY(wasi_replace_client_pipe());
++    m_wasi_replay.clear();
++#endif
+     auto body = IPC::File::adopt_fd(TRY(Core::System::dup(m_client_request_pipe->reader_fd())));
+ 
+     m_export = Export {};
+@@ -2147,6 +2151,10 @@ ErrorOr<void> Request::transfer_to_client(ConnectionFromClient& client, u64 requ
+     m_request_id = request_id;
+     m_transfer_lease = move(transfer_lease);
+ 
++#if defined(AK_OS_WASI)
++    if (m_client_request_pipe.has_value())
++        TRY(wasi_replace_client_pipe());
++#endif
+     if (m_client_request_pipe.has_value())
+         TRY(send_request_pipe_to_client());
+ 
+@@ -2223,6 +2231,24 @@ ErrorOr<void> Request::inform_client_request_started()
+     return {};
+ }
+ 
++#if defined(AK_OS_WASI)
++// The read end of a latha:proc channel lives in one instance at a time, so it moves to the client it is sent to, while
++// natively the request keeps a copy for the next owner. A request that changes owners gives the new one a new pipe,
++// with what the previous owner was sent while the transfer lease was held (as a lease holder, it was paused, and read
++// none of it). Writes to a channel never block.
++ErrorOr<void> Request::wasi_replace_client_pipe()
++{
++    m_client_writer_notifier = nullptr;
++    m_client_request_pipe = TRY(RequestPipe::create());
++    ReadonlyBytes replay = m_wasi_replay.bytes();
++    while (!replay.is_empty())
++        replay = replay.slice(TRY(m_client_request_pipe->write(replay)));
++    if (!m_transfer_lease.has_value())
++        m_wasi_replay.clear();
++    return {};
++}
++#endif
++
+ ErrorOr<void> Request::send_request_pipe_to_client()
+ {
+     VERIFY(m_client_request_pipe.has_value());
+@@ -2380,6 +2406,11 @@ ErrorOr<void> Request::write_queued_bytes_without_blocking()
+ 
+         auto written = result.value();
+         write_bytes_to_disk_cache(bytes.slice(0, written));
++#if defined(AK_OS_WASI)
++        // NB: Before the discard below, which can free what bytes points into.
++        if (m_transfer_lease.has_value())
++            TRY(m_wasi_replay.try_append(bytes.slice(0, written)));
++#endif
+         MUST(m_response_buffer.discard(written));
+ 
+         m_bytes_transferred_to_client += written;
+diff --git a/Services/RequestServer/Request.h b/Services/RequestServer/Request.h
+index ad4423df10a..d242505da85 100644
+--- a/Services/RequestServer/Request.h
++++ b/Services/RequestServer/Request.h
+@@ -118,7 +118,13 @@ public:
+     Optional<Requests::RequestTransferLeaseKey> const& transfer_lease() const { return m_transfer_lease; }
+ 
+     ErrorOr<void> transfer_to_client(ConnectionFromClient&, u64 request_id, Optional<Requests::RequestTransferLeaseKey>);
+-    void release_transfer_lease() { m_transfer_lease.clear(); }
++    void release_transfer_lease()
++    {
++        m_transfer_lease.clear();
++#if defined(AK_OS_WASI)
++        m_wasi_replay.clear();
++#endif
++    }
+ 
+     // Bound cache-holder inactivity, background-revalidation inactivity and total cache wait. Tests shorten these
+     // limits.
+@@ -367,6 +373,11 @@ private:
+     RefPtr<Core::Timer> m_wait_for_cache_timer;
+     Optional<MonotonicTime> m_started_waiting_for_cache_at;
+     Optional<RequestPipe> m_client_request_pipe;
++#if defined(AK_OS_WASI)
++    // What went into the client's pipe while a transfer lease is held (see transfer_to_client()).
++    ByteBuffer m_wasi_replay;
++    ErrorOr<void> wasi_replace_client_pipe();
++#endif
+     Optional<TransferredBodyFile> m_transferred_body_file;
+     size_t m_bytes_transferred_to_client { 0 };
+ 
+diff --git a/Services/WebContent/CMakeLists.txt b/Services/WebContent/CMakeLists.txt
+index 51e5cbe5d12..2033a61cb66 100644
+--- a/Services/WebContent/CMakeLists.txt
++++ b/Services/WebContent/CMakeLists.txt
+@@ -68,3 +68,8 @@ target_sources(webcontentservice PUBLIC FILE_SET server TYPE HEADERS
+ )
+ 
+ ladybird_sign_helper_process(WebContent ALLOW_JIT)
++
++if (WASI)
++    # A latha:proc process: its IPC socket and shared memory come from the latha:proc backend.
++    target_link_options(WebContent PRIVATE ${WEBBY_WASI_LATHA_LINK_OPTIONS})
++endif()
+diff --git a/Services/WebContent/main.cpp b/Services/WebContent/main.cpp
+index 74ecedcc98b..c9f7b46127d 100644
+--- a/Services/WebContent/main.cpp
++++ b/Services/WebContent/main.cpp
+@@ -272,7 +272,10 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+             VERIFY_NOT_REACHED();
+     }
+ 
++#if !defined(AK_OS_WASI)
++    // OpenSSL for WASI is built without threads.
+     OPENSSL_TRY(OSSL_set_max_threads(nullptr, Core::System::hardware_concurrency()));
++#endif
+ 
+     Web::HTML::Window::set_enable_test_mode(enable_test_mode);
+     Web::HTML::Window::set_internals_object_exposed(expose_internals_object);
+diff --git a/Utilities/CMakeLists.txt b/Utilities/CMakeLists.txt
+index a6e80e85783..a30110d7a7f 100644
+--- a/Utilities/CMakeLists.txt
++++ b/Utilities/CMakeLists.txt
+@@ -39,6 +39,10 @@ if (WASI)
+         if (WEBBY_UI_DIR)
+             add_subdirectory(${WEBBY_UI_DIR} ${CMAKE_BINARY_DIR}/webby-ui)
+         endif()
++        # The browser process without a window (webby-headless.cpp): LibWebView starts WebContent, Compositor,
++        # RequestServer and ImageDecoder as latha:proc child instances.
++        ladybird_utility(webby-headless SOURCES webby-headless.cpp LIBS LibWebView LibMain)
++        target_link_options(webby-headless PRIVATE ${WEBBY_WASI_LATHA_LINK_OPTIONS})
+     endif()
+     return()
+ endif()
+diff --git a/Utilities/webby-headless.cpp b/Utilities/webby-headless.cpp
+new file mode 100644
+index 00000000000..5c813d046eb
+--- /dev/null
++++ b/Utilities/webby-headless.cpp
+@@ -0,0 +1,44 @@
++/*
++ * Copyright (c) 2026, the webby authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++// webby-headless: the browser process of wasm webby without a window. LibWebView's Application starts WebContent,
++// Compositor, RequestServer and ImageDecoder as it does natively; on WASI each is a .wasm next to this one that
++// compat's posix_spawn runs as a latha:proc child instance, connected over latha:proc channels, with page bitmaps
++// in latha:proc shared memory. Application's own --headless modes do the rest, e.g.
++//   latha-run webby-headless.wasm --headless=screenshot --screenshot-path out.png --screenshot-delay 2 https://example.com
++
++#include <LibCore/EventLoop.h>
++#include <LibMain/Main.h>
++#include <LibWebView/Application.h>
++
++class WebbyHeadless final : public WebView::Application {
++    WEB_VIEW_APPLICATION(WebbyHeadless)
++
++public:
++    explicit WebbyHeadless(Optional<ByteString> ladybird_binary_path)
++        : WebView::Application(move(ladybird_binary_path))
++    {
++    }
++
++private:
++    virtual void create_platform_options(WebView::BrowserOptions& browser_options, WebView::RequestServerOptions&, WebView::WebContentOptions&) override
++    {
++        if (!browser_options.headless_mode.has_value())
++            browser_options.headless_mode = WebView::HeadlessMode::Screenshot;
++        // No SQLite in the wasm build's sysroot.
++        browser_options.disable_sql_database = WebView::DisableSQLDatabase::Yes;
++    }
++    virtual Core::EventLoop& create_platform_event_loop() override { return Core::EventLoop::current(); }
++    // One browser process per run: no profile lock or hand-off to a running one.
++    virtual bool should_coordinate_browser_process() const override { return false; }
++};
++
++ErrorOr<int> ladybird_main(Main::Arguments arguments)
++{
++    Core::EventLoop event_loop;
++    auto app = TRY(WebbyHeadless::create(arguments, OptionalNone {}));
++    return app->execute();
++}
