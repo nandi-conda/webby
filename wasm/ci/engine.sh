@@ -6,7 +6,8 @@
 # The build gets BUDGET seconds. When it runs out, the step still succeeds (so the cache keeps what was compiled)
 # and /export/status says "partial": ci/forge_wasm.py then starts the job again. Every outcome is written to
 # /export (status, build.log tail, the programs as <target>.wasm), never a failed step, so the job can report it.
-# env: TARGETS (space separated, default js), BUDGET (seconds)
+# env: TARGETS (space separated, default js), BUDGET (seconds), WASM_VERSION + WASM_UPDATE_URL (webby.wasm's
+# latha:app version= and update=: latha-gui and latha-android fetch newer builds through webby-update.txt)
 set -uo pipefail
 w=/w; C=/cache; out=/export; mkdir -p "$out" "$C"
 targets=${TARGETS:-js}; budget=${BUDGET:-2700}
@@ -102,6 +103,12 @@ for t in $targets; do
     # The UI is a latha:gui component, bin/webby.wasm (bin/webby-ui.core.wasm is its core module).
     [ -f "$build/bin/webby.wasm" ] || fail "no $build/bin/webby.wasm after the build"
     cp "$build/bin/webby.wasm" "$out/webby.wasm"
+    # Its name, version and update manifest (latha:app), before the tests and the precompile: the prebuilt key is
+    # the published bytes' hash. id webby-wasm, so latha-gui's desktop entry does not take the native webby.desktop.
+    if [ -n "${WASM_VERSION:-}" ] && [ -n "${WASM_UPDATE_URL:-}" ]; then
+      python3 "$w/wasm/tools/set-app-info.py" "$out/webby.wasm" id=webby-wasm name=Webby \
+        "version=$WASM_VERSION" "update=$WASM_UPDATE_URL" || fail "stamping webby.wasm's latha:app section failed"
+    fi
     # The PDF component on its own too, for the UI component a local shell build composes (ui/shell/build.sh).
     [ -f "$build/bin/webby-pdf.wasm" ] && cp "$build/bin/webby-pdf.wasm" "$out/webby-pdf.wasm"
     continue
@@ -242,4 +249,11 @@ if [[ " $targets " == *" webby-core "* ]] && [ -n "${LATHA_RUN:-}" ]; then
   echo "webby-ui-shell.wasm + webby-core.wasm ran in latha-gui"
 fi
 (cd "$out" && sha256sum ./*.wasm > SHA256SUMS)
+# The update of webby.wasm for latha-gui / latha-android (latha-gui/host/src/update.rs in qt2wasm): packed, and the
+# manifest naming it; forge_wasm.py uploads the manifest last.
+if [ -f "$out/webby.wasm" ] && [ -n "${WASM_VERSION:-}" ] && [ -n "${WASM_UPDATE_URL:-}" ]; then
+  zstd -q -19 --long=27 -T0 -f "$out/webby.wasm" -o "$out/webby.wasm.zst" || fail "packing webby.wasm failed"
+  printf 'version=%s\nurl=webby.wasm.zst\nsha256=%s\n' "$WASM_VERSION" "$(sha256sum "$out/webby.wasm" | cut -d' ' -f1)" \
+    > "$out/webby-update.txt"
+fi
 status ok

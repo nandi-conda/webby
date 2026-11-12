@@ -477,6 +477,15 @@ x86-64-v3) from the `wasm-engine` release, then loads it from its cache in 0.02 
 of ~45 s. CI makes it (`ci/engine.sh`: `latha-run --precompile`); for a hand-uploaded webby.wasm, run
 `latha-run --precompile DIR webby.wasm` with the latha-gui people use and upload DIR's file beside it.
 
+Updates: CI stamps webby.wasm's `latha:app` section (`ci/engine.sh` with `tools/set-app-info.py`, a copy of
+qt2wasm's): `id=webby-wasm` (not `webby`, so latha-gui's desktop entry leaves the native webby.desktop alone),
+`name=Webby`, `version=` the commit's UTC time (`2026.11.12.173000`), and `update=` the `wasm-engine` release's
+`webby-update.txt`. Each build uploads `webby.wasm.zst` and then that manifest (version, url, sha256). latha-gui
+>= 0.7 and latha-android >= 0.3 check it in the background at most every 6 hours, download a newer webby.wasm into
+`~/.local/share/latha-gui/updates/webby-wasm/` (with its precompiled code), and run it from the next start
+(qt2wasm `latha-gui/README.md`, "App updates"). A webby.wasm from before this has no update info: fetch one new
+build by hand, and it updates itself from then on.
+
 ### PDFs
 
 A PDF (application/pdf, or a generic type whose body starts with `%PDF-`, over http(s) or file:) opens in webby's own

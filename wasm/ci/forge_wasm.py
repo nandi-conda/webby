@@ -198,6 +198,20 @@ def again(reason):
         say(f"{reason}; started wasm-engine again on {branch} to carry on")
 
 
+# webby.wasm's update manifest (engine.sh writes it, latha-gui and latha-android read it; qt2wasm update.rs).
+UPDATE_URL = (f"https://fileapi.fastapicloud.dev/api/forge/repos/{os.environ.get('FORGE_REPO', 'nandi.uk/webby')}"
+              f"/releases/{ENGINE_TAG}/assets/webby-update.txt")
+
+
+def wasm_version():
+    """webby.wasm's version: the built commit's time in UTC, 2026.11.12.173000 (later commits on main are newer).
+    Empty when git can't say, and then the build carries no update info."""
+    sha = os.environ.get("FORGE_SHA") or "HEAD"
+    r = subprocess.run(["git", "-C", str(ROOT), "log", "-1", "--format=%cd", "--date=format-local:%Y.%m.%d.%H%M%S", sha],
+                       capture_output=True, text=True, env={**os.environ, "TZ": "UTC"})
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def engine():
     listed = [ln.split("#")[0] for ln in (CI / "engine-targets").read_text().splitlines()]
     targets = " ".join((os.environ.get("WASM_TARGETS") or " ".join(listed)).split())
@@ -210,8 +224,10 @@ def engine():
     if budget < 600:
         sys.exit("not enough of the job's hour left to build")
     out = ROOT / "build" / "wasm-engine"
+    version = wasm_version()
     code = depot_build(CI / "engine.Dockerfile", out,
-                       {"TARGETS": targets, "BUDGET": budget, "RUN_ID": f"{os.environ.get('FORGE_SHA', '')}-{time.time():.0f}"},
+                       {"TARGETS": targets, "BUDGET": budget, "RUN_ID": f"{os.environ.get('FORGE_SHA', '')}-{time.time():.0f}",
+                        "WASM_VERSION": version, "WASM_UPDATE_URL": UPDATE_URL if version else ""},
                        ROOT / "build" / "wasm-engine.log")
     status = (out / "status").read_text().strip() if (out / "status").exists() else ""
     if code != 0 or not status:
@@ -228,12 +244,18 @@ def engine():
     wasms = sorted(out.glob("*.wasm"))
     # latha-gui's precompiled webby.wasm (engine.sh, latha-run --precompile): fetched by name on a first run.
     prebuilt = sorted(out.glob("*.cwasm.zst"))
-    upload(ENGINE_TAG, [*wasms, *prebuilt, *out.glob("webby-render-test.png"), *out.glob("webby-ui-test.png"), *out.glob("webby-split-test.png"), *out.glob("webby-render-net-*.png"), out / "SHA256SUMS", out / "build.log"], f"webby wasm engine {sha[:12]}",
+    upload(ENGINE_TAG, [*wasms, *prebuilt, *out.glob("webby.wasm.zst"), *out.glob("webby-render-test.png"), *out.glob("webby-ui-test.png"), *out.glob("webby-split-test.png"), *out.glob("webby-render-net-*.png"), out / "SHA256SUMS", out / "build.log"], f"webby wasm engine {sha[:12]}",
            f"Ladybird ({(ROOT / 'LADYBIRD_COMMIT').read_text().strip()[:10]}) with webby's patches for wasm32-wasip1, "
            f"from {sha}, built against {name}: {', '.join(p.name for p in wasms)}.\n\n"
            f"Run with wasm/tools/wasi-run.py (PyPI wasmtime, wasm exceptions on, a big wasm stack): "
            f"`python wasm/tools/wasi-run.py js.wasm -c 'print(6 * 7)'`.")
     say(f"Published {', '.join(p.name for p in wasms)} on the {ENGINE_TAG} release")
+    manifest = out / "webby-update.txt"
+    if manifest.exists():
+        # Last, once webby.wasm.zst is up: latha-gui and latha-android see the new version from now on.
+        if subprocess.run(["forge-release", "upload", ENGINE_TAG, str(manifest)]).returncode != 0:
+            sys.exit("uploading webby-update.txt failed")
+        say(f"webby.wasm {version} is the update for latha-gui / latha-android ({UPDATE_URL})")
     if prebuilt:
         # Keep this build's precompiled files and the 4 newest others (other latha-gui versions, older webby.wasm
         # still being run); each is ~85 MB.

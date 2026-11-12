@@ -31,8 +31,12 @@ ARG TARGETS=js
 ARG BUDGET=2700
 # Changes every run, so the build step always runs (ninja decides what is out of date).
 ARG RUN_ID
+# webby.wasm's version and update manifest URL (latha:app version=, update=; latha-gui/latha-android update it).
+ARG WASM_VERSION=
+ARG WASM_UPDATE_URL=
 RUN --mount=type=cache,id=webby-wasm-engine,target=/cache \
-    echo "run $RUN_ID" && TARGETS="$TARGETS" BUDGET="$BUDGET" bash /w/wasm/ci/engine.sh
+    echo "run $RUN_ID" && TARGETS="$TARGETS" BUDGET="$BUDGET" WASM_VERSION="$WASM_VERSION" \
+    WASM_UPDATE_URL="$WASM_UPDATE_URL" bash /w/wasm/ci/engine.sh
 
 FROM scratch AS out
 COPY --from=engine /export/ /
