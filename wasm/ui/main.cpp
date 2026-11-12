@@ -62,7 +62,7 @@ static bool schedule_test_input(QWindow* window, QString const& arg)
         });
         return true;
     }
-    if (arg.startsWith(QStringLiteral("--wheel=")) || arg.startsWith(QStringLiteral("--key="))) {
+    if (arg.startsWith(QStringLiteral("--wheel="))) {
         int dy = arg.mid(8, at - 8).toInt();
         QTimer::singleShot(ms, window, [window, dy] {
             QPointF pos(window->width() / 2.0, window->height() / 2.0);
