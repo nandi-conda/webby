@@ -16,7 +16,9 @@
 #include <QPainterPath>
 #include <QPolygonF>
 #include <QWheelEvent>
+#include <QtMath>
 #include <cmath>
+#include <cstdlib>
 #include <qt2wasm/gui.h>
 
 using namespace WebbyUI;
@@ -150,7 +152,7 @@ void BrowserWindow::wake(Tab& tab)
     tab.view = std::move(view);
     raw->on_needs_paint = [this, raw] {
         if (current() && current()->view.get() == raw)
-            update();
+            request_page_frame();
     };
     raw->on_title_change = [this, raw](std::string const& title) {
         Profile::History::the().set_title(from_std(raw->url()), from_std(title).simplified());
@@ -166,8 +168,9 @@ void BrowserWindow::wake(Tab& tab)
     raw->on_loading_change = [this](bool) { sync_from_view(); };
     raw->on_link_hover = [this, raw](std::string const& link) {
         if (current() && current()->view.get() == raw) {
+            auto was = status_rect();
             m_hovered_link = from_std(link);
-            update();
+            update(QRegion(was) | status_rect());
         }
     };
     // The page's copies and pastes go to the host's clipboard (qt6-wasi has no QClipboard; qt2wasm asks the host).
@@ -217,6 +220,9 @@ void BrowserWindow::close_tab(int index)
         m_closed.append({ m_tabs[index].title, m_tabs[index].url, m_tabs[index].created });
     if (m_closed.size() > 25)
         m_closed.removeFirst();
+    // The frame on screen may be the closing tab's pixels.
+    m_page_image = {};
+    m_page_frame.invalidate();
     m_tabs.erase(m_tabs.begin() + index);
     m_save_timer.start();
     if (m_tabs.empty()) {
@@ -251,6 +257,8 @@ void BrowserWindow::activate_tab(int index)
     m_hovered_link.clear();
     hide_suggestions();
     m_save_timer.start();
+    m_page_frame.invalidate();
+    request_page_frame();
     sync_from_view();
 }
 
@@ -273,7 +281,7 @@ void BrowserWindow::pump()
 {
     WebbyUI::WebView::pump();
     if (auto* tab = current(); tab && tab->view && tab->view->needs_paint())
-        update();
+        request_page_frame();
 }
 
 void BrowserWindow::navigate_from_address()
@@ -763,25 +771,106 @@ void BrowserWindow::paint_suggestions(QPainter& p)
     }
 }
 
-void BrowserWindow::paint_page(QPainter& p)
+void BrowserWindow::request_page_frame()
 {
-    auto r = page_rect();
+    m_page_dirty = true;
+    requestUpdate();
+}
+
+// At the window's update, before it paints: take the page's new frame and mark what it changed. A scroll moves the
+// pixels already on screen (on the host too, so they are not sent again) and repaints only what the move did not
+// bring along: the strip it uncovered, sticky or fixed parts of the page, and what the window draws over the page.
+// Every other paint of the page area draws this same frame (m_page_image): only here does the view paint.
+void BrowserWindow::prepare_page_frame()
+{
+    if (!m_page_dirty)
+        return;
+    m_page_dirty = false;
+    auto page = page_rect();
     auto* tab = current();
     uint8_t const* pixels = tab && tab->view ? tab->view->paint() : nullptr;
     if (!pixels) {
+        m_page_image = {};
+        m_page_frame.invalidate();
+        update(page);
+        return;
+    }
+    QSize size { tab->view->width(), tab->view->height() };
+    m_page_image = QImage(pixels, size.width(), size.height(), size.width() * 4, QImage::Format_ARGB32_Premultiplied);
+    auto change = m_page_frame.take(pixels, size, tab->view.get());
+    QRegion damage = change.damage.translated(page.topLeft());
+    if (change.scroll) {
+        // The host moves whole device pixels. Under an open menu or the address suggestions (they can cover most of
+        // the page) the page is painted again instead.
+        qreal dpr = devicePixelRatio();
+        bool moved = false;
+        if (dpr == qFloor(dpr) && size == page.size() && !m_menu.is_open() && m_suggestions.isEmpty()) {
+            int d = int(dpr);
+            QRect area { page.left() * d, page.top() * d, page.width() * d, page.height() * d };
+            moved = qt2wasm::gui::scrollWindow(this, area, 0, -change.scroll * d);
+        }
+        if (moved) {
+            auto overlays = page_overlays();
+            damage += overlays;
+            damage += overlays.translated(0, -change.scroll);
+            damage &= page;
+        } else {
+            damage = page;
+        }
+    }
+    if (size != page.size())
+        damage += page;
+    // WEBBY_DAMAGE_DEBUG=1: each frame's scroll and damage on stderr.
+    if (getenv("WEBBY_DAMAGE_DEBUG")) {
+        QString out;
+        for (auto const& r : damage)
+            out += QStringLiteral(" %1,%2 %3x%4").arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height());
+        qWarning("webby: frame scroll %d, %d rects:%s", change.scroll, int(damage.rectCount()), qPrintable(out));
+    }
+    if (!damage.isEmpty())
+        update(damage);
+}
+
+QRegion BrowserWindow::page_overlays() const
+{
+    QRegion overlays;
+    if (!m_status_painted.isEmpty())
+        overlays += m_status_painted;
+    if (m_find_open)
+        overlays += find_rect().toAlignedRect().adjusted(-2, -2, 2, 2);
+    return overlays;
+}
+
+void BrowserWindow::paint_page(QPainter& p)
+{
+    auto r = page_rect();
+    if (m_page_image.isNull()) {
         p.fillRect(r, Qt::white);
         return;
     }
-    QImage image(pixels, tab->view->width(), tab->view->height(), tab->view->width() * 4, QImage::Format_ARGB32_Premultiplied);
+    auto const& image = m_page_image;
+    // The page is opaque: copy it, no blending.
+    p.save();
+    p.setCompositionMode(QPainter::CompositionMode_Source);
     p.drawImage(r.topLeft(), image);
+    p.restore();
     if (image.width() < r.width())
         p.fillRect(QRect(r.left() + image.width(), r.top(), r.width() - image.width(), r.height()), Qt::white);
     if (image.height() < r.height())
         p.fillRect(QRect(r.left(), r.top() + image.height(), r.width(), r.height() - image.height()), Qt::white);
 }
 
+QRect BrowserWindow::status_rect() const
+{
+    if (m_hovered_link.isEmpty())
+        return {};
+    // Wide enough for any text paint_status elides to (60% of the window), so it needs no font here.
+    return QRect(0, height() - 25, int(width() * 0.6) + 24, 25);
+}
+
 void BrowserWindow::paint_status(QPainter& p)
 {
+    m_status_painted = status_rect();
     if (m_hovered_link.isEmpty())
         return;
     QFont font = p.font();
@@ -806,6 +895,7 @@ void BrowserWindow::resizeEvent(QResizeEvent*)
         auto page = page_rect();
         tab->view->resize(page.width(), page.height());
     }
+    request_page_frame();
     update();
 }
 
@@ -1406,6 +1496,9 @@ bool BrowserWindow::menu_event(QEvent* event)
 
 bool BrowserWindow::event(QEvent* event)
 {
+    // The page's frame is taken before the window paints, so its damage is part of what this update paints.
+    if (event->type() == QEvent::UpdateRequest)
+        prepare_page_frame();
     if (menu_event(event))
         return true;
     // The release of a click that closed the menu goes nowhere.

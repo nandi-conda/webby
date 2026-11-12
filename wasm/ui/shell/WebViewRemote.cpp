@@ -19,8 +19,10 @@ namespace WebbyUI {
 
 struct WebView::Impl {
     webby_engine_views_own_view_t handle;
-    std::vector<uint8_t> pixels;
+    // The last frame, as the bindings lifted it (kept, not copied again: a frame is megabytes).
+    gui_list_u8_t pixels {};
     webby_engine_views_borrow_view_t borrow() const { return webby_engine_views_borrow_view(handle); }
+    ~Impl() { gui_list_u8_free(&pixels); }
 };
 
 // Live views, for pump: the event loop's work can change any of them.
@@ -103,15 +105,15 @@ uint8_t const* WebView::paint()
 {
     gui_list_u8_t list {};
     if (webby_engine_views_method_view_paint(m_impl->borrow(), &list)) {
-        m_impl->pixels.assign(list.ptr, list.ptr + list.len);
-        gui_list_u8_free(&list);
+        gui_list_u8_free(&m_impl->pixels);
+        m_impl->pixels = list;
     }
     m_needs_paint = false;
     deliver_engine_events();
     // The engine draws width x height; until it has, there is nothing to show.
-    if (m_impl->pixels.size() != size_t(m_width) * size_t(m_height) * 4)
+    if (m_impl->pixels.len != size_t(m_width) * size_t(m_height) * 4)
         return nullptr;
-    return m_impl->pixels.data();
+    return m_impl->pixels.ptr;
 }
 
 void WebView::mouse_down(int x, int y, unsigned button, unsigned buttons, unsigned modifiers, int clicks)

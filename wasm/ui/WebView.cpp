@@ -676,7 +676,8 @@ static ErrorOr<void> rasterize(Compositing::DisplayList const& display_list, Com
     Compositing::DisplayListResourceStorage resource_storage;
     resource_storage.apply_transaction(move(resources));
     TRY(resource_storage.validate_for_replay(display_list, visual_context_tree));
-    __builtin_memset(target.scanline_u8(0), 0, target.size_in_bytes());
+    // White below the page, as a browser's canvas is: a page with no background of its own is not see-through.
+    __builtin_memset(target.scanline_u8(0), 0xff, target.size_in_bytes());
     auto surface = Gfx::PaintingSurface::wrap_bitmap(target);
     Compositor::DisplayListPlayerSkia player { RefPtr<Gfx::SkiaBackendContext> {} };
     Compositor::DisplayListRasterCache raster_cache;

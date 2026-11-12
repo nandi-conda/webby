@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "PageFrame.h"
 #include "PopupMenu.h"
 #include "Omnibox.h"
 #include "Profile.h"
@@ -128,6 +129,15 @@ private:
     void paint_toolbar(QPainter&);
     void paint_page(QPainter&);
     void paint_status(QPainter&);
+    QRect status_rect() const;
+
+    // The page's pixels reach the window in frames: a view that changed asks for one (request_page_frame), and at the
+    // window's next update the frame is taken and only what it changed is repainted (prepare_page_frame, PageFrame).
+    void request_page_frame();
+    void prepare_page_frame();
+    // What the window paints over the page (the hovered link's box, the find bar): a scroll moves it along with the
+    // page, so it is painted again where it is. Anything new drawn over the page goes here too.
+    QRegion page_overlays() const;
     void paint_bookmarks_bar(QPainter&);
     void paint_suggestions(QPainter&);
 
@@ -168,4 +178,9 @@ private:
     bool m_dragging_tab { false };
     qreal m_press_x { 0 };
     qreal m_drag_offset { 0 };
+
+    WebbyUI::PageFrame m_page_frame;
+    QImage m_page_image; // the frame on screen (the view's own pixels, valid until its next paint)
+    bool m_page_dirty { true };
+    QRect m_status_painted;
 };
