@@ -1,0 +1,541 @@
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayListDamage.cpp b/Libraries/LibCompositing/DisplayList/DisplayListDamage.cpp
+index 400eddb3d1..8dcbde2b0a 100644
+--- a/Libraries/LibCompositing/DisplayList/DisplayListDamage.cpp
++++ b/Libraries/LibCompositing/DisplayList/DisplayListDamage.cpp
+@@ -37,6 +37,35 @@ Optional<Gfx::IntRect> compute_display_list_damage(
+     return damage_rect;
+ }
+ 
++Optional<ViewportScrollDamage> compute_viewport_scroll_damage(
++    DisplayList const& old_display_list,
++    AccumulatedVisualContextTree const& old_visual_context_tree,
++    ScrollStateSnapshot const& old_scroll_state,
++    DisplayList const& new_display_list,
++    AccumulatedVisualContextTree const& new_visual_context_tree,
++    ScrollStateSnapshot const& new_scroll_state,
++    Gfx::IntRect viewport_rect,
++    LiveContentChanges live_content_changes)
++{
++    auto old_scroll_offsets = old_scroll_state.device_offsets();
++    auto new_scroll_offsets = new_scroll_state.device_offsets();
++    Compositing::RustFFI::FfiViewportScrollDamage damage {};
++    if (!Compositing::RustFFI::display_list_compute_viewport_scroll_damage(
++            old_display_list.rust_handle(), old_visual_context_tree.rust_handle(), old_scroll_offsets.data(), old_scroll_offsets.size(),
++            new_display_list.rust_handle(), new_visual_context_tree.rust_handle(), new_scroll_offsets.data(), new_scroll_offsets.size(),
++            viewport_rect,
++            live_content_changes.canvases.data(), live_content_changes.canvases.size(),
++            live_content_changes.video_sinks.data(), live_content_changes.video_sinks.size(),
++            &damage))
++        return {};
++    return ViewportScrollDamage {
++        .scroll = damage.scroll,
++        .content = damage.content,
++        .unscrolled_new = damage.unscrolled_new,
++        .unscrolled_old = damage.unscrolled_old,
++    };
++}
++
+ AnimatedContentViewportEffect animated_content_may_affect_viewport(
+     DisplayList const& display_list,
+     AccumulatedVisualContextTree const& visual_context_tree,
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayListDamage.h b/Libraries/LibCompositing/DisplayList/DisplayListDamage.h
+index c9140e375f..4b226567ad 100644
+--- a/Libraries/LibCompositing/DisplayList/DisplayListDamage.h
++++ b/Libraries/LibCompositing/DisplayList/DisplayListDamage.h
+@@ -36,6 +36,28 @@ COMPOSITING_API Optional<Gfx::IntRect> compute_display_list_damage(
+     Gfx::IntRect viewport_rect,
+     LiveContentChanges);
+ 
++// What a scroll of the layout viewport changed, for a rasterizer that keeps its last frame: move that frame's pixels
++// by `scroll` (device pixels: negative y as the page scrolls down and its content moves up), then repaint `content` (what changed apart
++// from the scroll), `unscrolled_new` (what does not move with the viewport, where it is now) and `unscrolled_old`
++// (where the moved pixels put its old drawing). Empty when nothing can tell the change that way, and the whole
++// viewport must repaint.
++struct ViewportScrollDamage {
++    Gfx::FloatPoint scroll;
++    Gfx::IntRect content;
++    Gfx::IntRect unscrolled_new;
++    Gfx::IntRect unscrolled_old;
++};
++
++COMPOSITING_API Optional<ViewportScrollDamage> compute_viewport_scroll_damage(
++    DisplayList const& old_display_list,
++    AccumulatedVisualContextTree const& old_visual_context_tree,
++    ScrollStateSnapshot const& old_scroll_state,
++    DisplayList const& new_display_list,
++    AccumulatedVisualContextTree const& new_visual_context_tree,
++    ScrollStateSnapshot const& new_scroll_state,
++    Gfx::IntRect viewport_rect,
++    LiveContentChanges);
++
+ struct AnimatedContentViewportEffect {
+     bool may_affect_viewport { true };
+     // The answer holds until the scene changes: no finite animation is still running, so none can stop
+diff --git a/Libraries/LibCompositing/Rust/src/display_list/damage.rs b/Libraries/LibCompositing/Rust/src/display_list/damage.rs
+index 1b36ba1b66..eb2b3822bc 100644
+--- a/Libraries/LibCompositing/Rust/src/display_list/damage.rs
++++ b/Libraries/LibCompositing/Rust/src/display_list/damage.rs
+@@ -1682,6 +1682,286 @@ pub fn compute_display_list_damage(
+     ))
+ }
+ 
++// What a scroll of the layout viewport changed, for a rasterizer that keeps the last frame and moves its pixels
++// instead of repainting them (webby's wasm UI). Moving the last frame by the viewport's scroll draws everything that
++// scrolls with the viewport where it now is, so what still has to be repainted is:
++// - `content`: what changed apart from that scroll, which is the damage between the old list replayed with the
++//   viewport's new offset and the new list;
++// - `unscrolled_new` and `unscrolled_old`: what does not move with the viewport (fixed boxes, the viewport's own
++//   scrollbar, content under a fixed clip or filter that is not the viewport's), where it is drawn now and where the
++//   moved pixels put its old drawing.
++pub struct ViewportScrollDamage {
++    pub viewport_scroll_node: SpatialNodeIndex,
++    pub scroll: FloatPoint,
++    pub content: IntRect,
++    pub unscrolled_new: IntRect,
++    pub unscrolled_old: IntRect,
++}
++
++// The layout viewport's scroll node: the first scroll node right under the visual viewport.
++pub fn find_viewport_scroll_node(tree: &VisualContextTree) -> Option<SpatialNodeIndex> {
++    tree.spatial_nodes
++        .iter()
++        .enumerate()
++        .skip(1)
++        .find(|(_, node)| matches!(node.data, SpatialData::Scroll(_)) && node.parent == VISUAL_VIEWPORT_NODE_INDEX)
++        .map(|(index, _)| SpatialNodeIndex(index as u32))
++}
++
++// Per spatial node: whether what it draws moves exactly as the viewport scrolls (its root path goes through the
++// viewport's scroll node and holds no anchor shift, which can follow the viewport's offset by its own rules).
++fn spatial_nodes_moving_with(tree: &VisualContextTree, viewport_scroll_node: SpatialNodeIndex) -> Vec<bool> {
++    let count = tree.spatial_nodes.len();
++    // 0: not known yet, 1: moves, 2: does not.
++    let mut verdicts = vec![0u8; count];
++    let mut path = Vec::new();
++    for start in 0..count {
++        path.clear();
++        let mut index = start;
++        let verdict = loop {
++            if verdicts[index] != 0 {
++                break verdicts[index];
++            }
++            if index == viewport_scroll_node.0 as usize {
++                break 1;
++            }
++            let node = &tree.spatial_nodes[index];
++            if index == VISUAL_VIEWPORT_NODE_INDEX.0 as usize
++                || matches!(node.data, SpatialData::AnchorScrollShift(_))
++                || path.len() > count
++            {
++                break 2;
++            }
++            path.push(index);
++            let parent = node.parent.0 as usize;
++            if parent >= count {
++                break 2;
++            }
++            index = parent;
++        };
++        for &index in &path {
++            verdicts[index] = verdict;
++        }
++        if verdicts[start] == 0 {
++            verdicts[start] = verdict;
++        }
++    }
++    // The viewport's scroll node itself moves what it draws.
++    if let Some(verdict) = verdicts.get_mut(viewport_scroll_node.0 as usize) {
++        *verdict = 1;
++    }
++    verdicts.into_iter().map(|verdict| verdict == 1).collect()
++}
++
++// The viewport-space bounds of what `frame` draws that does not move with the viewport's scroll, or None when they
++// have no bounds.
++fn unscrolled_bounds(
++    frame: DisplayListFrame<'_>,
++    viewport_scroll_node: SpatialNodeIndex,
++    viewport_rect: IntRect,
++) -> Option<IntRect> {
++    let tree = frame.visual_context_tree;
++    let moves = spatial_nodes_moving_with(tree, viewport_scroll_node);
++    let spatial_moves = |index: SpatialNodeIndex| moves.get(index.0 as usize).copied().unwrap_or(false);
++    let viewport = viewport_rect.to_float();
++
++    // A clip that does not move cuts moving content at the same place before and after the scroll. One that holds
++    // the whole viewport cuts nothing the moved pixels get wrong; any other does.
++    let mut clip_verdicts = vec![0u8; tree.clip_nodes.len()];
++    let clip_is_ok = |start: ClipNodeIndex, clip_verdicts: &mut Vec<u8>| -> bool {
++        let mut index = start;
++        let mut path = Vec::new();
++        let verdict = loop {
++            if index.is_none() {
++                break 1;
++            }
++            let i = index.0 as usize;
++            if i >= tree.clip_nodes.len() || path.len() > tree.clip_nodes.len() {
++                break 2;
++            }
++            if clip_verdicts[i] != 0 {
++                break clip_verdicts[i];
++            }
++            let node = &tree.clip_nodes[i];
++            let ok = spatial_moves(node.spatial)
++                || match &node.data {
++                    ClipNodeData::Rect(clip) => {
++                        clip.mode == ClipMode::Intersect
++                            && !clip.corner_radii.has_any_radius()
++                            && tree
++                                .transform_rect_to_viewport(
++                                    node.spatial,
++                                    clip.rect,
++                                    frame.scroll_offsets,
++                                    IncludeVisualViewportTransform::Yes,
++                                )
++                                .contains_rect(viewport)
++                    }
++                    ClipNodeData::Dead => true,
++                    ClipNodeData::Path(_) => false,
++                };
++            if !ok {
++                break 2;
++            }
++            path.push(i);
++            index = node.parent;
++        };
++        for i in path {
++            clip_verdicts[i] = verdict;
++        }
++        verdict == 1
++    };
++    // An effect that does not move changes moving pixels one by one (opacity, blending) and so the same before and
++    // after the scroll; a filter or a mask reaches around and does not.
++    let mut effect_verdicts = vec![0u8; tree.effect_nodes.len()];
++    let effect_is_ok = |start: EffectNodeIndex, effect_verdicts: &mut Vec<u8>, clip_verdicts: &mut Vec<u8>| -> bool {
++        let mut index = start;
++        let mut path = Vec::new();
++        let verdict = loop {
++            if index.is_none() {
++                break 1;
++            }
++            let i = index.0 as usize;
++            if i >= tree.effect_nodes.len() || path.len() > tree.effect_nodes.len() {
++                break 2;
++            }
++            if effect_verdicts[i] != 0 {
++                break effect_verdicts[i];
++            }
++            let node = &tree.effect_nodes[i];
++            let ok = (spatial_moves(node.spatial)
++                || match &node.data {
++                    EffectNodeData::Effects(effects) => effects.filter.is_none() && effects.backdrop_filter.is_none(),
++                    EffectNodeData::BackgroundColorAnimation | EffectNodeData::Dead => true,
++                    EffectNodeData::Mask(_) => false,
++                })
++                && clip_is_ok(node.local_clip, clip_verdicts);
++            if !ok {
++                break 2;
++            }
++            path.push(i);
++            index = node.parent;
++        };
++        for i in path {
++            effect_verdicts[i] = verdict;
++        }
++        verdict == 1
++    };
++
++    let mut culling = TreeCullingScratch::default();
++    tree.fill_culling_scratch(&mut culling);
++    let effect_clips = EffectClipPlan::from_contexts(tree, frame.command_runs.iter().map(|run| run.context))?;
++    let filter_spreading = FilterSpreading::default();
++    let side = TreeSide {
++        tree,
++        scroll_offsets: frame.scroll_offsets,
++        culling: &culling,
++        effect_clips: &effect_clips,
++        filter_spreading: &filter_spreading,
++    };
++    let mut damage = DamageAccumulator {
++        damage_rect: None,
++        changed_unbounded_command: false,
++        viewport_rect,
++    };
++    let tape = Tape {
++        bytes: frame.command_bytes,
++        runs: frame.command_runs,
++    };
++    let mut commands = Vec::new();
++    for run in frame.command_runs {
++        if damage.covers_viewport() {
++            break;
++        }
++        let context = run.context;
++        let context_moves = spatial_moves(context.spatial)
++            && clip_is_ok(context.clip, &mut clip_verdicts)
++            && effect_is_ok(context.effect, &mut effect_verdicts, &mut clip_verdicts);
++        commands.clear();
++        tape.collect_commands_of_runs(std::slice::from_ref(run), &mut commands);
++        for command in &commands {
++            // The viewport's scrollbar sits still while its thumb follows the scroll.
++            let is_viewport_scrollbar = command.header.command_type == DisplayListCommandType::PaintScrollBar
++                && read_command::<PaintScrollBar>(command.payload).scroll_node_index == viewport_scroll_node;
++            if context_moves && !is_viewport_scrollbar {
++                continue;
++            }
++            damage.add_command_damage(command, side);
++        }
++    }
++    if damage.changed_unbounded_command {
++        return None;
++    }
++    let Some(damage_rect) = damage.damage_rect else {
++        return Some(IntRect::default());
++    };
++    Some(intersect_like_gfx_int_rect(damage_rect.inflated_edges(1, 1, 1, 1), viewport_rect))
++}
++
++// None when the change cannot be told as a move plus damage: the trees disagree on the viewport's scroll node, or a
++// change has no bounds.
++pub fn compute_viewport_scroll_damage(
++    old_frame: DisplayListFrame<'_>,
++    new_frame: DisplayListFrame<'_>,
++    viewport_rect: IntRect,
++    live_content_changes: LiveContentChanges<'_>,
++) -> Option<ViewportScrollDamage> {
++    let viewport_scroll_node = find_viewport_scroll_node(new_frame.visual_context_tree)?;
++    if find_viewport_scroll_node(old_frame.visual_context_tree) != Some(viewport_scroll_node) {
++        return None;
++    }
++    let old_offset = device_offset_for_index(old_frame.scroll_offsets, viewport_scroll_node);
++    let new_offset = device_offset_for_index(new_frame.scroll_offsets, viewport_scroll_node);
++    let scroll = FloatPoint {
++        x: new_offset.x - old_offset.x,
++        y: new_offset.y - old_offset.y,
++    };
++    if scroll.x == 0.0 && scroll.y == 0.0 {
++        let content = compute_display_list_damage(old_frame, new_frame, viewport_rect, live_content_changes)?;
++        return Some(ViewportScrollDamage {
++            viewport_scroll_node,
++            scroll,
++            content,
++            unscrolled_new: IntRect::default(),
++            unscrolled_old: IntRect::default(),
++        });
++    }
++    let mut old_offsets_after_scroll = old_frame.scroll_offsets.to_vec();
++    if (viewport_scroll_node.0 as usize) >= old_offsets_after_scroll.len() {
++        old_offsets_after_scroll.resize(viewport_scroll_node.0 as usize + 1, FloatPoint::default());
++    }
++    old_offsets_after_scroll[viewport_scroll_node.0 as usize] = new_offset;
++    let content = compute_display_list_damage(
++        DisplayListFrame {
++            scroll_offsets: &old_offsets_after_scroll,
++            ..old_frame
++        },
++        new_frame,
++        viewport_rect,
++        live_content_changes,
++    )?;
++    let unscrolled_new = unscrolled_bounds(new_frame, viewport_scroll_node, viewport_rect)?;
++    // Where the moved pixels put the old drawing: a device offset is where the scrolled content's origin is drawn, so
++    // the content moves by the offset's change (up, negative, as the page scrolls down).
++    let unscrolled_old = unscrolled_bounds(old_frame, viewport_scroll_node, viewport_rect)?;
++    let unscrolled_old = if unscrolled_old.is_empty() {
++        unscrolled_old
++    } else {
++        intersect_like_gfx_int_rect(
++            enclosing_int_rect(unscrolled_old.to_float().translated(scroll.x, scroll.y)),
++            viewport_rect,
++        )
++    };
++    Some(ViewportScrollDamage {
++        viewport_scroll_node,
++        scroll,
++        content,
++        unscrolled_new,
++        unscrolled_old,
++    })
++}
++
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -2194,6 +2474,81 @@ mod tests {
+         );
+     }
+ 
++    fn viewport_scroll_damage(
++        old_bytes: &TestDisplayList,
++        new_bytes: &TestDisplayList,
++        tree: &VisualContextTree,
++        old_scroll_offsets: &[FloatPoint],
++        new_scroll_offsets: &[FloatPoint],
++    ) -> Option<ViewportScrollDamage> {
++        compute_viewport_scroll_damage(
++            DisplayListFrame {
++                command_bytes: old_bytes,
++                command_runs: &old_bytes.runs,
++                summary: &summarize(old_bytes, &old_bytes.runs),
++                visual_context_tree: tree,
++                scroll_offsets: old_scroll_offsets,
++            },
++            DisplayListFrame {
++                command_bytes: new_bytes,
++                command_runs: &new_bytes.runs,
++                summary: &summarize(new_bytes, &new_bytes.runs),
++                visual_context_tree: tree,
++                scroll_offsets: new_scroll_offsets,
++            },
++            IntRect::new(0, 0, 100, 100),
++            LiveContentChanges::default(),
++        )
++    }
++
++    #[test]
++    fn viewport_scroll_damage_is_fixed_content_and_what_changed() {
++        let mut tree = identity_tree();
++        let viewport_scroll = tree.append_spatial(
++            SpatialData::Scroll(ScrollData {
++                state_slot: NO_SCROLL_STATE_SLOT,
++                owner_paintable: NodeSlotId::INVALID,
++                registry_parent_node: VISUAL_VIEWPORT_NODE_INDEX,
++            }),
++            VISUAL_VIEWPORT_NODE_INDEX,
++        );
++        let scrolled = context_in(viewport_scroll, ContextRef::default());
++        let fill = |rect: IntRect, color: Color, context: ContextRef| {
++            command_bytes(
++                &FillRect {
++                    rect,
++                    color,
++                    compositing_and_blending_operator: CompositingAndBlendingOperator::Normal,
++                    background_color_animation_effect: EffectNodeIndex::NONE,
++                },
++                Some(rect),
++                context,
++            )
++        };
++        let list = |changed_color: Color| {
++            let mut list = fill(IntRect::new(0, 0, 100, 300), RED, scrolled);
++            list.extend_from_slice(&fill(IntRect::new(0, 60, 100, 10), changed_color, scrolled));
++            list.extend_from_slice(&fill(IntRect::new(0, 50, 100, 10), BLUE, ContextRef::default()));
++            list
++        };
++        let old_offsets = [FloatPoint::default(), FloatPoint::default()];
++        // The page scrolled down by 40 device pixels.
++        let new_offsets = [FloatPoint::default(), FloatPoint { x: 0.0, y: -40.0 }];
++
++        let damage = viewport_scroll_damage(&list(GREEN), &list(GREEN), &tree, &old_offsets, &new_offsets).unwrap();
++        assert_eq!(damage.scroll, FloatPoint { x: 0.0, y: -40.0 });
++        assert!(damage.content.is_empty());
++        assert_eq!(damage.unscrolled_new, IntRect::new(0, 49, 100, 12));
++        assert_eq!(damage.unscrolled_old, IntRect::new(0, 9, 100, 12));
++
++        let damage = viewport_scroll_damage(&list(GREEN), &list(YELLOW), &tree, &old_offsets, &new_offsets).unwrap();
++        assert_eq!(damage.content, IntRect::new(0, 19, 100, 12));
++
++        let damage = viewport_scroll_damage(&list(GREEN), &list(YELLOW), &tree, &old_offsets, &old_offsets).unwrap();
++        assert_eq!(damage.scroll, FloatPoint::default());
++        assert_eq!(damage.content, IntRect::new(0, 59, 100, 12));
++    }
++
+     #[test]
+     fn a_child_stored_below_its_parent_damages_like_the_in_order_tree() {
+         let mut in_order = identity_tree();
+diff --git a/Libraries/LibCompositing/Rust/src/ffi.rs b/Libraries/LibCompositing/Rust/src/ffi.rs
+index bb9e1b6680..8e760f6560 100644
+--- a/Libraries/LibCompositing/Rust/src/ffi.rs
++++ b/Libraries/LibCompositing/Rust/src/ffi.rs
+@@ -109,6 +109,90 @@ pub unsafe extern "C" fn display_list_compute_damage(
+     }
+ }
+ 
++/// What a scroll of the layout viewport changed between two lists, for a rasterizer that moves the last frame's
++/// pixels by the scroll and repaints the rest. Returns false when the change cannot be told that way and the whole
++/// viewport must repaint.
++#[repr(C)]
++pub struct FfiViewportScrollDamage {
++    pub scroll: libgfx_rust::FloatPoint,
++    pub content: libgfx_rust::IntRect,
++    pub unscrolled_new: libgfx_rust::IntRect,
++    pub unscrolled_old: libgfx_rust::IntRect,
++}
++
++/// # Safety
++///
++/// As for `display_list_compute_damage`, with `out_damage` writable.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn display_list_compute_viewport_scroll_damage(
++    old_storage: *const c_void,
++    old_tree: *const c_void,
++    old_scroll_offsets: *const libgfx_rust::FloatPoint,
++    old_scroll_offsets_len: usize,
++    new_storage: *const c_void,
++    new_tree: *const c_void,
++    new_scroll_offsets: *const libgfx_rust::FloatPoint,
++    new_scroll_offsets_len: usize,
++    viewport_rect: libgfx_rust::IntRect,
++    canvases_with_new_content: *const crate::display_list::commands::CanvasId,
++    canvases_with_new_content_len: usize,
++    video_sinks_with_new_frames: *const crate::display_list::commands::VideoSinkResourceId,
++    video_sinks_with_new_frames_len: usize,
++    out_damage: *mut FfiViewportScrollDamage,
++) -> bool {
++    // SAFETY: The caller guarantees live handles and valid slices for the duration of the call.
++    let (old_storage, old_tree, old_scroll_offsets, new_storage, new_tree, new_scroll_offsets) = unsafe {
++        (
++            storage_from_handle(old_storage),
++            tree_from_handle(old_tree),
++            ak::slice_from_raw_parts(old_scroll_offsets, old_scroll_offsets_len),
++            storage_from_handle(new_storage),
++            tree_from_handle(new_tree),
++            ak::slice_from_raw_parts(new_scroll_offsets, new_scroll_offsets_len),
++        )
++    };
++    // SAFETY: As above.
++    let live_content_changes = unsafe {
++        crate::display_list::damage::LiveContentChanges {
++            canvases: ak::slice_from_raw_parts(canvases_with_new_content, canvases_with_new_content_len),
++            video_sinks: ak::slice_from_raw_parts(video_sinks_with_new_frames, video_sinks_with_new_frames_len),
++        }
++    };
++    let damage = crate::display_list::damage::compute_viewport_scroll_damage(
++        crate::display_list::damage::DisplayListFrame {
++            command_bytes: old_storage.bytes(),
++            command_runs: old_storage.command_runs(),
++            summary: old_storage.summary(),
++            visual_context_tree: old_tree,
++            scroll_offsets: old_scroll_offsets,
++        },
++        crate::display_list::damage::DisplayListFrame {
++            command_bytes: new_storage.bytes(),
++            command_runs: new_storage.command_runs(),
++            summary: new_storage.summary(),
++            visual_context_tree: new_tree,
++            scroll_offsets: new_scroll_offsets,
++        },
++        viewport_rect,
++        live_content_changes,
++    );
++    match damage {
++        Some(damage) => {
++            // SAFETY: The caller guarantees `out_damage` is writable.
++            unsafe {
++                *out_damage = FfiViewportScrollDamage {
++                    scroll: damage.scroll,
++                    content: damage.content,
++                    unscrolled_new: damage.unscrolled_new,
++                    unscrolled_old: damage.unscrolled_old,
++                }
++            };
++            true
++        }
++        None => false,
++    }
++}
++
+ /// # Safety
+ ///
+ /// The storage and the tree must be live handles and `scroll_offsets` must address

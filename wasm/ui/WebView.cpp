@@ -14,6 +14,9 @@
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
+#include <AK/StringBuilder.h>
+#include <AK/Time.h>
+#include <AK/AnyOf.h>
 #include <AK/LexicalPath.h>
 #include <AK/Random.h>
 #include <AK/Utf16String.h>
@@ -22,6 +25,7 @@
 #include <Compositor/DisplayListRasterCache.h>
 #include <Compositor/PaintingSurface.h>
 #include <Compositor/SkiaBackendContext.h>
+#include <LibCompositing/DisplayList/DisplayListDamage.h>
 #include <LibCompositing/DisplayList/DisplayListResourceStorage.h>
 #include <LibCore/ConfigFile.h>
 #include <LibCore/EventLoop.h>
@@ -81,6 +85,9 @@
 #include <string.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <core/SkCanvas.h>
+#include <core/SkRegion.h>
+#include <math.h>
 
 namespace WebbyUI {
 
@@ -416,6 +423,15 @@ struct WebView::Impl {
         bool already_registered { false };
     };
     Optional<PendingWebAuthn> webauthn;
+    // What `bitmap` shows, so that the next frame repaints only what changed (and moves the pixels of a scroll).
+    struct RasterizedFrame {
+        NonnullRefPtr<Compositing::DisplayList> display_list;
+        Compositing::AccumulatedVisualContextTree visual_context_tree;
+        Compositing::ScrollStateSnapshot scroll_state;
+        Web::DOM::Document const* document;
+    };
+    Optional<RasterizedFrame> last_frame;
+    Compositor::DisplayListRasterCache raster_cache;
 };
 
 namespace {
@@ -1009,21 +1025,50 @@ static void fill_white(Gfx::Bitmap& bitmap)
 }
 
 // Compositor::rasterize_display_list with the page's scroll offsets: in Ladybird the Compositor process owns them (it
-// scrolls by wheel events itself); here the document's own snapshot is the truth.
+// scrolls by wheel events itself); here the document's own snapshot is the truth. `damage`: repaint only that (the
+// rest of `target` already shows the list), else everything.
 static ErrorOr<void> rasterize(Compositing::DisplayList const& display_list, Compositing::AccumulatedVisualContextTree const& visual_context_tree,
-    Compositing::ScrollStateSnapshot const& scroll_state, Compositing::DisplayListResourceTransaction&& resources, Gfx::Bitmap& target)
+    Compositing::ScrollStateSnapshot const& scroll_state, Compositing::DisplayListResourceStorage const& resource_storage,
+    Compositor::DisplayListRasterCache& raster_cache, Gfx::Bitmap& target, Vector<Gfx::IntRect> const* damage = nullptr)
 {
-    Compositing::DisplayListResourceStorage resource_storage;
-    resource_storage.apply_transaction(move(resources));
-    TRY(resource_storage.validate_for_replay(display_list, visual_context_tree));
-    // White below the page, as a browser's canvas is: a page with no background of its own is not see-through.
-    __builtin_memset(target.scanline_u8(0), 0xff, target.size_in_bytes());
     auto surface = Gfx::PaintingSurface::wrap_bitmap(target);
+    auto& canvas = surface->canvas();
+    canvas.save();
+    if (damage) {
+        SkRegion region;
+        for (auto const& rect : *damage)
+            region.op(SkIRect::MakeXYWH(rect.x(), rect.y(), rect.width(), rect.height()), SkRegion::kUnion_Op);
+        canvas.clipRegion(region);
+        // White below the page, as a browser's canvas is: a page with no background of its own is not see-through.
+        canvas.clear(SK_ColorWHITE);
+    } else {
+        __builtin_memset(target.scanline_u8(0), 0xff, target.size_in_bytes());
+    }
     Compositor::DisplayListPlayerSkia player { RefPtr<Gfx::SkiaBackendContext> {} };
-    Compositor::DisplayListRasterCache raster_cache;
     player.execute(display_list, visual_context_tree, resource_storage, raster_cache, scroll_state, surface, WebbyUI::local_canvas_surfaces(), nullptr);
     player.flush(*surface);
+    canvas.restore();
     return {};
+}
+
+// Moves the bitmap's rows by `dy` (down when positive); the rows it uncovers keep what they had.
+static void move_rows(Gfx::Bitmap& bitmap, int dy)
+{
+    auto const pitch = bitmap.pitch();
+    auto const rows = bitmap.height() - abs(dy);
+    if (rows <= 0 || dy == 0)
+        return;
+    auto* base = bitmap.scanline_u8(0);
+    if (dy < 0)
+        memmove(base, base + size_t(-dy) * pitch, size_t(rows) * pitch);
+    else
+        memmove(base + size_t(dy) * pitch, base, size_t(rows) * pitch);
+}
+
+static bool env_flag(char const* name)
+{
+    auto const* value = getenv(name);
+    return value && *value && strcmp(value, "0") != 0;
 }
 
 uint8_t const* WebView::paint()
@@ -1041,6 +1086,7 @@ uint8_t const* WebView::paint()
             return nullptr;
         m_impl->bitmap = bitmap.release_value();
         fill_white(*m_impl->bitmap);
+        m_impl->last_frame.clear();
     }
 
     auto& document = *m_impl->document;
@@ -1071,15 +1117,131 @@ uint8_t const* WebView::paint()
     auto display_list = document.record_display_list(read, {}, resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite);
     if (!display_list) {
         fill_white(*m_impl->bitmap);
+        m_impl->last_frame.clear();
         return m_impl->bitmap->scanline_u8(0);
     }
     document.update_paint_and_hit_testing_properties_if_needed();
     auto& paint_state = document.paint_state();
     auto visual_context_tree = paint_state.visual_context_tree(document);
+    auto const& scroll_state = paint_state.scroll_state_snapshot();
     auto transaction = resource_storage.create_self_contained_transaction(*display_list, visual_context_tree);
-    if (transaction.is_error()
-        || rasterize(*display_list, visual_context_tree, paint_state.scroll_state_snapshot(), transaction.release_value(), *m_impl->bitmap).is_error())
+    Compositing::DisplayListResourceStorage frame_resources;
+    if (transaction.is_error()) {
         fill_white(*m_impl->bitmap);
+        m_impl->last_frame.clear();
+        return m_impl->bitmap->scanline_u8(0);
+    }
+    frame_resources.apply_transaction(transaction.release_value());
+    if (frame_resources.validate_for_replay(*display_list, visual_context_tree).is_error()) {
+        fill_white(*m_impl->bitmap);
+        m_impl->last_frame.clear();
+        return m_impl->bitmap->scanline_u8(0);
+    }
+
+    // Repaint only what changed since the frame the bitmap shows, moving its pixels when the viewport scrolled, as
+    // the Compositor process repaints only its damage (it repaints all of a scroll, which here is most of the time).
+    static bool const debug = env_flag("WEBBY_RASTER_DEBUG");
+    static bool const verify = env_flag("WEBBY_RASTER_VERIFY");
+    static bool const always_full = env_flag("WEBBY_RASTER_FULL");
+    Gfx::IntRect const viewport { 0, 0, size.width(), size.height() };
+    Optional<Vector<Gfx::IntRect>> damage;
+    int moved = 0;
+    auto& last = m_impl->last_frame;
+    if (!always_full && last.has_value() && last->document == &document && !visual_context_tree.has_visual_animations()
+        && last->display_list->surface_clear_color() == display_list->surface_clear_color()) {
+        // Canvases and videos change without their commands changing: repaint wherever they are drawn.
+        Vector<Compositing::CanvasId> canvases;
+        for (auto id : display_list->referenced_resource_ids().canvases)
+            canvases.append(Compositing::CanvasId { id });
+        Vector<Compositing::VideoSinkResourceId> video_sinks;
+        for (auto id : display_list->referenced_resource_ids().video_sinks)
+            video_sinks.append(Compositing::VideoSinkResourceId { id });
+        auto change = Compositing::compute_viewport_scroll_damage(*last->display_list, last->visual_context_tree, last->scroll_state,
+            *display_list, visual_context_tree, scroll_state, viewport, { .canvases = canvases, .video_sinks = video_sinks });
+        auto const dy = change.has_value() ? change->scroll.y() : 0.f;
+        if (change.has_value() && change->scroll.x() == 0 && dy == truncf(dy) && fabsf(dy) < size.height()) {
+            moved = static_cast<int>(dy);
+            Vector<Gfx::IntRect> rects;
+            auto add = [&](Gfx::IntRect rect) {
+                rect.intersect(viewport);
+                if (!rect.is_empty())
+                    rects.append(rect);
+            };
+            if (moved < 0)
+                add({ 0, size.height() + moved, size.width(), -moved });
+            else if (moved > 0)
+                add({ 0, 0, size.width(), moved });
+            // With a margin: the damage of some changes comes out a few pixels short of what they draw (Wikipedia's
+            // pulsing "watch" dot, a ring around a dot, left its old ring a few rows above the damage).
+            add(change->content.is_empty() ? change->content : change->content.inflated(32, 32));
+            add(change->unscrolled_new);
+            add(change->unscrolled_old);
+            // Everything to repaint anyway (a page under a fixed full-window layer): no move, no clip.
+            if (!any_of(rects, [&](auto const& rect) { return rect == viewport; }))
+                damage = move(rects);
+        }
+    }
+
+    auto const start = debug ? AK::MonotonicTime::now() : AK::MonotonicTime {};
+    if (damage.has_value()) {
+        move_rows(*m_impl->bitmap, moved);
+        if (!damage->is_empty() && rasterize(*display_list, visual_context_tree, scroll_state, frame_resources, m_impl->raster_cache, *m_impl->bitmap, &*damage).is_error())
+            damage.clear();
+    }
+    if (!damage.has_value() && rasterize(*display_list, visual_context_tree, scroll_state, frame_resources, m_impl->raster_cache, *m_impl->bitmap).is_error()) {
+        fill_white(*m_impl->bitmap);
+        last.clear();
+        return m_impl->bitmap->scanline_u8(0);
+    }
+    if (debug) {
+        auto ms = (AK::MonotonicTime::now() - start).to_microseconds() / 1000.0;
+        if (!damage.has_value()) {
+            warnln("webby raster: full {:.1} ms", ms);
+        } else {
+            StringBuilder rects;
+            for (auto const& rect : *damage)
+                rects.appendff(" {}", rect);
+            warnln("webby raster: move {} damage{} {:.1} ms", moved, rects.string_view(), ms);
+        }
+    }
+    // Check the partial raster against a whole one, and show the whole one.
+    if (verify && damage.has_value()) {
+        auto full = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, size);
+        if (!full.is_error() && !rasterize(*display_list, visual_context_tree, scroll_state, frame_resources, m_impl->raster_cache, *full.value()).is_error()) {
+            Gfx::IntRect wrong;
+            size_t wrong_pixels = 0;
+            for (int y = 0; y < size.height(); ++y) {
+                auto const* a = m_impl->bitmap->scanline(y);
+                auto const* b = full.value()->scanline(y);
+                for (int x = 0; x < size.width(); ++x) {
+                    // Skia's clipped and whole rasters round some blends differently, by a level or two.
+                    auto const near = [](u32 p, u32 q) {
+                        for (int shift = 0; shift < 32; shift += 8) {
+                            if (abs(int((p >> shift) & 0xff) - int((q >> shift) & 0xff)) > 4)
+                                return false;
+                        }
+                        return true;
+                    };
+                    if (near(a[x], b[x]))
+                        continue;
+                    if (wrong_pixels < 4)
+                        warnln("webby raster verify: ({},{}) partial {:08x} whole {:08x}", x, y, a[x], b[x]);
+                    ++wrong_pixels;
+                    wrong = wrong.united({ x, y, 1, 1 });
+                }
+            }
+            if (wrong_pixels) {
+                // Whether a second whole raster agrees with the first (content sampled at raster time).
+                auto again = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, size);
+                size_t unstable = 0;
+                if (!again.is_error() && !rasterize(*display_list, visual_context_tree, scroll_state, frame_resources, m_impl->raster_cache, *again.value()).is_error())
+                    unstable = memcmp(again.value()->scanline_u8(0), full.value()->scanline_u8(0), m_impl->bitmap->size_in_bytes()) != 0;
+                warnln("webby raster verify: {} pixels differ in {} (move {}{})", wrong_pixels, wrong, moved, unstable ? ", whole rasters differ too" : "");
+            }
+            memcpy(m_impl->bitmap->scanline_u8(0), full.value()->scanline_u8(0), m_impl->bitmap->size_in_bytes());
+        }
+    }
+    last = Impl::RasterizedFrame { display_list.release_nonnull(), move(visual_context_tree), scroll_state, &document };
     return m_impl->bitmap->scanline_u8(0);
 }
 

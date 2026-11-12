@@ -1,0 +1,27 @@
+--- a/Libraries/LibWeb/Rust/src/painting/record/publish.rs
++++ b/Libraries/LibWeb/Rust/src/painting/record/publish.rs
+@@ -221,7 +221,7 @@
+     if carried.is_empty() {
+         return drawn;
+     }
+-    let mut nested_ids = std::collections::HashSet::new();
++    let mut nested_ids = crate::css::style::fast_hash::FastSet::default();
+     crate::painting::display_list::nested_records::for_each_command_including_nested(
+         &output.display_list.bytes,
+         &mut |command_type, _, payload| {
+@@ -233,10 +233,12 @@
+             }
+         },
+     );
++    // A page with many SVG icons carries hundreds of them: look the drawn ones up by hash, not by a walk of the list
++    // for each (that walk was a fifth of a scroll frame on Wikipedia in webby's wasm build).
++    let mut drawn_requests: crate::css::style::fast_hash::FastSet<VectorImageRenderRequest> =
++        drawn.iter().map(|(request, _)| *request).collect();
+     for &(request, id) in carried {
+-        if nested_ids.contains(&DisplayListResourceId(id))
+-            && !drawn.iter().any(|(drawn_request, _)| *drawn_request == request)
+-        {
++        if nested_ids.contains(&DisplayListResourceId(id)) && drawn_requests.insert(request) {
+             drawn.push((request, id));
+         }
+     }
