@@ -48,6 +48,9 @@ add_executable(webby-ui-shell
     ${ui}/PageMenu.cpp
     ${ui}/PopupMenu.cpp
     ${ui}/KeyMap.cpp
+    ${ui}/Omnibox.cpp
+    ${ui}/Pages.cpp
+    ${ui}/Profile.cpp
     ${ui}/Resources.c
     ${ui}/main.cpp
     WebViewRemote.cpp

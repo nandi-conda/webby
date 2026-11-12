@@ -6,6 +6,7 @@
 
 #include "BrowserWindow.h"
 #include "KeyMap.h"
+#include "Pages.h"
 
 #include <QFontMetricsF>
 #include <QGuiApplication>
@@ -13,8 +14,12 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPolygonF>
 #include <QWheelEvent>
+#include <cmath>
 #include <qt2wasm/gui.h>
+
+using namespace WebbyUI;
 
 namespace {
 
@@ -28,6 +33,11 @@ QColor const field_color { 0xf1, 0xf3, 0xf4 };
 QColor const focus_color { 0x1a, 0x73, 0xe8 };
 QColor const button_hover_color { 0xe8, 0xea, 0xed };
 QColor const disabled_color { 0xbd, 0xc1, 0xc6 };
+QColor const star_color { 0x1a, 0x73, 0xe8 };
+QColor const age_color { 0xf2, 0x8b, 0x1e };
+
+// The age dot's steps (seconds), as the Nim strip's ageSteps: strongest when just opened, gone after 12 hours.
+constexpr qint64 age_steps[] = { 5 * 60, 20 * 60, 3600, 3 * 3600, 12 * 3600 };
 
 constexpr int max_tab_width = 220;
 constexpr int min_tab_width = 72;
@@ -74,13 +84,37 @@ BrowserWindow::BrowserWindow(QStringList const& urls)
     m_pump_timer.setInterval(8);
     QObject::connect(&m_pump_timer, &QTimer::timeout, this, [this] { pump(); });
     m_pump_timer.start();
-    if (urls.isEmpty())
+    // The open tabs are saved a moment after they change, for the next start.
+    m_save_timer.setSingleShot(true);
+    m_save_timer.setInterval(500);
+    QObject::connect(&m_save_timer, &QTimer::timeout, this, [this] { save_tabs(); });
+
+    // With no URLs given, last time's tabs come back, asleep until they come to the front (as in the Nim front end).
+    int active = 0;
+    if (urls.isEmpty() && qEnvironmentVariable("WEBBY_RESTORE_TABS") != u"0") {
+        auto saved = Profile::read_open_tabs(active);
+        for (auto const& tab : saved)
+            new_tab(tab.url, -1, true, tab.title, tab.created);
+    }
+    bool blank = urls.isEmpty() && m_tabs.empty();
+    if (blank)
         new_tab({});
     for (auto const& url : urls)
         new_tab(url);
-    activate_tab(0);
-    if (urls.isEmpty())
+    activate_tab(active);
+    if (blank)
         focus_address(true);
+}
+
+int BrowserWindow::chrome_height() const
+{
+    return tab_strip_height + toolbar_height + (show_bookmarks_bar() ? bookmarks_bar_height : 0);
+}
+
+bool BrowserWindow::show_bookmarks_bar() const
+{
+    auto const& b = Profile::Bookmarks::the();
+    return b.show_bar() && !b.bar().children.isEmpty();
 }
 
 BrowserWindow::Tab* BrowserWindow::current()
@@ -90,23 +124,44 @@ BrowserWindow::Tab* BrowserWindow::current()
     return &m_tabs[m_current];
 }
 
-void BrowserWindow::new_tab(QString const& url)
+void BrowserWindow::new_tab(QString const& url, int at, bool sleeping, QString const& title, qint64 created)
 {
+    if (at < 0 || at > int(m_tabs.size()))
+        at = int(m_tabs.size());
+    if (at <= m_current)
+        ++m_current;
+    m_tabs.insert(m_tabs.begin() + at, Tab { nullptr, title.isEmpty() ? (url.isEmpty() ? QStringLiteral("New Tab") : url) : title, url, false, created > 0 ? created : Profile::now_seconds() });
+    if (!sleeping)
+        wake(m_tabs[at]);
+    m_save_timer.start();
+    update();
+}
+
+void BrowserWindow::wake(Tab& tab)
+{
+    if (tab.view)
+        return;
     auto page = page_rect();
     auto view = WebbyUI::WebView::create(page.width(), page.height());
     if (!view)
         return;
     auto* raw = view.get();
-    m_tabs.push_back({ std::move(view), QStringLiteral("New Tab"), url, false });
+    auto url = tab.url;
+    tab.view = std::move(view);
     raw->on_needs_paint = [this, raw] {
         if (current() && current()->view.get() == raw)
             update();
     };
-    raw->on_title_change = [this, raw](std::string const&) { sync_from_view(); (void)raw; };
+    raw->on_title_change = [this, raw](std::string const& title) {
+        Profile::History::the().set_title(from_std(raw->url()), from_std(title).simplified());
+        sync_from_view();
+    };
     raw->on_url_change = [this, raw](std::string const& u) {
         if (current() && current()->view.get() == raw && !m_address_focused)
             m_address_text = from_std(u);
+        Profile::History::the().add(from_std(u), from_std(raw->title()).simplified());
         sync_from_view();
+        m_save_timer.start();
     };
     raw->on_loading_change = [this](bool) { sync_from_view(); };
     raw->on_link_hover = [this, raw](std::string const& link) {
@@ -124,7 +179,33 @@ void BrowserWindow::new_tab(QString const& url)
         raw->answer_clipboard(request, to_std(selection ? qt2wasm::gui::primaryText() : qt2wasm::gui::clipboardText()));
     };
     raw->on_context_menu = [this, raw](WebbyUI::ContextMenu const& menu) { show_page_menu(raw, menu); };
-    raw->load(to_std(url));
+    raw->load(to_std(Pages::is_own_page(url) ? Pages::refresh(url) : url));
+}
+
+void BrowserWindow::open_in_new_tab(QString const& url, bool activate)
+{
+    int at = m_current + 1;
+    new_tab(url, at);
+    if (activate)
+        activate_tab(at);
+}
+
+void BrowserWindow::reopen_closed_tab()
+{
+    if (m_closed.isEmpty())
+        return;
+    auto tab = m_closed.takeLast();
+    int at = int(m_tabs.size());
+    new_tab(tab.url, at, false, tab.title, tab.created);
+    activate_tab(at);
+}
+
+void BrowserWindow::save_tabs()
+{
+    QList<Profile::SavedTab> tabs;
+    for (auto const& tab : m_tabs)
+        tabs.append({ tab.title, tab.url, tab.created });
+    Profile::write_open_tabs(tabs, m_current);
 }
 
 void BrowserWindow::close_tab(int index)
@@ -132,8 +213,15 @@ void BrowserWindow::close_tab(int index)
     if (index < 0 || index >= int(m_tabs.size()))
         return;
     m_menu.close();
+    if (Profile::is_session_url(m_tabs[index].url))
+        m_closed.append({ m_tabs[index].title, m_tabs[index].url, m_tabs[index].created });
+    if (m_closed.size() > 25)
+        m_closed.removeFirst();
     m_tabs.erase(m_tabs.begin() + index);
+    m_save_timer.start();
     if (m_tabs.empty()) {
+        // Closing the last tab quits; the next start opens a blank tab, not the one just closed.
+        save_tabs();
         QGuiApplication::quit();
         return;
     }
@@ -150,15 +238,25 @@ void BrowserWindow::activate_tab(int index)
         m_menu.close();
     m_current = index;
     auto page = page_rect();
+    if (!m_tabs[index].view)
+        wake(m_tabs[index]);
+    if (!m_tabs[index].view)
+        return;
     m_tabs[index].view->resize(page.width(), page.height());
     m_address_text = from_std(m_tabs[index].view->url());
+    if (m_address_text.isEmpty() && !m_tabs[index].url.isEmpty())
+        m_address_text = m_tabs[index].url;
     m_hovered_link.clear();
+    hide_suggestions();
+    m_save_timer.start();
     sync_from_view();
 }
 
 void BrowserWindow::sync_from_view()
 {
     for (auto& tab : m_tabs) {
+        if (!tab.view)
+            continue;
         auto title = from_std(tab.view->title()).simplified();
         tab.url = from_std(tab.view->url());
         tab.title = !title.isEmpty() ? title : !tab.url.isEmpty() ? tab.url : QStringLiteral("New Tab");
@@ -172,18 +270,81 @@ void BrowserWindow::sync_from_view()
 void BrowserWindow::pump()
 {
     WebbyUI::WebView::pump();
-    if (auto* tab = current(); tab && tab->view->needs_paint())
+    if (auto* tab = current(); tab && tab->view && tab->view->needs_paint())
         update();
 }
 
 void BrowserWindow::navigate_from_address()
 {
-    auto* tab = current();
-    if (!tab)
-        return;
-    auto text = m_address_text.trimmed();
+    auto url = m_suggestion >= 0 && m_suggestion < m_suggestions.size() ? m_suggestions[m_suggestion].url
+                                                                           : Omnibox::address_to_url(m_address_text);
     focus_address(false);
-    tab->view->load(to_std(text));
+    load_in_current(url);
+}
+
+void BrowserWindow::load_in_current(QString const& url)
+{
+    auto* tab = current();
+    if (!tab || !tab->view)
+        return;
+    m_address_focused = false;
+    hide_suggestions();
+    tab->view->load(to_std(Pages::is_own_page(url) ? Pages::refresh(url) : url));
+    m_address_text = from_std(tab->view->url());
+    update();
+}
+
+void BrowserWindow::open_own_page(QString const& url)
+{
+    if (url.isEmpty())
+        return;
+    // Like the Nim front end: in this tab when it is blank, else in a new one.
+    auto* tab = current();
+    if (tab && tab->view && !Profile::is_session_url(from_std(tab->view->url())) && !Pages::is_own_page(from_std(tab->view->url())))
+        load_in_current(url);
+    else
+        open_in_new_tab(url, true);
+}
+
+void BrowserWindow::toggle_bookmark()
+{
+    auto* tab = current();
+    if (!tab || !tab->view)
+        return;
+    auto url = from_std(tab->view->url());
+    if (!Profile::is_session_url(url))
+        return;
+    auto& bookmarks = Profile::Bookmarks::the();
+    bool bar_was_shown = show_bookmarks_bar();
+    if (bookmarks.contains(url))
+        bookmarks.remove_url(url);
+    else
+        bookmarks.add(url, tab->title);
+    // The bar showing or hiding changes the page's height.
+    if (bar_was_shown != show_bookmarks_bar())
+        resizeEvent(nullptr);
+    update();
+}
+
+void BrowserWindow::update_suggestions()
+{
+    m_suggestions = m_address_focused ? Omnibox::suggestions(m_address_text) : QList<Omnibox::Suggestion> {};
+    // Only a search for the very text typed is not worth a list.
+    if (m_suggestions.size() == 1 && m_suggestions.first().kind != Omnibox::Suggestion::Kind::Bookmark
+        && m_suggestions.first().kind != Omnibox::Suggestion::Kind::History)
+        m_suggestions.clear();
+    m_suggestion = -1;
+    m_typed_text = m_address_text;
+    update();
+}
+
+void BrowserWindow::hide_suggestions()
+{
+    if (m_suggestions.isEmpty() && m_suggestion < 0)
+        return;
+    m_suggestions.clear();
+    m_suggestion = -1;
+    update();
 }
 
 void BrowserWindow::focus_address(bool focus)
@@ -192,8 +353,10 @@ void BrowserWindow::focus_address(bool focus)
     if (focus) {
         m_address_anchor = 0;
         m_address_cursor = m_address_text.size();
-    } else if (auto* tab = current()) {
-        m_address_text = from_std(tab->view->url());
+    } else {
+        hide_suggestions();
+        if (auto* tab = current(); tab && tab->view)
+            m_address_text = from_std(tab->view->url());
     }
     update();
 }
@@ -230,13 +393,46 @@ QRectF BrowserWindow::address_rect() const
     return { left, tab_strip_height + 6.0, qMax<qreal>(80, width() - left - 12), toolbar_height - 12.0 };
 }
 
+QRectF BrowserWindow::star_rect() const
+{
+    auto field = address_rect();
+    return { field.right() - field.height() - 2, field.top(), field.height(), field.height() };
+}
+
+QRectF BrowserWindow::bookmark_rect(int index) const
+{
+    // Laid out left to right at the width of each label; past the window's edge, none.
+    QFont font;
+    font.setPixelSize(12);
+    QFontMetricsF metrics(font);
+    qreal x = 8;
+    auto const& items = Profile::Bookmarks::the().bar().children;
+    for (int i = 0; i < int(items.size()); ++i) {
+        qreal w = qMin<qreal>(180, metrics.horizontalAdvance(items[i].label()) + 20 + (items[i].folder ? 14 : 0));
+        if (i == index)
+            return { x, qreal(tab_strip_height + toolbar_height + 3), w, bookmarks_bar_height - 6.0 };
+        x += w + 4;
+    }
+    return {};
+}
+
+QRectF BrowserWindow::suggestion_rect(int index) const
+{
+    auto field = address_rect();
+    return { field.left(), field.bottom() + 6 + index * 34.0, field.width(), 34 };
+}
+
 QRect BrowserWindow::page_rect() const
 {
-    return { 0, chrome_height, qMax(1, width()), qMax(1, height() - chrome_height) };
+    return { 0, chrome_height(), qMax(1, width()), qMax(1, height() - chrome_height()) };
 }
 
 BrowserWindow::HitResult BrowserWindow::hit_test(QPointF p) const
 {
+    for (int i = 0; i < int(m_suggestions.size()); ++i) {
+        if (suggestion_rect(i).contains(p))
+            return { Hit::Suggestion, i };
+    }
     for (int i = 0; i < int(m_tabs.size()); ++i) {
         if (tab_close_rect(i).contains(p))
             return { Hit::TabClose, i };
@@ -251,8 +447,16 @@ BrowserWindow::HitResult BrowserWindow::hit_test(QPointF p) const
         return { Hit::Forward };
     if (button_rect(2).contains(p))
         return { Hit::Reload };
+    if (star_rect().contains(p))
+        return { Hit::Star };
     if (address_rect().contains(p))
         return { Hit::Address };
+    if (show_bookmarks_bar()) {
+        for (int i = 0; i < int(Profile::Bookmarks::the().bar().children.size()); ++i) {
+            if (bookmark_rect(i).contains(p))
+                return { Hit::Bookmark, i };
+        }
+    }
     if (page_rect().contains(p.toPoint()))
         return { Hit::Page };
     return {};
@@ -267,7 +471,9 @@ void BrowserWindow::paintEvent(QPaintEvent*)
     paint_page(painter);
     paint_tabs(painter);
     paint_toolbar(painter);
+    paint_bookmarks_bar(painter);
     paint_status(painter);
+    paint_suggestions(painter);
     m_menu.paint(painter);
 }
 
@@ -278,8 +484,11 @@ void BrowserWindow::paint_tabs(QPainter& p)
     font.setPixelSize(13);
     p.setFont(font);
     QFontMetricsF metrics(font);
+    auto now = Profile::now_seconds();
     for (int i = 0; i < int(m_tabs.size()); ++i) {
         auto r = tab_rect(i);
+        if (m_dragging_tab && i == m_current)
+            r.translate(m_drag_offset, 0);
         bool active = i == m_current;
         bool hovered = m_hover.tab == i && (m_hover.hit == Hit::Tab || m_hover.hit == Hit::TabClose);
         if (active || hovered) {
@@ -292,9 +501,25 @@ void BrowserWindow::paint_tabs(QPainter& p)
         }
         auto text_rect = r.adjusted(12, 0, -30, 0);
         auto title = m_tabs[i].loading ? QStringLiteral("Loading…") : m_tabs[i].title;
+        // A young tab gets a small orange dot before its close button, fainter at each step (the Nim strip's).
+        int step = -1;
+        for (int k = 0; k < int(std::size(age_steps)); ++k) {
+            if (m_tabs[i].created > 0 && now - m_tabs[i].created < age_steps[k]) {
+                step = k;
+                break;
+            }
+        }
+        if (step >= 0) {
+            text_rect.adjust(0, 0, -10, 0);
+            QColor dot = age_color;
+            dot.setAlphaF(1.0 - step * 0.18);
+            p.setPen(Qt::NoPen);
+            p.setBrush(dot);
+            p.drawEllipse(QPointF(r.right() - 34, r.center().y()), 3, 3);
+        }
         p.setPen(active ? text_color : dim_text_color);
         p.drawText(text_rect, Qt::AlignVCenter | Qt::AlignLeft, metrics.elidedText(title, Qt::ElideRight, text_rect.width()));
-        auto c = tab_close_rect(i);
+        auto c = tab_close_rect(i).translated(r.left() - tab_rect(i).left(), 0);
         if (m_hover.hit == Hit::TabClose && m_hover.tab == i) {
             p.setPen(Qt::NoPen);
             p.setBrush(button_hover_color.darker(105));
@@ -322,11 +547,11 @@ void BrowserWindow::paint_toolbar(QPainter& p)
     QRectF bar(0, tab_strip_height, width(), toolbar_height);
     p.fillRect(bar, tab_color);
     p.setPen(QPen(QColor(0xda, 0xdc, 0xe0), 1));
-    p.drawLine(QPointF(0, chrome_height - 0.5), QPointF(width(), chrome_height - 0.5));
+    p.drawLine(QPointF(0, chrome_height() - 0.5), QPointF(width(), chrome_height() - 0.5));
 
     auto* tab = current();
-    bool can_back = tab && tab->view->can_go_back();
-    bool can_forward = tab && tab->view->can_go_forward();
+    bool can_back = tab && tab->view && tab->view->can_go_back();
+    bool can_forward = tab && tab->view && tab->view->can_go_forward();
     Hit buttons[] = { Hit::Back, Hit::Forward, Hit::Reload };
     bool enabled[] = { can_back, can_forward, tab != nullptr };
     for (int i = 0; i < 3; ++i) {
@@ -371,7 +596,28 @@ void BrowserWindow::paint_toolbar(QPainter& p)
     font.setPixelSize(14);
     p.setFont(font);
     QFontMetricsF metrics(font);
-    auto text_rect = field.adjusted(16, 0, -16, 0);
+    // The star: filled when the page is bookmarked.
+    auto star = star_rect();
+    if (m_hover.hit == Hit::Star) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(button_hover_color);
+        p.drawEllipse(star.adjusted(3, 3, -3, -3));
+    }
+    {
+        auto c = star.center();
+        QPolygonF poly;
+        for (int k = 0; k < 10; ++k) {
+            qreal radius = k % 2 ? 3.4 : 8.0;
+            qreal angle = M_PI / 2 + k * M_PI / 5;
+            poly << QPointF(c.x() + radius * std::cos(angle), c.y() - radius * std::sin(angle));
+        }
+        bool marked = tab && tab->view && Profile::Bookmarks::the().contains(from_std(tab->view->url()));
+        p.setPen(QPen(marked ? star_color : dim_text_color, 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(marked ? QBrush(star_color) : QBrush(Qt::NoBrush));
+        p.drawPolygon(poly);
+    }
+
+    auto text_rect = field.adjusted(16, 0, -16 - star.width(), 0);
     p.save();
     p.setClipRect(text_rect);
     if (m_address_text.isEmpty() && !m_address_focused) {
@@ -397,11 +643,103 @@ void BrowserWindow::paint_toolbar(QPainter& p)
     p.restore();
 }
 
+void BrowserWindow::paint_bookmarks_bar(QPainter& p)
+{
+    if (!show_bookmarks_bar())
+        return;
+    QRectF bar(0, tab_strip_height + toolbar_height, width(), bookmarks_bar_height);
+    p.fillRect(bar, tab_color);
+    p.setPen(QPen(QColor(0xda, 0xdc, 0xe0), 1));
+    p.drawLine(QPointF(0, bar.bottom() - 0.5), QPointF(width(), bar.bottom() - 0.5));
+    QFont font = p.font();
+    font.setPixelSize(12);
+    p.setFont(font);
+    QFontMetricsF metrics(font);
+    auto const& items = Profile::Bookmarks::the().bar().children;
+    for (int i = 0; i < int(items.size()); ++i) {
+        auto r = bookmark_rect(i);
+        if (r.isEmpty() || r.left() > width())
+            break;
+        if (m_hover.hit == Hit::Bookmark && m_hover.tab == i) {
+            QPainterPath path;
+            path.addRoundedRect(r, r.height() / 2, r.height() / 2);
+            p.fillPath(path, button_hover_color);
+        }
+        auto text = r.adjusted(10, 0, -10, 0);
+        p.setPen(text_color);
+        auto label = items[i].label();
+        if (items[i].folder)
+            label += QStringLiteral(" ▾");
+        p.drawText(text, Qt::AlignVCenter | Qt::AlignLeft, metrics.elidedText(label, Qt::ElideRight, text.width()));
+    }
+}
+
+void BrowserWindow::paint_suggestions(QPainter& p)
+{
+    if (m_suggestions.isEmpty())
+        return;
+    auto first = suggestion_rect(0);
+    QRectF box(first.left(), first.top() - 4, first.width(), m_suggestions.size() * first.height() + 8);
+    p.setPen(QPen(QColor(0xda, 0xdc, 0xe0), 1));
+    p.setBrush(tab_color);
+    p.drawRoundedRect(box, 10, 10);
+    QFont font = p.font();
+    font.setPixelSize(14);
+    QFont small = font;
+    small.setPixelSize(12);
+    for (int i = 0; i < int(m_suggestions.size()); ++i) {
+        auto r = suggestion_rect(i);
+        auto const& s = m_suggestions[i];
+        if (i == m_suggestion || (m_hover.hit == Hit::Suggestion && m_hover.tab == i))
+            p.fillRect(r, i == m_suggestion ? QColor(0xe8, 0xf0, 0xfe) : button_hover_color);
+        // An icon: a magnifier for a search, a star for a bookmark, a clock for history.
+        auto c = QPointF(r.left() + 22, r.center().y());
+        p.setPen(QPen(dim_text_color, 1.5));
+        p.setBrush(Qt::NoBrush);
+        using Kind = Omnibox::Suggestion::Kind;
+        if (s.kind == Kind::Search) {
+            p.drawEllipse(c + QPointF(-1.5, -1.5), 5, 5);
+            p.drawLine(c + QPointF(2, 2), c + QPointF(6, 6));
+        } else if (s.kind == Kind::Bookmark) {
+            QPolygonF poly;
+            for (int k = 0; k < 10; ++k) {
+                qreal radius = k % 2 ? 3 : 7;
+                qreal angle = M_PI / 2 + k * M_PI / 5;
+                poly << QPointF(c.x() + radius * std::cos(angle), c.y() - radius * std::sin(angle));
+            }
+            p.drawPolygon(poly);
+        } else if (s.kind == Kind::History) {
+            p.drawEllipse(c, 6.5, 6.5);
+            p.drawLine(c, c + QPointF(0, -4));
+            p.drawLine(c, c + QPointF(3, 2));
+        } else {
+            p.drawEllipse(c, 6.5, 6.5);
+            p.drawLine(c + QPointF(-6.5, 0), c + QPointF(6.5, 0));
+            p.drawEllipse(c, 3, 6.5);
+        }
+        auto text = r.adjusted(44, 0, -12, 0);
+        QFontMetricsF metrics(font);
+        p.setFont(font);
+        p.setPen(text_color);
+        auto title = s.kind == Kind::Search ? s.title + QStringLiteral(" — Search") : s.title;
+        auto title_text = metrics.elidedText(title, Qt::ElideRight, text.width() * 0.6);
+        p.drawText(text, Qt::AlignVCenter | Qt::AlignLeft, title_text);
+        if (s.kind == Kind::Bookmark || s.kind == Kind::History) {
+            qreal x = metrics.horizontalAdvance(title_text) + 12;
+            QFontMetricsF small_metrics(small);
+            p.setFont(small);
+            p.setPen(focus_color);
+            p.drawText(text.adjusted(x, 0, 0, 0), Qt::AlignVCenter | Qt::AlignLeft,
+                small_metrics.elidedText(s.url, Qt::ElideMiddle, text.width() - x));
+        }
+    }
+}
+
 void BrowserWindow::paint_page(QPainter& p)
 {
     auto r = page_rect();
     auto* tab = current();
-    uint8_t const* pixels = tab ? tab->view->paint() : nullptr;
+    uint8_t const* pixels = tab && tab->view ? tab->view->paint() : nullptr;
     if (!pixels) {
         p.fillRect(r, Qt::white);
         return;
@@ -436,7 +774,7 @@ void BrowserWindow::paint_status(QPainter& p)
 void BrowserWindow::resizeEvent(QResizeEvent*)
 {
     m_menu.close();
-    if (auto* tab = current()) {
+    if (auto* tab = current(); tab && tab->view) {
         auto page = page_rect();
         tab->view->resize(page.width(), page.height());
     }
@@ -464,15 +802,36 @@ void BrowserWindow::mousePressEvent(QMouseEvent* event)
 {
     auto hit = hit_test(event->position());
     m_pressed = hit;
+    if (hit.hit == Hit::Suggestion) {
+        if (event->button() == Qt::LeftButton && hit.tab < m_suggestions.size()) {
+            auto url = m_suggestions[hit.tab].url;
+            m_address_focused = false;
+            load_in_current(url);
+        }
+        m_pressed = {};
+        return;
+    }
     if (hit.hit != Hit::Address && hit.hit != Hit::None && m_address_focused)
         focus_address(false);
     auto* tab = current();
+    if (tab && !tab->view)
+        tab = nullptr;
     switch (hit.hit) {
     case Hit::Tab:
-        if (event->button() == Qt::MiddleButton)
+        if (event->button() == Qt::MiddleButton) {
             close_tab(hit.tab);
-        else
+        } else {
             activate_tab(hit.tab);
+            m_press_x = event->position().x();
+            m_drag_offset = 0;
+        }
+        break;
+    case Hit::Bookmark:
+        if (event->button() == Qt::MiddleButton) {
+            auto const& items = Profile::Bookmarks::the().bar().children;
+            if (hit.tab < items.size() && !items[hit.tab].folder)
+                open_in_new_tab(items[hit.tab].url, false);
+        }
         break;
     case Hit::Address:
         if (event->button() == Qt::MiddleButton) {
@@ -497,6 +856,13 @@ void BrowserWindow::mousePressEvent(QMouseEvent* event)
         }
         break;
     case Hit::Page:
+        // A middle or Ctrl+click on a link opens it in a new tab behind this one.
+        if (!m_hovered_link.isEmpty() && (event->button() == Qt::MiddleButton
+                || (event->button() == Qt::LeftButton && (event->modifiers() & Qt::ControlModifier)))) {
+            open_in_new_tab(m_hovered_link, event->modifiers() & Qt::ShiftModifier);
+            m_pressed = {};
+            break;
+        }
         if (tab) {
             auto page = page_rect();
             m_page_buttons = web_buttons(event->buttons());
@@ -526,7 +892,7 @@ void BrowserWindow::mouseDoubleClickEvent(QMouseEvent* event)
         return;
     }
     if (hit.hit == Hit::Page) {
-        if (auto* tab = current()) {
+        if (auto* tab = current(); tab && tab->view) {
             auto page = page_rect();
             tab->view->mouse_down(int(event->position().x()) - page.left(), int(event->position().y()) - page.top(),
                 web_button(event->button()), web_buttons(event->buttons()), web_modifiers(event->modifiers()), 2);
@@ -541,7 +907,16 @@ void BrowserWindow::mouseReleaseEvent(QMouseEvent* event)
     m_pressed = {};
     if (pressed.hit == Hit::Address && event->button() == Qt::LeftButton)
         update_primary_selection();
+    if (m_dragging_tab) {
+        m_dragging_tab = false;
+        m_drag_offset = 0;
+        m_save_timer.start();
+        update();
+        return;
+    }
     auto* tab = current();
+    if (tab && !tab->view)
+        tab = nullptr;
     if (pressed.hit == Hit::Page && tab) {
         auto page = page_rect();
         m_page_buttons = web_buttons(event->buttons());
@@ -571,7 +946,23 @@ void BrowserWindow::mouseReleaseEvent(QMouseEvent* event)
         break;
     case Hit::Reload:
         if (tab)
-            tab->view->reload();
+            Pages::is_own_page(from_std(tab->view->url())) ? load_in_current(from_std(tab->view->url())) : tab->view->reload();
+        break;
+    case Hit::Star:
+        toggle_bookmark();
+        break;
+    case Hit::Bookmark:
+        if (hit.tab == pressed.tab) {
+            auto const& items = Profile::Bookmarks::the().bar().children;
+            if (hit.tab < items.size()) {
+                if (items[hit.tab].folder)
+                    open_own_page(Pages::bookmarks_page());
+                else if (event->modifiers() & Qt::ControlModifier)
+                    open_in_new_tab(items[hit.tab].url, false);
+                else
+                    load_in_current(items[hit.tab].url);
+            }
+        }
         break;
     default:
         break;
@@ -590,8 +981,31 @@ void BrowserWindow::mouseMoveEvent(QMouseEvent* event)
         update();
         return;
     }
+    if (m_pressed.hit == Hit::Tab && (event->buttons() & Qt::LeftButton) && m_current >= 0) {
+        // Dragging a tab: it follows the pointer and changes places with a neighbour it passes half of.
+        m_drag_offset = event->position().x() - m_press_x;
+        if (!m_dragging_tab && qAbs(m_drag_offset) > 5)
+            m_dragging_tab = true;
+        if (m_dragging_tab) {
+            qreal w = tab_rect(0).width() + 2;
+            while (m_drag_offset > w / 2 && m_current + 1 < int(m_tabs.size())) {
+                std::swap(m_tabs[m_current], m_tabs[m_current + 1]);
+                ++m_current;
+                m_press_x += w;
+                m_drag_offset -= w;
+            }
+            while (m_drag_offset < -w / 2 && m_current > 0) {
+                std::swap(m_tabs[m_current], m_tabs[m_current - 1]);
+                --m_current;
+                m_press_x -= w;
+                m_drag_offset += w;
+            }
+            update();
+        }
+        return;
+    }
     auto* tab = current();
-    if (!tab)
+    if (!tab || !tab->view)
         return;
     bool in_page = hit.hit == Hit::Page || m_pressed.hit == Hit::Page;
     if (in_page) {
@@ -609,7 +1023,7 @@ void BrowserWindow::mouseMoveEvent(QMouseEvent* event)
 void BrowserWindow::wheelEvent(QWheelEvent* event)
 {
     auto* tab = current();
-    if (!tab || hit_test(event->position()).hit != Hit::Page)
+    if (!tab || !tab->view || hit_test(event->position()).hit != Hit::Page)
         return;
     auto page = page_rect();
     // A notch is 120 eighths of a degree in angleDelta and scrolls three 40-pixel lines; a touchpad reports pixels.
@@ -663,17 +1077,39 @@ bool BrowserWindow::address_key(QKeyEvent* event)
     }
     if (paste_key) {
         paste(qt2wasm::gui::clipboardText());
-        update();
+        update_suggestions();
         return true;
     }
+    auto before = m_address_text;
     switch (key) {
     case Qt::Key_Return:
     case Qt::Key_Enter:
         navigate_from_address();
         return true;
     case Qt::Key_Escape:
-        focus_address(false);
+        // First Escape closes the suggestions (and puts back what was typed), the second leaves the field.
+        if (!m_suggestions.isEmpty()) {
+            m_address_text = m_typed_text;
+            m_address_cursor = m_address_anchor = int(m_address_text.size());
+            hide_suggestions();
+        } else {
+            focus_address(false);
+        }
         return true;
+    case Qt::Key_Up:
+    case Qt::Key_Down: {
+        if (m_suggestions.isEmpty())
+            return true;
+        int n = int(m_suggestions.size());
+        m_suggestion = key == Qt::Key_Down ? (m_suggestion + 1 >= n ? -1 : m_suggestion + 1)
+                                           : (m_suggestion < 0 ? n - 1 : m_suggestion - 1);
+        m_address_text = m_suggestion < 0 ? m_typed_text
+            : m_suggestions[m_suggestion].kind == Omnibox::Suggestion::Kind::Search ? m_suggestions[m_suggestion].title
+                                                                                     : m_suggestions[m_suggestion].url;
+        m_address_cursor = m_address_anchor = int(m_address_text.size());
+        update();
+        return true;
+    }
     case Qt::Key_Left:
         move(m_address_cursor - 1);
         break;
@@ -718,6 +1154,8 @@ bool BrowserWindow::address_key(QKeyEvent* event)
     }
     if (shift && m_address_anchor != m_address_cursor)
         update_primary_selection();
+    if (m_address_text != before)
+        update_suggestions();
     update();
     return true;
 }
@@ -735,7 +1173,54 @@ void BrowserWindow::keyPressEvent(QKeyEvent* event)
 {
     auto mods = event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier | Qt::MetaModifier);
     auto* tab = current();
-    // Browser shortcuts first.
+    if (tab && !tab->view)
+        tab = nullptr;
+    auto key = event->key();
+    bool ctrl = mods == Qt::ControlModifier;
+    bool ctrl_shift = mods == (Qt::ControlModifier | Qt::ShiftModifier);
+    // Browser shortcuts first, the Nim front end's.
+    if (ctrl && key == Qt::Key_D) {
+        toggle_bookmark();
+        return;
+    }
+    if (ctrl_shift && key == Qt::Key_B) {
+        auto& bookmarks = Profile::Bookmarks::the();
+        bookmarks.set_show_bar(!bookmarks.show_bar());
+        resizeEvent(nullptr);
+        return;
+    }
+    if ((ctrl && key == Qt::Key_H) || (ctrl_shift && key == Qt::Key_H)) {
+        open_own_page(Pages::history_page());
+        return;
+    }
+    if (ctrl_shift && key == Qt::Key_O) {
+        open_own_page(Pages::bookmarks_page());
+        return;
+    }
+    if (ctrl_shift && key == Qt::Key_T) {
+        reopen_closed_tab();
+        return;
+    }
+    if (ctrl && key >= Qt::Key_1 && key <= Qt::Key_9 && !m_tabs.empty()) {
+        activate_tab(key == Qt::Key_9 ? int(m_tabs.size()) - 1 : qMin(int(key - Qt::Key_1), int(m_tabs.size()) - 1));
+        return;
+    }
+    if (((ctrl_shift && (key == Qt::Key_Backtab || key == Qt::Key_Tab)) || (ctrl && key == Qt::Key_PageUp)) && !m_tabs.empty()) {
+        activate_tab((m_current + int(m_tabs.size()) - 1) % int(m_tabs.size()));
+        return;
+    }
+    if (ctrl && key == Qt::Key_PageDown && !m_tabs.empty()) {
+        activate_tab((m_current + 1) % int(m_tabs.size()));
+        return;
+    }
+    if ((mods == Qt::NoModifier && key == Qt::Key_F6) || (mods == Qt::AltModifier && key == Qt::Key_D) || (ctrl && key == Qt::Key_K)) {
+        focus_address(true);
+        return;
+    }
+    if (mods == Qt::AltModifier && key == Qt::Key_Home) {
+        load_in_current({});
+        return;
+    }
     if (mods == Qt::ControlModifier && event->key() == Qt::Key_T) {
         new_tab({});
         activate_tab(int(m_tabs.size()) - 1);
@@ -752,7 +1237,7 @@ void BrowserWindow::keyPressEvent(QKeyEvent* event)
     }
     if ((mods == Qt::ControlModifier && event->key() == Qt::Key_R) || (mods == Qt::NoModifier && event->key() == Qt::Key_F5)) {
         if (tab)
-            tab->view->reload();
+            Pages::is_own_page(from_std(tab->view->url())) ? load_in_current(from_std(tab->view->url())) : tab->view->reload();
         return;
     }
     if (mods == Qt::AltModifier && (event->key() == Qt::Key_Left || event->key() == Qt::Key_Right)) {
@@ -781,7 +1266,7 @@ void BrowserWindow::keyReleaseEvent(QKeyEvent* event)
 {
     if (m_address_focused)
         return;
-    if (auto* tab = current())
+    if (auto* tab = current(); tab && tab->view)
         tab->view->key_up(web_key_code(*event), web_modifiers(event->modifiers()), 0);
 }
 
@@ -851,7 +1336,7 @@ bool BrowserWindow::event(QEvent* event)
     if (event->type() == QEvent::Leave) {
         m_hover = {};
         if (m_page_has_mouse) {
-            if (auto* tab = current())
+            if (auto* tab = current(); tab && tab->view)
                 tab->view->mouse_leave();
             m_page_has_mouse = false;
         }

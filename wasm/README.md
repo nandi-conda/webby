@@ -378,6 +378,17 @@ its display list with the Compositor's Skia CPU player and hands the pixels to Q
 `Page::handle_*`. file: pages and the built-in start page load; http(s) is not wired into the UI yet (patch 0010 has
 it for webby-render). Ctrl+T/W/L/R, F5, Alt+Left/Right and Ctrl+Tab work.
 
+The Nim front end's everyday features are there too, in the UI component alone (`ui/Profile.cpp`, `ui/Omnibox.cpp`,
+`ui/Pages.cpp`), with the Nim front end's files in its profile folder (`$XDG_DATA_HOME/webby/profiles/default`, or
+`WEBBY_DATA_DIR`), so both share them: the address bar searches for what is not an address (`WEBBY_SEARCH_URL`,
+Google by default) and suggests bookmarks and history as you type (Up/Down, Return, Escape); `history.jsonl` keeps
+every visit and Ctrl+H opens a History page; the star in the address bar and Ctrl+D add or remove the page in
+`bookmarks.json`'s bookmarks bar, shown under the toolbar (Ctrl+Shift+B hides it, Ctrl+Shift+O opens a Bookmarks
+page); `open_tabs.json` brings the last tabs back at start, asleep until they come to the front
+(`WEBBY_RESTORE_TABS=0` turns that off); tabs drag to new places and carry the age dot; middle-click or Ctrl+click on
+a link opens it in a new tab; Ctrl+Shift+T reopens a closed tab; Ctrl+1..9, Ctrl+PgUp/PgDn, Ctrl+Shift+Tab, F6,
+Alt+D, Ctrl+K and Alt+Home work.
+
 It builds inside Ladybird's WASI build (`patches/0014-webby-ui.patch` adds the directory when `WEBBY_UI_DIR` names it),
 with Qt for WASI, qt2wasm, wit-bindgen, wasm-tools and the preview1 reactor adapter from this pixi env:
 

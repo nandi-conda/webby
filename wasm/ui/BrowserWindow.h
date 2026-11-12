@@ -10,6 +10,8 @@
 #pragma once
 
 #include "PopupMenu.h"
+#include "Omnibox.h"
+#include "Profile.h"
 #include "WebView.h"
 
 #include <QImage>
@@ -27,7 +29,14 @@ public:
 
     static constexpr int tab_strip_height = 36;
     static constexpr int toolbar_height = 44;
-    static constexpr int chrome_height = tab_strip_height + toolbar_height;
+    static constexpr int bookmarks_bar_height = 30;
+    // The tabs, the toolbar and (when it is on and has bookmarks) the bookmarks bar.
+    int chrome_height() const;
+
+    // The current page in the bookmarks bar, or out of the bookmarks if it is there (Ctrl+D, the star).
+    void toggle_bookmark();
+    // Opens `url` in a new tab after the current one; `activate` brings it to the front.
+    void open_in_new_tab(QString const& url, bool activate);
 
 protected:
     void paintEvent(QPaintEvent*) override;
@@ -43,10 +52,12 @@ protected:
 
 private:
     struct Tab {
+        // Null while a restored tab sleeps: it gets a view (and loads `url`) when it first comes to the front.
         std::unique_ptr<WebbyUI::WebView> view;
         QString title;
         QString url;
         bool loading { false };
+        qint64 created { 0 }; // seconds since the epoch, for the age dot
     };
 
     enum class Hit {
@@ -58,6 +69,9 @@ private:
         Forward,
         Reload,
         Address,
+        Star,
+        Bookmark,
+        Suggestion,
         Page,
     };
     struct HitResult {
@@ -65,7 +79,15 @@ private:
         int tab { -1 };
     };
 
-    void new_tab(QString const& url);
+    void new_tab(QString const& url, int at = -1, bool sleeping = false, QString const& title = {}, qint64 created = 0);
+    void wake(Tab&);
+    void reopen_closed_tab();
+    void save_tabs();
+    void open_own_page(QString const& url);
+    bool show_bookmarks_bar() const;
+    void update_suggestions();
+    void hide_suggestions();
+    void load_in_current(QString const& url);
     void close_tab(int index);
     void activate_tab(int index);
     Tab* current();
@@ -83,12 +105,17 @@ private:
     QRectF new_tab_rect() const;
     QRectF button_rect(int index) const;
     QRectF address_rect() const;
+    QRectF star_rect() const;
+    QRectF bookmark_rect(int index) const;
+    QRectF suggestion_rect(int index) const;
     QRect page_rect() const;
 
     void paint_tabs(QPainter&);
     void paint_toolbar(QPainter&);
     void paint_page(QPainter&);
     void paint_status(QPainter&);
+    void paint_bookmarks_bar(QPainter&);
+    void paint_suggestions(QPainter&);
 
     bool address_key(QKeyEvent*);
     int address_index_at(qreal x) const;
@@ -110,4 +137,15 @@ private:
     unsigned m_page_buttons { 0 };
     PopupMenu m_menu;
     bool m_swallow_release { false };
+
+    QList<WebbyUI::Profile::SavedTab> m_closed; // for Ctrl+Shift+T, newest last
+    QList<WebbyUI::Omnibox::Suggestion> m_suggestions;
+    int m_suggestion { -1 }; // the highlighted suggestion, -1 for none (Return loads the typed text)
+    QString m_typed_text; // what was typed before Up/Down put a suggestion in the field
+    QTimer m_save_timer;
+
+    // Dragging a tab along the strip.
+    bool m_dragging_tab { false };
+    qreal m_press_x { 0 };
+    qreal m_drag_offset { 0 };
 };
