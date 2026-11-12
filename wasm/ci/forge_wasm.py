@@ -116,8 +116,40 @@ def depot_build(dockerfile, out, build_args, log):
     return p.returncode
 
 
-def upload(tag, files, title, notes):
-    subprocess.run(["forge-release", "upload", "--create", tag, *map(str, files)], check=True)
+def sha256_of(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def upload(tag, files, title, notes, jobs=4):
+    """Put files on the release, skipping ones it already has with the same size and sha256 (the wasm build is
+    reproducible, so a UI-only change re-sends webby.wasm and webby-core.wasm, not all 1.3 GB), several at once.
+    The server stores ~5 MB/s per upload, so parallel files are what make the rest fast."""
+    have = {a["name"]: a for a in assets(tag)}
+    todo, skipped = [], 0
+    for p in map(Path, files):
+        a = have.get(p.name)
+        if a and a.get("state") == "ready" and a.get("size") == p.stat().st_size and a.get("sha256") == sha256_of(p):
+            skipped += p.stat().st_size
+        else:
+            todo.append(p)
+    say(f"{len(files) - len(todo)} of {len(files)} files unchanged on {tag} ({skipped >> 20} MiB not sent); "
+        f"uploading {len(todo)} ({sum(p.stat().st_size for p in todo) >> 20} MiB)")
+    todo.sort(key=lambda p: -p.stat().st_size)  # biggest first, so none starts last and runs on alone
+    t0 = time.time()
+    if todo and not have:  # make the release with one upload before the parallel ones race to create it
+        subprocess.run(["forge-release", "upload", "--create", tag, str(todo.pop())], check=True)
+    if todo:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(jobs) as pool:
+            codes = list(pool.map(lambda p: subprocess.run(["forge-release", "upload", tag, str(p)]).returncode, todo))
+        if any(codes):
+            sys.exit(f"uploading to {tag} failed for {', '.join(p.name for p, c in zip(todo, codes) if c)}")
+    say(f"uploads took {time.time() - t0:.0f} s")
     status, out = api("PATCH", f"/releases/{tag}", {"name": title, "notes": notes, "draft": False, "prerelease": True})
     if status >= 300:
         sys.exit(f"updating the {tag} release failed: HTTP {status} {out}")
