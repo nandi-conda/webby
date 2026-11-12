@@ -88,6 +88,7 @@ private:
 
     bool address_key(QKeyEvent*);
     int address_index_at(qreal x) const;
+    void update_primary_selection();
 
     std::vector<Tab> m_tabs;
     int m_current { -1 };

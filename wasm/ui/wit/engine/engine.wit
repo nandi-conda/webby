@@ -15,6 +15,18 @@ interface views {
     /// Mouse buttons, in LibWeb's UIEvents::MouseButton bit order.
     flags buttons { primary, secondary, middle, backward, forward }
 
+    /// Text the page copied: to the clipboard, or (`selection`) to the X11 primary selection.
+    record clipboard-write {
+        text: string,
+        selection: bool,
+    }
+    /// The page pastes: the UI reads the clipboard (or, `selection`, the primary selection) and calls the view's
+    /// `answer-clipboard` with `id`. Unanswered, the paste waits.
+    record clipboard-request {
+        id: u64,
+        selection: bool,
+    }
+
     /// What a page did since the last `take-events`, for the chrome.
     variant event {
         /// The page changed: `paint` it again.
@@ -24,6 +36,8 @@ interface views {
         loading-changed(bool),
         /// The URL of the link under the pointer, "" when it leaves the link.
         link-hovered(string),
+        clipboard-written(clipboard-write),
+        clipboard-requested(clipboard-request),
     }
 
     /// One page (a tab). Sizes and coordinates are CSS pixels at device pixel ratio 1.
@@ -54,6 +68,8 @@ interface views {
         key-down: func(key: u32, mods: modifiers, code-point: u32, repeat: bool);
         key-up: func(key: u32, mods: modifiers, code-point: u32);
         take-events: func() -> list<event>;
+        /// The clipboard's text for a `clipboard-requested` event ("" if it holds none).
+        answer-clipboard: func(id: u64, text: string);
     }
 
     /// Run the engine's event loop until nothing is due right now (timers, tasks). Never blocks.

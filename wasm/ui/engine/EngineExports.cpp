@@ -21,6 +21,7 @@ struct EventRecord {
     uint8_t tag;
     std::string text;
     bool flag { false };
+    uint64_t id { 0 };
 };
 
 struct exports_webby_engine_views_view_t {
@@ -64,6 +65,12 @@ exports_webby_engine_views_own_view_t exports_webby_engine_views_constructor_vie
     view.on_url_change = [&events](std::string const& u) { events.push_back({ EXPORTS_WEBBY_ENGINE_VIEWS_EVENT_URL_CHANGED, u }); };
     view.on_loading_change = [&events](bool l) { events.push_back({ EXPORTS_WEBBY_ENGINE_VIEWS_EVENT_LOADING_CHANGED, {}, l }); };
     view.on_link_hover = [&events](std::string const& u) { events.push_back({ EXPORTS_WEBBY_ENGINE_VIEWS_EVENT_LINK_HOVERED, u }); };
+    view.on_clipboard_write = [&events](std::string const& t, bool selection) {
+        events.push_back({ EXPORTS_WEBBY_ENGINE_VIEWS_EVENT_CLIPBOARD_WRITTEN, t, selection });
+    };
+    view.on_clipboard_request = [&events](uint64_t id, bool selection) {
+        events.push_back({ EXPORTS_WEBBY_ENGINE_VIEWS_EVENT_CLIPBOARD_REQUESTED, {}, selection, id });
+    };
     return exports_webby_engine_views_view_new(record);
 }
 
@@ -155,10 +162,23 @@ void exports_webby_engine_views_method_view_take_events(Borrow self, exports_web
         case EXPORTS_WEBBY_ENGINE_VIEWS_EVENT_LOADING_CHANGED:
             out.val.loading_changed = events[i].flag;
             break;
+        case EXPORTS_WEBBY_ENGINE_VIEWS_EVENT_CLIPBOARD_WRITTEN:
+            give_string(&out.val.clipboard_written.text, events[i].text);
+            out.val.clipboard_written.selection = events[i].flag;
+            break;
+        case EXPORTS_WEBBY_ENGINE_VIEWS_EVENT_CLIPBOARD_REQUESTED:
+            out.val.clipboard_requested.id = events[i].id;
+            out.val.clipboard_requested.selection = events[i].flag;
+            break;
         default:
             break;
         }
     }
+}
+
+void exports_webby_engine_views_method_view_answer_clipboard(Borrow self, uint64_t id, engine_string_t* text)
+{
+    self->view->answer_clipboard(id, take_string(text));
 }
 
 void exports_webby_engine_views_pump(void) { WebbyUI::WebView::pump(); }

@@ -32,6 +32,7 @@
 #include <LibWeb/Bindings/MainThreadVM.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/DocumentObserver.h>
+#include <LibWeb/HTML/LocalNavigable.h>
 #include <LibWeb/HTML/LocalTraversableNavigable.h>
 #include <LibWeb/HTML/Parser/HTMLParser.h>
 #include <LibWeb/HTML/Window.h>
@@ -42,6 +43,7 @@
 #include <LibWeb/Painting/DocumentPaintState.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/Platform/FontPlugin.h>
+#include <LibWebCommon/Clipboard/SystemClipboard.h>
 #include <LibWebCommon/Page/NavigationTarget.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -145,6 +147,41 @@ public:
             m_view->did_hover_link({});
     }
 
+    // Copy and cut (keys, the context menu, document.execCommand, navigator.clipboard.write*): the host clipboard
+    // holds text only, so the item's text/plain representation goes there.
+    virtual void page_did_insert_clipboard_item(Web::Clipboard::SystemClipboardItem const& item, StringView) override
+    {
+        if (!m_view)
+            return;
+        for (auto const& representation : item.system_clipboard_representations) {
+            if (representation.name != "text/plain"sv || !representation.data.has<ByteString>())
+                continue;
+            m_view->did_write_clipboard(to_std(representation.data.get<ByteString>()), false);
+            return;
+        }
+    }
+
+    // Paste (keys, navigator.clipboard.read*): the UI answers with the host clipboard's text (answer_clipboard).
+    // Requests are numbered: even ones are the page's, odd ones a middle click's primary-selection paste.
+    virtual void page_did_request_clipboard_entries(u64 request_id) override
+    {
+        if (m_view)
+            m_view->did_request_clipboard(request_id << 1, false);
+    }
+
+    // X11's primary selection: a middle click in an editable pastes it.
+    virtual void page_did_request_primary_paste() override
+    {
+        if (m_view)
+            m_view->did_request_clipboard((m_next_primary_paste++ << 1) | 1, true);
+    }
+
+    virtual void page_did_update_primary_selection(Utf16String const& text) override
+    {
+        if (m_view)
+            m_view->did_write_clipboard(to_std(text.to_utf8().to_byte_string()), true);
+    }
+
     // The page's own loads of file: URLs (style sheets, images, scripts) open the file right here.
     virtual void request_file(Web::FileRequest request) override
     {
@@ -180,6 +217,7 @@ private:
     Gfx::IntSize m_viewport;
     NonnullRefPtr<Gfx::PaletteImpl> m_palette_impl;
     Queue<Web::QueuedInputEvent> m_input_event_queue;
+    u64 m_next_primary_paste { 0 };
     Web::HTML::CrossProcessIdAllocator m_cross_process_ids { .namespace_id = 1 };
 };
 
@@ -545,6 +583,44 @@ void WebView::did_finish_loading()
     if (on_loading_change)
         on_loading_change(false);
     did_request_frame();
+}
+
+void WebView::did_write_clipboard(std::string text, bool selection)
+{
+    if (on_clipboard_write)
+        on_clipboard_write(text, selection);
+}
+
+void WebView::did_request_clipboard(uint64_t request, bool selection)
+{
+    if (on_clipboard_request)
+        on_clipboard_request(request, selection);
+    else
+        answer_clipboard(request, {});
+}
+
+void WebView::answer_clipboard(uint64_t request, std::string const& text)
+{
+    if (!m_impl->page)
+        return;
+    // After the current task, as an answer from a UI process would come (the UI may answer inside the request).
+    Core::deferred_invoke([page = m_impl->page, request, text] {
+        if (request & 1) {
+            if (text.empty())
+                return;
+            auto utf16 = Utf16String::from_utf8_with_replacement_character(StringView { text.data(), text.size() });
+            if (auto navigable = page->hosted_focused_navigable())
+                navigable->paste(utf16);
+            return;
+        }
+        Vector<Web::Clipboard::SystemClipboardItem> items;
+        if (!text.empty()) {
+            Web::Clipboard::SystemClipboardItem item;
+            item.system_clipboard_representations.append({ "text/plain"_string, ByteString(text.data(), text.size()) });
+            items.append(move(item));
+        }
+        page->retrieved_clipboard_entries(request >> 1, move(items));
+    });
 }
 
 void WebView::did_hover_link(std::string url)

@@ -13,6 +13,8 @@
 #include <QByteArray>
 #include <QFontDatabase>
 #include <QGuiApplication>
+#include <QHash>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QTimer>
 #include <QWheelEvent>
@@ -36,7 +38,9 @@ static void add_chrome_fonts()
 }
 
 // Test input, so that the UI can be driven headless (latha-gui --screenshot only types): --click=X,Y@MS clicks the
-// left button at X,Y (window pixels) MS milliseconds after start, --wheel=DY@MS scrolls by DY pixels over the page.
+// left button at X,Y (window pixels) MS milliseconds after start, --wheel=DY@MS scrolls by DY pixels over the page,
+// --key=ctrl+c@MS presses a key with modifiers (ctrl, shift, alt; a letter, a digit, or Home, End, Left, Right,
+// Insert, Delete, Return, Tab).
 static bool schedule_test_input(QWindow* window, QString const& arg)
 {
     auto at = arg.lastIndexOf(u'@');
@@ -58,13 +62,48 @@ static bool schedule_test_input(QWindow* window, QString const& arg)
         });
         return true;
     }
-    if (arg.startsWith(QStringLiteral("--wheel="))) {
+    if (arg.startsWith(QStringLiteral("--wheel=")) || arg.startsWith(QStringLiteral("--key="))) {
         int dy = arg.mid(8, at - 8).toInt();
         QTimer::singleShot(ms, window, [window, dy] {
             QPointF pos(window->width() / 2.0, window->height() / 2.0);
             QWheelEvent wheel(pos, window->mapToGlobal(pos), QPoint(0, -dy), QPoint(0, -dy * 120 / 100), Qt::NoButton,
                 Qt::NoModifier, Qt::NoScrollPhase, false);
             QGuiApplication::sendEvent(window, &wheel);
+        });
+        return true;
+    }
+    if (arg.startsWith(QStringLiteral("--key="))) {
+        auto parts = arg.mid(6, at - 6).split(u'+');
+        Qt::KeyboardModifiers mods;
+        for (int i = 0; i + 1 < parts.size(); ++i) {
+            auto m = parts[i].toLower();
+            mods |= m == u"ctrl" ? Qt::ControlModifier : m == u"shift" ? Qt::ShiftModifier : m == u"alt" ? Qt::AltModifier : Qt::NoModifier;
+        }
+        auto name = parts.last();
+        int key = 0;
+        QString text;
+        static QHash<QString, int> const named {
+            { QStringLiteral("home"), Qt::Key_Home }, { QStringLiteral("end"), Qt::Key_End },
+            { QStringLiteral("left"), Qt::Key_Left }, { QStringLiteral("right"), Qt::Key_Right },
+            { QStringLiteral("insert"), Qt::Key_Insert }, { QStringLiteral("delete"), Qt::Key_Delete },
+            { QStringLiteral("return"), Qt::Key_Return }, { QStringLiteral("tab"), Qt::Key_Tab },
+        };
+        if (name.size() == 1 && name.at(0).isLetterOrNumber()) {
+            key = name.at(0).toUpper().unicode();
+            if (mods & Qt::ControlModifier)
+                text = QChar(char16_t(name.at(0).toUpper().unicode() & 0x1f));
+            else
+                text = mods & Qt::ShiftModifier ? name.toUpper() : name.toLower();
+        } else if (named.contains(name.toLower())) {
+            key = named.value(name.toLower());
+        } else {
+            return false;
+        }
+        QTimer::singleShot(ms, window, [window, key, mods, text] {
+            QKeyEvent press(QEvent::KeyPress, key, mods, text);
+            QGuiApplication::sendEvent(window, &press);
+            QKeyEvent release(QEvent::KeyRelease, key, mods, text);
+            QGuiApplication::sendEvent(window, &release);
         });
         return true;
     }
@@ -78,7 +117,7 @@ extern "C" int qt2wasm_gui_main(int argc, char** argv)
     QStringList test_input;
     for (int i = 1; i < argc; ++i) {
         auto arg = QString::fromUtf8(argv[i]);
-        if (arg.startsWith(QStringLiteral("--click=")) || arg.startsWith(QStringLiteral("--wheel=")))
+        if (arg.startsWith(QStringLiteral("--click=")) || arg.startsWith(QStringLiteral("--wheel=")) || arg.startsWith(QStringLiteral("--key=")))
             test_input << arg;
         else
             urls << arg;

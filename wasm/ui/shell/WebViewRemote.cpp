@@ -186,6 +186,27 @@ void WebView::did_hover_link(std::string url)
         on_link_hover(url);
 }
 
+void WebView::did_write_clipboard(std::string text, bool selection)
+{
+    if (on_clipboard_write)
+        on_clipboard_write(text, selection);
+}
+
+void WebView::did_request_clipboard(uint64_t request, bool selection)
+{
+    if (on_clipboard_request)
+        on_clipboard_request(request, selection);
+    else
+        answer_clipboard(request, {});
+}
+
+void WebView::answer_clipboard(uint64_t request, std::string const& text)
+{
+    auto s = borrow_string(text);
+    webby_engine_views_method_view_answer_clipboard(m_impl->borrow(), request, &s);
+    deliver_engine_events();
+}
+
 // The engine's events since the last call, delivered as the callbacks would have been.
 void WebView::deliver_engine_events()
 {
@@ -196,6 +217,7 @@ void WebView::deliver_engine_events()
         uint8_t tag;
         std::string text;
         bool flag;
+        uint64_t id { 0 };
     };
     std::vector<Event> list;
     for (size_t i = 0; i < events.len; ++i) {
@@ -213,6 +235,14 @@ void WebView::deliver_engine_events()
             break;
         case WEBBY_ENGINE_VIEWS_EVENT_LOADING_CHANGED:
             out.flag = e.val.loading_changed;
+            break;
+        case WEBBY_ENGINE_VIEWS_EVENT_CLIPBOARD_WRITTEN:
+            out.text.assign(reinterpret_cast<char const*>(e.val.clipboard_written.text.ptr), e.val.clipboard_written.text.len);
+            out.flag = e.val.clipboard_written.selection;
+            break;
+        case WEBBY_ENGINE_VIEWS_EVENT_CLIPBOARD_REQUESTED:
+            out.id = e.val.clipboard_requested.id;
+            out.flag = e.val.clipboard_requested.selection;
             break;
         default:
             break;
@@ -244,6 +274,12 @@ void WebView::deliver_engine_events()
             break;
         case WEBBY_ENGINE_VIEWS_EVENT_LINK_HOVERED:
             did_hover_link(std::move(e.text));
+            break;
+        case WEBBY_ENGINE_VIEWS_EVENT_CLIPBOARD_WRITTEN:
+            did_write_clipboard(std::move(e.text), e.flag);
+            break;
+        case WEBBY_ENGINE_VIEWS_EVENT_CLIPBOARD_REQUESTED:
+            did_request_clipboard(e.id, e.flag);
             break;
         }
     }

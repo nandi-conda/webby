@@ -14,6 +14,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QWheelEvent>
+#include <qt2wasm/gui.h>
 
 namespace {
 
@@ -113,6 +114,14 @@ void BrowserWindow::new_tab(QString const& url)
             m_hovered_link = from_std(link);
             update();
         }
+    };
+    // The page's copies and pastes go to the host's clipboard (qt6-wasi has no QClipboard; qt2wasm asks the host).
+    raw->on_clipboard_write = [](std::string const& text, bool selection) {
+        auto q = from_std(text);
+        selection ? qt2wasm::gui::setPrimaryText(q) : qt2wasm::gui::setClipboardText(q);
+    };
+    raw->on_clipboard_request = [raw](uint64_t request, bool selection) {
+        raw->answer_clipboard(request, to_std(selection ? qt2wasm::gui::primaryText() : qt2wasm::gui::clipboardText()));
     };
     raw->load(to_std(url));
 }
@@ -460,6 +469,18 @@ void BrowserWindow::mousePressEvent(QMouseEvent* event)
             activate_tab(hit.tab);
         break;
     case Hit::Address:
+        if (event->button() == Qt::MiddleButton) {
+            auto text = qt2wasm::gui::primaryText();
+            if (!m_address_focused)
+                focus_address(true);
+            m_address_cursor = m_address_anchor = address_index_at(event->position().x());
+            text.replace(QLatin1Char('\r'), QLatin1Char(' ')).replace(QLatin1Char('\n'), QLatin1Char(' '));
+            m_address_text.insert(m_address_cursor, text);
+            m_address_cursor += int(text.size());
+            m_address_anchor = m_address_cursor;
+            update();
+            break;
+        }
         if (!m_address_focused) {
             focus_address(true);
         } else {
@@ -488,6 +509,7 @@ void BrowserWindow::mouseDoubleClickEvent(QMouseEvent* event)
     if (hit.hit == Hit::Address) {
         m_address_anchor = 0;
         m_address_cursor = m_address_text.size();
+        update_primary_selection();
         update();
         return;
     }
@@ -511,6 +533,8 @@ void BrowserWindow::mouseReleaseEvent(QMouseEvent* event)
     auto hit = hit_test(event->position());
     auto pressed = m_pressed;
     m_pressed = {};
+    if (pressed.hit == Hit::Address && event->button() == Qt::LeftButton)
+        update_primary_selection();
     auto* tab = current();
     if (pressed.hit == Hit::Page && tab) {
         auto page = page_rect();
@@ -605,7 +629,38 @@ bool BrowserWindow::address_key(QKeyEvent* event)
         if (!shift)
             m_address_anchor = m_address_cursor;
     };
-    switch (event->key()) {
+    auto selected = [this] {
+        int a = qMin(m_address_anchor, m_address_cursor);
+        return m_address_text.mid(a, qAbs(m_address_anchor - m_address_cursor));
+    };
+    auto paste = [&](QString text) {
+        // One line: a pasted newline would end up in the URL.
+        text.replace(QLatin1Char('\r'), QLatin1Char(' ')).replace(QLatin1Char('\n'), QLatin1Char(' '));
+        remove_selection();
+        m_address_text.insert(m_address_cursor, text);
+        m_address_cursor += int(text.size());
+        m_address_anchor = m_address_cursor;
+    };
+    auto key = event->key();
+    bool ctrl = mods == Qt::ControlModifier;
+    bool copy = (ctrl && key == Qt::Key_C) || (ctrl && key == Qt::Key_Insert);
+    bool cut = (ctrl && key == Qt::Key_X) || (shift && !mods && key == Qt::Key_Delete);
+    bool paste_key = (ctrl && key == Qt::Key_V) || (shift && !mods && key == Qt::Key_Insert);
+    if (copy || cut) {
+        if (m_address_anchor != m_address_cursor) {
+            qt2wasm::gui::setClipboardText(selected());
+            if (cut)
+                remove_selection();
+        }
+        update();
+        return true;
+    }
+    if (paste_key) {
+        paste(qt2wasm::gui::clipboardText());
+        update();
+        return true;
+    }
+    switch (key) {
     case Qt::Key_Return:
     case Qt::Key_Enter:
         navigate_from_address();
@@ -639,6 +694,7 @@ bool BrowserWindow::address_key(QKeyEvent* event)
         if (mods == Qt::ControlModifier) {
             m_address_anchor = 0;
             m_address_cursor = int(m_address_text.size());
+            update_primary_selection();
             break;
         }
         [[fallthrough]];
@@ -654,8 +710,19 @@ bool BrowserWindow::address_key(QKeyEvent* event)
         m_address_anchor = m_address_cursor;
         break;
     }
+    if (shift && m_address_anchor != m_address_cursor)
+        update_primary_selection();
     update();
     return true;
+}
+
+// X11 habit: selected text in the address field is the primary selection, which a middle click pastes.
+void BrowserWindow::update_primary_selection()
+{
+    if (m_address_anchor == m_address_cursor)
+        return;
+    int a = qMin(m_address_anchor, m_address_cursor);
+    qt2wasm::gui::setPrimaryText(m_address_text.mid(a, qAbs(m_address_anchor - m_address_cursor)));
 }
 
 void BrowserWindow::keyPressEvent(QKeyEvent* event)

@@ -87,6 +87,12 @@ public:
     std::function<void(std::string const&)> on_url_change;
     std::function<void(bool)> on_loading_change;
     std::function<void(std::string const&)> on_link_hover; // "" when the pointer leaves the link
+    // The page copied text: to the clipboard, or (`selection`) to the X11 primary selection.
+    std::function<void(std::string const&, bool selection)> on_clipboard_write;
+    // The page pastes: the UI reads the clipboard (or the primary selection) and calls answer_clipboard with the
+    // request and its text, now or later. Unanswered, the paste waits.
+    std::function<void(uint64_t request, bool selection)> on_clipboard_request;
+    void answer_clipboard(uint64_t request, std::string const& text);
 
     // Implementation details, public for the page client in WebView.cpp.
     struct Impl;
@@ -95,6 +101,8 @@ public:
     void did_request_navigation(std::string url);
     void did_finish_loading();
     void did_hover_link(std::string url);
+    void did_write_clipboard(std::string text, bool selection);
+    void did_request_clipboard(uint64_t request, bool selection);
     // The UI component's WebView (shell/WebViewRemote.cpp) only: the engine component's queued events, as the
     // callbacks above.
     void deliver_engine_events();
