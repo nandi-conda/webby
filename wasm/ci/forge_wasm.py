@@ -34,6 +34,7 @@ WASM = ROOT / "wasm"
 CI = WASM / "ci"
 DEPS_TAG, ENGINE_TAG = "wasm-deps", "wasm-engine"
 BUILD_PREFIX, KEEP_BUILDS = "webby-wasm-", 3  # one release per engine build, the newest few kept
+ENGINE_POINTERS = {"webby-core.wasm", "webby-pdf.wasm", "SHA256SUMS"}
 JOB_LIMIT = 3600
 START = time.time()
 UA = "webby-forge-ci/1"  # the forge sits behind Cloudflare, which rejects urllib's default User-Agent
@@ -301,8 +302,20 @@ def engine():
     upload(tag, files, f"webby.wasm {version or sha[:12]}", notes)
     say(f"Released {tag}: {os.environ.get('FORGE_URL', 'https://fileapi.fastapicloud.dev')}/forge/"
         f"{os.environ.get('FORGE_REPO', 'nandi.uk/webby')}/-/releases/{tag}")
-    upload(ENGINE_TAG, files, f"webby wasm engine {sha[:12]} ({tag})", notes + f"\n\nThis build is also the {tag} release.")
-    say(f"Published {', '.join(p.name for p in wasms)} on the {ENGINE_TAG} release")
+    # The rolling release holds only what is read at its fixed address: webby-core.wasm and webby-pdf.wasm
+    # (wasm/ui/shell/build.sh), the precompiled *.cwasm.zst (latha-gui's lookup) and webby-update.txt (below).
+    # Sending all 1.4 GB twice per build is what the forge server fell over during (19:04 and 19:48 today).
+    pointers = [p for p in files if p.name in ENGINE_POINTERS or p.name.endswith(".cwasm.zst")]
+    upload(ENGINE_TAG, pointers, f"webby wasm engine {sha[:12]} ({tag})",
+           f"The newest wasm engine build's fixed address. Every build's full set of programs is its own release: "
+           f"this one is {tag}.\n\n" + notes)
+    keep = {p.name for p in pointers} | {"webby-update.txt"}
+    for a in assets(ENGINE_TAG):
+        n = a.get("name", "")
+        if n not in keep and not n.endswith(".cwasm.zst"):
+            s, _ = api("DELETE", f"/releases/{ENGINE_TAG}/assets/{urllib.parse.quote(n)}")
+            say(f"{ENGINE_TAG}: removed {n}, which is in {tag} (HTTP {s})")
+    say(f"Published {', '.join(p.name for p in pointers)} on the {ENGINE_TAG} release")
     manifest = out / "webby-update.txt"
     if manifest.exists():
         # The update points into this build's own release, so a download never mixes two builds' files.
