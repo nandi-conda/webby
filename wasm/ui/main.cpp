@@ -38,26 +38,29 @@ static void add_chrome_fonts()
 }
 
 // Test input, so that the UI can be driven headless (latha-gui --screenshot only types): --click=X,Y@MS clicks the
-// left button at X,Y (window pixels) MS milliseconds after start, --wheel=DY@MS scrolls by DY pixels over the page,
+// left button at X,Y (window pixels) MS milliseconds after start (--rclick= the right one), --wheel=DY@MS scrolls by DY pixels over the page,
 // --key=ctrl+c@MS presses a key with modifiers (ctrl, shift, alt; a letter, a digit, or Home, End, Left, Right,
-// Insert, Delete, Return, Tab).
+// Insert, Delete, Return, Tab, Escape, Up, Down).
 static bool schedule_test_input(QWindow* window, QString const& arg)
 {
     auto at = arg.lastIndexOf(u'@');
     if (at < 0)
         return false;
     int ms = arg.mid(at + 1).toInt();
-    if (arg.startsWith(QStringLiteral("--click="))) {
-        auto xy = arg.mid(8, at - 8).split(u',');
+    bool right = arg.startsWith(QStringLiteral("--rclick="));
+    if (arg.startsWith(QStringLiteral("--click=")) || right) {
+        int start = right ? 9 : 8;
+        auto xy = arg.mid(start, at - start).split(u',');
         if (xy.size() != 2)
             return false;
         QPointF pos(xy[0].toDouble(), xy[1].toDouble());
-        QTimer::singleShot(ms, window, [window, pos] {
+        auto button = right ? Qt::RightButton : Qt::LeftButton;
+        QTimer::singleShot(ms, window, [window, pos, button] {
             QMouseEvent move(QEvent::MouseMove, pos, window->mapToGlobal(pos), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
             QGuiApplication::sendEvent(window, &move);
-            QMouseEvent press(QEvent::MouseButtonPress, pos, window->mapToGlobal(pos), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QMouseEvent press(QEvent::MouseButtonPress, pos, window->mapToGlobal(pos), button, button, Qt::NoModifier);
             QGuiApplication::sendEvent(window, &press);
-            QMouseEvent release(QEvent::MouseButtonRelease, pos, window->mapToGlobal(pos), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QMouseEvent release(QEvent::MouseButtonRelease, pos, window->mapToGlobal(pos), button, Qt::NoButton, Qt::NoModifier);
             QGuiApplication::sendEvent(window, &release);
         });
         return true;
@@ -87,6 +90,7 @@ static bool schedule_test_input(QWindow* window, QString const& arg)
             { QStringLiteral("left"), Qt::Key_Left }, { QStringLiteral("right"), Qt::Key_Right },
             { QStringLiteral("insert"), Qt::Key_Insert }, { QStringLiteral("delete"), Qt::Key_Delete },
             { QStringLiteral("return"), Qt::Key_Return }, { QStringLiteral("tab"), Qt::Key_Tab },
+            { QStringLiteral("escape"), Qt::Key_Escape }, { QStringLiteral("down"), Qt::Key_Down }, { QStringLiteral("up"), Qt::Key_Up },
         };
         if (name.size() == 1 && name.at(0).isLetterOrNumber()) {
             key = name.at(0).toUpper().unicode();
@@ -117,7 +121,7 @@ extern "C" int qt2wasm_gui_main(int argc, char** argv)
     QStringList test_input;
     for (int i = 1; i < argc; ++i) {
         auto arg = QString::fromUtf8(argv[i]);
-        if (arg.startsWith(QStringLiteral("--click=")) || arg.startsWith(QStringLiteral("--wheel=")) || arg.startsWith(QStringLiteral("--key=")))
+        if (arg.startsWith(QStringLiteral("--click=")) || arg.startsWith(QStringLiteral("--rclick=")) || arg.startsWith(QStringLiteral("--wheel=")) || arg.startsWith(QStringLiteral("--key=")))
             test_input << arg;
         else
             urls << arg;
