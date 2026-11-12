@@ -72,6 +72,12 @@ if [[ " $targets " == *" webby-ui "* || " $targets " == *" webby-core "* ]]; the
   export WEBBY_QT_ENV=$qtenv
 fi
 
+# wasm/ui is compiled straight from the job's copy of the repo, whose files carry the commit's time, not the time
+# they changed here: a commit older than the cached objects would look up to date to ninja. A cached copy updated
+# by content (rsync -c, as the Ladybird tree above) gives changed files a new time and leaves the rest alone.
+mkdir -p "$C/webby-ui"
+rsync -rlc --delete "$w/wasm/ui/" "$C/webby-ui/" || fail "updating the cached copy of wasm/ui failed"
+export WEBBY_UI_DIR=$C/webby-ui
 export LIBJS_TARGET_RUNNER="python $w/wasm/tools/wasi-run.py"
 echo "building $targets (budget ${budget}s)"
 # shellcheck disable=SC2086

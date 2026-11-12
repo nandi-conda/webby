@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Configure and build Ladybird (with webby's patches) for wasm32-wasip1.
 # usage: build-engine.sh LADYBIRD_SRC BUILD_DIR [targets...]   (default target: js)
-# env: WEBBY_CCACHE=0 (no ccache), ENABLE_GUI_TARGETS (ON for LibWeb and webby-render), WASI_SDK_PREFIX, WEBBY_WASI_SYSROOT (dependencies from deps/), RUSTUP_TOOLCHAIN (Ladybird's, with wasm32-wasip1)
+# env: WEBBY_CCACHE=0 (no ccache), WEBBY_UI_DIR (default ./ui), ENABLE_GUI_TARGETS (ON for LibWeb and webby-render), WASI_SDK_PREFIX, WEBBY_WASI_SYSROOT (dependencies from deps/), RUSTUP_TOOLCHAIN (Ladybird's, with wasm32-wasip1)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 src=$1; build=$2; shift 2
@@ -31,6 +31,6 @@ cmake -S "$src" -B "$build" -G Ninja \
     -DLADYBIRD_ENABLE_CPPTRACE=OFF \
     -DENABLE_NETWORK_DOWNLOADS=OFF \
     -DRUST_TARGET_TRIPLE=wasm32-wasip1 \
-    -DWEBBY_UI_DIR="$here/ui" \
+    -DWEBBY_UI_DIR="${WEBBY_UI_DIR:-$here/ui}" \
     "${launcher[@]}" > "$build/configure.log" || { tail -50 "$build/configure.log"; exit 1; }
 cmake --build "$build" --target "${targets[@]}"
