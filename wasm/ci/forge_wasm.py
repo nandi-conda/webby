@@ -226,12 +226,23 @@ def engine():
         sys.exit(f"the engine build failed ({status})")
     sha = os.environ.get("FORGE_SHA", "")
     wasms = sorted(out.glob("*.wasm"))
-    upload(ENGINE_TAG, [*wasms, *out.glob("webby-render-test.png"), *out.glob("webby-ui-test.png"), *out.glob("webby-split-test.png"), *out.glob("webby-render-net-*.png"), out / "SHA256SUMS", out / "build.log"], f"webby wasm engine {sha[:12]}",
+    # latha-gui's precompiled webby.wasm (engine.sh, latha-run --precompile): fetched by name on a first run.
+    prebuilt = sorted(out.glob("*.cwasm.zst"))
+    upload(ENGINE_TAG, [*wasms, *prebuilt, *out.glob("webby-render-test.png"), *out.glob("webby-ui-test.png"), *out.glob("webby-split-test.png"), *out.glob("webby-render-net-*.png"), out / "SHA256SUMS", out / "build.log"], f"webby wasm engine {sha[:12]}",
            f"Ladybird ({(ROOT / 'LADYBIRD_COMMIT').read_text().strip()[:10]}) with webby's patches for wasm32-wasip1, "
            f"from {sha}, built against {name}: {', '.join(p.name for p in wasms)}.\n\n"
            f"Run with wasm/tools/wasi-run.py (PyPI wasmtime, wasm exceptions on, a big wasm stack): "
            f"`python wasm/tools/wasi-run.py js.wasm -c 'print(6 * 7)'`.")
     say(f"Published {', '.join(p.name for p in wasms)} on the {ENGINE_TAG} release")
+    if prebuilt:
+        # Keep this build's precompiled files and the 4 newest others (other latha-gui versions, older webby.wasm
+        # still being run); each is ~85 MB.
+        new = {p.name for p in prebuilt}
+        old = sorted((a for a in assets(ENGINE_TAG) if a.get("name", "").endswith(".cwasm.zst") and a["name"] not in new),
+                     key=lambda a: a.get("created_at") or a.get("updated_at") or "", reverse=True)[4:]
+        for a in old:
+            s, _ = api("DELETE", f"/releases/{ENGINE_TAG}/assets/{urllib.parse.quote(a['name'])}")
+            say(f"deleted old {a['name']} (HTTP {s})")
 
 
 def main():

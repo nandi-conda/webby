@@ -197,6 +197,20 @@ if [[ " $targets " == *" webby-ui "* ]] && [ -n "${LATHA_RUN:-}" ]; then
     tail -40 "$out/webby-ui-bare.log"; fail "webby-ui with no arguments failed (exit $rc)"
   fi
   echo "webby.wasm ran in latha-gui"
+  # webby.wasm compiled ahead of time (x86-64-v3) for latha-gui's first run: it fetches <key>.cwasm.zst from this
+  # release instead of compiling 200 MB of wasm (35-50 s). Needs latha-gui >= 0.6 (--precompile); the key has
+  # latha-gui's host version in it, so each latha-gui release needs its own file (forge_wasm.py keeps a few).
+  pre=$C/tools-env-latha-0.6
+  if [ ! -x "$pre/bin/latha-run" ]; then
+    [ -x /tmp/bin/micromamba ] || (cd /tmp && curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj bin/micromamba)
+    /tmp/bin/micromamba create -y -q -r /tmp/mamba -p "$pre" -c https://prefix.dev/nandi-testing -c conda-forge \
+      'latha-gui>=0.6' > /dev/null 2>&1 || echo "latha-gui 0.6 not installable yet: no precompiled webby.wasm"
+  fi
+  if [ -x "$pre/bin/latha-run" ]; then
+    "$pre/bin/latha-run" --precompile "$out" "$out/webby.wasm" > "$out/webby-precompile.log" 2>&1 \
+      && echo "precompiled webby.wasm: $(tail -1 "$out/webby-precompile.log")" \
+      || { tail -20 "$out/webby-precompile.log"; echo "precompiling webby.wasm failed (latha-gui compiles it on first run)"; }
+  fi
 fi
 if [[ " $targets " == *" webby-core "* ]] && [ -n "${LATHA_RUN:-}" ]; then
   # The UI component (wasm/ui/shell, Qt only) composed with this engine component, the way a local UI build does it,

@@ -429,6 +429,12 @@ without a Compositor), wheel scrolling of inner scroll containers.
 `ConfigFile::open_from_text`, and skips font directories the sandbox refuses). A `/res` (or `WEBBY_RESOURCES`) with
 Ladybird's Base/res takes over the theme, and system font directories add their fonts.
 
+First run: compiling webby.wasm takes Cranelift ~165 s of CPU (35-50 s on 4-8 cores), so latha-gui >= 0.6 shows a
+"Getting webby ready" window at once and fetches webby.wasm compiled ahead of time, `<key>.cwasm.zst` (84 MB,
+x86-64-v3) from the `wasm-engine` release, then loads it from its cache in 0.02 s: about 5 s from the forge instead
+of ~45 s. CI makes it (`ci/engine.sh`: `latha-run --precompile`); for a hand-uploaded webby.wasm, run
+`latha-run --precompile DIR webby.wasm` with the latha-gui people use and upload DIR's file beside it.
+
 ### The UI on its own, over a prebuilt engine
 
 The engine is also a component by itself, `bin/webby-core.wasm` (target `webby-core`): `ui/WebView.cpp`, the
