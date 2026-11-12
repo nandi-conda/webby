@@ -214,21 +214,24 @@ HEAD_URL = (f"https://fileapi.fastapicloud.dev/api/forge/repos/{os.environ.get('
 
 def wasm_version():
     """webby.wasm's version: the built commit's time in UTC, 2026.11.12.173000 (later commits on main are newer).
-    Empty when git can't say, and then the build carries no update info."""
-    sha = os.environ.get("FORGE_SHA") or "HEAD"
-    r = subprocess.run(["git", "-C", str(ROOT), "log", "-1", "--format=%cd", "--date=format-local:%Y.%m.%d.%H%M%S", sha],
-                       capture_output=True, text=True, env={**os.environ, "TZ": "UTC"})
-    return r.stdout.strip() if r.returncode == 0 else ""
-
-
-def branch_head():
-    """The commit the job's branch is at now ("" when the forge can't say)."""
-    branch = os.environ.get("FORGE_BRANCH") or "main"
-    status, out = api("GET", f"/commits?ref={urllib.parse.quote(branch)}&limit=1")
-    try:
-        return out["commits"][0]["sha"] if status == 200 else ""
-    except (TypeError, KeyError, IndexError):
+    The forge's job checkout has no .git, so the time comes from the forge's commit API, else from git.
+    Empty when neither can say, and then the build carries no update info."""
+    sha = os.environ.get("FORGE_SHA") or ""
+    if sha and os.environ.get("FORGE_API"):
+        status, out = api("GET", f"/commits/{sha}")
+        try:
+            t = time.strptime(out["date"], "%Y-%m-%dT%H:%M:%SZ") if status == 200 else None
+        except (TypeError, KeyError, ValueError):
+            t = None
+        if t:
+            return time.strftime("%Y.%m.%d.%H%M%S", t)
+        say(f"no commit time for {sha[:12]} from the forge (HTTP {status}); trying git")
+    r = subprocess.run(["git", "-C", str(ROOT), "log", "-1", "--format=%cd", "--date=format-local:%Y.%m.%d.%H%M%S",
+                        sha or "HEAD"], capture_output=True, text=True, env={**os.environ, "TZ": "UTC"})
+    if r.returncode != 0 or not r.stdout.strip():
+        say("no commit time from git either: this webby.wasm carries no update info")
         return ""
+    return r.stdout.strip()
 
 
 def engine():
