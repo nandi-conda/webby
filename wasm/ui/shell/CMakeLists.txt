@@ -45,6 +45,8 @@ add_custom_command(OUTPUT "${gen}/bindings/gui.c" "${gen}/bindings/gui.h" "${gen
 
 add_executable(webby-ui-shell
     ${ui}/BrowserWindow.cpp
+    ${ui}/PageMenu.cpp
+    ${ui}/PopupMenu.cpp
     ${ui}/KeyMap.cpp
     ${ui}/Resources.c
     ${ui}/main.cpp

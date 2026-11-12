@@ -123,6 +123,7 @@ void BrowserWindow::new_tab(QString const& url)
     raw->on_clipboard_request = [raw](uint64_t request, bool selection) {
         raw->answer_clipboard(request, to_std(selection ? qt2wasm::gui::primaryText() : qt2wasm::gui::clipboardText()));
     };
+    raw->on_context_menu = [this, raw](WebbyUI::ContextMenu const& menu) { show_page_menu(raw, menu); };
     raw->load(to_std(url));
 }
 
@@ -130,6 +131,7 @@ void BrowserWindow::close_tab(int index)
 {
     if (index < 0 || index >= int(m_tabs.size()))
         return;
+    m_menu.close();
     m_tabs.erase(m_tabs.begin() + index);
     if (m_tabs.empty()) {
         QGuiApplication::quit();
@@ -144,6 +146,8 @@ void BrowserWindow::activate_tab(int index)
 {
     if (index < 0 || index >= int(m_tabs.size()))
         return;
+    if (index != m_current)
+        m_menu.close();
     m_current = index;
     auto page = page_rect();
     m_tabs[index].view->resize(page.width(), page.height());
@@ -264,6 +268,7 @@ void BrowserWindow::paintEvent(QPaintEvent*)
     paint_tabs(painter);
     paint_toolbar(painter);
     paint_status(painter);
+    m_menu.paint(painter);
 }
 
 void BrowserWindow::paint_tabs(QPainter& p)
@@ -430,6 +435,7 @@ void BrowserWindow::paint_status(QPainter& p)
 
 void BrowserWindow::resizeEvent(QResizeEvent*)
 {
+    m_menu.close();
     if (auto* tab = current()) {
         auto page = page_rect();
         tab->view->resize(page.width(), page.height());
@@ -779,8 +785,69 @@ void BrowserWindow::keyReleaseEvent(QKeyEvent* event)
         tab->view->key_up(web_key_code(*event), web_modifiers(event->modifiers()), 0);
 }
 
+// While the page menu is open it takes the window's input. A release still reaches the page that had the press.
+bool BrowserWindow::menu_event(QEvent* event)
+{
+    if (!m_menu.is_open())
+        return false;
+    switch (event->type()) {
+    case QEvent::MouseButtonPress:
+    case QEvent::MouseButtonDblClick: {
+        auto* mouse = static_cast<QMouseEvent*>(event);
+        if (m_menu.mouse_press(mouse->position()))
+            update();
+        // Swallowed either way, as GTK and Qt menus do: a click outside only closes the menu.
+        m_swallow_release = true;
+        return true;
+    }
+    case QEvent::MouseButtonRelease: {
+        auto* mouse = static_cast<QMouseEvent*>(event);
+        if (m_pressed.hit == Hit::Page) {
+            if (auto* tab = current()) {
+                auto page = page_rect();
+                m_page_buttons = web_buttons(mouse->buttons());
+                tab->view->mouse_up(int(mouse->position().x()) - page.left(), int(mouse->position().y()) - page.top(),
+                    web_button(mouse->button()), m_page_buttons, web_modifiers(mouse->modifiers()));
+            }
+            m_pressed = {};
+        }
+        if (m_menu.mouse_release(mouse->position(), mouse->button() == Qt::RightButton))
+            update();
+        m_swallow_release = false;
+        return true;
+    }
+    case QEvent::MouseMove:
+        if (m_menu.mouse_move(static_cast<QMouseEvent*>(event)->position()))
+            update();
+        return true;
+    case QEvent::Wheel:
+        m_menu.close();
+        update();
+        return true;
+    case QEvent::KeyPress:
+        m_menu.key_press(static_cast<QKeyEvent*>(event));
+        update();
+        return true;
+    case QEvent::KeyRelease:
+        return true;
+    case QEvent::FocusOut:
+        m_menu.close();
+        update();
+        return false;
+    default:
+        return false;
+    }
+}
+
 bool BrowserWindow::event(QEvent* event)
 {
+    if (menu_event(event))
+        return true;
+    // The release of a click that closed the menu goes nowhere.
+    if (m_swallow_release && event->type() == QEvent::MouseButtonRelease) {
+        m_swallow_release = false;
+        return true;
+    }
     if (event->type() == QEvent::Leave) {
         m_hover = {};
         if (m_page_has_mouse) {

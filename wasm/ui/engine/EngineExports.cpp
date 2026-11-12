@@ -22,6 +22,7 @@ struct EventRecord {
     std::string text;
     bool flag { false };
     uint64_t id { 0 };
+    WebbyUI::ContextMenu menu {};
 };
 
 struct exports_webby_engine_views_view_t {
@@ -70,6 +71,9 @@ exports_webby_engine_views_own_view_t exports_webby_engine_views_constructor_vie
     };
     view.on_clipboard_request = [&events](uint64_t id, bool selection) {
         events.push_back({ EXPORTS_WEBBY_ENGINE_VIEWS_EVENT_CLIPBOARD_REQUESTED, {}, selection, id });
+    };
+    view.on_context_menu = [&events](WebbyUI::ContextMenu const& menu) {
+        events.push_back({ EXPORTS_WEBBY_ENGINE_VIEWS_EVENT_CONTEXT_MENU_REQUESTED, {}, false, 0, menu });
     };
     return exports_webby_engine_views_view_new(record);
 }
@@ -170,6 +174,18 @@ void exports_webby_engine_views_method_view_take_events(Borrow self, exports_web
             out.val.clipboard_requested.id = events[i].id;
             out.val.clipboard_requested.selection = events[i].flag;
             break;
+        case EXPORTS_WEBBY_ENGINE_VIEWS_EVENT_CONTEXT_MENU_REQUESTED: {
+            auto const& m = events[i].menu;
+            auto& o = out.val.context_menu_requested;
+            o.x = m.x;
+            o.y = m.y;
+            give_string(&o.link, m.link);
+            give_string(&o.link_text, m.link_text);
+            give_string(&o.image, m.image);
+            give_string(&o.selection, m.selection);
+            o.editable = m.editable;
+            break;
+        }
         default:
             break;
         }
@@ -180,5 +196,10 @@ void exports_webby_engine_views_method_view_answer_clipboard(Borrow self, uint64
 {
     self->view->answer_clipboard(id, take_string(text));
 }
+
+void exports_webby_engine_views_method_view_selected_text(Borrow self, engine_string_t* ret) { give_string(ret, self->view->selected_text()); }
+void exports_webby_engine_views_method_view_select_all(Borrow self) { self->view->select_all(); }
+void exports_webby_engine_views_method_view_cut_selection(Borrow self, engine_string_t* ret) { give_string(ret, self->view->cut_selection()); }
+void exports_webby_engine_views_method_view_insert_text(Borrow self, engine_string_t* text) { self->view->insert_text(take_string(text)); }
 
 void exports_webby_engine_views_pump(void) { WebbyUI::WebView::pump(); }

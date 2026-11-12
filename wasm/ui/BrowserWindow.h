@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "PopupMenu.h"
 #include "WebView.h"
 
 #include <QImage>
@@ -72,6 +73,9 @@ private:
     void navigate_from_address();
     void focus_address(bool focus);
     void pump();
+    // The page's right-click menu (PageMenu.cpp).
+    void show_page_menu(WebbyUI::WebView*, WebbyUI::ContextMenu const&);
+    bool menu_event(QEvent*);
 
     HitResult hit_test(QPointF) const;
     QRectF tab_rect(int index) const;
@@ -104,4 +108,6 @@ private:
     HitResult m_pressed;
     bool m_page_has_mouse { false };
     unsigned m_page_buttons { 0 };
+    PopupMenu m_menu;
+    bool m_swallow_release { false };
 };

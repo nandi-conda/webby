@@ -27,6 +27,18 @@ interface views {
         selection: bool,
     }
 
+    /// What a right-click hit (the page did not cancel its contextmenu event): the UI shows its menu. URLs are ""
+    /// when there is none; `selection` is the selected text, `editable` a click in a text field.
+    record context-menu {
+        x: s32,
+        y: s32,
+        link: string,
+        link-text: string,
+        image: string,
+        selection: string,
+        editable: bool,
+    }
+
     /// What a page did since the last `take-events`, for the chrome.
     variant event {
         /// The page changed: `paint` it again.
@@ -38,6 +50,7 @@ interface views {
         link-hovered(string),
         clipboard-written(clipboard-write),
         clipboard-requested(clipboard-request),
+        context-menu-requested(context-menu),
     }
 
     /// One page (a tab). Sizes and coordinates are CSS pixels at device pixel ratio 1.
@@ -70,6 +83,12 @@ interface views {
         take-events: func() -> list<event>;
         /// The clipboard's text for a `clipboard-requested` event ("" if it holds none).
         answer-clipboard: func(id: u64, text: string);
+        /// Editing in the focused frame, for the context menu: the selected text, select all, cut (removes the
+        /// selection in an editable and returns it), and insert `text` at the caret as a paste would.
+        selected-text: func() -> string;
+        select-all: func();
+        cut-selection: func() -> string;
+        insert-text: func(text: string);
     }
 
     /// Run the engine's event loop until nothing is due right now (timers, tasks). Never blocks.

@@ -43,6 +43,17 @@ enum MouseButton : unsigned {
     ButtonForward = 16,
 };
 
+// What a right-click (or Ctrl+click) hit, for the chrome's context menu. URLs are "" when there is none.
+struct ContextMenu {
+    int x { 0 }; // viewport coordinates of the click
+    int y { 0 };
+    std::string link;      // the link's URL
+    std::string link_text; // its text
+    std::string image;     // the image's URL
+    std::string selection; // the selected text in the clicked frame
+    bool editable { false }; // the click was in a text field or contenteditable
+};
+
 class WebView {
 public:
     // The engine is set up the first time a view is made: LibWeb's JS VM, resource loader and fonts.
@@ -95,6 +106,14 @@ public:
     // request and its text, now or later. Unanswered, the paste waits.
     std::function<void(uint64_t request, bool selection)> on_clipboard_request;
     void answer_clipboard(uint64_t request, std::string const& text);
+    // The page's own context menu was not cancelled (Shift skips the page's handler): the chrome shows its menu.
+    std::function<void(ContextMenu const&)> on_context_menu;
+
+    // Editing, for the context menu, in the focused frame.
+    std::string selected_text() const;
+    void select_all();
+    std::string cut_selection(); // removes the selected text (in an editable) and returns it
+    void insert_text(std::string const& text); // a paste of `text` at the caret
 
     // Implementation details, public for the page client in WebView.cpp.
     struct Impl;
@@ -105,6 +124,7 @@ public:
     void did_hover_link(std::string url);
     void did_write_clipboard(std::string text, bool selection);
     void did_request_clipboard(uint64_t request, bool selection);
+    void did_request_context_menu(ContextMenu);
     // The UI component's WebView (shell/WebViewRemote.cpp) only: the engine component's queued events, as the
     // callbacks above.
     void deliver_engine_events();

@@ -207,6 +207,48 @@ void WebView::answer_clipboard(uint64_t request, std::string const& text)
     deliver_engine_events();
 }
 
+void WebView::did_request_context_menu(ContextMenu menu)
+{
+    if (on_context_menu)
+        on_context_menu(menu);
+}
+
+static std::string take_gui_string(gui_string_t& s)
+{
+    std::string result(reinterpret_cast<char const*>(s.ptr), s.len);
+    gui_string_free(&s);
+    return result;
+}
+
+std::string WebView::selected_text() const
+{
+    gui_string_t s {};
+    webby_engine_views_method_view_selected_text(m_impl->borrow(), &s);
+    return take_gui_string(s);
+}
+
+void WebView::select_all()
+{
+    webby_engine_views_method_view_select_all(m_impl->borrow());
+    deliver_engine_events();
+}
+
+std::string WebView::cut_selection()
+{
+    gui_string_t s {};
+    webby_engine_views_method_view_cut_selection(m_impl->borrow(), &s);
+    auto text = take_gui_string(s);
+    deliver_engine_events();
+    return text;
+}
+
+void WebView::insert_text(std::string const& text)
+{
+    auto s = borrow_string(text);
+    webby_engine_views_method_view_insert_text(m_impl->borrow(), &s);
+    deliver_engine_events();
+}
+
 // The engine's events since the last call, delivered as the callbacks would have been.
 void WebView::deliver_engine_events()
 {
@@ -218,6 +260,7 @@ void WebView::deliver_engine_events()
         std::string text;
         bool flag;
         uint64_t id { 0 };
+        ContextMenu menu {};
     };
     std::vector<Event> list;
     for (size_t i = 0; i < events.len; ++i) {
@@ -244,6 +287,12 @@ void WebView::deliver_engine_events()
             out.id = e.val.clipboard_requested.id;
             out.flag = e.val.clipboard_requested.selection;
             break;
+        case WEBBY_ENGINE_VIEWS_EVENT_CONTEXT_MENU_REQUESTED: {
+            auto const& m = e.val.context_menu_requested;
+            auto str = [](gui_string_t const& s) { return std::string(reinterpret_cast<char const*>(s.ptr), s.len); };
+            out.menu = { m.x, m.y, str(m.link), str(m.link_text), str(m.image), str(m.selection), m.editable };
+            break;
+        }
         default:
             break;
         }
@@ -280,6 +329,9 @@ void WebView::deliver_engine_events()
             break;
         case WEBBY_ENGINE_VIEWS_EVENT_CLIPBOARD_REQUESTED:
             did_request_clipboard(e.id, e.flag);
+            break;
+        case WEBBY_ENGINE_VIEWS_EVENT_CONTEXT_MENU_REQUESTED:
+            did_request_context_menu(std::move(e.menu));
             break;
         }
     }

@@ -37,6 +37,7 @@
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/DocumentObserver.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/MIME.h>
+#include <LibWeb/HTML/HTMLImageElement.h>
 #include <LibWeb/HTML/LocalNavigable.h>
 #include <LibWeb/HTML/LocalTraversableNavigable.h>
 #include <LibWeb/HTML/Parser/HTMLEncodingDetection.h>
@@ -52,6 +53,8 @@
 #include <LibWeb/Platform/FontPlugin.h>
 #include <LibWebCommon/Clipboard/SystemClipboard.h>
 #include <LibWebCommon/MimeSniff/MimeType.h>
+#include <LibWebCommon/HTML/PreparedNavigationDescriptor.h>
+#include <LibWebCommon/Page/ContextMenuForInputEventsTarget.h>
 #include <LibWebCommon/Page/NavigationTarget.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -190,6 +193,38 @@ public:
             m_view->did_write_clipboard(to_std(text.to_utf8().to_byte_string()), true);
     }
 
+    // Right-click (the page did not cancel its contextmenu event): what was hit goes to the chrome's menu.
+    virtual void page_did_request_context_menu(Web::HTML::CrossProcessId, Web::CSSPixelPoint position, Web::ContextMenuForInputEventsTarget input_target, Optional<Utf16String>, GC::Ptr<Web::DOM::Range>) override
+    {
+        auto menu = context_menu_at(position);
+        menu.editable = input_target == Web::ContextMenuForInputEventsTarget::Yes;
+        send_context_menu(move(menu));
+    }
+
+    virtual void page_did_request_link_context_menu(Web::HTML::CrossProcessId, Web::CSSPixelPoint position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString const&, unsigned, GC::Ptr<Web::DOM::Range>) override
+    {
+        auto menu = context_menu_at(position);
+        menu.link = to_std(navigation.url.serialize().to_byte_string());
+        if (auto request = m_page->take_context_menu_request(); request.has_value())
+            menu.link_text = to_std(request->target->descendant_text_content().to_utf8().to_byte_string());
+        // A linked image: the image's rows too.
+        if (auto* image = image_under(position))
+            menu.image = *image;
+        send_context_menu(move(menu));
+    }
+
+    virtual void page_did_request_image_context_menu(Web::HTML::CrossProcessId, Web::CSSPixelPoint position, Web::HTML::PreparedNavigationDescriptor navigation, ByteString const&, unsigned, Optional<Gfx::Bitmap const*>) override
+    {
+        auto menu = context_menu_at(position);
+        menu.image = to_std(navigation.url.serialize().to_byte_string());
+        send_context_menu(move(menu));
+    }
+
+    virtual void page_did_request_media_context_menu(Web::HTML::CrossProcessId, Web::CSSPixelPoint position, ByteString const&, unsigned, Web::Page::MediaContextMenu const&, Optional<Web::HTML::PreparedNavigationDescriptor>) override
+    {
+        send_context_menu(context_menu_at(position));
+    }
+
     // The page's own loads of file: URLs (style sheets, images, scripts) open the file right here.
     virtual void request_file(Web::FileRequest request) override
     {
@@ -207,6 +242,47 @@ public:
     }
 
 private:
+    WebbyUI::ContextMenu context_menu_at(Web::CSSPixelPoint position)
+    {
+        WebbyUI::ContextMenu menu;
+        menu.x = position.x().to_int();
+        menu.y = position.y().to_int();
+        if (auto navigable = m_page->hosted_focused_navigable())
+            menu.selection = to_std(navigable->selected_text().to_utf8().to_byte_string());
+        return menu;
+    }
+
+    // The <img> at `position` in the top-level document, if any (Ladybird reports a linked image as a link).
+    std::string const* image_under(Web::CSSPixelPoint position)
+    {
+        m_image_under.clear();
+        if (!m_page->has_local_traversable())
+            return nullptr;
+        auto document = m_page->local_traversable()->active_document();
+        if (!document)
+            return nullptr;
+        for (GC::Ptr<Web::DOM::Element const> element = document->element_from_point(position.x().to_double(), position.y().to_double()); element; element = element->parent_element()) {
+            if (auto const* image = as_if<Web::HTML::HTMLImageElement>(*element)) {
+                if (auto url = image->document().encoding_parse_url(image->current_src()); url.has_value())
+                    m_image_under = to_std(url->serialize().to_byte_string());
+                break;
+            }
+            if (element->is_html_anchor_element())
+                break;
+        }
+        return m_image_under.empty() ? nullptr : &m_image_under;
+    }
+
+    void send_context_menu(WebbyUI::ContextMenu menu)
+    {
+        if (!m_view)
+            return;
+        // After the input event, as a menu from the UI process would open.
+        Core::deferred_invoke([view = m_view, menu = move(menu)]() mutable { view->did_request_context_menu(move(menu)); });
+    }
+
+    std::string m_image_under;
+
     BrowserPageClient(WebView& view, Gfx::IntSize viewport, NonnullRefPtr<Gfx::PaletteImpl> palette_impl)
         : m_view(&view)
         , m_viewport(viewport)
@@ -778,6 +854,49 @@ void WebView::did_hover_link(std::string url)
 {
     if (on_link_hover)
         on_link_hover(url);
+}
+
+void WebView::did_request_context_menu(ContextMenu menu)
+{
+    if (on_context_menu)
+        on_context_menu(menu);
+}
+
+static GC::Ptr<Web::HTML::LocalNavigable> focused_navigable(GC::Root<Web::Page> const& page)
+{
+    return page ? page->hosted_focused_navigable() : nullptr;
+}
+
+std::string WebView::selected_text() const
+{
+    auto navigable = focused_navigable(m_impl->page);
+    return navigable ? to_std(navigable->selected_text().to_utf8().to_byte_string()) : std::string {};
+}
+
+void WebView::select_all()
+{
+    if (auto navigable = focused_navigable(m_impl->page))
+        navigable->select_all();
+    did_request_frame();
+}
+
+std::string WebView::cut_selection()
+{
+    auto navigable = focused_navigable(m_impl->page);
+    auto text = navigable ? to_std(navigable->cut_selected_text().to_utf8().to_byte_string()) : std::string {};
+    did_request_frame();
+    return text;
+}
+
+void WebView::insert_text(std::string const& text)
+{
+    if (text.empty())
+        return;
+    if (auto navigable = focused_navigable(m_impl->page)) {
+        auto utf16 = Utf16String::from_utf8_with_replacement_character(StringView { text.data(), text.size() });
+        navigable->paste(utf16);
+    }
+    did_request_frame();
 }
 
 }
