@@ -263,6 +263,7 @@ void BrowserWindow::wake(Tab& tab)
     raw->on_context_menu = [this, raw](WebbyUI::ContextMenu const& menu) { show_page_menu(raw, menu); };
     raw->on_pdf = [this, raw](WebbyUI::PdfDocument& pdf) { open_pdf(raw, pdf); };
     PasswordManager::the().attach(*raw);
+    hook_summarize(*raw);
     raw->on_navigation_request = [this, raw](std::string const& u) {
         auto url = from_std(u);
         if (Pages::is_sessions_action(url)) {
@@ -403,7 +404,9 @@ void BrowserWindow::close_tab(int index)
     // The frame on screen may be the closing tab's pixels.
     m_page_image = {};
     m_page_frame.invalidate();
+    bool panel_was = panel_showing();
     if (auto* view = m_tabs[index].view.get()) {
+        forget_summary(view);
         PasswordManager::the().detach(view);
         std::erase_if(m_passkey_requests, [view](auto const& r) { return r.first == view; });
         if (m_dialog_view == view) {
@@ -428,6 +431,8 @@ void BrowserWindow::close_tab(int index)
     if (m_current >= int(m_tabs.size()) || m_current > index)
         --m_current;
     activate_tab(qBound(0, m_current, int(m_tabs.size()) - 1));
+    if (panel_was && !panel_showing())
+        relayout_panel();
 }
 
 void BrowserWindow::activate_tab(int index)
@@ -438,6 +443,8 @@ void BrowserWindow::activate_tab(int index)
         m_menu.close();
         close_find();
     }
+    bool panel_was = panel_showing();
+    auto* panel_job_was = panel_job();
     m_current = index;
     auto page = page_rect();
     if (!m_tabs[index].view)
@@ -456,6 +463,15 @@ void BrowserWindow::activate_tab(int index)
     m_page_frame.invalidate();
     request_page_frame();
     sync_from_view();
+    // The panel shows this tab's summary, if it has one open.
+    if (panel_showing() != panel_was || panel_job() != panel_job_was) {
+        m_panel_focused = false;
+        if (panel_showing()) {
+            ensure_panel();
+            render_panel();
+        }
+        relayout_panel();
+    }
 }
 
 void BrowserWindow::sync_from_view()
@@ -645,7 +661,15 @@ QRectF BrowserWindow::suggestion_rect(int index) const
 
 QRect BrowserWindow::page_rect() const
 {
-    return { 0, chrome_height(), qMax(1, width()), qMax(1, height() - chrome_height()) };
+    QRect page { 0, chrome_height(), qMax(1, width()), qMax(1, height() - chrome_height()) };
+    // The Summarize panel takes the right (or, in a narrow window, the lower) part.
+    if (auto panel = panel_rect(); !panel.isEmpty()) {
+        if (panel.left() > 0)
+            page.setWidth(qMax(1, panel.left()));
+        else
+            page.setHeight(qMax(1, panel.top() - page.top()));
+    }
+    return page;
 }
 
 BrowserWindow::HitResult BrowserWindow::hit_test(QPointF p) const
@@ -701,6 +725,8 @@ BrowserWindow::HitResult BrowserWindow::hit_test(QPointF p) const
         if (password_bar_rect().contains(p))
             return {};
     }
+    if (panel_showing() && panel_rect().contains(p.toPoint()))
+        return { Hit::Panel };
     if (page_rect().contains(p.toPoint()))
         return { Hit::Page };
     return {};
@@ -715,6 +741,7 @@ void BrowserWindow::paintEvent(QPaintEvent* event)
     painter.setRenderHint(QPainter::Antialiasing);
     paint_page(painter);
     paint_page_scrollbars(painter);
+    paint_panel(painter);
     paint_tabs(painter);
     paint_toolbar(painter);
     paint_toolbar_buttons(painter);
@@ -1307,6 +1334,11 @@ void BrowserWindow::resizeEvent(QResizeEvent*)
         if (tab->pdf)
             tab->pdf->resize(page.size());
     }
+    if (m_panel && panel_showing()) {
+        auto panel = panel_rect();
+        if (m_panel->width() != panel.width() || m_panel->height() != panel.height())
+            m_panel->resize(panel.width(), panel.height());
+    }
     request_page_frame();
     update();
 }
@@ -1350,10 +1382,18 @@ void BrowserWindow::mousePressEvent(QMouseEvent* event)
     }
     if (hit.hit != Hit::Address && hit.hit != Hit::None && m_address_focused)
         focus_address(false);
+    m_panel_focused = hit.hit == Hit::Panel;
     auto* tab = current();
     if (tab && !tab->view)
         tab = nullptr;
     switch (hit.hit) {
+    case Hit::Panel:
+        if (m_panel) {
+            auto r = panel_rect();
+            m_panel->mouse_down(int(event->position().x()) - r.left(), int(event->position().y()) - r.top(),
+                web_button(event->button()), web_buttons(event->buttons()), web_modifiers(event->modifiers()), 1);
+        }
+        break;
     case Hit::Tab:
         if (event->button() == Qt::MiddleButton) {
             close_tab(hit.tab);
@@ -1443,6 +1483,12 @@ void BrowserWindow::mouseDoubleClickEvent(QMouseEvent* event)
         focus_address(true);
         return;
     }
+    if (hit.hit == Hit::Panel && m_panel) {
+        auto r = panel_rect();
+        m_panel->mouse_down(int(event->position().x()) - r.left(), int(event->position().y()) - r.top(),
+            web_button(event->button()), web_buttons(event->buttons()), web_modifiers(event->modifiers()), 2);
+        return;
+    }
     if (hit.hit == Hit::Page) {
         if (auto* pdf = current_pdf()) {
             if (event->button() == Qt::LeftButton)
@@ -1474,6 +1520,14 @@ void BrowserWindow::mouseReleaseEvent(QMouseEvent* event)
     auto* tab = current();
     if (tab && !tab->view)
         tab = nullptr;
+    if (pressed.hit == Hit::Panel) {
+        if (m_panel && panel_showing()) {
+            auto r = panel_rect();
+            m_panel->mouse_up(int(event->position().x()) - r.left(), int(event->position().y()) - r.top(),
+                web_button(event->button()), web_buttons(event->buttons()), web_modifiers(event->modifiers()));
+        }
+        return;
+    }
     if (pressed.hit == Hit::Page && tab && tab->pdf) {
         tab->pdf->mouse_release(event->position() - page_rect().topLeft(), event->button(), event->modifiers());
         return;
@@ -1589,6 +1643,18 @@ void BrowserWindow::mouseMoveEvent(QMouseEvent* event)
         }
         return;
     }
+    bool in_panel = m_panel && panel_showing() && (m_pressed.hit == Hit::Panel || (hit.hit == Hit::Panel && m_pressed.hit != Hit::Page));
+    if (in_panel) {
+        auto r = panel_rect();
+        m_panel->mouse_move(int(event->position().x()) - r.left(), int(event->position().y()) - r.top(),
+            web_buttons(event->buttons()), web_modifiers(event->modifiers()));
+        m_panel_has_mouse = true;
+    } else if (m_panel_has_mouse) {
+        if (m_panel)
+            m_panel->mouse_leave();
+        m_panel_has_mouse = false;
+        m_hovered_link.clear();
+    }
     auto* tab = current();
     if (!tab || !tab->view)
         return;
@@ -1617,6 +1683,13 @@ void BrowserWindow::mouseMoveEvent(QMouseEvent* event)
 
 void BrowserWindow::wheelEvent(QWheelEvent* event)
 {
+    if (m_panel && panel_showing() && hit_test(event->position()).hit == Hit::Panel) {
+        auto r = panel_rect();
+        QPointF delta = !event->pixelDelta().isNull() ? QPointF(-event->pixelDelta()) : QPointF(-event->angleDelta());
+        m_panel->wheel(int(event->position().x()) - r.left(), int(event->position().y()) - r.top(), delta.x(), delta.y(),
+            web_modifiers(event->modifiers()));
+        return;
+    }
     auto* tab = current();
     if (!tab || !tab->view || hit_test(event->position()).hit != Hit::Page)
         return;
@@ -1889,6 +1962,14 @@ void BrowserWindow::keyPressEvent(QKeyEvent* event)
         address_key(event);
         return;
     }
+    if (m_panel_focused && m_panel && panel_showing()) {
+        auto text = event->text();
+        uint32_t code_point = text.isEmpty() ? 0 : text.toUcs4().value(0);
+        if (code_point && !QChar::isPrint(code_point) && code_point != '\r' && code_point != '\t' && code_point != '\b')
+            code_point = 0;
+        m_panel->key_down(web_key_code(*event), web_modifiers(event->modifiers()), code_point, event->isAutoRepeat());
+        return;
+    }
     if (!tab)
         return;
     if (tab->pdf) {
@@ -1906,6 +1987,10 @@ void BrowserWindow::keyReleaseEvent(QKeyEvent* event)
 {
     if (m_address_focused)
         return;
+    if (m_panel_focused && m_panel && panel_showing()) {
+        m_panel->key_up(web_key_code(*event), web_modifiers(event->modifiers()), 0);
+        return;
+    }
     if (auto* tab = current(); tab && tab->view && !tab->pdf)
         tab->view->key_up(web_key_code(*event), web_modifiers(event->modifiers()), 0);
 }
@@ -1935,6 +2020,14 @@ bool BrowserWindow::menu_event(QEvent* event)
                 m_page_buttons = web_buttons(mouse->buttons());
                 tab->view->mouse_up(int(mouse->position().x()) - page.left(), int(mouse->position().y()) - page.top(),
                     web_button(mouse->button()), m_page_buttons, web_modifiers(mouse->modifiers()));
+            }
+            m_pressed = {};
+        }
+        if (m_pressed.hit == Hit::Panel) {
+            if (m_panel && panel_showing()) {
+                auto r = panel_rect();
+                m_panel->mouse_up(int(mouse->position().x()) - r.left(), int(mouse->position().y()) - r.top(),
+                    web_button(mouse->button()), web_buttons(mouse->buttons()), web_modifiers(mouse->modifiers()));
             }
             m_pressed = {};
         }
@@ -1984,6 +2077,10 @@ bool BrowserWindow::event(QEvent* event)
         save_session_on_quit();
     if (event->type() == QEvent::Leave) {
         m_hover = {};
+        if (m_panel_has_mouse && m_panel) {
+            m_panel->mouse_leave();
+            m_panel_has_mouse = false;
+        }
         if (m_page_has_mouse) {
             if (auto* pdf = current_pdf())
                 pdf->mouse_leave();
@@ -2000,10 +2097,11 @@ bool BrowserWindow::event(QEvent* event)
 
 QRectF BrowserWindow::find_rect() const
 {
-    qreal w = qMin<qreal>(420, width() - 24);
+    qreal w = qMin<qreal>(420, page_rect().width() - 24);
     // Under the PDF viewer's bar when a PDF shows.
     qreal below = const_cast<BrowserWindow*>(this)->current_pdf() ? 40 : 0;
-    return { width() - w - 12, chrome_height() + 8.0 + below, w, 40 };
+    qreal right = page_rect().right() + 1;
+    return { right - w - 12, chrome_height() + 8.0 + below, w, 40 };
 }
 
 QRectF BrowserWindow::find_button_rect(int index) const
@@ -2334,6 +2432,10 @@ void BrowserWindow::show_pdf_menu(QPointF at)
     }
     if (pdf->has_selection()) {
         m_menu.add(QStringLiteral("Copy"), QStringLiteral("Ctrl+C"), with_pdf([](Tab& t) { t.pdf->copy_selection(); }));
+        m_menu.add(QStringLiteral("Ask AI about this"), with_pdf([this](Tab& t) {
+            if (t.view)
+                ask_about_selection(t.view.get(), t.pdf->selected_text().trimmed());
+        }));
         m_menu.add_separator();
     }
     m_menu.add(QStringLiteral("Select all"), QStringLiteral("Ctrl+A"), with_pdf([](Tab& t) { t.pdf->select_all(); }));

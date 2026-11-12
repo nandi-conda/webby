@@ -373,4 +373,126 @@ void request(std::string const& method, std::string const& url, Headers const& h
         });
 }
 
+namespace {
+
+struct Streaming {
+    AK_ALLOC_WITH_KMALLOC;
+
+    RefPtr<Requests::Request> request;
+    std::function<void(int, Headers const&)> on_headers;
+    std::function<void(std::string const&)> on_data;
+    std::function<void(std::string const&)> on_done;
+};
+HashMap<StreamId, NonnullOwnPtr<Streaming>> s_streams;
+StreamId s_next_stream { 1 };
+
+// Runs `f` on the stream's callbacks on a later turn of the event loop, unless it was cancelled or finished by then.
+template<typename F>
+void later(StreamId id, F f)
+{
+    Core::deferred_invoke([id, f = move(f)]() mutable {
+        auto it = s_streams.find(id);
+        if (it != s_streams.end())
+            f(*it->value);
+    });
+}
+
+void stream_failed(StreamId id, std::string why)
+{
+    later(id, [id, why = move(why)](Streaming& s) {
+        auto done = move(s.on_done);
+        s_streams.remove(id);
+        if (done)
+            done(why.empty() ? std::string("failed") : why);
+    });
+}
+
+}
+
+StreamId stream(std::string const& method, std::string const& url, Headers const& headers, std::string const& body,
+    std::function<void(int, Headers const&)> on_headers, std::function<void(std::string const&)> on_data,
+    std::function<void(std::string const&)> on_done)
+{
+    auto id = s_next_stream++;
+    auto streaming = make<Streaming>();
+    streaming->on_headers = move(on_headers);
+    streaming->on_data = move(on_data);
+    streaming->on_done = move(on_done);
+    s_streams.set(id, move(streaming));
+    if (!Network::s_state) {
+        stream_failed(id, "The network did not start");
+        return id;
+    }
+    auto parsed = URL::Parser::basic_parse(StringView { url.data(), url.size() });
+    if (!parsed.has_value()) {
+        stream_failed(id, "Not a URL");
+        return id;
+    }
+    auto list = HTTP::HeaderList::create();
+    list->append(HTTP::Header::isomorphic_encode("User-Agent"sv, Web::default_user_agent));
+    for (auto const& [k, v] : headers)
+        list->append(HTTP::Header::isomorphic_encode(StringView { k.data(), k.size() }, StringView { v.data(), v.size() }));
+    auto req = Network::s_state->client->start_request(ByteString { method.data(), method.size() }, *parsed, *list,
+        ReadonlyBytes { reinterpret_cast<u8 const*>(body.data()), body.size() }, HTTP::CacheMode::NoStore,
+        HTTP::Cookie::IncludeCredentials::No);
+    if (!req) {
+        stream_failed(id, "RequestServer did not start the request");
+        return id;
+    }
+    if (auto it = s_streams.find(id); it != s_streams.end())
+        it->value->request = req;
+    req->set_unbuffered_request_callbacks(
+        [id](NonnullRefPtr<HTTP::HeaderList> response_headers, Optional<u32> response_code, Optional<String> const&,
+            Optional<Core::ImmutableBytes>, Optional<u64>, Requests::CacheState) {
+            Headers list;
+            for (auto const& header : *response_headers)
+                list.emplace_back(std::string { header.name.characters(), header.name.length() }, std::string { header.value.characters(), header.value.length() });
+            int status = response_code.has_value() ? int(*response_code) : 0;
+            later(id, [status, list = move(list)](Streaming& s) {
+                // A copy: the callback may cancel the stream, which destroys `s`.
+                if (auto f = s.on_headers)
+                    f(status, list);
+            });
+        },
+        [id](Requests::ResponseData data) {
+            auto bytes = data.bytes();
+            std::string piece(reinterpret_cast<char const*>(bytes.data()), bytes.size());
+            later(id, [piece = move(piece)](Streaming& s) {
+                if (auto f = s.on_data)
+                    f(piece);
+            });
+        },
+        [id](Core::ImmutableBytes data) {
+            std::string piece(reinterpret_cast<char const*>(data.bytes().data()), data.bytes().size());
+            later(id, [piece = move(piece)](Streaming& s) {
+                if (auto f = s.on_data)
+                    f(piece);
+            });
+        },
+        [id](u64, Requests::RequestTimingInfo const&, Optional<Requests::NetworkError> network_error) {
+            std::string why;
+            if (network_error.has_value()) {
+                auto text = Requests::network_error_to_string(*network_error);
+                why.assign(text.characters_without_null_termination(), text.length());
+                if (why.empty())
+                    why = "network error";
+            }
+            later(id, [id, why = move(why)](Streaming& s) {
+                auto done = move(s.on_done);
+                // Not removed before the callback's copy is taken: `s` lives in the map.
+                s_streams.remove(id);
+                if (done)
+                    done(why);
+            });
+        });
+    return id;
+}
+
+void cancel(StreamId id)
+{
+    auto streaming = s_streams.take(id);
+    if (streaming.has_value() && (*streaming)->request)
+        (void)(*streaming)->request->stop();
+}
+
 }

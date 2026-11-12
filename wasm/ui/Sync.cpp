@@ -8,6 +8,7 @@
 #include "HttpClient.h"
 #include "Profile.h"
 #include "Sessions.h"
+#include "Summarize.h"
 #include "SyncDoc.h"
 #include "SyncKeys.h"
 
@@ -808,6 +809,9 @@ void start()
     register_blob(Blob::Sessions, [] { return SyncDoc::doc_with(u"sessions"_s, Sessions::to_sync_doc()); },
         [](QJsonObject const& merged) { Sessions::apply_sync_doc(SyncDoc::section(merged, u"sessions"_s)); });
     Sessions::on_change([] { local_changed(Blob::Sessions); });
+    register_blob(Blob::Summaries, [] { return SyncDoc::doc_with(u"summaries"_s, Summarize::to_sync_records()); },
+        [](QJsonObject const& merged) { Summarize::apply_sync_records(SyncDoc::section(merged, u"summaries"_s)); });
+    Summarize::on_saved_change([] { local_changed(Blob::Summaries); });
     on_devices([] { tabs_changed(); });
 
     s_debounce = new QTimer;

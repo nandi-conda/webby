@@ -15,6 +15,7 @@
 #include "PopupMenu.h"
 #include "Omnibox.h"
 #include "Profile.h"
+#include "Summarize.h"
 #include "WebView.h"
 
 #include <QImage>
@@ -22,8 +23,11 @@
 #include <QRasterWindow>
 #include <QString>
 #include <QTimer>
+#include <map>
 #include <memory>
 #include <vector>
+
+struct SummaryJob;
 
 class BrowserWindow final : public QRasterWindow {
     Q_OBJECT
@@ -89,6 +93,7 @@ private:
         Bookmark,
         Suggestion,
         PasswordBar, // a button of the password bar; `tab` is its index
+        Panel,       // the Summarize / Ask AI side panel
         Page,
     };
     struct HitResult {
@@ -127,7 +132,7 @@ private:
     void paint_toast(QPainter&);
 
     // The buttons right of the address field, as the Nim front end's toolbar has them (right to left).
-    enum ToolbarButton { ButtonMore, ButtonDownloads, ButtonHistory, ButtonBookmarks, ButtonSessions, ButtonCloseAndSave, ButtonCount };
+    enum ToolbarButton { ButtonMore, ButtonDownloads, ButtonHistory, ButtonBookmarks, ButtonSessions, ButtonCloseAndSave, ButtonSummarize, ButtonCount };
     QRectF toolbar_button_rect(int button) const;
     void paint_toolbar_buttons(QPainter&);
     void toolbar_button(int button);
@@ -168,6 +173,33 @@ private:
     void next_passkey_dialog();
     bool dialog_event(QEvent*);
     void open_passwords_page();
+
+    // Summarize and Ask AI (SummaryPanel.cpp, Summarize.h): a job per tab, and the side panel showing the current
+    // tab's, a page of its own in m_panel beside (or under) the page.
+    void summarize_page();
+    void toggle_summary();
+    void close_summary();
+    void open_summarize_settings();
+    void ask_about_selection(WebbyUI::WebView*, QString const& text);
+    SummaryJob* panel_job() const;
+    bool panel_showing() const;
+    QRect panel_rect() const;
+    void relayout_panel();
+    void paint_panel(QPainter&);
+    void ensure_panel();
+    void render_panel();
+    void send_panel_state();
+    void panel_message(QString const&);
+    void job_changed(SummaryJob&);
+    std::shared_ptr<SummaryJob> job_for(WebbyUI::WebView*);
+    void start_summary(std::shared_ptr<SummaryJob> const&, bool fresh);
+    void ask_question(std::shared_ptr<SummaryJob> const&, QString const& question);
+    void read_page_text(WebbyUI::WebView*, bool whole_page, std::function<void(bool, WebbyUI::Summarize::PageText const&)>);
+    void hook_summarize(WebbyUI::WebView&);
+    void forget_summary(WebbyUI::WebView*);
+    void summary_jump(SummaryJob&, QString const& words);
+    void summary_jump_elsewhere(SummaryJob&, QString const& words);
+    void run_summary_jump(WebbyUI::WebView*, QString const& words, int retries, bool click);
 
     HitResult hit_test(QPointF) const;
     QRectF tab_rect(int index) const;
@@ -261,4 +293,15 @@ private:
     std::vector<WebbyUI::WebView::Scrollbar> m_page_scrollbars;
     QRect m_suggestions_painted; // where paint_suggestions last drew its box
     QRegion m_paint_region;      // what the paint in progress repaints (needs_paint skips the rest)
+
+    std::map<WebbyUI::WebView*, std::shared_ptr<SummaryJob>> m_jobs;
+    std::unique_ptr<WebbyUI::WebView> m_panel;
+    bool m_panel_ready { false };
+    bool m_panel_focused { false }; // keys go to the panel
+    bool m_panel_has_mouse { false };
+    bool m_panel_render_queued { false };
+    bool m_panel_open_settings { false };
+    bool m_panel_focus_entry { false };
+    bool m_panel_scroll_to_end { false };
+    std::pair<WebbyUI::WebView*, QString> m_pending_jump { nullptr, {} }; // a source link waiting for its page to load
 };

@@ -81,6 +81,9 @@ public:
     void zoom_step(int steps, QPointF anchor = { -1, -1 }); // 0: fit width
     bool has_selection() const;
     QString selected_text() const;
+    // The document's text from the first page on, a line per line and a blank line between pages, joining words
+    // hyphenated at a line's end, for Summarize: pages are read as needed until there is about `limit` characters.
+    QString document_text(int limit);
     void select_all();
     void copy_selection();
 

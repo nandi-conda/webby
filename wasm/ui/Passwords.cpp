@@ -5,6 +5,7 @@
  */
 
 #include "Passwords.h"
+#include "Summarize.h"
 #include "Pages.h"
 #include "Passkeys.h"
 #include "Resources.h"
@@ -100,6 +101,15 @@ void PasswordManager::vault_opened()
         });
         use_vault_passkeys();
         hook_sync(*vault);
+        // Summarize's API keys and provider choice are vault secrets, as on the desktop.
+        Summarize::set_secret_store({
+            [](QString const& name) { auto* v = Vault::the(); return v ? v->secret(name) : QString(); },
+            [](QString const& name, QString const& value, bool sync) {
+                if (auto* v = Vault::the())
+                    v->set_secret(name, value, sync);
+            },
+            [](QString const& name) { auto* v = Vault::the(); return v ? v->secret_syncs(name) : true; },
+        });
     }
     for (auto& [view, agent] : m_agents) {
         if (is_page(from_std(view->url())))

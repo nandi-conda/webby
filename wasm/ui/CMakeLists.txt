@@ -148,6 +148,18 @@ add_custom_command(OUTPUT "${gen}/pty/pty_guest.c" "${gen}/pty/pty_guest.h" "${g
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/wit/pty/pty.wit" VERBATIM)
 set_source_files_properties(PageScripts.c PROPERTIES COMPILE_OPTIONS "-std=c23;--embed-dir=${WEBBY_SCRIPTS_DIR}"
     OBJECT_DEPENDS "${WEBBY_SCRIPTS_DIR}/passwords.js")
+# ccache does not see #embed's files: a hash of them in the command line makes a change to one a cache miss
+# (build-engine.sh configures every run, so the hash is current).
+set(embedded_hash "")
+foreach (f "${WEBBY_SCRIPTS_DIR}/page_text.js" "${WEBBY_SCRIPTS_DIR}/jump_to_text.js" "${WEBBY_SCRIPTS_DIR}/ask_selection.js" "${WEBBY_SCRIPTS_DIR}/passwords.js" "${CMAKE_CURRENT_SOURCE_DIR}/summary-panel.html")
+    file(SHA256 "${f}" h)
+    string(APPEND embedded_hash "${h}")
+endforeach()
+string(SHA256 embedded_hash "${embedded_hash}")
+set_source_files_properties(PageScripts.c SummaryScripts.c PROPERTIES COMPILE_DEFINITIONS "WEBBY_EMBEDDED_HASH=${embedded_hash}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/summary-panel.html" "${WEBBY_SCRIPTS_DIR}/page_text.js" "${WEBBY_SCRIPTS_DIR}/jump_to_text.js" "${WEBBY_SCRIPTS_DIR}/ask_selection.js" "${WEBBY_SCRIPTS_DIR}/passwords.js")
+set_source_files_properties(SummaryScripts.c PROPERTIES COMPILE_OPTIONS "-std=c23;--embed-dir=${WEBBY_SCRIPTS_DIR};--embed-dir=${CMAKE_CURRENT_SOURCE_DIR}"
+    OBJECT_DEPENDS "${WEBBY_SCRIPTS_DIR}/page_text.js;${WEBBY_SCRIPTS_DIR}/jump_to_text.js;${WEBBY_SCRIPTS_DIR}/ask_selection.js;${CMAKE_CURRENT_SOURCE_DIR}/summary-panel.html")
 set_source_files_properties("${gen}/pty/pty_guest.c" "${WEBBY_NATIVE_DIR}/Authenticator.cpp" PROPERTIES COMPILE_OPTIONS "-w;-Wno-error")
 
 add_executable(webby-ui
@@ -179,6 +191,9 @@ add_executable(webby-ui
     SyncDoc.cpp
     SyncKeys.cpp
     SyncPages.cpp
+    Summarize.cpp
+    SummaryPanel.cpp
+    SummaryScripts.c
     WebView.cpp
     main.cpp
     qt_wasi_shims.c
@@ -215,9 +230,9 @@ target_include_directories(webby-ui PRIVATE
 target_compile_definitions(webby-ui PRIVATE QT_CORE_LIB QT_GUI_LIB QT_NO_DEBUG QT_STATIC QT_STATICPLUGIN
     QT2WASM_GUI QT2WASM_QPA_PLATFORM="qt2wasmgui" QT2WASM_GUI_BINDINGS_H="gui.h")
 # This UI's own sources share files with Ladybird's headers, which use Qt's keywords (emit, signals) as names.
-set_source_files_properties(BrowserWindow.cpp Dialog.cpp Keyring.cpp PageMenu.cpp PasswordBar.cpp Passwords.cpp PopupMenu.cpp KeyMap.cpp MoreMenu.cpp Network.cpp Omnibox.cpp PageFrame.cpp Pages.cpp PdfView.cpp Profile.cpp Sessions.cpp SessionsPage.cpp Sync.cpp SyncDoc.cpp SyncKeys.cpp SyncPages.cpp Vault.cpp WebView.cpp main.cpp PROPERTIES COMPILE_DEFINITIONS QT_NO_KEYWORDS)
+set_source_files_properties(BrowserWindow.cpp Dialog.cpp Keyring.cpp PageMenu.cpp PasswordBar.cpp Passwords.cpp PopupMenu.cpp KeyMap.cpp MoreMenu.cpp Network.cpp Omnibox.cpp PageFrame.cpp Pages.cpp PdfView.cpp Profile.cpp Sessions.cpp SessionsPage.cpp Summarize.cpp SummaryPanel.cpp Sync.cpp SyncDoc.cpp SyncKeys.cpp SyncPages.cpp Vault.cpp WebView.cpp main.cpp PROPERTIES COMPILE_DEFINITIONS QT_NO_KEYWORDS)
 # Qt's headers (QJsonValue's bit fields) trip Ladybird's -Wpadded-bitfield in the sources that include them.
-set_source_files_properties(BrowserWindow.cpp Dialog.cpp Keyring.cpp PageMenu.cpp PasswordBar.cpp Passwords.cpp PopupMenu.cpp KeyMap.cpp MoreMenu.cpp Omnibox.cpp PageFrame.cpp Pages.cpp PdfView.cpp Profile.cpp Sessions.cpp SessionsPage.cpp Sync.cpp SyncDoc.cpp SyncKeys.cpp SyncPages.cpp Vault.cpp main.cpp
+set_source_files_properties(BrowserWindow.cpp Dialog.cpp Keyring.cpp PageMenu.cpp PasswordBar.cpp Passwords.cpp PopupMenu.cpp KeyMap.cpp MoreMenu.cpp Omnibox.cpp PageFrame.cpp Pages.cpp PdfView.cpp Profile.cpp Sessions.cpp SessionsPage.cpp Summarize.cpp SummaryPanel.cpp Sync.cpp SyncDoc.cpp SyncKeys.cpp SyncPages.cpp Vault.cpp main.cpp
     PROPERTIES COMPILE_OPTIONS "-Wno-padded-bitfield")
 # Qt's and qt2wasm's own sources are not written to Ladybird's warning flags.
 set_source_files_properties(qt_wasi_shims.c ${moc_outputs} "${gen}/bindings/gui.c" "${qt2wasm_data}/runtime/runtime.cpp"

@@ -717,6 +717,30 @@ std::pair<PdfView::Caret, PdfView::Caret> PdfView::sel_range() const
 
 bool PdfView::has_selection() const { return !(m_sel_a == m_sel_b); }
 
+QString PdfView::document_text(int limit)
+{
+    std::u32string out;
+    for (int i = 0; i < int(m_pages.size()); ++i) {
+        auto& p = m_pages[i];
+        if (p.text_state == 0)
+            read_text(i);
+        for (size_t k = 0; k < p.chars.size(); ++k) {
+            auto const& ch = p.chars[k];
+            // "infor-" at a line's end and "mation" on the next are one word.
+            if (ch.line_end && ch.c == U'-' && k > 0 && QChar::isLetter(p.chars[k - 1].c))
+                continue;
+            if (!(ch.line_end && QChar::isSpace(ch.c)))
+                out += ch.c;
+            if (ch.line_end)
+                out += U'\n';
+        }
+        out += U'\n';
+        if (int(out.size()) > limit)
+            break;
+    }
+    return QString::fromStdU32String(out).trimmed();
+}
+
 QString PdfView::selected_text() const
 {
     if (!has_selection() || m_pages.empty())

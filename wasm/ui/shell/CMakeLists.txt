@@ -64,6 +64,7 @@ add_executable(webby-ui-shell
     SyncUnavailable.cpp
     WebViewRemote.cpp
     PasswordsStub.cpp
+    SummarizeStub.cpp
     ${moc_outputs}
     "${gen}/bindings/gui.c"
     "${qt2wasm_data}/runtime/runtime.cpp"

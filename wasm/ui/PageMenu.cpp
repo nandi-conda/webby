@@ -84,6 +84,10 @@ void BrowserWindow::show_page_menu(WebbyUI::WebView* view, WebbyUI::ContextMenu 
     } else if (!selection.trimmed().isEmpty()) {
         auto query = selection.simplified();
         m_menu.add(QStringLiteral("Copy"), copy(selection));
+        m_menu.add(QStringLiteral("Ask AI about this"), [this, alive, view, selection] {
+            if (alive())
+                ask_about_selection(view, selection.trimmed());
+        });
         m_menu.add(QStringLiteral("Search the web for “%1”").arg(ellipsize(query, 30)),
             in_new_tab(QStringLiteral("https://duckduckgo.com/?q=") + QString::fromLatin1(QUrl::toPercentEncoding(query))));
         m_menu.add_separator();

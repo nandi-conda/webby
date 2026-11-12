@@ -113,6 +113,27 @@ void BrowserWindow::paint_toolbar_buttons(QPainter& p)
             p.drawLine(QPointF(c.x() + 3.5, c.y() - 2.5), QPointF(c.x(), c.y() + 1));
             break;
         }
+        case ButtonSummarize: {
+            // A page with lines of text (summarize_outlined), lit while the panel shows a summary.
+            if (panel_showing()) {
+                p.setPen(Qt::NoPen);
+                p.setBrush(button_hover_color);
+                p.drawEllipse(r);
+                p.setPen(QPen(text_color, 1.7, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                p.setBrush(Qt::NoBrush);
+            }
+            QPainterPath page;
+            page.moveTo(c.x() - 6, c.y() - 8);
+            page.lineTo(c.x() + 2.5, c.y() - 8);
+            page.lineTo(c.x() + 6, c.y() - 4.5);
+            page.lineTo(c.x() + 6, c.y() + 8);
+            page.lineTo(c.x() - 6, c.y() + 8);
+            page.closeSubpath();
+            p.drawPath(page);
+            for (int line = 0; line < 3; ++line)
+                p.drawLine(QPointF(c.x() - 3, c.y() - 2 + line * 3.5), QPointF(c.x() + 3, c.y() - 2 + line * 3.5));
+            break;
+        }
         }
     }
     p.restore();
@@ -135,6 +156,10 @@ void BrowserWindow::toolbar_button(int button)
         break;
     case ButtonCloseAndSave:
         save_open_tabs_as_session(true);
+        break;
+    case ButtonSummarize:
+        toggle_summary();
+        update_chrome();
         break;
     case ButtonMore:
         open_more_menu();
@@ -206,10 +231,12 @@ void BrowserWindow::open_more_menu()
             t->view->reload();
     }, has_page);
     menu.add(QStringLiteral("Copy page address"), [url] { qt2wasm::gui::setClipboardText(url); }, !url.isEmpty());
+    menu.add(QStringLiteral("Summarize this page"), [this] { summarize_page(); update_chrome(); }, has_page && Profile::is_session_url(url));
     menu.add_separator();
 
     auto& settings = menu.add_submenu(QStringLiteral("Settings"));
     settings.add(WebbyUI::Sync::enabled() ? QStringLiteral("Sync (on)") : QStringLiteral("Sync"), [this] { open_own_page(Pages::sync_page()); });
+    settings.add(QStringLiteral("Summarize settings…"), [this] { open_summarize_settings(); update_chrome(); }, has_page);
     settings.add_separator();
     settings.add_check(QStringLiteral("Restore tabs at start"), Profile::ui_setting(QStringLiteral("restoreTabs")).toBool(true), {}, [] {
         Profile::set_ui_setting(QStringLiteral("restoreTabs"), !Profile::ui_setting(QStringLiteral("restoreTabs")).toBool(true));
