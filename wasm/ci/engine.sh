@@ -20,10 +20,16 @@ if [ "$(cat "$lb/.git/webby-wasm-patches" 2>/dev/null)" != "$stamp" ]; then
   [ -d "$lb/.git" ] || { git init -q "$lb" && git -C "$lb" remote add origin https://github.com/LadybirdBrowser/ladybird; }
   git -C "$lb" cat-file -e "$commit^{commit}" 2>/dev/null || git -C "$lb" fetch -q --depth 1 origin "$commit" \
     || fail "fetching Ladybird $commit failed"
-  git -C "$lb" checkout -q -f "$commit" && git -C "$lb" clean -qfdx -e Build/caches || fail "checkout failed"
+  # The patched tree is made beside the build's one, then only files whose contents differ are copied over
+  # (rsync -c): unchanged files keep their times, so ninja and cargo rebuild only what a patch touched. (A
+  # checkout -f and clean of the tree itself gave every file a new time, and a patch change meant a cold build.)
+  staged=$C/ladybird-staged; rm -rf "$staged"; mkdir -p "$staged"
+  git -C "$lb" archive "$commit" | tar -x -C "$staged" || fail "exporting Ladybird $commit failed"
   for p in "$w"/patches/*.patch "$w"/wasm/patches/*.patch; do
-    git -C "$lb" apply "$p" || fail "patch $(basename "$p") does not apply"
+    (cd "$staged" && git apply "$p") || fail "patch $(basename "$p") does not apply"
   done
+  rsync -rlc --delete --exclude=/.git --exclude=/Build/caches "$staged/" "$lb/" || fail "updating the source tree failed"
+  rm -rf "$staged"
   echo "$stamp" > "$lb/.git/webby-wasm-patches"
 fi
 
@@ -41,10 +47,14 @@ fi
 
 # LibWeb and webby-render only exist with the GUI targets on (patches/0006).
 if [[ " $targets " == *" webby-render "* ]]; then export ENABLE_GUI_TARGETS=ON; fi
-# A different configuration (build-engine.sh's options, the toolchain file) starts the build directory over.
+# A different toolchain file starts the build directory over; build-engine.sh configures again every run, so its
+# options apply without one. ccache (in the cache mount) makes a fresh build directory cheap anyway.
 build=$C/build
-conf=$( (cat "$w/wasm/build-engine.sh" "$w/wasm/cmake/wasi.cmake"; echo "gui=${ENABLE_GUI_TARGETS:-}") | sha256sum | cut -d' ' -f1)
+conf=$(cat "$w/wasm/cmake/wasi.cmake" | sha256sum | cut -d' ' -f1)
 if [ "$(cat "$build/.webby-conf" 2>/dev/null)" != "$conf" ]; then rm -rf "$build"; mkdir -p "$build"; echo "$conf" > "$build/.webby-conf"; fi
+export CCACHE_DIR=$C/ccache CCACHE_MAXSIZE=10G CCACHE_COMPILERCHECK=content \
+  CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime
+ccache -z > /dev/null 2>&1 || true
 
 # The Qt UI (wasm/ui) builds against qt2wasm's Qt for WASI, wit-bindgen, wasm-tools and the preview1 reactor adapter:
 # a micromamba env, cached; ui/CMakeLists.txt finds it through WEBBY_QT_ENV.
@@ -67,6 +77,7 @@ echo "building $targets (budget ${budget}s)"
 timeout "$budget" "$w/wasm/build-engine.sh" "$lb" "$build" $targets > "$out/build.full.log" 2>&1
 rc=$?
 grep -E "^\[[0-9]+/[0-9]+\]" "$out/build.full.log" | tail -1 > "$out/progress" || true
+ccache -s >> "$out/build.full.log" 2>&1 || true
 tail -150 "$out/build.full.log" > "$out/build.log"; rm -f "$out/build.full.log"
 if [ $rc = 124 ]; then status partial; exit 0; fi
 [ $rc = 0 ] || fail "build-engine.sh failed (exit $rc)"

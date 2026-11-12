@@ -8,6 +8,8 @@ RUN bash /tmp/base.sh
 ENV WASI_SDK_PREFIX=/opt/wasi-sdk WEBBY_WASI_SYSROOT=/opt/webby-wasi PATH=/opt/venv/bin:/root/.cargo/bin:$PATH
 
 FROM base AS engine
+# rsync updates the cached source tree by content (ci/engine.sh), ccache keeps compiled objects across build dirs.
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends rsync ccache > /dev/null && rm -rf /var/lib/apt/lists/*
 COPY wasm/ci/out/webby-wasi-sysroot.tar.zst /tmp/sysroot.tar.zst
 RUN tar -C /opt -I zstd -xf /tmp/sysroot.tar.zst && rm /tmp/sysroot.tar.zst
 COPY LADYBIRD_COMMIT /w/LADYBIRD_COMMIT
