@@ -11,6 +11,9 @@ if [ -x "${CARGO_HOME:-$HOME/.cargo}/bin/rustup" ]; then export PATH="${CARGO_HO
 # The Rust runtime's build script compiles the C interpreter (patches/0003) with cc-rs, which needs wasi-sdk's clang.
 export CC_wasm32_wasip1="${CC_wasm32_wasip1:-$WASI_SDK_PREFIX/bin/clang}" AR_wasm32_wasip1="${AR_wasm32_wasip1:-$WASI_SDK_PREFIX/bin/llvm-ar}"
 # Configured every time (cheap when nothing changed), so a change to these options reaches an existing build directory.
+# Links run at most WEBBY_LINK_JOBS (2) at a time: each ~200 MB wasm link + wasm-opt takes several GB, and a change
+# that relinks everything (a new sysroot) ran out of memory on the forge with all of them at once. (JOB_POOLS, not
+# LAGOM_LINK_POOL_SIZE: Ladybird's rust_crate.cmake overwrites the pools with "${JOB_POOLS};cargo=1".)
 # ccache, when there is one, wraps the compilers (ci/engine.sh keeps its directory in the job's cache).
 mkdir -p "$build"
 launcher=()
@@ -32,5 +35,6 @@ cmake -S "$src" -B "$build" -G Ninja \
     -DENABLE_NETWORK_DOWNLOADS=OFF \
     -DRUST_TARGET_TRIPLE=wasm32-wasip1 \
     -DWEBBY_UI_DIR="${WEBBY_UI_DIR:-$here/ui}" \
+    -DJOB_POOLS="link=${WEBBY_LINK_JOBS:-2}" -DCMAKE_JOB_POOL_LINK=link \
     "${launcher[@]}" > "$build/configure.log" || { tail -50 "$build/configure.log"; exit 1; }
 cmake --build "$build" --target "${targets[@]}"
