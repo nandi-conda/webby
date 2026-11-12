@@ -8,7 +8,7 @@
 // process. The UI (Qt) side talks to it through this header only, which names no LibWeb or AK type, so Qt and
 // Ladybird headers never meet in one file.
 //
-// A load parses the document right here and gives it a fresh Page (see WebView.cpp), as webby-render does. A paint
+// A load parses the document right here (http(s) documents come from RequestServer, in this module: Network.h) and gives it a fresh Page (see WebView.cpp), as webby-render does. A paint
 // lays the page out, records its display list and rasterizes it on the CPU with the Compositor's Skia player.
 
 #pragma once
@@ -20,6 +20,8 @@
 #include <vector>
 
 namespace WebbyUI {
+
+struct LoadedDocument;
 
 // Keyboard modifiers, as LibWeb's UIEvents::KeyModifier numbers them.
 enum Modifier : unsigned {
@@ -110,6 +112,8 @@ public:
 private:
     WebView(int width, int height);
     void navigate(std::string const& url, bool add_to_history);
+    void set_location(std::string url, bool add_to_history);
+    void show_document(LoadedDocument);
 
     std::unique_ptr<Impl> m_impl;
     int m_width { 0 };
@@ -120,6 +124,7 @@ private:
     bool m_needs_paint { true };
     std::vector<std::string> m_history;
     size_t m_history_index { 0 };
+    uint64_t m_fetch_id { 0 }; // the http(s) document being downloaded, if any
 };
 
 }

@@ -51,6 +51,7 @@ set(compositor_dir ${LADYBIRD_SOURCE_DIR}/Services/Compositor)
 add_executable(webby-ui
     BrowserWindow.cpp
     KeyMap.cpp
+    Network.cpp
     Resources.c
     WebView.cpp
     main.cpp
@@ -88,7 +89,7 @@ target_include_directories(webby-ui PRIVATE
 target_compile_definitions(webby-ui PRIVATE QT_CORE_LIB QT_GUI_LIB QT_NO_DEBUG QT_STATIC QT_STATICPLUGIN
     QT2WASM_GUI QT2WASM_QPA_PLATFORM="qt2wasmgui" QT2WASM_GUI_BINDINGS_H="gui.h")
 # This UI's own sources share files with Ladybird's headers, which use Qt's keywords (emit, signals) as names.
-set_source_files_properties(BrowserWindow.cpp KeyMap.cpp WebView.cpp main.cpp PROPERTIES COMPILE_DEFINITIONS QT_NO_KEYWORDS)
+set_source_files_properties(BrowserWindow.cpp KeyMap.cpp Network.cpp WebView.cpp main.cpp PROPERTIES COMPILE_DEFINITIONS QT_NO_KEYWORDS)
 # Qt's and qt2wasm's own sources are not written to Ladybird's warning flags.
 set_source_files_properties(qt_wasi_shims.c ${moc_outputs} "${gen}/bindings/gui.c" "${qt2wasm_data}/runtime/runtime.cpp"
     "${qt2wasm_data}/runtime/wasieventdispatcher.cpp" "${qt2wasm_data}/gui/qt2wasmgui.cpp"
@@ -103,7 +104,7 @@ target_link_libraries(webby-ui PRIVATE
     "${qt}/lib/objects-Release/Gui_resources_1/.qt/rcc/qrc_qpdf_init.cpp.obj"
     "${qt}/lib/objects-Release/Gui_resources_2/.qt/rcc/qrc_gui_shaders_init.cpp.obj"
     "${qt}/lib/libQt6Gui.a" "${qt}/lib/libQt6Core.a" "${qt}/lib/libQt6BundledPcre2.a" "${qt}/lib/libQt6BundledZLIB.a"
-    LibWeb LibCompositing LibGfx LibMedia LibFileSystem LibURL skia)
+    LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibFileSystem LibURL skia requestserverservice LibRequests)
 # A reactor: the host calls the exports; there is no main().
 target_link_options(webby-ui PRIVATE -mexec-model=reactor)
 
@@ -119,6 +120,7 @@ add_custom_command(OUTPUT "${gen}/engine/engine.c" "${gen}/engine/engine.h" "${g
     COMMAND "${WIT_BINDGEN}" c "${CMAKE_CURRENT_SOURCE_DIR}/wit/engine" --world engine --out-dir "${gen}/engine"
     DEPENDS "${engine_wit}" VERBATIM)
 add_executable(webby-core
+    Network.cpp
     WebView.cpp
     Resources.c
     engine/EngineExports.cpp
@@ -141,7 +143,7 @@ target_include_directories(webby-core PRIVATE ${LADYBIRD_SOURCE_DIR}/Services ${
     "${CMAKE_CURRENT_SOURCE_DIR}" "${gen}/engine")
 set_source_files_properties("${gen}/engine/engine.c" PROPERTIES COMPILE_OPTIONS "-w;-Wno-error")
 target_link_libraries(webby-core PRIVATE "${gen}/engine/engine_component_type.o"
-    LibWeb LibCompositing LibGfx LibMedia LibFileSystem LibURL skia)
+    LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibFileSystem LibURL skia requestserverservice LibRequests)
 target_link_options(webby-core PRIVATE -mexec-model=reactor)
 add_custom_command(TARGET webby-core POST_BUILD
     COMMAND "${WASM_TOOLS}" component new "$<TARGET_FILE:webby-core>" --adapt "wasi_snapshot_preview1=${adapter}"

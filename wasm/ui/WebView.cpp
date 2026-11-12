@@ -5,6 +5,7 @@
  */
 
 #include "WebView.h"
+#include "Network.h"
 #include "Resources.h"
 
 #include <AK/LexicalPath.h>
@@ -44,6 +45,7 @@
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/Platform/FontPlugin.h>
 #include <LibWebCommon/Clipboard/SystemClipboard.h>
+#include <LibWebCommon/MimeSniff/MimeType.h>
 #include <LibWebCommon/Page/NavigationTarget.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -66,7 +68,7 @@ code { background: #e8e2d6; padding: 1px 4px; border-radius: 4px; }
 <h1>webby</h1>
 <p>This browser runs entirely in WebAssembly: Ladybird's LibWeb lays out and paints the page, and the window around it
 is Qt, in the same module.</p>
-<p>Type a <code>file://</code> path in the address bar to open a page.</p>
+<p>Type a web address or a <code>file://</code> path in the address bar to open a page.</p>
 </main></body></html>)html";
 
 ByteString error_page_html(StringView url, StringView reason)
@@ -271,6 +273,9 @@ ErrorOr<void> initialize_engine()
     }
     Web::Platform::FontPlugin::install(*new Web::Platform::FontPlugin(false, &font_provider));
     s_palette = Gfx::PaletteImpl::create_with_anonymous_buffer(TRY(load_theme(resources)));
+    // http(s) pages and their subresources go through RequestServer, in this module. Without it, file: pages still open.
+    if (auto result = Network::initialize(); result.is_error())
+        warnln("webby: the network could not start: {}", result.error());
     return {};
 }
 
@@ -300,6 +305,8 @@ WebView::WebView(int width, int height)
 
 WebView::~WebView()
 {
+    if (m_fetch_id)
+        Network::cancel(m_fetch_id);
     if (m_impl->client)
         m_impl->client->detach();
 }
@@ -334,6 +341,12 @@ void WebView::go_forward()
     navigate(m_history[m_history_index], false);
 }
 
+struct LoadedDocument {
+    URL::URL url;
+    ByteBuffer html;
+    Optional<Web::MimeSniff::MimeType> mime_type;
+};
+
 // A load makes a new Page with a new top-level traversable, and parses the document into it directly, in this module
 // (the document a navigation would have made, as webby-render and SVGDecodedImageData make theirs).
 void WebView::navigate(std::string const& requested_url, bool add_to_history)
@@ -348,6 +361,11 @@ void WebView::navigate(std::string const& requested_url, bool add_to_history)
         url = URL::Parser::basic_parse(input);
     if (!url.has_value() && !input.contains("://"sv))
         url = URL::Parser::basic_parse(ByteString::formatted("https://{}", input));
+
+    if (m_fetch_id) {
+        Network::cancel(m_fetch_id);
+        m_fetch_id = 0;
+    }
 
     ByteString html;
     URL::URL document_url = url.has_value() ? *url : URL::Parser::basic_parse("about:blank"sv).value();
@@ -365,10 +383,66 @@ void WebView::navigate(std::string const& requested_url, bool add_to_history)
             html = error_page_html(url->serialize(), "This is a folder."sv);
         else
             html = ByteString { contents.value().bytes() };
+    } else if (url->scheme() == "http"sv || url->scheme() == "https"sv) {
+        // The old page stays up while the document downloads; the new one replaces it when it arrives.
+        set_location(to_std(url->serialize().to_byte_string()), add_to_history);
+        m_fetch_id = Network::fetch_document(*url, [this, requested = *url](ErrorOr<Network::Document> result) {
+            m_fetch_id = 0;
+            if (result.is_error()) {
+                auto html = error_page_html(requested.serialize(), ByteString::formatted("{}", result.error()));
+                show_document({ requested, MUST(ByteBuffer::copy(html.bytes())), {} });
+                return;
+            }
+            auto document = result.release_value();
+            Optional<Web::MimeSniff::MimeType> mime_type;
+            if (document.content_type.has_value())
+                mime_type = Web::MimeSniff::MimeType::parse(*document.content_type);
+            if (document.url != requested) {
+                // After a redirect the address bar and history show where the page came from.
+                m_url = to_std(document.url.serialize().to_byte_string());
+                if (m_history_index < m_history.size())
+                    m_history[m_history_index] = m_url;
+                if (on_url_change)
+                    on_url_change(m_url);
+            }
+            show_document({ document.url, move(document.body), move(mime_type) });
+        });
+        return;
     } else {
-        html = error_page_html(url->serialize(), "Only file: pages open so far: the network is not connected to this build yet."sv);
+        html = error_page_html(url->serialize(), ByteString::formatted("webby cannot open {}: URLs yet.", url->scheme()));
     }
 
+    set_location(to_std(document_url.serialize().to_byte_string()), add_to_history);
+    if (url.has_value() && url->scheme() == "about"sv) {
+        m_url = "";
+        if (add_to_history)
+            m_history[m_history_index] = m_url;
+        if (on_url_change)
+            on_url_change(m_url);
+    }
+    show_document({ document_url, MUST(ByteBuffer::copy(html.bytes())), {} });
+}
+
+void WebView::set_location(std::string url, bool add_to_history)
+{
+    m_url = move(url);
+    if (add_to_history) {
+        if (!m_history.empty())
+            m_history.resize(m_history_index + 1);
+        m_history.push_back(m_url);
+        m_history_index = m_history.size() - 1;
+    }
+    m_loading = true;
+    if (on_url_change)
+        on_url_change(m_url);
+    if (on_loading_change)
+        on_loading_change(true);
+}
+
+// The document's bytes are decoded as for a navigation: Content-Type's charset, a BOM or a <meta charset>, else UTF-8.
+void WebView::show_document(LoadedDocument loaded)
+{
+    auto const& document_url = loaded.url;
     if (m_impl->client)
         m_impl->client->detach();
 
@@ -383,6 +457,7 @@ void WebView::navigate(std::string const& requested_url, bool add_to_history)
 
     auto document = Web::DOM::Document::create(*page, window, document_url);
     document->set_id(client->allocate_cross_process_id());
+    document->set_origin(document_url.origin());
     document->set_document_type(Web::DOM::Document::Type::HTML);
     document->set_content_type("text/html"_utf16_fly_string);
     document->set_browsing_context(navigable.active_browsing_context());
@@ -399,25 +474,11 @@ void WebView::navigate(std::string const& requested_url, bool add_to_history)
     m_impl->document = document;
     m_impl->observer = observer;
 
-    m_url = to_std(document_url.serialize().to_byte_string());
-    if (url.has_value() && url->scheme() == "about"sv)
-        m_url = "";
-    if (add_to_history) {
-        if (!m_history.empty())
-            m_history.resize(m_history_index + 1);
-        m_history.push_back(m_url);
-        m_history_index = m_history.size() - 1;
-    }
     m_title.clear();
-    m_loading = true;
     if (on_link_hover)
         on_link_hover({});
-    if (on_url_change)
-        on_url_change(m_url);
-    if (on_loading_change)
-        on_loading_change(true);
 
-    auto parser = Web::HTML::HTMLParser::create_from_byte_string(*document, StringView { html }, Web::HTML::ParserScriptingMode::Normal, "UTF-8"sv);
+    auto parser = Web::HTML::HTMLParser::create_with_uncertain_encoding(*document, loaded.html, loaded.mime_type);
     parser->run(document_url);
     did_request_frame();
 }
