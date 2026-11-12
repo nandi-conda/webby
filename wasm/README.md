@@ -61,8 +61,8 @@ the wasm32 layout marks `<OFFSET>_WIDTH = 4` load and store as 32 bits. `flapc -
 
 Running: `python tools/wasi-run.py build/ladybird/bin/js script.js`. The LibJS runtime suite
 (`test-js-runtime Tests/LibJS/Runtime Tests/LibJS/Runtime/test-common.js`, built with `BUILD_TESTING=ON`) passes
-7666 of 7673 tests, the same in wasmtime (`tools/wasi-run.py`) and in latha-gui's `latha-run`, and `-g` (collect
-after every allocation) gives the same result. 3 are expected failures on every target. The 4 that fail are buffers
+7666 of 7673 tests, the same in wasmtime (`tools/wasi-run.py`) and in latha-gui's `latha-run`. With `-g` (collect
+after every allocation) every file passes when run on its own; the whole suite in one process under `-g` takes hours. 3 are expected failures on every target. The 4 that fail are buffers
 wasm32 cannot hold (see [32-bit limits](#32-bit-limits)).
 
 ### 32-bit limits
@@ -83,7 +83,9 @@ LibJS runtime suite's failures that were bugs rather than limits:
   offset masks are 0xFFFFFFFF and the sizes are kept as u64 or as the last address. wasi-libc's malloc grows memory
   with `sbrk`, whose increment is signed, so it never returns 2 GiB or more: PrimitiveStorage takes ranges of
   64 MiB and up straight from `memory.grow`, in whole wasm pages, and keeps released ones for reuse (merged with their
-  neighbours, extended in place when they end at the top of memory). Buffers of up to about 3 GiB now work.
+  neighbours, extended in place when they end at the top of memory). A range is only grown while 256 MiB stay free
+  above it for malloc (`patches/0016-wasm32-malloc-headroom.patch`), since malloc can never use that memory again. Buffers
+  of up to about 3 GiB now work.
 
 `patches/0015-wasm32-intrinsic-accessor-sret.patch`: C++ returns a `JS::Value` (a class around a union) through a
 hidden result pointer on wasm32, so the Rust runtime calls LibWeb's intrinsic accessors (the lazily created

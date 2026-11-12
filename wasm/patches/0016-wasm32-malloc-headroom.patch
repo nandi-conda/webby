@@ -1,0 +1,19 @@
+diff --git a/Libraries/LibGC/PrimitiveStorage.cpp b/Libraries/LibGC/PrimitiveStorage.cpp
+index 1a6b251d..3824edb7 100644
+--- a/Libraries/LibGC/PrimitiveStorage.cpp
++++ b/Libraries/LibGC/PrimitiveStorage.cpp
+@@ -52,8 +52,14 @@ static u64 wasi_memory_end()
+     return static_cast<u64>(__builtin_wasm_memory_size(0)) * wasi_page_size;
+ }
+ 
++// Linear memory never shrinks and malloc cannot use a released direct range, so a direct range is only grown while
++// this much address space stays free above it for malloc (the GC's own bookkeeping allocates during a collection).
++static constexpr u64 wasi_malloc_headroom = 256 * MiB;
++
+ static Optional<size_t> wasi_grow_memory(size_t size)
+ {
++    if (wasi_memory_end() + size + wasi_malloc_headroom > 4ull * GiB)
++        return {};
+     auto previous_pages = __builtin_wasm_memory_grow(0, size / wasi_page_size);
+     if (previous_pages == static_cast<decltype(previous_pages)>(-1))
+         return {};
