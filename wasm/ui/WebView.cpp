@@ -40,6 +40,8 @@
 #include <LibWeb/HTML/CustomElements/CustomElementRegistry.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/MIME.h>
 #include <LibWeb/HTML/HTMLImageElement.h>
+#include <LibWeb/HTML/HTMLInputElement.h>
+#include <LibWeb/HTML/HTMLTextAreaElement.h>
 #include <LibWeb/HTML/LocalNavigable.h>
 #include <LibWeb/HTML/LocalTraversableNavigable.h>
 #include <LibWeb/HTML/Parser/HTMLEncodingDetection.h>
@@ -206,6 +208,20 @@ public:
     {
         auto menu = context_menu_at(position);
         menu.editable = input_target == Web::ContextMenuForInputEventsTarget::Yes;
+        // The click's mousedown focuses a text field only after this, so look at what was hit as well.
+        if (auto request = m_page->take_context_menu_request(); request.has_value()) {
+            auto& target = *request->target;
+            if (auto* input = as_if<Web::HTML::HTMLInputElement>(target)) {
+                using Type = Web::HTML::HTMLInputElement::TypeAttributeState;
+                if (input->is_single_line() || input->type_state() == Type::URL)
+                    menu.editable = true;
+                // A password's text is not offered for copying.
+                if (input->type_state() == Type::Password)
+                    menu.selection.clear();
+            } else if (is<Web::HTML::HTMLTextAreaElement>(target) || target.is_editable_or_editing_host()) {
+                menu.editable = true;
+            }
+        }
         send_context_menu(move(menu));
     }
 
