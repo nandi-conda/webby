@@ -489,13 +489,18 @@ struct LoadedDocument {
 // Downloads. A response is saved rather than shown when its Content-Disposition says attachment, or its type is one
 // the engine has no way to show (not HTML, XML, text, an image, JSON or JavaScript), as Ladybird's navigation does.
 
+static bool is_attachment(Network::Document const& document)
+{
+    if (!document.content_disposition.has_value())
+        return false;
+    auto disposition = document.content_disposition->view().trim_whitespace();
+    return disposition.starts_with("attachment"sv, CaseSensitivity::CaseInsensitive);
+}
+
 static bool is_download(Network::Document const& document, Optional<Web::MimeSniff::MimeType> const& type)
 {
-    if (document.content_disposition.has_value()) {
-        auto disposition = document.content_disposition->view().trim_whitespace();
-        if (disposition.starts_with("attachment"sv, CaseSensitivity::CaseInsensitive))
-            return true;
-    }
+    if (is_attachment(document))
+        return true;
     if (!type.has_value())
         return false;
     auto essence = type->essence();
@@ -612,6 +617,45 @@ static Download save_download(Network::Document const& document, Optional<Web::M
     return download;
 }
 
+// PDFs are shown by the chrome's PDF viewer (wasm/ui/PdfView.cpp, MuPDF in the webby-pdf component), as the Nim
+// front end shows them with MuPDF rather than Ladybird's pdf.js viewer: application/pdf, or a file that starts as
+// one where the server gives no type or a generic one.
+static bool is_pdf(Optional<Web::MimeSniff::MimeType> const& type, ReadonlyBytes body)
+{
+    if (type.has_value() && type->essence() == "application/pdf"sv)
+        return true;
+    bool generic = !type.has_value() || type->essence() == "application/octet-stream"sv
+        || type->essence() == "binary/octet-stream"sv || type->essence() == "application/x-pdf"sv;
+    return generic && body.size() >= 5 && memcmp(body.data(), "%PDF-", 5) == 0;
+}
+
+// The page under the PDF viewer: empty, the viewer's grey, titled with the file's name (the viewer names the tab
+// after the document's own title once it has it).
+void WebView::show_pdf(LoadedDocument loaded)
+{
+    auto const& url = loaded.url;
+    auto const& body = loaded.html;
+    auto path = URL::percent_decode(url.serialize_path());
+    if (auto slash = path.find_last('/'); slash.has_value())
+        path = path.substring(*slash + 1);
+    if (path.is_empty())
+        path = "PDF";
+    auto name = path.replace("&"sv, "&amp;"sv, ReplaceMode::All).replace("<"sv, "&lt;"sv, ReplaceMode::All);
+    auto html = ByteString::formatted("<!doctype html><meta charset=utf-8><title>{}</title><style>html{{background:#525659}}</style>", name);
+    PdfDocument pdf;
+    pdf.url = to_std(url.serialize().to_byte_string());
+    pdf.mime = "application/pdf";
+    pdf.data.assign(body.data(), body.data() + body.size());
+    show_document({ url, MUST(ByteBuffer::copy(html.bytes())), {} });
+    did_receive_pdf(move(pdf));
+}
+
+void WebView::did_receive_pdf(PdfDocument pdf)
+{
+    if (on_pdf)
+        on_pdf(pdf);
+}
+
 // A load makes a new Page with a new top-level traversable, and parses the document into it directly, in this module
 // (the document a navigation would have made, as webby-render and SVGDecodedImageData make theirs).
 void WebView::navigate(std::string const& requested_url, bool add_to_history)
@@ -670,6 +714,17 @@ void WebView::navigate(std::string const& requested_url, bool add_to_history)
             Optional<Web::MimeSniff::MimeType> mime_type;
             if (document.content_type.has_value())
                 mime_type = Web::MimeSniff::MimeType::parse(*document.content_type);
+            if (!is_attachment(document) && is_pdf(mime_type, document.body.bytes())) {
+                if (document.url != requested) {
+                    m_url = to_std(document.url.serialize().to_byte_string());
+                    if (m_history_index < m_history.size())
+                        m_history[m_history_index] = m_url;
+                    if (on_url_change)
+                        on_url_change(m_url);
+                }
+                show_pdf({ document.url, move(document.body), move(mime_type) });
+                return;
+            }
             if (is_download(document, mime_type)) {
                 // Saved, not shown: the page, the address and the history stay as they were.
                 m_url = move(previous_url);
@@ -704,7 +759,9 @@ void WebView::navigate(std::string const& requested_url, bool add_to_history)
         if (on_url_change)
             on_url_change(m_url);
     }
-    if (file_body.has_value())
+    if (file_body.has_value() && is_pdf(file_type, file_body->bytes()))
+        show_pdf({ document_url, file_body.release_value(), move(file_type) });
+    else if (file_body.has_value())
         show_document({ document_url, file_body.release_value(), move(file_type) });
     else
         show_document({ document_url, MUST(ByteBuffer::copy(html.bytes())), {} });

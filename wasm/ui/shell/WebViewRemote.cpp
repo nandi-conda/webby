@@ -215,6 +215,12 @@ void WebView::did_download(Download download)
         on_download(download);
 }
 
+void WebView::did_receive_pdf(PdfDocument pdf)
+{
+    if (on_pdf)
+        on_pdf(pdf);
+}
+
 void WebView::did_request_context_menu(ContextMenu menu)
 {
     if (on_context_menu)
@@ -310,6 +316,7 @@ void WebView::deliver_engine_events()
         uint64_t id { 0 };
         ContextMenu menu {};
         Download download {};
+        PdfDocument pdf {};
     };
     std::vector<Event> list;
     for (size_t i = 0; i < events.len; ++i) {
@@ -346,6 +353,14 @@ void WebView::deliver_engine_events()
             auto const& d = e.val.download_finished;
             auto str = [](gui_string_t const& s) { return std::string(reinterpret_cast<char const*>(s.ptr), s.len); };
             out.download = { str(d.url), str(d.path), d.size, str(d.mime), str(d.error) };
+            break;
+        }
+        case WEBBY_ENGINE_VIEWS_EVENT_PDF_RECEIVED: {
+            auto const& d = e.val.pdf_received;
+            auto str = [](gui_string_t const& s) { return std::string(reinterpret_cast<char const*>(s.ptr), s.len); };
+            out.pdf.url = str(d.url);
+            out.pdf.mime = str(d.mime);
+            out.pdf.data.assign(d.data.ptr, d.data.ptr + d.data.len);
             break;
         }
         default:
@@ -390,6 +405,9 @@ void WebView::deliver_engine_events()
             break;
         case WEBBY_ENGINE_VIEWS_EVENT_DOWNLOAD_FINISHED:
             did_download(std::move(e.download));
+            break;
+        case WEBBY_ENGINE_VIEWS_EVENT_PDF_RECEIVED:
+            did_receive_pdf(std::move(e.pdf));
             break;
         }
     }

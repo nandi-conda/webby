@@ -24,6 +24,7 @@ struct EventRecord {
     uint64_t id { 0 };
     WebbyUI::ContextMenu menu {};
     WebbyUI::Download download {};
+    WebbyUI::PdfDocument pdf {};
 };
 
 struct exports_webby_engine_views_view_t {
@@ -79,6 +80,11 @@ exports_webby_engine_views_own_view_t exports_webby_engine_views_constructor_vie
     view.on_download = [&events](WebbyUI::Download const& d) {
         EventRecord e { EXPORTS_WEBBY_ENGINE_VIEWS_EVENT_DOWNLOAD_FINISHED, {} };
         e.download = d;
+        events.push_back(std::move(e));
+    };
+    view.on_pdf = [&events](WebbyUI::PdfDocument& pdf) {
+        EventRecord e { EXPORTS_WEBBY_ENGINE_VIEWS_EVENT_PDF_RECEIVED, {} };
+        e.pdf = std::move(pdf);
         events.push_back(std::move(e));
     };
     return exports_webby_engine_views_view_new(record);
@@ -200,6 +206,16 @@ void exports_webby_engine_views_method_view_take_events(Borrow self, exports_web
             o.size = d.size;
             give_string(&o.mime, d.mime);
             give_string(&o.error, d.error);
+            break;
+        }
+        case EXPORTS_WEBBY_ENGINE_VIEWS_EVENT_PDF_RECEIVED: {
+            auto const& d = events[i].pdf;
+            auto& o = out.val.pdf_received;
+            give_string(&o.url, d.url);
+            give_string(&o.mime, d.mime);
+            o.data.len = d.data.size();
+            o.data.ptr = static_cast<uint8_t*>(malloc(d.data.size() ? d.data.size() : 1));
+            memcpy(o.data.ptr, d.data.data(), d.data.size());
             break;
         }
         default:

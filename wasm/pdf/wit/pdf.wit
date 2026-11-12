@@ -1,0 +1,68 @@
+/// webby:pdf: MuPDF as its own component (webby-pdf.wasm, built from ../webby_pdf.c), for the PDF viewer in webby's
+/// Qt UI (wasm/ui/PdfView.cpp). It is what nim/pdf/webby-pdf is to the Nim front end: a separate component, so MuPDF
+/// (AGPL-3.0) and its own FreeType/HarfBuzz/zlib/libjpeg stay out of the UI and the engine, in a memory of their own.
+/// `wac plug` puts it into webby.wasm.
+///
+/// Sizes and positions are in points (1/72 inch), from a page's top left.
+package webby:pdf@0.1.0;
+
+interface documents {
+    record page-size {
+        width: f32,
+        height: f32,
+    }
+    /// One entry of the document outline (its table of contents): `page` -1 when it points nowhere in the document.
+    record outline-entry {
+        level: u32,
+        title: string,
+        page: s32,
+        y: f32,
+    }
+    record info {
+        pages: list<page-size>,
+        title: string,
+        outline: list<outline-entry>,
+    }
+    /// One character: its box and code point.
+    record char-box {
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        c: u32,
+    }
+    /// A link on a page: to `uri` outside the document (page -1), or to `page`, `y` inside it (uri "").
+    record link {
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        uri: string,
+        page: s32,
+        y: f32,
+    }
+    record page-text {
+        /// The page's text lines, in reading order, as MuPDF's structured text has them.
+        lines: list<list<char-box>>,
+        links: list<link>,
+    }
+    /// A page's pixels: premultiplied BGRA (Qt's ARGB32_Premultiplied), width x height, rows packed.
+    record pixels {
+        width: u32,
+        height: u32,
+        data: list<u8>,
+    }
+
+    resource document {
+        /// The PDF (or XPS, CBZ, image) in `data`; an error says why it cannot be opened (damaged, password).
+        open: static func(data: list<u8>, mime: string) -> result<document, string>;
+        info: func() -> info;
+        /// Page `page` (from 0) at `scale` pixels per point.
+        render: func(page: u32, scale: f32) -> result<pixels, string>;
+        text: func(page: u32) -> result<page-text, string>;
+    }
+}
+
+world pdf {
+    export documents;
+}
