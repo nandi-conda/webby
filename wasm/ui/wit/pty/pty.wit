@@ -1,0 +1,25 @@
+package latha:gui@0.2.1;
+
+// latha:gui's pty interface, as gui.wit has it (qt2wasm's gui/wit/gui.wit): the UI runs secret-tool on it (Keyring.cpp).
+/// Pseudo-terminals, for apps that run programs (terminal emulators).
+/// Output is polled: the host calls `app.tick` when a pty has data or ends.
+interface pty {
+    /// Start `argv` (argv[0] looked up in PATH; empty: the user's shell) on a
+    /// new pty of `cols` x `rows`, with `env` added to the host's
+    /// environment and `cwd` (none: the user's home). Returns its id.
+    spawn: func(argv: list<string>, env: list<tuple<string, string>>, cwd: option<string>,
+                cols: u16, rows: u16) -> result<u32, string>;
+    write: func(id: u32, data: list<u8>);
+    /// Everything the program wrote since the last read, base64 ("" = nothing).
+    read: func(id: u32) -> string;
+    resize: func(id: u32, cols: u16, rows: u16);
+    /// Its exit code once it has ended and its output was read, else none.
+    exit-code: func(id: u32) -> option<s32>;
+    /// Hang up (SIGHUP) and forget it.
+    close: func(id: u32);
+}
+
+/// Just the pty calls, linked next to the gui world's bindings.
+world pty-guest {
+    import pty;
+}

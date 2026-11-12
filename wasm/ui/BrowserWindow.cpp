@@ -7,9 +7,8 @@
 #include "BrowserWindow.h"
 #include "KeyMap.h"
 #include "Pages.h"
+#include "Passwords.h"
 
-#include <QDir>
-#include <QFile>
 #include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QKeyEvent>
@@ -98,6 +97,7 @@ BrowserWindow::BrowserWindow(QStringList const& urls)
         m_toast.clear();
         update();
     });
+    setup_passwords();
 
     // With no URLs given, last time's tabs come back, asleep until they come to the front (as in the Nim front end).
     int active = 0;
@@ -118,7 +118,7 @@ BrowserWindow::BrowserWindow(QStringList const& urls)
 
 int BrowserWindow::chrome_height() const
 {
-    return tab_strip_height + toolbar_height + (show_bookmarks_bar() ? bookmarks_bar_height : 0);
+    return tab_strip_height + toolbar_height + (show_bookmarks_bar() ? bookmarks_bar_height : 0) + (show_password_bar() ? password_bar_height : 0);
 }
 
 bool BrowserWindow::show_bookmarks_bar() const
@@ -167,20 +167,10 @@ void BrowserWindow::wake(Tab& tab)
         sync_from_view();
     };
     raw->on_url_change = [this, raw](std::string const& u) {
-        // The PDF viewer shows while the view stays on the PDF's URL (back, a link or a new address leave it).
-        for (auto& t : m_tabs) {
-            if (t.view.get() == raw && t.pdf && t.pdf->url() != from_std(u)) {
-                t.pdf.reset();
-                if (current() == &t) {
-                    m_page_frame.invalidate();
-                    m_hovered_link.clear();
-                    request_page_frame();
-                }
-            }
-        }
         if (current() && current()->view.get() == raw && !m_address_focused)
             m_address_text = from_std(u);
         Profile::History::the().add(from_std(u), from_std(raw->title()).simplified());
+        PasswordManager::the().url_changed(raw);
         sync_from_view();
         m_save_timer.start();
     };
@@ -209,7 +199,7 @@ void BrowserWindow::wake(Tab& tab)
             show_toast(QStringLiteral("Download failed: %1").arg(record.error));
     };
     raw->on_context_menu = [this, raw](WebbyUI::ContextMenu const& menu) { show_page_menu(raw, menu); };
-    raw->on_pdf = [this, raw](WebbyUI::PdfDocument& pdf) { open_pdf(raw, pdf); };
+    PasswordManager::the().attach(*raw);
     raw->load(to_std(Pages::is_own_page(url) ? Pages::refresh(url) : url));
 }
 
@@ -251,6 +241,15 @@ void BrowserWindow::close_tab(int index)
     // The frame on screen may be the closing tab's pixels.
     m_page_image = {};
     m_page_frame.invalidate();
+    if (auto* view = m_tabs[index].view.get()) {
+        PasswordManager::the().detach(view);
+        std::erase_if(m_passkey_requests, [view](auto const& r) { return r.first == view; });
+        if (m_dialog_view == view) {
+            // The view answers its own request as it goes.
+            m_dialog_view = nullptr;
+            m_dialog.close(-1);
+        }
+    }
     m_tabs.erase(m_tabs.begin() + index);
     m_save_timer.start();
     if (m_tabs.empty()) {
@@ -279,8 +278,6 @@ void BrowserWindow::activate_tab(int index)
     if (!m_tabs[index].view)
         return;
     m_tabs[index].view->resize(page.width(), page.height());
-    if (m_tabs[index].pdf)
-        m_tabs[index].pdf->resize(page.size());
     m_address_text = from_std(m_tabs[index].view->url());
     if (m_address_text.isEmpty() && !m_tabs[index].url.isEmpty())
         m_address_text = m_tabs[index].url;
@@ -297,7 +294,7 @@ void BrowserWindow::sync_from_view()
     for (auto& tab : m_tabs) {
         if (!tab.view)
             continue;
-        auto title = tab.pdf ? tab.pdf->title() : from_std(tab.view->title()).simplified();
+        auto title = from_std(tab.view->title()).simplified();
         tab.url = from_std(tab.view->url());
         tab.title = !title.isEmpty() ? title : !tab.url.isEmpty() ? tab.url : QStringLiteral("New Tab");
         tab.loading = tab.view->is_loading();
@@ -310,20 +307,6 @@ void BrowserWindow::sync_from_view()
 void BrowserWindow::pump()
 {
     WebbyUI::WebView::pump();
-    if (auto* pdf = current_pdf()) {
-        // At most one page rendered (or read) a turn, so input keeps coming through while a PDF fills in.
-        pdf->pump();
-        if (m_find_open && !m_find_text.isEmpty()) {
-            auto r = pdf->find_state();
-            if (r.index != m_find_result.index || r.total != m_find_result.total) {
-                m_find_result = r;
-                update(find_rect().toAlignedRect().adjusted(-2, -2, 2, 2));
-            }
-        }
-        if (pdf->needs_paint())
-            request_page_frame();
-        return;
-    }
     if (auto* tab = current(); tab && tab->view && tab->view->needs_paint())
         request_page_frame();
 }
@@ -526,6 +509,15 @@ BrowserWindow::HitResult BrowserWindow::hit_test(QPointF p) const
                 return { Hit::Bookmark, i };
         }
     }
+    if (show_password_bar()) {
+        auto buttons = password_bar_buttons();
+        for (int i = 0; i < int(buttons.size()); ++i) {
+            if (buttons[i].rect.contains(p))
+                return { Hit::PasswordBar, i };
+        }
+        if (password_bar_rect().contains(p))
+            return {};
+    }
     if (page_rect().contains(p.toPoint()))
         return { Hit::Page };
     return {};
@@ -542,11 +534,13 @@ void BrowserWindow::paintEvent(QPaintEvent*)
     paint_toolbar(painter);
     paint_toolbar_buttons(painter);
     paint_bookmarks_bar(painter);
+    paint_password_bar(painter);
     paint_status(painter);
     paint_find(painter);
     paint_toast(painter);
     paint_suggestions(painter);
     m_menu.paint(painter);
+    m_dialog.paint(painter, size());
 }
 
 void BrowserWindow::paint_tabs(QPainter& p)
@@ -839,28 +833,16 @@ void BrowserWindow::prepare_page_frame()
     m_page_dirty = false;
     auto page = page_rect();
     auto* tab = current();
-    auto* pdf = current_pdf();
-    uint8_t const* pixels = nullptr;
-    QSize size;
-    void const* owner = nullptr;
-    if (pdf) {
-        auto const& frame = pdf->paint();
-        pixels = frame.isNull() ? nullptr : frame.constBits();
-        size = frame.size();
-        owner = pdf;
-    } else if (tab && tab->view) {
-        pixels = tab->view->paint();
-        size = { tab->view->width(), tab->view->height() };
-        owner = tab->view.get();
-    }
+    uint8_t const* pixels = tab && tab->view ? tab->view->paint() : nullptr;
     if (!pixels) {
         m_page_image = {};
         m_page_frame.invalidate();
         update(page);
         return;
     }
+    QSize size { tab->view->width(), tab->view->height() };
     m_page_image = QImage(pixels, size.width(), size.height(), size.width() * 4, QImage::Format_ARGB32_Premultiplied);
-    auto change = m_page_frame.take(pixels, size, owner);
+    auto change = m_page_frame.take(pixels, size, tab->view.get());
     QRegion damage = change.damage.translated(page.topLeft());
     if (change.scroll) {
         // The host moves whole device pixels. Under an open menu or the address suggestions (they can cover most of
@@ -959,8 +941,6 @@ void BrowserWindow::resizeEvent(QResizeEvent*)
     if (auto* tab = current(); tab && tab->view) {
         auto page = page_rect();
         tab->view->resize(page.width(), page.height());
-        if (tab->pdf)
-            tab->pdf->resize(page.size());
     }
     request_page_frame();
     update();
@@ -1054,15 +1034,6 @@ void BrowserWindow::mousePressEvent(QMouseEvent* event)
         }
         break;
     case Hit::Page:
-        if (auto* pdf = current_pdf()) {
-            if (event->button() == Qt::RightButton) {
-                m_pressed = {};
-                show_pdf_menu(event->position());
-            } else {
-                pdf->mouse_press(event->position() - page_rect().topLeft(), event->button(), event->modifiers(), 1);
-            }
-            break;
-        }
         // A middle or Ctrl+click on a link opens it in a new tab behind this one.
         if (!m_hovered_link.isEmpty() && (event->button() == Qt::MiddleButton
                 || (event->button() == Qt::LeftButton && (event->modifiers() & Qt::ControlModifier)))) {
@@ -1099,11 +1070,6 @@ void BrowserWindow::mouseDoubleClickEvent(QMouseEvent* event)
         return;
     }
     if (hit.hit == Hit::Page) {
-        if (auto* pdf = current_pdf()) {
-            if (event->button() == Qt::LeftButton)
-                pdf->mouse_press(event->position() - page_rect().topLeft(), event->button(), event->modifiers(), 2);
-            return;
-        }
         if (auto* tab = current(); tab && tab->view) {
             auto page = page_rect();
             tab->view->mouse_down(int(event->position().x()) - page.left(), int(event->position().y()) - page.top(),
@@ -1129,10 +1095,6 @@ void BrowserWindow::mouseReleaseEvent(QMouseEvent* event)
     auto* tab = current();
     if (tab && !tab->view)
         tab = nullptr;
-    if (pressed.hit == Hit::Page && tab && tab->pdf) {
-        tab->pdf->mouse_release(event->position() - page_rect().topLeft(), event->button(), event->modifiers());
-        return;
-    }
     if (pressed.hit == Hit::Page && tab) {
         auto page = page_rect();
         m_page_buttons = web_buttons(event->buttons());
@@ -1173,6 +1135,10 @@ void BrowserWindow::mouseReleaseEvent(QMouseEvent* event)
         break;
     case Hit::Zoom:
         zoom_by(0);
+        break;
+    case Hit::PasswordBar:
+        if (hit.tab == pressed.tab)
+            password_bar_click(hit.tab);
         break;
     case Hit::FindPrevious:
         run_find(-1);
@@ -1240,16 +1206,6 @@ void BrowserWindow::mouseMoveEvent(QMouseEvent* event)
     if (!tab || !tab->view)
         return;
     bool in_page = hit.hit == Hit::Page || m_pressed.hit == Hit::Page;
-    if (tab->pdf) {
-        if (in_page) {
-            tab->pdf->mouse_move(event->position() - page_rect().topLeft(), event->buttons(), event->modifiers());
-            m_page_has_mouse = true;
-        } else if (m_page_has_mouse) {
-            tab->pdf->mouse_leave();
-            m_page_has_mouse = false;
-        }
-        return;
-    }
     if (in_page) {
         auto page = page_rect();
         tab->view->mouse_move(int(event->position().x()) - page.left(), int(event->position().y()) - page.top(),
@@ -1267,10 +1223,6 @@ void BrowserWindow::wheelEvent(QWheelEvent* event)
     auto* tab = current();
     if (!tab || !tab->view || hit_test(event->position()).hit != Hit::Page)
         return;
-    if (tab->pdf) {
-        tab->pdf->wheel(event->position() - page_rect().topLeft(), event->pixelDelta(), event->angleDelta(), event->modifiers());
-        return;
-    }
     if (event->modifiers() & Qt::ControlModifier) {
         // Ctrl+wheel zooms, a step a notch.
         auto dy = event->angleDelta().y();
@@ -1538,10 +1490,6 @@ void BrowserWindow::keyPressEvent(QKeyEvent* event)
     }
     if (!tab)
         return;
-    if (tab->pdf) {
-        tab->pdf->key_press(event);
-        return;
-    }
     auto text = event->text();
     uint32_t code_point = text.isEmpty() ? 0 : text.toUcs4().value(0);
     if (code_point && !QChar::isPrint(code_point) && code_point != '\r' && code_point != '\t' && code_point != '\b')
@@ -1553,7 +1501,7 @@ void BrowserWindow::keyReleaseEvent(QKeyEvent* event)
 {
     if (m_address_focused)
         return;
-    if (auto* tab = current(); tab && tab->view && !tab->pdf)
+    if (auto* tab = current(); tab && tab->view)
         tab->view->key_up(web_key_code(*event), web_modifiers(event->modifiers()), 0);
 }
 
@@ -1575,9 +1523,7 @@ bool BrowserWindow::menu_event(QEvent* event)
     case QEvent::MouseButtonRelease: {
         auto* mouse = static_cast<QMouseEvent*>(event);
         if (m_pressed.hit == Hit::Page) {
-            if (auto* pdf = current_pdf()) {
-                pdf->mouse_release(mouse->position() - page_rect().topLeft(), mouse->button(), mouse->modifiers());
-            } else if (auto* tab = current()) {
+            if (auto* tab = current()) {
                 auto page = page_rect();
                 m_page_buttons = web_buttons(mouse->buttons());
                 tab->view->mouse_up(int(mouse->position().x()) - page.left(), int(mouse->position().y()) - page.top(),
@@ -1620,6 +1566,8 @@ bool BrowserWindow::event(QEvent* event)
         prepare_page_frame();
     if (menu_event(event))
         return true;
+    if (dialog_event(event))
+        return true;
     // The release of a click that closed the menu goes nowhere.
     if (m_swallow_release && event->type() == QEvent::MouseButtonRelease) {
         m_swallow_release = false;
@@ -1628,9 +1576,7 @@ bool BrowserWindow::event(QEvent* event)
     if (event->type() == QEvent::Leave) {
         m_hover = {};
         if (m_page_has_mouse) {
-            if (auto* pdf = current_pdf())
-                pdf->mouse_leave();
-            else if (auto* tab = current(); tab && tab->view)
+            if (auto* tab = current(); tab && tab->view)
                 tab->view->mouse_leave();
             m_page_has_mouse = false;
         }
@@ -1644,9 +1590,7 @@ bool BrowserWindow::event(QEvent* event)
 QRectF BrowserWindow::find_rect() const
 {
     qreal w = qMin<qreal>(420, width() - 24);
-    // Under the PDF viewer's bar when a PDF shows.
-    qreal below = const_cast<BrowserWindow*>(this)->current_pdf() ? 40 : 0;
-    return { width() - w - 12, chrome_height() + 8.0 + below, w, 40 };
+    return { width() - w - 12, chrome_height() + 8.0, w, 40 };
 }
 
 QRectF BrowserWindow::find_button_rect(int index) const
@@ -1665,7 +1609,7 @@ void BrowserWindow::open_find()
     m_find_open = true;
     m_find_focused = true;
     // The page's selection is the first query, as in other browsers.
-    auto selected = (tab->pdf ? tab->pdf->selected_text() : from_std(tab->view->selected_text())).simplified();
+    auto selected = from_std(tab->view->selected_text()).simplified();
     if (!selected.isEmpty() && selected.size() < 200)
         m_find_text = selected;
     run_find(0);
@@ -1678,9 +1622,7 @@ void BrowserWindow::close_find()
         return;
     m_find_open = false;
     m_find_result = {};
-    if (auto* pdf = current_pdf())
-        pdf->find_end();
-    else if (auto* tab = current(); tab && tab->view)
+    if (auto* tab = current(); tab && tab->view)
         tab->view->find_end();
     update();
 }
@@ -1690,18 +1632,6 @@ void BrowserWindow::run_find(int direction)
     auto* tab = current();
     if (!tab || !tab->view)
         return;
-    if (auto* pdf = tab->pdf.get()) {
-        if (m_find_text.isEmpty()) {
-            pdf->find_end();
-            m_find_result = {};
-        } else if (direction == 0) {
-            m_find_result = pdf->find(m_find_text);
-        } else {
-            m_find_result = direction > 0 ? pdf->find_next() : pdf->find_previous();
-        }
-        update();
-        return;
-    }
     if (m_find_text.isEmpty()) {
         tab->view->find_end();
         m_find_result = {};
@@ -1827,12 +1757,6 @@ void BrowserWindow::zoom_by(int steps)
     auto* tab = current();
     if (!tab || !tab->view)
         return;
-    if (tab->pdf) {
-        // Ctrl+0 fits the width, as in the Nim viewer.
-        tab->pdf->zoom_step(steps);
-        update();
-        return;
-    }
     static constexpr double levels[] = { 0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0 };
     double zoom = tab->view->zoom();
     double next = 1.0;
@@ -1858,8 +1782,7 @@ void BrowserWindow::zoom_by(int steps)
 QRectF BrowserWindow::zoom_rect() const
 {
     auto* tab = const_cast<BrowserWindow*>(this)->current();
-    // The PDF viewer's bar shows its own zoom.
-    if (!tab || !tab->view || tab->pdf || qAbs(tab->view->zoom() - 1.0) < 0.001)
+    if (!tab || !tab->view || qAbs(tab->view->zoom() - 1.0) < 0.001)
         return {};
     auto star = star_rect();
     return { star.left() - 52, star.top() + 6, 50, star.height() - 12 };
@@ -1891,155 +1814,3 @@ void BrowserWindow::paint_toast(QPainter& p)
     p.drawText(box, Qt::AlignCenter, text);
 }
 
-
-// PDFs.
-
-WebbyUI::PdfView* BrowserWindow::current_pdf()
-{
-    auto* tab = current();
-    return tab && tab->view ? tab->pdf.get() : nullptr;
-}
-
-void BrowserWindow::open_pdf(WebbyUI::WebView* view, WebbyUI::PdfDocument& document)
-{
-    Tab* tab = nullptr;
-    for (auto& t : m_tabs) {
-        if (t.view.get() == view)
-            tab = &t;
-    }
-    if (!tab)
-        return;
-    QByteArray bytes(reinterpret_cast<char const*>(document.data.data()), qsizetype(document.data.size()));
-    document.data.clear();
-    document.data.shrink_to_fit();
-    auto pdf = std::make_unique<WebbyUI::PdfView>(from_std(document.url), std::move(bytes), from_std(document.mime));
-    auto* raw = pdf.get();
-    raw->on_needs_paint = [this, raw] {
-        if (current_pdf() == raw)
-            request_page_frame();
-    };
-    raw->on_link_hover = [this, raw](QString const& link) {
-        if (current_pdf() == raw) {
-            auto was = status_rect();
-            m_hovered_link = link;
-            update(QRegion(was) | status_rect());
-        }
-    };
-    raw->on_open_url = [this, raw](QString const& url, bool in_new_tab) {
-        if (in_new_tab)
-            open_in_new_tab(url, false);
-        else if (current_pdf() == raw)
-            load_in_current(url);
-    };
-    raw->on_save = [this, raw] {
-        for (auto& t : m_tabs) {
-            if (t.pdf.get() == raw)
-                save_pdf(t);
-        }
-    };
-    raw->resize(page_rect().size());
-    tab->pdf = std::move(pdf);
-    if (current() == tab) {
-        close_find();
-        m_hovered_link.clear();
-        m_page_frame.invalidate();
-        request_page_frame();
-    }
-    Profile::History::the().set_title(tab->pdf->url(), tab->pdf->title());
-    sync_from_view();
-}
-
-void BrowserWindow::show_pdf_menu(QPointF at)
-{
-    auto* tab = current();
-    auto* pdf = current_pdf();
-    if (!pdf)
-        return;
-    auto* view = tab->view.get();
-    // The viewer may be gone (its tab closed or navigated) by the time a row runs: look it up again.
-    auto with_pdf = [this, pdf](auto f) {
-        return [this, pdf, f] {
-            for (auto& t : m_tabs) {
-                if (t.pdf.get() == pdf) {
-                    f(t);
-                    return;
-                }
-            }
-        };
-    };
-    auto link = pdf->link_at(at - page_rect().topLeft());
-    m_menu.close();
-    if (!link.uri.isEmpty()) {
-        auto url = link.uri;
-        m_menu.add(QStringLiteral("Open link in new tab"), [this, url] { new_tab(url); });
-        m_menu.add(QStringLiteral("Copy link address"), [url] { qt2wasm::gui::setClipboardText(url); });
-        m_menu.add_separator();
-    }
-    if (pdf->has_selection()) {
-        m_menu.add(QStringLiteral("Copy"), QStringLiteral("Ctrl+C"), with_pdf([](Tab& t) { t.pdf->copy_selection(); }));
-        m_menu.add_separator();
-    }
-    m_menu.add(QStringLiteral("Select all"), QStringLiteral("Ctrl+A"), with_pdf([](Tab& t) { t.pdf->select_all(); }));
-    m_menu.add(QStringLiteral("Find…"), QStringLiteral("Ctrl+F"), [this] { open_find(); });
-    m_menu.add(QStringLiteral("Save PDF"), QStringLiteral("Ctrl+S"), with_pdf([this](Tab& t) { save_pdf(t); }));
-    m_menu.add_separator();
-    m_menu.add(QStringLiteral("Back"), [this, view] {
-        if (auto* t = current(); t && t->view.get() == view)
-            view->go_back();
-    }, view->can_go_back());
-    m_menu.add(QStringLiteral("Reload"), [this, view] {
-        if (auto* t = current(); t && t->view.get() == view)
-            view->reload();
-    });
-    auto url = pdf->url();
-    m_menu.add(QStringLiteral("Copy page address"), [url] { qt2wasm::gui::setClipboardText(url); });
-    m_menu.open(at, size());
-    update();
-}
-
-// Save: the PDF's bytes into the downloads folder (as the engine saves downloads: $WEBBY_DOWNLOAD_DIR, else
-// $XDG_DOWNLOAD_DIR, else ~/Downloads; "name (1).pdf" rather than overwriting), and into the Downloads page's list.
-void BrowserWindow::save_pdf(Tab& tab)
-{
-    if (!tab.pdf)
-        return;
-    QString dir;
-    for (auto const* name : { "WEBBY_DOWNLOAD_DIR", "XDG_DOWNLOAD_DIR" }) {
-        if (dir.isEmpty())
-            dir = qEnvironmentVariable(name);
-    }
-    if (dir.isEmpty()) {
-        auto home = qEnvironmentVariable("HOME");
-        dir = (home.isEmpty() ? QStringLiteral("/tmp") : home) + QStringLiteral("/Downloads");
-    }
-    QDir().mkpath(dir);
-    auto name = tab.pdf->file_name();
-    auto stem = name.left(name.size() - 4);
-    QString path;
-    QFile file;
-    for (int i = 0; i < 1000; ++i) {
-        path = dir + u'/' + (i == 0 ? name : QStringLiteral("%1 (%2).pdf").arg(stem).arg(i));
-        if (QFile::exists(path))
-            continue;
-        file.setFileName(path);
-        if (file.open(QIODevice::WriteOnly | QIODevice::NewOnly))
-            break;
-    }
-    QString error;
-    if (!file.isOpen())
-        error = QStringLiteral("cannot write in %1").arg(dir);
-    else if (file.write(tab.pdf->data()) != tab.pdf->data().size())
-        error = file.errorString();
-    file.close();
-    if (!error.isEmpty())
-        QFile::remove(path);
-    Profile::DownloadRecord record { tab.pdf->url(), error.isEmpty() ? path : QString(), qint64(tab.pdf->data().size()),
-        QStringLiteral("application/pdf"), error, Profile::now_ms() };
-    Profile::add_download(record);
-    if (error.isEmpty()) {
-        tab.pdf->set_status(QStringLiteral("Saved as %1").arg(path.section(u'/', -1)));
-        show_toast(QStringLiteral("Saved %1 to %2  ·  Ctrl+J").arg(path.section(u'/', -1), dir));
-    } else {
-        tab.pdf->set_status(QStringLiteral("Couldn't save: %1").arg(error));
-    }
-}

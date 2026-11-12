@@ -49,15 +49,6 @@ interface views {
         error: string,
     }
 
-    /// A navigation's response is a PDF (application/pdf, not an attachment; or a .pdf file): the view keeps `url` in
-    /// its history and shows an empty page titled with the file's name; the UI shows the PDF itself (MuPDF, the
-    /// webby:pdf component) while the view's URL is `url`.
-    record pdf-document {
-        url: string,
-        mime: string,
-        data: list<u8>,
-    }
-
     /// What a page did since the last `take-events`, for the chrome.
     variant event {
         /// The page changed: `paint` it again.
@@ -71,7 +62,6 @@ interface views {
         clipboard-requested(clipboard-request),
         context-menu-requested(context-menu),
         download-finished(download),
-        pdf-received(pdf-document),
     }
 
     record find-result {

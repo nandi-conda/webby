@@ -9,14 +9,15 @@
 
 #pragma once
 
+#include "Dialog.h"
 #include "PageFrame.h"
-#include "PdfView.h"
 #include "PopupMenu.h"
 #include "Omnibox.h"
 #include "Profile.h"
 #include "WebView.h"
 
 #include <QImage>
+#include <QJsonObject>
 #include <QRasterWindow>
 #include <QString>
 #include <QTimer>
@@ -32,6 +33,7 @@ public:
     static constexpr int tab_strip_height = 36;
     static constexpr int toolbar_height = 44;
     static constexpr int bookmarks_bar_height = 30;
+    static constexpr int password_bar_height = 40;
     // The tabs, the toolbar and (when it is on and has bookmarks) the bookmarks bar.
     int chrome_height() const;
 
@@ -60,8 +62,6 @@ private:
         QString url;
         bool loading { false };
         qint64 created { 0 }; // seconds since the epoch, for the age dot
-        // While the view's page is a PDF: the viewer, shown in place of the page (PdfView.h).
-        std::unique_ptr<WebbyUI::PdfView> pdf {};
     };
 
     enum class Hit {
@@ -82,6 +82,7 @@ private:
         FindClose,
         Bookmark,
         Suggestion,
+        PasswordBar, // a button of the password bar; `tab` is its index
         Page,
     };
     struct HitResult {
@@ -126,12 +127,26 @@ private:
     void pump();
     // The page's right-click menu (PageMenu.cpp).
     void show_page_menu(WebbyUI::WebView*, WebbyUI::ContextMenu const&);
-    // PDFs (PdfView): the view handed one over; its right-click menu; Save (Ctrl+S, the bar's button).
-    void open_pdf(WebbyUI::WebView*, WebbyUI::PdfDocument&);
-    void show_pdf_menu(QPointF at);
-    void save_pdf(Tab&);
-    WebbyUI::PdfView* current_pdf();
     bool menu_event(QEvent*);
+
+    // Passwords and passkeys (PasswordBar.cpp, Passwords.h): the save / fill / generate bar under the toolbar and the
+    // passkey dialog.
+    struct BarButton {
+        QString label;
+        QRectF rect;
+        bool primary { false };
+    };
+    void setup_passwords();
+    bool show_password_bar() const;
+    QRectF password_bar_rect() const;
+    std::vector<BarButton> password_bar_buttons() const;
+    void paint_password_bar(QPainter&);
+    void password_bar_click(int button);
+    void password_offer_changed(WebbyUI::WebView*);
+    void show_passkey_dialog(WebbyUI::WebView*, QJsonObject const& prompt);
+    void next_passkey_dialog();
+    bool dialog_event(QEvent*);
+    void open_passwords_page();
 
     HitResult hit_test(QPointF) const;
     QRectF tab_rect(int index) const;
@@ -179,6 +194,9 @@ private:
     bool m_page_has_mouse { false };
     unsigned m_page_buttons { 0 };
     PopupMenu m_menu;
+    ModalDialog m_dialog;
+    WebbyUI::WebView* m_dialog_view { nullptr }; // the passkey dialog's page
+    std::vector<std::pair<WebbyUI::WebView*, QJsonObject>> m_passkey_requests; // waiting behind the open dialog
     bool m_swallow_release { false };
 
     QList<WebbyUI::Profile::SavedTab> m_closed; // for Ctrl+Shift+T, newest last

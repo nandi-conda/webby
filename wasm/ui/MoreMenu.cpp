@@ -151,6 +151,7 @@ void BrowserWindow::open_more_menu()
     bookmarks.add(QStringLiteral("Bookmark manager"), QStringLiteral("Ctrl+Shift+O"), [this] { open_own_page(Pages::bookmarks_page()); });
 
     menu.add(QStringLiteral("Downloads"), QStringLiteral("Ctrl+J"), [this] { open_own_page(Pages::downloads_page()); });
+    menu.add(QStringLiteral("Passwords and passkeys"), [this] { open_passwords_page(); });
     menu.add_separator();
 
     menu.add(QStringLiteral("Find in page…"), QStringLiteral("Ctrl+F"), [this] { open_find(); }, has_page);

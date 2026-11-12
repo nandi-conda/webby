@@ -23,6 +23,8 @@ struct WebbyBuiltinResource {
 extern struct WebbyBuiltinResource const webby_builtin_theme;
 extern struct WebbyBuiltinResource const webby_builtin_fonts[];
 extern size_t const webby_builtin_font_count;
+// nim/src/scripts/passwords.js (PageScripts.c), as text.
+extern char const webby_builtin_passwords_js[];
 
 #ifdef __cplusplus
 }

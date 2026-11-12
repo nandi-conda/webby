@@ -63,13 +63,6 @@ struct Download {
     std::string error; // why it was not saved, "" if it was
 };
 
-// A navigation whose response is a PDF (see WebView::on_pdf).
-struct PdfDocument {
-    std::string url;
-    std::string mime;
-    std::vector<uint8_t> data;
-};
-
 class WebView {
 public:
     // The engine is set up the first time a view is made: LibWeb's JS VM, resource loader and fonts.
@@ -127,10 +120,24 @@ public:
     // A navigation's response was saved to the downloads folder instead of shown ($WEBBY_DOWNLOAD_DIR, else
     // $XDG_DOWNLOAD_DIR, else ~/Downloads): Content-Disposition: attachment, or a type the engine cannot show.
     std::function<void(Download const&)> on_download;
-    // A navigation's response is a PDF (application/pdf, not an attachment; or a .pdf file): the view keeps it in
-    // its history and shows an empty page with the file's name as its title, and hands the bytes to the chrome,
-    // whose PDF viewer shows it while the view's URL stays `url` (wasm/ui/PdfView.h). `data` may be moved from.
-    std::function<void(PdfDocument&)> on_pdf;
+
+    // The browser's own page scripts. Every hook runs for every document the view shows, before the document is
+    // parsed (a hook returns "" to skip it); the scripts talk back with prompt(message_prefix() + text), which never
+    // shows anything and reaches on_page_message (text without the prefix, and the URL of the document that sent it,
+    // which can differ from url() while a navigation's document downloads) after the script's task.
+    using PageScriptHook = std::function<std::string(WebView&)>;
+    static void add_page_script(PageScriptHook);
+    std::string const& message_prefix() const { return m_message_prefix; }
+    std::function<void(std::string const& text, std::string const& document_url)> on_page_message;
+    // Runs `source` as a classic script in the current document, now.
+    void run_javascript(std::string const& source);
+
+    // Web Authentication (passkeys, ../../patches/0002): the page asked to create or use one. `prompt` is the JSON the
+    // Nim front end's dialog gets (type "create" with rpId, userName, userDisplayName, alreadyRegistered; or "get"
+    // with rpId and accounts [{userName, userDisplayName, createdAt}]). The UI answers with webauthn_respond: whether
+    // the user agreed and, for "get", which account. A view handles one request at a time.
+    std::function<void(std::string const& prompt)> on_webauthn_prompt;
+    void webauthn_respond(bool accepted, int account_index);
 
     // Editing, for the context menu, in the focused frame.
     std::string selected_text() const;
@@ -164,7 +171,9 @@ public:
     void did_request_clipboard(uint64_t request, bool selection);
     void did_request_context_menu(ContextMenu);
     void did_download(Download);
-    void did_receive_pdf(PdfDocument);
+    void did_send_page_message(std::string text, std::string document_url);
+    void did_request_webauthn(uint64_t request_id, std::string request);
+    void run_page_scripts();
     // The UI component's WebView (shell/WebViewRemote.cpp) only: the engine component's queued events, as the
     // callbacks above.
     void deliver_engine_events();
@@ -174,7 +183,6 @@ private:
     void navigate(std::string const& url, bool add_to_history);
     void set_location(std::string url, bool add_to_history);
     void show_document(LoadedDocument);
-    void show_pdf(LoadedDocument); // the document's bytes are the PDF's
 
     std::unique_ptr<Impl> m_impl;
     int m_width { 0 };
@@ -187,6 +195,7 @@ private:
     std::vector<std::string> m_history;
     size_t m_history_index { 0 };
     uint64_t m_fetch_id { 0 }; // the http(s) document being downloaded, if any
+    std::string m_message_prefix;
 };
 
 }

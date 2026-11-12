@@ -21,6 +21,8 @@ QString bookmarks_page();
 QString downloads_page();
 // The file:// URL of the Keyboard shortcuts page.
 QString shortcuts_page();
+// The file:// URL of the Passwords and passkeys page (no secrets in the file: Passwords.cpp sends them to the page).
+QString passwords_page();
 // The file:// URL of the About Webby page.
 QString about_page();
 // Whether `url` is one of these pages, and so is written again when reloaded.

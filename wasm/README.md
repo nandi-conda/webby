@@ -405,7 +405,7 @@ staying as it was; the engine reports a `download-finished` event, the UI shows 
 `download_history.jsonl`, and Ctrl+J opens a Downloads page with links to the saved files.
 Right of the address field are the Nim toolbar's Bookmarks, History and Downloads buttons and the ⋮ menu
 (`ui/MoreMenu.cpp`), grouped as `nim/src/browser.nim` groups it: New tab; History (recently closed tabs);
-Bookmarks; Downloads; Find, Zoom, Reload; Settings (restore tabs, colour tabs by age, bookmarks bar, search
+Bookmarks; Downloads; Passwords and passkeys; Find, Zoom, Reload; Settings (restore tabs, colour tabs by age, bookmarks bar, search
 engine, kept in `wasm_ui.json` and the Nim `tabs.json`); Help (Keyboard shortcuts, About Webby).
 
 It builds inside Ladybird's WASI build (`patches/0014-webby-ui.patch` adds the directory when `WEBBY_UI_DIR` names it),
@@ -435,6 +435,23 @@ no WebGL shader validation. `LATHA_GUI_GL=0` turns it off. Tested headless with 
     QT_QPA_PLATFORM=offscreen latha-gui --dir <ladybird>/Base/res::/res --size 1100x760 --screenshot out.png \
       --quit-after 12000 build/ladybird/bin/webby.wasm page.html --click=95,315@5000
 
+Passwords and passkeys are the Nim front end's (`nim/src/features/passwords*`): the same vault, `vault.json` in the
+profile, in the same AES-256-GCM envelope (`ui/Vault.cpp`, OpenSSL from the sysroot), so wasm webby and the desktop
+share saved passwords. The desktop keeps the vault's key in the Secret Service; a wasm module has no D-Bus, so
+`ui/Keyring.cpp` asks the host to run `secret-tool lookup application webby profile <profile>` on a pty (latha:gui's
+`pty` interface, `ui/wit/pty`; secret-tool comes with libsecret), and falls back to `vault.key` beside the vault, where a
+vault first made here keeps its key (the desktop moves it into the keyring when it next opens the vault). The page
+script is `nim/src/scripts/passwords.js` as it is (`ui/PageScripts.c`, `#embed`): it reports password fields and
+logins through `prompt(prefix + message)`, which the page client answers at once and hands to the UI
+(`WebView::add_page_script`, `on_page_message`); a bar under the toolbar offers to save, update, fill (one saved
+account fills by itself) or generate a password (`ui/PasswordBar.cpp`). Passkeys use `native/Authenticator.cpp` (the
+desktop's ES256 software authenticator) behind patches/0002's WebAuthn requests (`WebView::on_webauthn_prompt`,
+`webauthn_respond`), with a dialog to create one or pick an account (`ui/Dialog.cpp`); they live in the vault too.
+⋮ > Passwords and passkeys opens a page to search, show, copy, edit, add and delete passwords and delete passkeys;
+the file holds no secrets, the browser sends them to that page alone over its own channel. Sync of the vault is
+`ui/Sync.cpp`'s. `alert()`, `confirm()` and `prompt()` used to end the process (the page client said its
+connection was closed); they now return at once (no dialogs for pages yet).
+
 `latha-gui webby.wasm` needs nothing else: Ladybird's default theme and the Liberation fonts are built in
 (`ui/Resources.c`, `#embed`; `patches/0017-builtin-fonts-and-theme.patch` adds `PathFontProvider::add_typeface` and
 `ConfigFile::open_from_text`, and skips font directories the sandbox refuses). A `/res` (or `WEBBY_RESOURCES`) with
@@ -445,23 +462,6 @@ First run: compiling webby.wasm takes Cranelift ~165 s of CPU (35-50 s on 4-8 co
 x86-64-v3) from the `wasm-engine` release, then loads it from its cache in 0.02 s: about 5 s from the forge instead
 of ~45 s. CI makes it (`ci/engine.sh`: `latha-run --precompile`); for a hand-uploaded webby.wasm, run
 `latha-run --precompile DIR webby.wasm` with the latha-gui people use and upload DIR's file beside it.
-
-### PDFs
-
-A PDF (application/pdf, or a generic type whose body starts with `%PDF-`, over http(s) or file:) opens in webby's own
-viewer, as the Nim front end's `nim/src/features/pdf.nim` does, instead of Ladybird's pdf.js page: the engine commits
-a grey placeholder document under the PDF's URL (so back, forward, reload and history behave) and hands the bytes to
-the UI in a `pdf-received` event; `ui/PdfView.cpp` paints the page area from then on. It has the Nim viewer's parts:
-a bar (Contents panel from the outline, page field, zoom −/+, Fit width, Save to the downloads folder), lazy page
-rendering one page per pump (nearest the page being read first, far pages given back), Ladybird-style scrollbars,
-text selection (drag, double/triple click, Shift+click, Ctrl+A, Ctrl+C), the window's Ctrl+F find bar, links inside
-and out of the document, a right-click menu, and the arrow/Page/Space/Home/End keys and Ctrl+wheel zoom.
-
-MuPDF renders, in a component of its own, `bin/webby-pdf.wasm` (`pdf/webby_pdf.c` behind `webby:pdf/documents`,
-`pdf/wit/pdf.wit`), which `wac plug` puts into `webby.wasm` (and `ui/shell/build.sh` into the shell's): MuPDF's own
-FreeType, HarfBuzz, zlib and libjpeg (`deps/mupdf.sh`, in the sysroot under `mupdf/`) then never meet Ladybird's or
-Qt's, and each component has its own memory. MuPDF is AGPL-3.0, so `webby-pdf.wasm` is, and so is a `webby.wasm`
-that contains it; the rest of webby's source keeps its license.
 
 ### The UI on its own, over a prebuilt engine
 

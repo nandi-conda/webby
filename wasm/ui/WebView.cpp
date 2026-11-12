@@ -9,8 +9,13 @@
 #include "Network.h"
 #include "Resources.h"
 #include "Storage.h"
+#include <Authenticator.h>
 
+#include <AK/JsonArray.h>
+#include <AK/JsonObject.h>
+#include <AK/JsonValue.h>
 #include <AK/LexicalPath.h>
+#include <AK/Random.h>
 #include <AK/Utf16String.h>
 #include <Compositor/DisplayListPlayerSkia.h>
 #include <Compositor/CanvasSurfaceRegistry.h>
@@ -47,6 +52,8 @@
 #include <LibWeb/HTML/HTMLImageElement.h>
 #include <LibWeb/HTML/HTMLInputElement.h>
 #include <LibWeb/HTML/HTMLTextAreaElement.h>
+#include <LibWeb/HTML/Scripting/ClassicScript.h>
+#include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/LocalNavigable.h>
 #include <LibWeb/HTML/LocalTraversableNavigable.h>
 #include <LibWeb/HTML/Navigation.h>
@@ -129,7 +136,8 @@ public:
     virtual Web::PageId id() const override { return 1; }
     virtual Web::Page& page() override { return *m_page; }
     virtual Web::Page const& page() const override { return *m_page; }
-    virtual bool is_connection_open() const override { return false; }
+    // Page::did_request_alert/confirm/prompt end the process when this is false (WebContent's "client disconnected").
+    virtual bool is_connection_open() const override { return true; }
     virtual Gfx::Palette palette() const override { return Gfx::Palette { *m_palette_impl }; }
     virtual Web::DevicePixelRect screen_rect() const override { return { { 0, 0 }, m_viewport.to_type<Web::DevicePixels>() }; }
     // Page zoom (Ctrl +/-): the viewport's device pixels stay the window's, its CSS pixels grow or shrink.
@@ -273,6 +281,41 @@ public:
         send_context_menu(context_menu_at(position));
     }
 
+    // Dialogs. The browser's page scripts send their messages as prompt(prefix + text) (patches/0040 marks the ones from
+    // a page whose CSP sandbox forbids dialogs): those are answered at once and handed to the UI after this task.
+    // The UI has no dialogs for pages yet, so alert() returns, confirm() is false and prompt() null, straight away.
+    virtual void page_did_request_alert(Utf16String const&) override { m_page->alert_closed(); }
+    virtual void page_did_request_confirm(Utf16String const&) override { m_page->confirm_closed(false); }
+    virtual void page_did_request_prompt(Utf16String const& message, Utf16String const&) override
+    {
+        auto text = message.to_utf8().to_byte_string();
+        if (text.starts_with("\x01webby-sandboxed\x01"sv))
+            text = text.substring(strlen("\x01webby-sandboxed\x01"));
+        m_page->prompt_closed({});
+        if (!m_view || m_view->message_prefix().empty() || !text.starts_with(StringView { m_view->message_prefix().data(), m_view->message_prefix().size() }))
+            return;
+        // The view may be gone by then (its tab closed): the client, kept alive, knows.
+        std::string document_url;
+        if (m_page->has_local_traversable()) {
+            if (auto document = m_page->local_traversable()->active_document())
+                document_url = to_std(document->url().serialize().to_byte_string());
+        }
+        Core::deferred_invoke([client = GC::make_root(*this), message = to_std(text.substring(m_view->message_prefix().size())), document_url = move(document_url)]() mutable {
+            if (client->m_view)
+                client->m_view->did_send_page_message(move(message), move(document_url));
+        });
+    }
+
+    // navigator.credentials.create/get with publicKey (patches/0002): the view asks the UI, which answers later.
+    virtual void page_did_request_webauthn(u64 request_id, String const& request) override
+    {
+        if (!m_view) {
+            m_page->webauthn_response(request_id, Webby::error_reply("NotAllowedError"sv, "The page is gone"sv));
+            return;
+        }
+        m_view->did_request_webauthn(request_id, to_std(request.to_byte_string()));
+    }
+
     // The page's own loads of file: URLs (style sheets, images, scripts) open the file right here.
     virtual void request_file(Web::FileRequest request) override
     {
@@ -364,6 +407,15 @@ struct WebView::Impl {
     GC::Root<Web::DOM::DocumentObserver> observer;
     RefPtr<Gfx::Bitmap> bitmap;
     RefPtr<Core::Timer> render_block_timer;
+    // The Web Authentication request waiting for the user (see did_request_webauthn).
+    struct PendingWebAuthn {
+        GC::Root<Web::Page> page;
+        u64 request_id { 0 };
+        JsonObject request;
+        Vector<Webby::Passkey> accounts;
+        bool already_registered { false };
+    };
+    Optional<PendingWebAuthn> webauthn;
 };
 
 namespace {
@@ -438,12 +490,20 @@ WebView::WebView(int width, int height)
     , m_width(max(width, 1))
     , m_height(max(height, 1))
 {
+    // As the Nim front end's randomPrefix: page scripts cannot guess another view's.
+    static constexpr char chars[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+    m_message_prefix = "webby-msg-";
+    for (int i = 0; i < 16; ++i)
+        m_message_prefix += chars[get_random_uniform(sizeof(chars) - 1)];
+    m_message_prefix += ':';
 }
 
 WebView::~WebView()
 {
     if (m_fetch_id)
         Network::cancel(m_fetch_id);
+    if (m_impl->webauthn.has_value())
+        webauthn_respond(false, -1);
     if (m_impl->client)
         m_impl->client->detach();
     // A tab closing may be the app quitting: localStorage is otherwise written half a second after a change.
@@ -489,18 +549,13 @@ struct LoadedDocument {
 // Downloads. A response is saved rather than shown when its Content-Disposition says attachment, or its type is one
 // the engine has no way to show (not HTML, XML, text, an image, JSON or JavaScript), as Ladybird's navigation does.
 
-static bool is_attachment(Network::Document const& document)
-{
-    if (!document.content_disposition.has_value())
-        return false;
-    auto disposition = document.content_disposition->view().trim_whitespace();
-    return disposition.starts_with("attachment"sv, CaseSensitivity::CaseInsensitive);
-}
-
 static bool is_download(Network::Document const& document, Optional<Web::MimeSniff::MimeType> const& type)
 {
-    if (is_attachment(document))
-        return true;
+    if (document.content_disposition.has_value()) {
+        auto disposition = document.content_disposition->view().trim_whitespace();
+        if (disposition.starts_with("attachment"sv, CaseSensitivity::CaseInsensitive))
+            return true;
+    }
     if (!type.has_value())
         return false;
     auto essence = type->essence();
@@ -617,45 +672,6 @@ static Download save_download(Network::Document const& document, Optional<Web::M
     return download;
 }
 
-// PDFs are shown by the chrome's PDF viewer (wasm/ui/PdfView.cpp, MuPDF in the webby-pdf component), as the Nim
-// front end shows them with MuPDF rather than Ladybird's pdf.js viewer: application/pdf, or a file that starts as
-// one where the server gives no type or a generic one.
-static bool is_pdf(Optional<Web::MimeSniff::MimeType> const& type, ReadonlyBytes body)
-{
-    if (type.has_value() && type->essence() == "application/pdf"sv)
-        return true;
-    bool generic = !type.has_value() || type->essence() == "application/octet-stream"sv
-        || type->essence() == "binary/octet-stream"sv || type->essence() == "application/x-pdf"sv;
-    return generic && body.size() >= 5 && memcmp(body.data(), "%PDF-", 5) == 0;
-}
-
-// The page under the PDF viewer: empty, the viewer's grey, titled with the file's name (the viewer names the tab
-// after the document's own title once it has it).
-void WebView::show_pdf(LoadedDocument loaded)
-{
-    auto const& url = loaded.url;
-    auto const& body = loaded.html;
-    auto path = URL::percent_decode(url.serialize_path());
-    if (auto slash = path.find_last('/'); slash.has_value())
-        path = path.substring(*slash + 1);
-    if (path.is_empty())
-        path = "PDF";
-    auto name = path.replace("&"sv, "&amp;"sv, ReplaceMode::All).replace("<"sv, "&lt;"sv, ReplaceMode::All);
-    auto html = ByteString::formatted("<!doctype html><meta charset=utf-8><title>{}</title><style>html{{background:#525659}}</style>", name);
-    PdfDocument pdf;
-    pdf.url = to_std(url.serialize().to_byte_string());
-    pdf.mime = "application/pdf";
-    pdf.data.assign(body.data(), body.data() + body.size());
-    show_document({ url, MUST(ByteBuffer::copy(html.bytes())), {} });
-    did_receive_pdf(move(pdf));
-}
-
-void WebView::did_receive_pdf(PdfDocument pdf)
-{
-    if (on_pdf)
-        on_pdf(pdf);
-}
-
 // A load makes a new Page with a new top-level traversable, and parses the document into it directly, in this module
 // (the document a navigation would have made, as webby-render and SVGDecodedImageData make theirs).
 void WebView::navigate(std::string const& requested_url, bool add_to_history)
@@ -714,17 +730,6 @@ void WebView::navigate(std::string const& requested_url, bool add_to_history)
             Optional<Web::MimeSniff::MimeType> mime_type;
             if (document.content_type.has_value())
                 mime_type = Web::MimeSniff::MimeType::parse(*document.content_type);
-            if (!is_attachment(document) && is_pdf(mime_type, document.body.bytes())) {
-                if (document.url != requested) {
-                    m_url = to_std(document.url.serialize().to_byte_string());
-                    if (m_history_index < m_history.size())
-                        m_history[m_history_index] = m_url;
-                    if (on_url_change)
-                        on_url_change(m_url);
-                }
-                show_pdf({ document.url, move(document.body), move(mime_type) });
-                return;
-            }
             if (is_download(document, mime_type)) {
                 // Saved, not shown: the page, the address and the history stay as they were.
                 m_url = move(previous_url);
@@ -759,9 +764,7 @@ void WebView::navigate(std::string const& requested_url, bool add_to_history)
         if (on_url_change)
             on_url_change(m_url);
     }
-    if (file_body.has_value() && is_pdf(file_type, file_body->bytes()))
-        show_pdf({ document_url, file_body.release_value(), move(file_type) });
-    else if (file_body.has_value())
+    if (file_body.has_value())
         show_document({ document_url, file_body.release_value(), move(file_type) });
     else
         show_document({ document_url, MUST(ByteBuffer::copy(html.bytes())), {} });
@@ -866,6 +869,14 @@ void WebView::show_document(LoadedDocument loaded)
     auto document = Web::DOM::Document::create(*page, window, document_url);
     document->set_id(client->allocate_cross_process_id());
     document->set_origin(document_url.origin());
+    // The window's settings object still describes the initial about:blank: its top-level origin is what WebAuthn
+    // (and blob URL checks) compare against, and an opaque one made every page a "cross-origin frame".
+    {
+        auto& settings = Web::HTML::relevant_settings_object(window);
+        settings.creation_url = document_url;
+        settings.top_level_creation_url = document_url;
+        settings.top_level_origin = document_url.origin();
+    }
     // As a navigation's "create and initialize a Document object" does: the document is visible when its page is.
     document->set_initial_visibility_state(page->system_visibility_state());
     // What a navigation's "create and initialize a Document object" also gives it: customElements reads the registry
@@ -908,6 +919,8 @@ void WebView::show_document(LoadedDocument loaded)
     m_title.clear();
     if (on_link_hover)
         on_link_hover({});
+
+    run_page_scripts();
 
     if (as_text) {
         parse_text_document(*document, loaded.html, *loaded.mime_type, document_url);
@@ -1245,6 +1258,155 @@ void WebView::find_end()
     if (m_impl->page && m_impl->document)
         m_impl->page->find_in_page_end();
     did_request_frame();
+}
+
+}
+
+namespace WebbyUI {
+
+static std::vector<WebView::PageScriptHook>& page_script_hooks()
+{
+    static std::vector<WebView::PageScriptHook> hooks;
+    return hooks;
+}
+
+void WebView::add_page_script(PageScriptHook hook)
+{
+    page_script_hooks().push_back(move(hook));
+}
+
+void WebView::run_page_scripts()
+{
+    for (auto& hook : page_script_hooks()) {
+        auto source = hook(*this);
+        if (!source.empty())
+            run_javascript(source);
+    }
+}
+
+void WebView::run_javascript(std::string const& source)
+{
+    auto document = m_impl->document;
+    if (!document || !document->browsing_context())
+        return;
+    auto& settings = document->relevant_settings_object();
+    auto script = Web::HTML::ClassicScript::create("(webby page script)", Utf16String::from_utf8(StringView { source.data(), source.size() }), settings, settings.api_base_url());
+    if (script->run().is_error())
+        dbgln("webby: a page script threw");
+}
+
+void WebView::did_send_page_message(std::string message, std::string document_url)
+{
+    if (on_page_message)
+        on_page_message(message, document_url);
+}
+
+static Vector<String> webauthn_strings(JsonObject const& object, StringView key)
+{
+    Vector<String> strings;
+    if (auto array = object.get_array(key); array.has_value()) {
+        array->for_each([&](JsonValue const& value) {
+            if (value.is_string())
+                strings.append(value.as_string());
+        });
+    }
+    return strings;
+}
+
+static String webauthn_string(JsonObject const& object, StringView key)
+{
+    if (auto value = object.get_string(key); value.has_value())
+        return *value;
+    return {};
+}
+
+// As the Nim desktop's native/WebbyView.cpp handle_webauthn_request: the prompt for the UI, with the passkeys that fit.
+void WebView::did_request_webauthn(uint64_t request_id, std::string request_json)
+{
+    auto page = m_impl->page;
+    auto reply = [&](String const& json) { page->webauthn_response(request_id, json); };
+    auto parsed = JsonValue::from_string(StringView { request_json.data(), request_json.size() });
+    if (parsed.is_error() || !parsed.value().is_object()) {
+        reply(Webby::error_reply("UnknownError"sv, "Malformed request"sv));
+        return;
+    }
+    if (m_impl->webauthn.has_value() || !on_webauthn_prompt) {
+        reply(Webby::error_reply("NotAllowedError"sv, "Another passkey request is waiting for the user"sv));
+        return;
+    }
+    auto request = move(parsed.value().as_object());
+    auto type = webauthn_string(request, "type"sv);
+    auto rp_id = webauthn_string(request, "rpId"sv);
+    Impl::PendingWebAuthn pending;
+    pending.page = page;
+    pending.request_id = request_id;
+    JsonObject prompt;
+    prompt.set("type"sv, type);
+    prompt.set("rpId"sv, rp_id);
+    prompt.set("origin"sv, webauthn_string(request, "origin"sv));
+    if (type == "create"sv) {
+        bool supports_es256 = false;
+        if (auto algorithms = request.get_array("algorithms"sv); algorithms.has_value()) {
+            algorithms->for_each([&](JsonValue const& value) {
+                if (value.get_i64() == -7)
+                    supports_es256 = true;
+            });
+        }
+        if (!supports_es256) {
+            reply(Webby::error_reply("NotSupportedError"sv, "This browser's passkeys only support ES256"sv));
+            return;
+        }
+        // An empty exclude list means "exclude nothing", not "any passkey for this site".
+        if (auto excluded = webauthn_strings(request, "excludeCredentials"sv); !excluded.is_empty())
+            pending.already_registered = !Webby::credential_store().list(rp_id, excluded).is_empty();
+        prompt.set("rpName"sv, webauthn_string(request, "rpName"sv));
+        prompt.set("userName"sv, webauthn_string(request, "userName"sv));
+        prompt.set("userDisplayName"sv, webauthn_string(request, "userDisplayName"sv));
+        prompt.set("alreadyRegistered"sv, pending.already_registered);
+    } else if (type == "get"sv) {
+        pending.accounts = Webby::credential_store().list(rp_id, webauthn_strings(request, "allowCredentials"sv));
+        JsonArray accounts;
+        for (auto const& passkey : pending.accounts) {
+            JsonObject account;
+            account.set("userName"sv, passkey.user_name);
+            account.set("userDisplayName"sv, passkey.user_display_name);
+            account.set("createdAt"sv, passkey.created_at);
+            accounts.must_append(move(account));
+        }
+        prompt.set("accounts"sv, move(accounts));
+    } else {
+        reply(Webby::error_reply("NotSupportedError"sv, "Unknown request"sv));
+        return;
+    }
+    pending.request = move(request);
+    m_impl->webauthn = move(pending);
+    on_webauthn_prompt(to_std(prompt.serialized().to_byte_string()));
+}
+
+void WebView::webauthn_respond(bool accepted, int account_index)
+{
+    if (!m_impl->webauthn.has_value())
+        return;
+    auto pending = m_impl->webauthn.release_value();
+    String reply;
+    auto type = webauthn_string(pending.request, "type"sv);
+    if (!accepted) {
+        reply = Webby::error_reply("NotAllowedError"sv, "The user cancelled the request"sv);
+    } else if (type == "create"sv) {
+        // https://w3c.github.io/webauthn/#sctn-op-make-cred step 3: after the user consents, report that one of the
+        // excluded credentials is already here.
+        if (pending.already_registered)
+            reply = Webby::error_reply("InvalidStateError"sv, "A passkey for this account already exists in this browser"sv);
+        else
+            reply = Webby::make_credential(pending.request);
+    } else if (account_index < 0 || static_cast<size_t>(account_index) >= pending.accounts.size()) {
+        reply = Webby::error_reply("NotAllowedError"sv, "No passkey was chosen"sv);
+    } else {
+        reply = Webby::get_assertion(pending.request, pending.accounts[account_index]);
+    }
+    // The page may have navigated meanwhile; Ladybird drops a reply for a request it no longer has.
+    if (pending.page)
+        pending.page->webauthn_response(pending.request_id, reply);
 }
 
 }

@@ -21,6 +21,10 @@ COPY wasm/tools /w/wasm/tools
 COPY wasm/tests /w/wasm/tests
 COPY wasm/patches /w/wasm/patches
 COPY wasm/ui /w/wasm/ui
+COPY wasm/gl /w/wasm/gl
+# wasm/ui builds the Nim front end's passkey authenticator and page scripts too.
+COPY native /w/native
+COPY nim/src/scripts /w/nim/src/scripts
 COPY wasm/ci/engine.sh /w/wasm/ci/engine.sh
 ARG TARGETS=js
 ARG BUDGET=2700

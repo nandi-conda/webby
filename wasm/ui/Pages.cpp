@@ -158,6 +158,106 @@ QString shortcuts_page()
     return write_page(u"shortcuts.html"_s, u"Keyboard shortcuts"_s, body);
 }
 
+QString passwords_page()
+{
+    // Drawn by its script from what the browser sends (window.__webbyVaultShow); the browser gives this page alone
+    // the channel (window.__webbyVault, Passwords.cpp).
+    auto body = uR"html(<input id="search" type="search" placeholder="Search passwords" autocomplete="off">
+<div id="note" class="empty">Opening the password vault…</div>
+<div id="content"></div>
+<style>
+#search { width: 100%; box-sizing: border-box; font-size: 14px; padding: 8px 12px; border: 1px solid #dadce0; border-radius: 18px; margin-bottom: 8px; }
+.row { display: flex; gap: 10px; align-items: center; padding: 6px 8px; border-radius: 6px; }
+.row:hover { background: #f1f3f4; }
+.site { min-width: 200px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #3c4043; }
+.secret { font-family: monospace; min-width: 160px; color: #3c4043; }
+button { font-size: 12px; padding: 3px 10px; border: 1px solid #dadce0; border-radius: 12px; background: #fff; color: #1a73e8; cursor: pointer; }
+button:hover { background: #e8f0fe; }
+button.danger { color: #d93025; }
+.edit { display: flex; gap: 6px; padding: 4px 8px 10px; flex-wrap: wrap; }
+.edit input { font-size: 13px; padding: 4px 8px; border: 1px solid #dadce0; border-radius: 6px; }
+.warn { background: #fef7e0; padding: 8px 12px; border-radius: 6px; color: #5f4b00; margin: 8px 0; }
+</style>
+<script>
+(() => {
+  let data = null, editing = null, adding = false, shown = new Set();
+  const $ = (tag, props = {}, ...children) => {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) { if (k === 'onclick') el.onclick = v; else el.setAttribute(k, v); }
+    for (const c of children) el.append(c);
+    return el;
+  };
+  const send = (m) => window.__webbyVault && window.__webbyVault.send(m);
+  const host = (origin) => { try { return new URL(origin).host; } catch (e) { return origin; } };
+  const button = (text, onclick, cls) => $('button', cls ? { class: cls, onclick } : { onclick }, text);
+  const editor = (p) => {
+    const user = $('input', { placeholder: 'Username', value: p ? p.username : '' });
+    const pass = $('input', { placeholder: 'Password', value: p ? p.password : '' });
+    const site = $('input', { placeholder: 'https://example.com' });
+    window.__webbyVaultGenerated = (g) => { pass.value = g; };
+    const save = () => {
+      if (p) send({ type: 'update', id: p.id, username: user.value, password: pass.value });
+      else send({ type: 'add', site: site.value.includes('://') ? site.value : 'https://' + site.value, username: user.value, password: pass.value });
+      editing = null; adding = false;
+    };
+    return $('div', { class: 'edit' }, ...(p ? [] : [site]), user, pass, button('Generate', () => send({ type: 'generate' })),
+      button('Save', save), button('Cancel', () => { editing = null; adding = false; render(); }));
+  };
+  function render() {
+    const note = document.getElementById('note'), content = document.getElementById('content');
+    content.textContent = '';
+    if (!data) return;
+    if (data.error) {
+      note.textContent = data.error;
+      content.append(button('Try again', () => send({ type: 'retry' })));
+      if (data.canStartOver)
+        content.append(' ', button('Start a new vault (keeps the old file)', () => send({ type: 'startOver' }), 'danger'));
+      return;
+    }
+    note.textContent = '';
+    if (data.keyInFile)
+      content.append($('div', { class: 'warn' }, 'The vault key is in vault.key next to the vault (no desktop keyring was reachable). Opening webby on the desktop moves it into the keyring.'));
+    const q = document.getElementById('search').value.toLowerCase();
+    const match = (...s) => !q || s.some((x) => (x || '').toLowerCase().includes(q));
+    const passwords = data.passwords.filter((p) => match(p.origin, p.username)).sort((a, b) => host(a.origin).localeCompare(host(b.origin)) || a.username.localeCompare(b.username));
+    content.append($('h2', {}, `Passwords (${passwords.length})`));
+    content.append(adding ? editor(null) : button('Add password', () => { adding = true; render(); }));
+    if (!passwords.length) content.append($('p', { class: 'empty' }, q ? 'No saved password matches.' : 'No saved passwords yet. Sign in to a site and webby offers to save it.'));
+    for (const p of passwords) {
+      const visible = shown.has(p.id);
+      content.append($('div', { class: 'row' },
+        $('a', { class: 'site', href: p.origin, title: p.origin }, host(p.origin)),
+        $('span', { class: 'user' }, p.username || '(no username)'),
+        $('span', { class: 'secret' }, visible ? p.password : '••••••••••'),
+        button(visible ? 'Hide' : 'Show', () => { visible ? shown.delete(p.id) : shown.add(p.id); render(); }),
+        button('Copy', () => send({ type: 'copy', id: p.id })),
+        button('Edit', () => { editing = p.id; render(); }),
+        button('Delete', () => send({ type: 'delete', id: p.id }), 'danger')));
+      if (editing === p.id) content.append(editor(p));
+    }
+    const passkeys = data.passkeys.filter((k) => match(k.rpId, k.userName, k.userDisplayName));
+    content.append($('h2', {}, `Passkeys (${passkeys.length})`));
+    if (!passkeys.length) content.append($('p', { class: 'empty' }, 'No passkeys. Sites that offer passkey sign-in save them here.'));
+    for (const k of passkeys)
+      content.append($('div', { class: 'row' }, $('span', { class: 'site' }, k.rpId),
+        $('span', { class: 'user' }, k.userDisplayName && k.userDisplayName !== k.userName ? `${k.userDisplayName} (${k.userName})` : k.userName),
+        button('Delete', () => send({ type: 'deletePasskey', id: k.credentialId }), 'danger')));
+    const never = data.neverSave.filter((o) => match(o));
+    if (never.length) {
+      content.append($('h2', {}, 'Never saved'));
+      for (const o of never)
+        content.append($('div', { class: 'row' }, $('span', { class: 'user' }, host(o)), button('Allow saving', () => send({ type: 'allowSave', origin: o }))));
+    }
+  }
+  window.__webbyVaultShow = (d) => { data = d; render(); };
+  document.getElementById('search').addEventListener('input', render);
+  send({ type: 'ready' });
+})();
+</script>)html"_s;
+    return write_page(u"passwords.html"_s, u"Passwords and passkeys"_s, body);
+}
+
 QString about_page()
 {
     auto body = u"<p>Webby, built to WebAssembly: the Ladybird engine and this Qt interface run as wasm components under "
@@ -181,6 +281,8 @@ QString refresh(QString const& url)
         return bookmarks_page();
     if (url.endsWith(u"/downloads.html"_s))
         return downloads_page();
+    if (url.endsWith(u"/passwords.html"_s))
+        return passwords_page();
     return url;
 }
 

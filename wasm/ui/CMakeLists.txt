@@ -42,58 +42,10 @@ foreach (header "${CMAKE_CURRENT_SOURCE_DIR}/BrowserWindow.h" "${qt2wasm_data}/r
 endforeach()
 
 # The latha:gui world's C bindings (exports app, imports host), which qt2wasmgui.cpp implements.
-# The app's world (wit/app): latha:gui plus webby:pdf's documents (MuPDF, the webby-pdf component below).
-set(pdf_dir "${CMAKE_CURRENT_SOURCE_DIR}/../pdf")
-set(app_wit "${CMAKE_CURRENT_SOURCE_DIR}/wit/app/app.wit" "${qt2wasm_data}/gui/wit/gui.wit" "${pdf_dir}/wit/pdf.wit")
+file(GLOB gui_wit "${qt2wasm_data}/gui/wit/*.wit")
 add_custom_command(OUTPUT "${gen}/bindings/gui.c" "${gen}/bindings/gui.h" "${gen}/bindings/gui_component_type.o"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${gen}/wit"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${gen}/wit/deps/gui" "${gen}/wit/deps/pdf"
-    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/wit/app/app.wit" "${gen}/wit/"
-    COMMAND ${CMAKE_COMMAND} -E copy "${qt2wasm_data}/gui/wit/gui.wit" "${gen}/wit/deps/gui/"
-    COMMAND ${CMAKE_COMMAND} -E copy "${pdf_dir}/wit/pdf.wit" "${gen}/wit/deps/pdf/"
-    COMMAND "${WIT_BINDGEN}" c "${gen}/wit" --world gui --out-dir "${gen}/bindings"
-    DEPENDS ${app_wit} VERBATIM)
-
-# webby-pdf.wasm: MuPDF (deps/mupdf.sh, in the sysroot's mupdf/) behind webby:pdf (../pdf). It is compiled here with
-# wasi-sdk's clang directly, not as a CMake target of this build: none of Ladybird's flags, compat library or
-# --spill-pointers pass apply to it, and it links MuPDF's own FreeType/HarfBuzz/zlib/libjpeg, which live in this
-# component alone. AGPL-3.0, as MuPDF is.
-set(mupdf "$ENV{WEBBY_WASI_SYSROOT}/mupdf")
-set(pdf_core "${CMAKE_BINARY_DIR}/bin/webby-pdf.core.wasm")
-set(pdf_component "${CMAKE_BINARY_DIR}/bin/webby-pdf.wasm")
-add_custom_command(OUTPUT "${gen}/pdf/pdf.c" "${gen}/pdf/pdf.h" "${gen}/pdf/pdf_component_type.o"
-    COMMAND "${WIT_BINDGEN}" c "${pdf_dir}/wit" --world pdf --out-dir "${gen}/pdf"
-    DEPENDS "${pdf_dir}/wit/pdf.wit" VERBATIM)
-if (EXISTS "${mupdf}/lib/libmupdf.a")
-    set(pdf_flags --target=wasm32-wasip1 -O2 -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false)
-    add_custom_command(OUTPUT "${pdf_component}"
-        COMMAND "${CMAKE_C_COMPILER}" ${pdf_flags} -I "${gen}/pdf" -I "${mupdf}/include" -Wall
-            "${pdf_dir}/webby_pdf.c" "${gen}/pdf/pdf.c" "${gen}/pdf/pdf_component_type.o"
-            "${mupdf}/lib/libmupdf.a" "${mupdf}/lib/libmupdf-third.a" -lsetjmp -lm -mexec-model=reactor
-            -Wl,--gc-sections -o "${pdf_core}"
-        COMMAND "${WASM_TOOLS}" component new "${pdf_core}" --adapt "wasi_snapshot_preview1=${adapter}" -o "${pdf_component}"
-        DEPENDS "${pdf_dir}/webby_pdf.c" "${gen}/pdf/pdf.c" "${mupdf}/lib/libmupdf.a" "${mupdf}/lib/libmupdf-third.a"
-        COMMENT "Making the PDF component bin/webby-pdf.wasm" VERBATIM)
-else()
-    add_custom_command(OUTPUT "${pdf_component}"
-        COMMAND ${CMAKE_COMMAND} -E echo "webby-pdf: no MuPDF in ${mupdf} (wasm/deps/mupdf.sh; the wasm-deps sysroot has it)"
-        COMMAND false VERBATIM)
-endif()
-add_custom_target(webby-pdf DEPENDS "${pdf_component}")
-
-# wac composes webby.wasm from the UI's component and webby-pdf.wasm: $WAC, else on PATH, else downloaded here.
-if (DEFINED ENV{WAC} AND EXISTS "$ENV{WAC}")
-    set(WAC "$ENV{WAC}")
-else()
-    find_program(WAC wac)
-endif()
-if (NOT WAC)
-    set(WAC "${CMAKE_BINARY_DIR}/tools/wac-0.8.1")
-    if (NOT EXISTS "${WAC}")
-        file(DOWNLOAD https://github.com/bytecodealliance/wac/releases/download/v0.8.1/wac-cli-x86_64-unknown-linux-musl "${WAC}")
-        file(CHMOD "${WAC}" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
-    endif()
-endif()
+    COMMAND "${WIT_BINDGEN}" c "${qt2wasm_data}/gui/wit" --world gui --out-dir "${gen}/bindings"
+    DEPENDS ${gui_wit} VERBATIM)
 
 set(compositor_dir ${LADYBIRD_SOURCE_DIR}/Services/Compositor)
 
@@ -133,8 +85,34 @@ target_include_directories(webby-webgl SYSTEM PRIVATE $<TARGET_PROPERTY:skia,INT
 target_compile_definitions(webby-webgl PRIVATE $<TARGET_PROPERTY:skia,INTERFACE_COMPILE_DEFINITIONS>)
 set_source_files_properties("${webby_gl_dir}/latha_gles.c" "${webby_gl_dir}/latha_gles_custom.c" "${webby_gl_dir}/latha_egl.c"
     "${gen}/gl/gl_guest.c" PROPERTIES COMPILE_OPTIONS "-w;-Wno-error")
+# Passwords and passkeys: the Nim front end's passkey authenticator (../../native/Authenticator.cpp, with its
+# CredentialStore) and page script (../../nim/src/scripts/passwords.js); latha:gui's pty interface for the keyring
+# lookup (Keyring.cpp, wit/pty). WEBBY_NATIVE_DIR and WEBBY_SCRIPTS_DIR override where they are (the forge CI keeps
+# copies beside its copy of wasm/ui).
+if (NOT WEBBY_NATIVE_DIR)
+    get_filename_component(WEBBY_NATIVE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../native" ABSOLUTE)
+endif()
+if (NOT WEBBY_SCRIPTS_DIR)
+    get_filename_component(WEBBY_SCRIPTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../nim/src/scripts" ABSOLUTE)
+endif()
+add_custom_command(OUTPUT "${gen}/pty/pty_guest.c" "${gen}/pty/pty_guest.h" "${gen}/pty/pty_guest_component_type.o"
+    COMMAND "${WIT_BINDGEN}" c "${CMAKE_CURRENT_SOURCE_DIR}/wit/pty" --world pty-guest --out-dir "${gen}/pty"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/wit/pty/pty.wit" VERBATIM)
+set_source_files_properties(PageScripts.c PROPERTIES COMPILE_OPTIONS "-std=c23;--embed-dir=${WEBBY_SCRIPTS_DIR}"
+    OBJECT_DEPENDS "${WEBBY_SCRIPTS_DIR}/passwords.js")
+set_source_files_properties("${gen}/pty/pty_guest.c" "${WEBBY_NATIVE_DIR}/Authenticator.cpp" PROPERTIES COMPILE_OPTIONS "-w;-Wno-error")
+
 add_executable(webby-ui
     BrowserWindow.cpp
+    Dialog.cpp
+    Keyring.cpp
+    PageScripts.c
+    PasskeyStore.cpp
+    PasswordBar.cpp
+    Passwords.cpp
+    Vault.cpp
+    "${WEBBY_NATIVE_DIR}/Authenticator.cpp"
+    "${gen}/pty/pty_guest.c"
     PageMenu.cpp
     PopupMenu.cpp
     KeyMap.cpp
@@ -144,7 +122,6 @@ add_executable(webby-ui
     Omnibox.cpp
     PageFrame.cpp
     Pages.cpp
-    PdfView.cpp
     Profile.cpp
     Resources.c
     WebView.cpp
@@ -175,7 +152,7 @@ set_source_files_properties(Resources.c PROPERTIES COMPILE_OPTIONS
 set_target_properties(webby-ui PROPERTIES SUFFIX ".core.wasm" RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 target_include_directories(webby-ui PRIVATE
     ${LADYBIRD_SOURCE_DIR}/Services ${CMAKE_BINARY_DIR}/Services
-    "${CMAKE_CURRENT_SOURCE_DIR}" "${gen}/bindings"
+    "${CMAKE_CURRENT_SOURCE_DIR}" "${gen}/bindings" "${gen}/pty" "${WEBBY_NATIVE_DIR}"
     "${qt2wasm_data}/include" "${qt2wasm_data}/runtime" "${qt2wasm_data}/gui"
     "${qt}/include" "${qt}/include/QtCore" "${qt}/include/QtGui" "${qt}/mkspecs/wasi-clang"
     "${qt}/include/QtCore/${qt_version}" "${qt}/include/QtCore/${qt_version}/QtCore"
@@ -183,9 +160,9 @@ target_include_directories(webby-ui PRIVATE
 target_compile_definitions(webby-ui PRIVATE QT_CORE_LIB QT_GUI_LIB QT_NO_DEBUG QT_STATIC QT_STATICPLUGIN
     QT2WASM_GUI QT2WASM_QPA_PLATFORM="qt2wasmgui" QT2WASM_GUI_BINDINGS_H="gui.h")
 # This UI's own sources share files with Ladybird's headers, which use Qt's keywords (emit, signals) as names.
-set_source_files_properties(BrowserWindow.cpp PageMenu.cpp PopupMenu.cpp KeyMap.cpp MoreMenu.cpp Network.cpp Omnibox.cpp PageFrame.cpp Pages.cpp PdfView.cpp Profile.cpp WebView.cpp main.cpp PROPERTIES COMPILE_DEFINITIONS QT_NO_KEYWORDS)
+set_source_files_properties(BrowserWindow.cpp Dialog.cpp Keyring.cpp PageMenu.cpp PasswordBar.cpp Passwords.cpp PopupMenu.cpp KeyMap.cpp MoreMenu.cpp Network.cpp Omnibox.cpp PageFrame.cpp Pages.cpp Profile.cpp Vault.cpp WebView.cpp main.cpp PROPERTIES COMPILE_DEFINITIONS QT_NO_KEYWORDS)
 # Qt's headers (QJsonValue's bit fields) trip Ladybird's -Wpadded-bitfield in the sources that include them.
-set_source_files_properties(BrowserWindow.cpp PageMenu.cpp PopupMenu.cpp KeyMap.cpp MoreMenu.cpp Omnibox.cpp PageFrame.cpp Pages.cpp PdfView.cpp Profile.cpp main.cpp
+set_source_files_properties(BrowserWindow.cpp Dialog.cpp Keyring.cpp PageMenu.cpp PasswordBar.cpp Passwords.cpp PopupMenu.cpp KeyMap.cpp MoreMenu.cpp Omnibox.cpp PageFrame.cpp Pages.cpp Profile.cpp Vault.cpp main.cpp
     PROPERTIES COMPILE_OPTIONS "-Wno-padded-bitfield")
 # Qt's and qt2wasm's own sources are not written to Ladybird's warning flags.
 set_source_files_properties(qt_wasi_shims.c ${moc_outputs} "${gen}/bindings/gui.c" "${qt2wasm_data}/runtime/runtime.cpp"
@@ -197,20 +174,18 @@ target_compile_options(webby-ui PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wno-error=dep
 # Qt's bundled FreeType, HarfBuzz and libpng are left out: the engine's own (newer, same ABI) serve both. Its zlib
 # stays, as its symbols carry a z_ prefix.
 target_link_libraries(webby-ui PRIVATE
-    "${gen}/bindings/gui_component_type.o"
+    "${gen}/bindings/gui_component_type.o" "${gen}/pty/pty_guest_component_type.o"
     "${qt}/lib/objects-Release/Gui_resources_1/.qt/rcc/qrc_qpdf_init.cpp.obj"
     "${qt}/lib/objects-Release/Gui_resources_2/.qt/rcc/qrc_gui_shaders_init.cpp.obj"
     "${qt}/lib/libQt6Gui.a" "${qt}/lib/libQt6Core.a" "${qt}/lib/libQt6BundledPcre2.a" "${qt}/lib/libQt6BundledZLIB.a"
-    webby-webgl LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibFileSystem LibURL skia requestserverservice LibRequests)
+    webby-webgl LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibFileSystem LibURL skia requestserverservice LibRequests LibCrypto)
 # A reactor: the host calls the exports; there is no main().
 target_link_options(webby-ui PRIVATE -mexec-model=reactor)
 
-add_dependencies(webby-ui webby-pdf)
 add_custom_command(TARGET webby-ui POST_BUILD
     COMMAND "${WASM_TOOLS}" component new "$<TARGET_FILE:webby-ui>" --adapt "wasi_snapshot_preview1=${adapter}"
-        -o "${CMAKE_BINARY_DIR}/bin/webby-ui-app.wasm"
-    COMMAND "${WAC}" plug "${CMAKE_BINARY_DIR}/bin/webby-ui-app.wasm" --plug "${pdf_component}" -o "${CMAKE_BINARY_DIR}/bin/webby.wasm"
-    COMMENT "Making the latha:gui component bin/webby.wasm (the UI and engine, with webby-pdf.wasm plugged in)" VERBATIM)
+        -o "${CMAKE_BINARY_DIR}/bin/webby.wasm"
+    COMMENT "Making the latha:gui component bin/webby.wasm" VERBATIM)
 
 # The engine as its own component: WebView.cpp and the Compositor's Skia player behind webby:engine's views
 # (wit/engine/engine.wit, engine/EngineExports.cpp). No Qt. shell/ builds the UI that imports it.
@@ -219,6 +194,7 @@ add_custom_command(OUTPUT "${gen}/engine/engine.c" "${gen}/engine/engine.h" "${g
     COMMAND "${WIT_BINDGEN}" c "${CMAKE_CURRENT_SOURCE_DIR}/wit/engine" --world engine --out-dir "${gen}/engine"
     DEPENDS "${engine_wit}" VERBATIM)
 add_executable(webby-core
+    "${WEBBY_NATIVE_DIR}/Authenticator.cpp"
     Network.cpp
     Storage.cpp
     WebView.cpp
@@ -240,10 +216,10 @@ add_executable(webby-core
     ${compositor_dir}/VideoFrameSkia.cpp)
 set_target_properties(webby-core PROPERTIES SUFFIX ".core.wasm" RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 target_include_directories(webby-core PRIVATE ${LADYBIRD_SOURCE_DIR}/Services ${CMAKE_BINARY_DIR}/Services
-    "${CMAKE_CURRENT_SOURCE_DIR}" "${gen}/engine")
+    "${CMAKE_CURRENT_SOURCE_DIR}" "${gen}/engine" "${WEBBY_NATIVE_DIR}")
 set_source_files_properties("${gen}/engine/engine.c" PROPERTIES COMPILE_OPTIONS "-w;-Wno-error")
 target_link_libraries(webby-core PRIVATE "${gen}/engine/engine_component_type.o"
-    webby-webgl LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibFileSystem LibURL skia requestserverservice LibRequests)
+    webby-webgl LibWeb LibCompositing LibGfx LibImageDecoders LibMedia LibFileSystem LibURL skia requestserverservice LibRequests LibCrypto)
 target_link_options(webby-core PRIVATE -mexec-model=reactor)
 add_custom_command(TARGET webby-core POST_BUILD
     COMMAND "${WASM_TOOLS}" component new "$<TARGET_FILE:webby-core>" --adapt "wasi_snapshot_preview1=${adapter}"
