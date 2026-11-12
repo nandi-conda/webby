@@ -21,6 +21,7 @@
 #include <LibCore/ResourceImplementation.h>
 #include <LibCore/ResourceImplementationFile.h>
 #include <LibCore/System.h>
+#include <LibCore/Timer.h>
 #include <LibFileSystem/FileSystem.h>
 #include <LibGC/Root.h>
 #include <LibGfx/Bitmap.h>
@@ -231,6 +232,7 @@ struct WebView::Impl {
     GC::Root<Web::DOM::Document> document;
     GC::Root<Web::DOM::DocumentObserver> observer;
     RefPtr<Gfx::Bitmap> bitmap;
+    RefPtr<Core::Timer> render_block_timer;
 };
 
 namespace {
@@ -469,6 +471,9 @@ void WebView::show_document(LoadedDocument loaded)
     auto observer = Web::DOM::DocumentObserver::create(*document);
     observer->set_document_completely_loaded([this] { did_finish_loading(); });
 
+    if (m_impl->render_block_timer)
+        m_impl->render_block_timer->stop();
+    m_impl->render_block_timer = nullptr;
     m_impl->client = client;
     m_impl->page = page;
     m_impl->document = document;
@@ -534,12 +539,26 @@ uint8_t const* WebView::paint()
         if (bitmap.is_error())
             return nullptr;
         m_impl->bitmap = bitmap.release_value();
+        fill_white(*m_impl->bitmap);
     }
 
     auto& document = *m_impl->document;
     auto* navigable = document.navigable().ptr();
     if (!navigable)
         return m_impl->bitmap->scanline_u8(0);
+
+    // A render-blocked document (its <head> style sheets and blocking scripts still loading) is not painted, as
+    // Ladybird's update-the-rendering skips it: the last frame (the previous page's) stays up, so a page never shows
+    // unstyled before its CSS arrives. The last blocking load ending requests a frame; the engine's 30 s cap on
+    // blocking does not, so a timer asks again then.
+    if (document.is_render_blocked()) {
+        m_needs_paint = true;
+        if (!m_impl->render_block_timer) {
+            m_impl->render_block_timer = Core::Timer::create_single_shot(AK::Duration::from_milliseconds(30100), [this] { did_request_frame(); });
+            m_impl->render_block_timer->start();
+        }
+        return m_impl->bitmap->scanline_u8(0);
+    }
     auto& resource_storage = navigable->display_list_resource_storage();
 
     Web::Layout::ForcedReadScope read { document };
