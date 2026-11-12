@@ -70,6 +70,11 @@ private:
         Reload,
         Address,
         Star,
+        Zoom,
+        FindField,
+        FindPrevious,
+        FindNext,
+        FindClose,
         Bookmark,
         Suggestion,
         Page,
@@ -88,6 +93,15 @@ private:
     void update_suggestions();
     void hide_suggestions();
     void load_in_current(QString const& url);
+    void open_find();
+    void close_find();
+    void run_find(int direction); // 0: search again from the start, 1: next, -1: previous
+    bool find_key(QKeyEvent*);
+    void zoom_by(int steps); // 0 resets
+    QRectF find_rect() const;
+    QRectF find_button_rect(int index) const; // 0 previous, 1 next, 2 close
+    QRectF zoom_rect() const;
+    void paint_find(QPainter&);
     void close_tab(int index);
     void activate_tab(int index);
     Tab* current();
@@ -143,6 +157,12 @@ private:
     int m_suggestion { -1 }; // the highlighted suggestion, -1 for none (Return loads the typed text)
     QString m_typed_text; // what was typed before Up/Down put a suggestion in the field
     QTimer m_save_timer;
+
+    // The find bar (Ctrl+F), over the page's top right corner.
+    bool m_find_open { false };
+    bool m_find_focused { false }; // keys go to the find field
+    QString m_find_text;
+    WebbyUI::WebView::FindResult m_find_result;
 
     // Dragging a tab along the strip.
     bool m_dragging_tab { false };

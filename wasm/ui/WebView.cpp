@@ -109,6 +109,7 @@ public:
 
     void set_page(Web::Page& page) { m_page = &page; }
     void set_viewport(Gfx::IntSize size) { m_viewport = size; }
+    void set_zoom(double zoom) { m_zoom = zoom; }
     void detach() { m_view = nullptr; }
 
     virtual Web::PageId id() const override { return 1; }
@@ -117,9 +118,10 @@ public:
     virtual bool is_connection_open() const override { return false; }
     virtual Gfx::Palette palette() const override { return Gfx::Palette { *m_palette_impl }; }
     virtual Web::DevicePixelRect screen_rect() const override { return { { 0, 0 }, m_viewport.to_type<Web::DevicePixels>() }; }
-    virtual double zoom_level() const override { return 1.0; }
+    // Page zoom (Ctrl +/-): the viewport's device pixels stay the window's, its CSS pixels grow or shrink.
+    virtual double zoom_level() const override { return m_zoom; }
     virtual double device_pixel_ratio() const override { return 1.0; }
-    virtual double device_pixels_per_css_pixel() const override { return 1.0; }
+    virtual double device_pixels_per_css_pixel() const override { return m_zoom; }
     virtual Web::CSS::PreferredColorScheme preferred_color_scheme() const override { return Web::CSS::PreferredColorScheme::Light; }
     virtual Web::CSS::PreferredContrast preferred_contrast() const override { return Web::CSS::PreferredContrast::NoPreference; }
     virtual Web::CSS::PreferredMotion preferred_motion() const override { return Web::CSS::PreferredMotion::NoPreference; }
@@ -301,6 +303,7 @@ private:
     WebView* m_view { nullptr };
     GC::Ptr<Web::Page> m_page;
     Gfx::IntSize m_viewport;
+    double m_zoom { 1.0 };
     NonnullRefPtr<Gfx::PaletteImpl> m_palette_impl;
     Queue<Web::QueuedInputEvent> m_input_event_queue;
     u64 m_next_primary_paste { 0 };
@@ -595,12 +598,13 @@ void WebView::show_document(LoadedDocument loaded)
 
     Gfx::IntSize viewport { m_width, m_height };
     auto client = BrowserPageClient::create(*this, viewport, *s_palette);
+    client->set_zoom(m_zoom);
     auto page = Web::Page::create(*client);
     client->set_page(*page);
     page->set_top_level_traversable(Web::HTML::LocalTraversableNavigable::create_a_new_top_level_traversable(page, nullptr, {}));
     auto& navigable = *page->local_traversable();
     auto& window = *navigable.active_window();
-    navigable.set_viewport_size(viewport.to_type<Web::CSSPixels>());
+    navigable.set_viewport_size(page->device_to_css_size(viewport.to_type<Web::DevicePixels>()));
 
     auto document = Web::DOM::Document::create(*page, window, document_url);
     document->set_id(client->allocate_cross_process_id());
@@ -655,7 +659,7 @@ void WebView::resize(int width, int height)
     if (m_impl->client)
         m_impl->client->set_viewport({ width, height });
     if (m_impl->page && m_impl->page->has_local_traversable())
-        m_impl->page->local_traversable()->set_viewport_size(Gfx::IntSize { width, height }.to_type<Web::CSSPixels>());
+        m_impl->page->local_traversable()->set_viewport_size(m_impl->page->device_to_css_size(Gfx::IntSize { width, height }.to_type<Web::DevicePixels>()));
     did_request_frame();
 }
 
@@ -773,7 +777,7 @@ void WebView::wheel(int x, int y, double dx, double dy, unsigned modifiers)
     // Ladybird scrolls by a wheel event in its Compositor process, and there is none here: unless the page cancelled
     // the event, scroll the viewport on this thread. (Inner scroll containers do not scroll by the wheel yet.)
     if (result != Web::EventResult::Cancelled && m_impl->document && m_impl->document->window())
-        m_impl->document->window()->scroll_by(dx, dy, nullptr);
+        m_impl->document->window()->scroll_by(dx / m_zoom, dy / m_zoom, nullptr);
     did_request_frame();
 }
 
@@ -905,6 +909,66 @@ void WebView::insert_text(std::string const& text)
         auto utf16 = Utf16String::from_utf8_with_replacement_character(StringView { text.data(), text.size() });
         navigable->paste(utf16);
     }
+    did_request_frame();
+}
+
+
+void WebView::set_zoom(double zoom)
+{
+    zoom = clamp(zoom, 0.25, 5.0);
+    if (zoom == m_zoom)
+        return;
+    m_zoom = zoom;
+    if (m_impl->client)
+        m_impl->client->set_zoom(zoom);
+    if (m_impl->page && m_impl->page->has_local_traversable()) {
+        m_impl->page->local_traversable()->set_viewport_size(
+            m_impl->page->device_to_css_size(Gfx::IntSize { m_width, m_height }.to_type<Web::DevicePixels>()),
+            Web::InvalidateDisplayList::PaintCommandsAndHitTestList);
+    }
+    did_request_frame();
+}
+
+static WebView::FindResult find_result(Web::Page::FindInPageResult const& result)
+{
+    return { unsigned(result.current_match_index), result.total_match_count.has_value() ? int(*result.total_match_count) : -1 };
+}
+
+WebView::FindResult WebView::find(std::string const& query, bool case_sensitive)
+{
+    if (!m_impl->page || !m_impl->document)
+        return { 0, 0 };
+    Web::Page::FindInPageQuery q;
+    q.string = Utf16String::from_utf8(StringView { query.data(), query.size() });
+    q.case_sensitivity = case_sensitive ? CaseSensitivity::CaseSensitive : CaseSensitivity::CaseInsensitive;
+    q.highlight_all_matches = true;
+    auto result = m_impl->page->find_in_page(q);
+    did_request_frame();
+    return find_result(result);
+}
+
+WebView::FindResult WebView::find_next()
+{
+    if (!m_impl->page || !m_impl->document)
+        return { 0, 0 };
+    auto result = m_impl->page->find_in_page_next_match();
+    did_request_frame();
+    return find_result(result);
+}
+
+WebView::FindResult WebView::find_previous()
+{
+    if (!m_impl->page || !m_impl->document)
+        return { 0, 0 };
+    auto result = m_impl->page->find_in_page_previous_match();
+    did_request_frame();
+    return find_result(result);
+}
+
+void WebView::find_end()
+{
+    if (m_impl->page && m_impl->document)
+        m_impl->page->find_in_page_end();
     did_request_frame();
 }
 

@@ -111,6 +111,21 @@ public:
 
     // Editing, for the context menu, in the focused frame.
     std::string selected_text() const;
+
+    // Find in page (Ctrl+F): every match highlighted, the active one scrolled to. `index` counts from 0; `total` is -1
+    // when unknown, 0 for no match.
+    struct FindResult {
+        unsigned index { 0 };
+        int total { 0 };
+    };
+    FindResult find(std::string const& query, bool case_sensitive);
+    FindResult find_next();
+    FindResult find_previous();
+    void find_end();
+
+    // Page zoom, 1 for 100% (0.25 to 5). Kept across this view's navigations.
+    void set_zoom(double);
+    double zoom() const { return m_zoom; }
     void select_all();
     std::string cut_selection(); // removes the selected text (in an editable) and returns it
     void insert_text(std::string const& text); // a paste of `text` at the caret
@@ -142,6 +157,7 @@ private:
     std::string m_title;
     bool m_loading { false };
     bool m_needs_paint { true };
+    double m_zoom { 1.0 };
     std::vector<std::string> m_history;
     size_t m_history_index { 0 };
     uint64_t m_fetch_id { 0 }; // the http(s) document being downloaded, if any

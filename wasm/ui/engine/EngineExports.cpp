@@ -202,4 +202,19 @@ void exports_webby_engine_views_method_view_select_all(Borrow self) { self->view
 void exports_webby_engine_views_method_view_cut_selection(Borrow self, engine_string_t* ret) { give_string(ret, self->view->cut_selection()); }
 void exports_webby_engine_views_method_view_insert_text(Borrow self, engine_string_t* text) { self->view->insert_text(take_string(text)); }
 
+static void give_find(exports_webby_engine_views_find_result_t* ret, WebbyUI::WebView::FindResult r)
+{
+    ret->index = r.index;
+    ret->total = r.total;
+}
+
+void exports_webby_engine_views_method_view_find(Borrow self, engine_string_t* query, bool case_sensitive, exports_webby_engine_views_find_result_t* ret)
+{
+    give_find(ret, self->view->find(take_string(query), case_sensitive));
+}
+void exports_webby_engine_views_method_view_find_next(Borrow self, exports_webby_engine_views_find_result_t* ret) { give_find(ret, self->view->find_next()); }
+void exports_webby_engine_views_method_view_find_previous(Borrow self, exports_webby_engine_views_find_result_t* ret) { give_find(ret, self->view->find_previous()); }
+void exports_webby_engine_views_method_view_find_end(Borrow self) { self->view->find_end(); }
+void exports_webby_engine_views_method_view_set_zoom(Borrow self, double level) { self->view->set_zoom(level); }
+
 void exports_webby_engine_views_pump(void) { WebbyUI::WebView::pump(); }

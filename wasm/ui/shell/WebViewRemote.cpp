@@ -220,6 +220,46 @@ static std::string take_gui_string(gui_string_t& s)
     return result;
 }
 
+WebView::FindResult WebView::find(std::string const& query, bool case_sensitive)
+{
+    auto s = borrow_string(query);
+    webby_engine_views_find_result_t r {};
+    webby_engine_views_method_view_find(m_impl->borrow(), &s, case_sensitive, &r);
+    deliver_engine_events();
+    return { r.index, r.total };
+}
+
+WebView::FindResult WebView::find_next()
+{
+    webby_engine_views_find_result_t r {};
+    webby_engine_views_method_view_find_next(m_impl->borrow(), &r);
+    deliver_engine_events();
+    return { r.index, r.total };
+}
+
+WebView::FindResult WebView::find_previous()
+{
+    webby_engine_views_find_result_t r {};
+    webby_engine_views_method_view_find_previous(m_impl->borrow(), &r);
+    deliver_engine_events();
+    return { r.index, r.total };
+}
+
+void WebView::find_end()
+{
+    webby_engine_views_method_view_find_end(m_impl->borrow());
+    deliver_engine_events();
+}
+
+void WebView::set_zoom(double zoom)
+{
+    zoom = std::clamp(zoom, 0.25, 5.0);
+    m_zoom = zoom;
+    webby_engine_views_method_view_set_zoom(m_impl->borrow(), zoom);
+    m_needs_paint = true;
+    deliver_engine_events();
+}
+
 std::string WebView::selected_text() const
 {
     gui_string_t s {};

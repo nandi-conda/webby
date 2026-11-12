@@ -53,6 +53,11 @@ interface views {
         context-menu-requested(context-menu),
     }
 
+    record find-result {
+        index: u32,
+        total: s32,
+    }
+
     /// One page (a tab). Sizes and coordinates are CSS pixels at device pixel ratio 1.
     resource view {
         /// The first view sets the engine up (its JS VM, resource loader, theme and fonts).
@@ -88,6 +93,15 @@ interface views {
         selected-text: func() -> string;
         select-all: func();
         cut-selection: func() -> string;
+
+        /// Find in page: every match of `query` highlighted, the active one scrolled into view. `index` counts from
+        /// 0; `total` is -1 when not known yet, 0 for no match. `find-end` clears the highlights.
+        find: func(query: string, case-sensitive: bool) -> find-result;
+        find-next: func() -> find-result;
+        find-previous: func() -> find-result;
+        find-end: func();
+        /// Page zoom, 1.0 for 100% (clamped to 0.25 .. 5); it stays across the view's navigations.
+        set-zoom: func(level: f64);
         insert-text: func(text: string);
     }
 

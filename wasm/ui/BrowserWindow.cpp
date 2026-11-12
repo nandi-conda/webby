@@ -234,8 +234,10 @@ void BrowserWindow::activate_tab(int index)
 {
     if (index < 0 || index >= int(m_tabs.size()))
         return;
-    if (index != m_current)
+    if (index != m_current) {
         m_menu.close();
+        close_find();
+    }
     m_current = index;
     auto page = page_rect();
     if (!m_tabs[index].view)
@@ -447,8 +449,18 @@ BrowserWindow::HitResult BrowserWindow::hit_test(QPointF p) const
         return { Hit::Forward };
     if (button_rect(2).contains(p))
         return { Hit::Reload };
+    if (m_find_open) {
+        for (int i = 0; i < 3; ++i) {
+            if (find_button_rect(i).contains(p))
+                return { i == 0 ? Hit::FindPrevious : i == 1 ? Hit::FindNext : Hit::FindClose };
+        }
+        if (find_rect().contains(p))
+            return { Hit::FindField };
+    }
     if (star_rect().contains(p))
         return { Hit::Star };
+    if (zoom_rect().contains(p))
+        return { Hit::Zoom };
     if (address_rect().contains(p))
         return { Hit::Address };
     if (show_bookmarks_bar()) {
@@ -473,6 +485,7 @@ void BrowserWindow::paintEvent(QPaintEvent*)
     paint_toolbar(painter);
     paint_bookmarks_bar(painter);
     paint_status(painter);
+    paint_find(painter);
     paint_suggestions(painter);
     m_menu.paint(painter);
 }
@@ -617,7 +630,22 @@ void BrowserWindow::paint_toolbar(QPainter& p)
         p.drawPolygon(poly);
     }
 
-    auto text_rect = field.adjusted(16, 0, -16 - star.width(), 0);
+    // The page's zoom, when it is not 100%: a pill before the star that resets it.
+    auto zoom = zoom_rect();
+    if (!zoom.isEmpty()) {
+        QFont small = p.font();
+        small.setPixelSize(12);
+        p.save();
+        p.setFont(small);
+        QPainterPath pill;
+        pill.addRoundedRect(zoom, zoom.height() / 2, zoom.height() / 2);
+        p.fillPath(pill, m_hover.hit == Hit::Zoom ? button_hover_color.darker(105) : button_hover_color);
+        p.setPen(text_color);
+        p.drawText(zoom, Qt::AlignCenter, QStringLiteral("%1%").arg(qRound(tab->view->zoom() * 100)));
+        p.restore();
+    }
+
+    auto text_rect = field.adjusted(16, 0, -16 - star.width() - (zoom.isEmpty() ? 0 : zoom.width() + 4), 0);
     p.save();
     p.setClipRect(text_rect);
     if (m_address_text.isEmpty() && !m_address_focused) {
@@ -802,6 +830,13 @@ void BrowserWindow::mousePressEvent(QMouseEvent* event)
 {
     auto hit = hit_test(event->position());
     m_pressed = hit;
+    if (m_find_open) {
+        bool in_find = hit.hit == Hit::FindField || hit.hit == Hit::FindPrevious || hit.hit == Hit::FindNext;
+        if (in_find != m_find_focused) {
+            m_find_focused = in_find;
+            update();
+        }
+    }
     if (hit.hit == Hit::Suggestion) {
         if (event->button() == Qt::LeftButton && hit.tab < m_suggestions.size()) {
             auto url = m_suggestions[hit.tab].url;
@@ -951,6 +986,18 @@ void BrowserWindow::mouseReleaseEvent(QMouseEvent* event)
     case Hit::Star:
         toggle_bookmark();
         break;
+    case Hit::Zoom:
+        zoom_by(0);
+        break;
+    case Hit::FindPrevious:
+        run_find(-1);
+        break;
+    case Hit::FindNext:
+        run_find(1);
+        break;
+    case Hit::FindClose:
+        close_find();
+        break;
     case Hit::Bookmark:
         if (hit.tab == pressed.tab) {
             auto const& items = Profile::Bookmarks::the().bar().children;
@@ -1025,6 +1072,13 @@ void BrowserWindow::wheelEvent(QWheelEvent* event)
     auto* tab = current();
     if (!tab || !tab->view || hit_test(event->position()).hit != Hit::Page)
         return;
+    if (event->modifiers() & Qt::ControlModifier) {
+        // Ctrl+wheel zooms, a step a notch.
+        auto dy = event->angleDelta().y();
+        if (dy)
+            zoom_by(dy > 0 ? 1 : -1);
+        return;
+    }
     auto page = page_rect();
     // A notch is 120 eighths of a degree in angleDelta and scrolls three 40-pixel lines; a touchpad reports pixels.
     QPointF delta = !event->pixelDelta().isNull() ? QPointF(-event->pixelDelta()) : QPointF(-event->angleDelta()) / 120.0 * 120.0;
@@ -1179,6 +1233,32 @@ void BrowserWindow::keyPressEvent(QKeyEvent* event)
     bool ctrl = mods == Qt::ControlModifier;
     bool ctrl_shift = mods == (Qt::ControlModifier | Qt::ShiftModifier);
     // Browser shortcuts first, the Nim front end's.
+    if (ctrl && key == Qt::Key_F) {
+        open_find();
+        return;
+    }
+    if ((mods == Qt::NoModifier && key == Qt::Key_F3) || (ctrl && key == Qt::Key_G)) {
+        m_find_open ? run_find(1) : open_find();
+        return;
+    }
+    if ((mods == Qt::ShiftModifier && key == Qt::Key_F3) || (ctrl_shift && key == Qt::Key_G)) {
+        m_find_open ? run_find(-1) : open_find();
+        return;
+    }
+    if ((ctrl || ctrl_shift) && (key == Qt::Key_Plus || key == Qt::Key_Equal)) {
+        zoom_by(1);
+        return;
+    }
+    if (ctrl && (key == Qt::Key_Minus || key == Qt::Key_Underscore)) {
+        zoom_by(-1);
+        return;
+    }
+    if (ctrl && key == Qt::Key_0) {
+        zoom_by(0);
+        return;
+    }
+    if (m_find_open && m_find_focused && !m_address_focused && find_key(event))
+        return;
     if (ctrl && key == Qt::Key_D) {
         toggle_bookmark();
         return;
@@ -1344,3 +1424,207 @@ bool BrowserWindow::event(QEvent* event)
     }
     return QRasterWindow::event(event);
 }
+
+// Find in page.
+
+QRectF BrowserWindow::find_rect() const
+{
+    qreal w = qMin<qreal>(420, width() - 24);
+    return { width() - w - 12, chrome_height() + 8.0, w, 40 };
+}
+
+QRectF BrowserWindow::find_button_rect(int index) const
+{
+    auto r = find_rect();
+    return { r.right() - 8 - (3 - index) * 30.0, r.top() + 5, 30, 30 };
+}
+
+void BrowserWindow::open_find()
+{
+    auto* tab = current();
+    if (!tab || !tab->view)
+        return;
+    if (m_address_focused)
+        focus_address(false);
+    m_find_open = true;
+    m_find_focused = true;
+    // The page's selection is the first query, as in other browsers.
+    auto selected = from_std(tab->view->selected_text()).simplified();
+    if (!selected.isEmpty() && selected.size() < 200)
+        m_find_text = selected;
+    run_find(0);
+    update();
+}
+
+void BrowserWindow::close_find()
+{
+    if (!m_find_open)
+        return;
+    m_find_open = false;
+    m_find_result = {};
+    if (auto* tab = current(); tab && tab->view)
+        tab->view->find_end();
+    update();
+}
+
+void BrowserWindow::run_find(int direction)
+{
+    auto* tab = current();
+    if (!tab || !tab->view)
+        return;
+    if (m_find_text.isEmpty()) {
+        tab->view->find_end();
+        m_find_result = {};
+    } else if (direction == 0) {
+        m_find_result = tab->view->find(to_std(m_find_text), false);
+    } else {
+        m_find_result = direction > 0 ? tab->view->find_next() : tab->view->find_previous();
+    }
+    update();
+}
+
+bool BrowserWindow::find_key(QKeyEvent* event)
+{
+    auto mods = event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+    switch (event->key()) {
+    case Qt::Key_Escape:
+        close_find();
+        return true;
+    case Qt::Key_Return:
+    case Qt::Key_Enter:
+        run_find(event->modifiers() & Qt::ShiftModifier ? -1 : 1);
+        return true;
+    case Qt::Key_Backspace:
+        if (!m_find_text.isEmpty()) {
+            m_find_text.chop(1);
+            run_find(0);
+        }
+        return true;
+    default:
+        break;
+    }
+    if (mods == Qt::ControlModifier && event->key() == Qt::Key_V) {
+        auto text = qt2wasm::gui::clipboardText().simplified();
+        if (!text.isEmpty()) {
+            m_find_text += text;
+            run_find(0);
+        }
+        return true;
+    }
+    if (mods == Qt::ControlModifier && event->key() == Qt::Key_A) {
+        m_find_text.clear();
+        run_find(0);
+        return true;
+    }
+    if (mods)
+        return false;
+    auto text = event->text();
+    if (text.isEmpty() || !text.at(0).isPrint())
+        return false;
+    m_find_text += text;
+    run_find(0);
+    return true;
+}
+
+void BrowserWindow::paint_find(QPainter& p)
+{
+    if (!m_find_open)
+        return;
+    auto r = find_rect();
+    p.setPen(QPen(QColor(0xda, 0xdc, 0xe0), 1));
+    p.setBrush(tab_color);
+    p.drawRoundedRect(r, 10, 10);
+    QFont font = p.font();
+    font.setPixelSize(14);
+    p.setFont(font);
+    QFontMetricsF metrics(font);
+    QString count;
+    if (!m_find_text.isEmpty()) {
+        if (m_find_result.total == 0)
+            count = QStringLiteral("No results");
+        else if (m_find_result.total > 0)
+            count = QStringLiteral("%1 of %2").arg(m_find_result.index + 1).arg(m_find_result.total);
+    }
+    qreal count_width = count.isEmpty() ? 0 : metrics.horizontalAdvance(count) + 12;
+    auto text = QRectF(r.left() + 14, r.top(), find_button_rect(0).left() - r.left() - 18 - count_width, r.height());
+    p.save();
+    p.setClipRect(text);
+    qreal baseline = text.center().y() + (metrics.ascent() - metrics.descent()) / 2;
+    if (m_find_text.isEmpty()) {
+        p.setPen(dim_text_color);
+        p.drawText(text, Qt::AlignVCenter | Qt::AlignLeft, QStringLiteral("Find in page"));
+    } else {
+        // The end of a long query stays in view.
+        qreal w = metrics.horizontalAdvance(m_find_text);
+        qreal x = text.left() + qMin<qreal>(0, text.width() - w - 2);
+        p.setPen(text_color);
+        p.drawText(QPointF(x, baseline), m_find_text);
+    }
+    qreal caret = text.left() + qMin(metrics.horizontalAdvance(m_find_text), text.width() - 2);
+    p.setPen(QPen(m_find_focused ? text_color : Qt::transparent, 1));
+    p.drawLine(QPointF(caret, text.center().y() - metrics.height() / 2), QPointF(caret, text.center().y() + metrics.height() / 2));
+    p.restore();
+    if (!count.isEmpty()) {
+        p.setPen(m_find_result.total == 0 ? QColor(0xd9, 0x30, 0x25) : dim_text_color);
+        p.drawText(QRectF(text.right() + 6, r.top(), count_width, r.height()), Qt::AlignVCenter | Qt::AlignLeft, count);
+    }
+    Hit hits[] = { Hit::FindPrevious, Hit::FindNext, Hit::FindClose };
+    for (int i = 0; i < 3; ++i) {
+        auto b = find_button_rect(i);
+        if (m_hover.hit == hits[i]) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(button_hover_color);
+            p.drawEllipse(b.adjusted(2, 2, -2, -2));
+        }
+        p.setPen(QPen(text_color, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        auto c = b.center();
+        if (i == 2) {
+            p.drawLine(c + QPointF(-5, -5), c + QPointF(5, 5));
+            p.drawLine(c + QPointF(5, -5), c + QPointF(-5, 5));
+        } else {
+            qreal d = i == 0 ? -1 : 1;
+            p.drawLine(c + QPointF(-6, -3 * d), c + QPointF(0, 3 * d));
+            p.drawLine(c + QPointF(0, 3 * d), c + QPointF(6, -3 * d));
+        }
+    }
+}
+
+// Zoom: the Nim front end's (and Chrome's) steps.
+
+void BrowserWindow::zoom_by(int steps)
+{
+    auto* tab = current();
+    if (!tab || !tab->view)
+        return;
+    static constexpr double levels[] = { 0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0 };
+    double zoom = tab->view->zoom();
+    double next = 1.0;
+    if (steps > 0) {
+        next = levels[std::size(levels) - 1];
+        for (double level : levels) {
+            if (level > zoom + 0.001) {
+                next = level;
+                break;
+            }
+        }
+    } else if (steps < 0) {
+        next = levels[0];
+        for (double level : levels) {
+            if (level < zoom - 0.001)
+                next = level;
+        }
+    }
+    tab->view->set_zoom(next);
+    update();
+}
+
+QRectF BrowserWindow::zoom_rect() const
+{
+    auto* tab = const_cast<BrowserWindow*>(this)->current();
+    if (!tab || !tab->view || qAbs(tab->view->zoom() - 1.0) < 0.001)
+        return {};
+    auto star = star_rect();
+    return { star.left() - 52, star.top() + 6, 50, star.height() - 12 };
+}
+
