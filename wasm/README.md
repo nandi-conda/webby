@@ -132,6 +132,14 @@ WebAssembly runs inside wasm webby:
   as `Sequence<ptr<u8>>`.
 - WASI stack bounds come from wasm-ld's `__stack_low`.
 
+`patches/0020-libwasm-nested-entries.patch` fixes entries into the C interpreter from host functions that WebAssembly
+called (wasm-bindgen glue calls exports such as `__externref_table_alloc` from inside imports, so every Rust/wasm
+site does this). A nested entry used the outer entry's frame region bottom as its own lower limit while it already
+ran below it, got an empty region and trapped "call stack exhausted" (JS: InternalError "Call stack size limit
+exceeded"; blog.zortax.de's hydrate). Every entry now splits what is left above the thread's real limit, at most
+1 MiB for the outermost entry's frames and 256 KiB for nested ones, so many levels fit in the 8 MiB stack. Engine test
+`host_functions_call_back_into_webassembly` (natively with `LIBWASM_INTERPRETER_BACKEND=c`).
+
 `tests/libwasm.sh LADYBIRD_SRC OUT` runs LibWasm's Engine tests in wasm (execution, fixtures, side tables,
 validation: all pass) and the WebAssembly spec test suite (github.com/WebAssembly/testsuite, 258 scripts) with
 `tools/libwasm-wast`, a .wast runner on LibWasm's Rust API, three ways: natively with the assembly interpreter,

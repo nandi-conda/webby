@@ -1,0 +1,129 @@
+diff --git a/Libraries/LibJS/Flap/src/target/c.rs b/Libraries/LibJS/Flap/src/target/c.rs
+index 6e7d4d47..d633dece 100644
+--- a/Libraries/LibJS/Flap/src/target/c.rs
++++ b/Libraries/LibJS/Flap/src/target/c.rs
+@@ -1801,9 +1801,12 @@ fn vector_statement(
+ 
+ /// Print the WebAssembly interpreter. Its handlers keep `ip`, `stp`, `vsp`, `memory_base`, the dispatch table, `sp`
+ /// and `fp` in parameters. The frames that the assembly backends build on the machine stack go in a region the entry
+-/// function allocates on the C stack instead, the upper half of what the context's stack limit leaves it, so that
+-/// the native calls handlers make (the runtime's functions, and through them nested entries) run below the frames.
+-/// While it runs, the entry makes the bottom of that region the context's stack limit.
++/// function allocates on the C stack instead, the upper half of what the context's stack limit leaves it but at most
++/// `FLAP_FRAME_REGION_MAX` (`FLAP_NESTED_FRAME_REGION_MAX` for nested entries), so that the native calls handlers make (the runtime's functions, and through them nested
++/// entries) run below the frames. While it runs, the entry makes the bottom of that region the context's stack limit.
++/// NB: Nested entries split what is left below their caller's region the same way. With only halves, each level of
++///     WebAssembly -> host -> WebAssembly had half the stack of the last (wasm-bindgen glue makes such calls for
++///     every JS value it hands to WebAssembly), so the cap leaves room for many levels.
+ fn generate_webassembly(
+     program: &low_ir::Program,
+     options: &CompileOptions,
+@@ -1911,6 +1914,10 @@ fn generate_webassembly_unit(
+     w(&mut out, format_args!(r#"/* The native stack limit of the outermost entry on this thread, which nested entries split further. */
+ static _Thread_local u64 flap_native_stack_limit;
+ 
++/* The most stack the outermost entry and nested ones keep for their frames. */
++#define FLAP_FRAME_REGION_MAX ((uptr)1024 * 1024)
++#define FLAP_NESTED_FRAME_REGION_MAX ((uptr)256 * 1024)
++
+ void {entry}(const u8* code, u64 argument)
+ {{
+     uptr context = ldptr(argument + FLAP_ENTRY_CONTEXT);
+@@ -1919,11 +1926,16 @@ void {entry}(const u8* code, u64 argument)
+     u64 native_limit = outer_native_limit != 0 ? outer_native_limit : context_limit;
+     uptr here = (uptr)__builtin_frame_address(0);
+     uptr size = here > native_limit + 4096 ? ((here - native_limit) / 2) & ~(uptr)15 : 0;
++    uptr most = outer_native_limit != 0 ? FLAP_NESTED_FRAME_REGION_MAX : FLAP_FRAME_REGION_MAX;
++    if (size > most)
++        size = most;
+     /* NB: The frames live in this region, which the native stack's conservative scans see. */
+     u8* region = (u8*)__builtin_alloca(size + 16);
+     u64 bottom = ((uptr)region + 15) & ~(uptr)15;
+     u64 top = bottom + size;
+-    flap_native_stack_limit = here > size ? (u64)(here - size) : native_limit;
++    /* NB: Native calls from the handlers run below the region, down to the same limit, and so do the entries they
++     *     make: those split what is left between there and this limit again. */
++    flap_native_stack_limit = native_limit;
+     st64(context + FLAP_CONTEXT_STACK_LIMIT, bottom);
+     {dispatch_table}[ld8((uptr)code)]((u64)(uptr)code, 0, argument, 0, (uptr){dispatch_table}, top, top);
+     st64(context + FLAP_CONTEXT_STACK_LIMIT, context_limit);
+diff --git a/Libraries/LibWasm/Engine/tests/execution.rs b/Libraries/LibWasm/Engine/tests/execution.rs
+index 9e8af94f..f37b23d0 100644
+--- a/Libraries/LibWasm/Engine/tests/execution.rs
++++ b/Libraries/LibWasm/Engine/tests/execution.rs
+@@ -471,3 +471,50 @@ fn calls_between_the_tiers_with_many_values() {
+     };
+     assert_eq!(run(false), run(true));
+ }
++
++fn host_functions_call_back_into_webassembly_on_this_thread() {
++    use libwasm_engine::runtime::FunctionAddress;
++    use libwasm_engine::types::{FuncType, ValType};
++    use std::cell::Cell;
++    use std::rc::Rc;
++    let mut store = Store::new();
++    let outer: Rc<Cell<Option<FunctionAddress>>> = Rc::new(Cell::new(None));
++    let callee = outer.clone();
++    let call_back = store.allocate_host_function(
++        FuncType {
++            params: vec![ValType::I32],
++            results: vec![ValType::I32],
++        },
++        Rc::new(move |store: &mut Store, arguments: &[Value]| {
++            store.invoke(callee.get().unwrap(), arguments)
++        }),
++    );
++    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reentry.wasm");
++    let module = libwasm_engine::compile(&std::fs::read(path).unwrap()).unwrap();
++    let instance = store
++        .instantiate(Arc::new(module), &[ExternValue::Function(call_back)])
++        .unwrap();
++    let Some(ExternValue::Function(function)) = store.instance(instance).export("outer") else {
++        panic!("no function export outer");
++    };
++    outer.set(Some(function));
++    // NB: Each level is an entry into the interpreter from a host function that an outer entry called.
++    for depth in [1, 2, 3, 10, 20] {
++        assert_eq!(
++            call(&mut store, instance, "outer", &[Value::I32(depth)]),
++            Ok(vec![Value::I32(depth)]),
++            "{depth} nested entries"
++        );
++    }
++}
++
++#[test]
++fn host_functions_call_back_into_webassembly() {
++    // NB: Like a browser's main thread (and the WASI modules' 8 MiB stack), not a test thread's 2 MiB.
++    std::thread::Builder::new()
++        .stack_size(8 * 1024 * 1024)
++        .spawn(host_functions_call_back_into_webassembly_on_this_thread)
++        .unwrap()
++        .join()
++        .unwrap();
++}
+diff --git a/Libraries/LibWasm/Engine/tests/fixtures/reentry.wasm b/Libraries/LibWasm/Engine/tests/fixtures/reentry.wasm
+new file mode 100644
+index 0000000000000000000000000000000000000000..03fc6b2b23e98f65e6a470d14670da455f14afe7
+GIT binary patch
+literal 105
+zcmYMrI|_q907cPv$5HW9h#)C!+=_+kFcT5PFGN$%)?;ULx+8aPNFw5m$D0y69p{w{
+uZe9D28x|=rC{75E-!*<k`l3>!&iYniqn4$(nX^o_-Q6~lqo<n)5c?ktZxciS
+
+literal 0
+HcmV?d00001
+
+diff --git a/Libraries/LibWasm/Engine/tests/fixtures/reentry.wat b/Libraries/LibWasm/Engine/tests/fixtures/reentry.wat
+new file mode 100644
+index 00000000..aa814c55
+--- /dev/null
++++ b/Libraries/LibWasm/Engine/tests/fixtures/reentry.wat
+@@ -0,0 +1,8 @@
++;; Calls from WebAssembly into the host that call back into WebAssembly, the way wasm-bindgen glue calls exports
++;; such as __externref_table_alloc from the imports a module calls.
++(module
++  (import "host" "call_back" (func $call_back (param i32) (result i32)))
++  (func (export "outer") (param $n i32) (result i32)
++    (if (result i32) (i32.eqz (local.get $n))
++      (then (i32.const 0))
++      (else (i32.add (call $call_back (i32.sub (local.get $n) (i32.const 1))) (i32.const 1))))))
