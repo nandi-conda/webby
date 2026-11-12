@@ -1,9 +1,11 @@
 /// webby's Qt UI over the engine component: a latha:gui app (the world is named `gui` because qt2wasm's platform
-/// plugin uses the `gui_` binding names) that imports webby:engine's views. deps/ is filled in by the build: latha:gui
-/// from qt2wasm, webby:engine from ../engine.
+/// plugin uses the `gui_` binding names) that imports webby:engine's views and, for the PDF viewer, webby:pdf's
+/// documents (MuPDF, the webby-pdf component). deps/ is filled in by the build: latha:gui from qt2wasm, webby:engine
+/// from ../engine, webby:pdf from wasm/pdf/wit.
 package webby:ui@0.1.0;
 
 world gui {
     include latha:gui/gui@0.2.1;
     import webby:engine/views@0.1.0;
+    import webby:pdf/documents@0.1.0;
 }

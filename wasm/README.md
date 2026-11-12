@@ -463,6 +463,23 @@ x86-64-v3) from the `wasm-engine` release, then loads it from its cache in 0.02 
 of ~45 s. CI makes it (`ci/engine.sh`: `latha-run --precompile`); for a hand-uploaded webby.wasm, run
 `latha-run --precompile DIR webby.wasm` with the latha-gui people use and upload DIR's file beside it.
 
+### PDFs
+
+A PDF (application/pdf, or a generic type whose body starts with `%PDF-`, over http(s) or file:) opens in webby's own
+viewer, as the Nim front end's `nim/src/features/pdf.nim` does, instead of Ladybird's pdf.js page: the engine commits
+a grey placeholder document under the PDF's URL (so back, forward, reload and history behave) and hands the bytes to
+the UI in a `pdf-received` event; `ui/PdfView.cpp` paints the page area from then on. It has the Nim viewer's parts:
+a bar (Contents panel from the outline, page field, zoom −/+, Fit width, Save to the downloads folder), lazy page
+rendering one page per pump (nearest the page being read first, far pages given back), Ladybird-style scrollbars,
+text selection (drag, double/triple click, Shift+click, Ctrl+A, Ctrl+C), the window's Ctrl+F find bar, links inside
+and out of the document, a right-click menu, and the arrow/Page/Space/Home/End keys and Ctrl+wheel zoom.
+
+MuPDF renders, in a component of its own, `bin/webby-pdf.wasm` (`pdf/webby_pdf.c` behind `webby:pdf/documents`,
+`pdf/wit/pdf.wit`), which `wac plug` puts into `webby.wasm` (and `ui/shell/build.sh` into the shell's): MuPDF's own
+FreeType, HarfBuzz, zlib and libjpeg (`deps/mupdf.sh`, in the sysroot under `mupdf/`) then never meet Ladybird's or
+Qt's, and each component has its own memory. MuPDF is AGPL-3.0, so `webby-pdf.wasm` is, and so is a `webby.wasm`
+that contains it; the rest of webby's source keeps its license.
+
 ### The UI on its own, over a prebuilt engine
 
 The engine is also a component by itself, `bin/webby-core.wasm` (target `webby-core`): `ui/WebView.cpp`, the

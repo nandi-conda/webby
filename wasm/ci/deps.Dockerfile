@@ -31,6 +31,8 @@ RUN --mount=type=cache,id=webby-wasi-src,target=/cache/src --mount=type=cache,id
 RUN --mount=type=cache,id=webby-wasi-src,target=/cache/src --mount=type=cache,id=webby-wasi-work,target=/cache/work \
     /w/deps/all.sh /cache/src /cache/work skia
 RUN --mount=type=cache,id=webby-wasi-src,target=/cache/src --mount=type=cache,id=webby-wasi-work,target=/cache/work \
+    /w/deps/all.sh /cache/src /cache/work mupdf
+RUN --mount=type=cache,id=webby-wasi-src,target=/cache/src --mount=type=cache,id=webby-wasi-work,target=/cache/work \
     /w/deps/all.sh /cache/src /cache/work binaryen
 RUN mkdir /export && tar -C /opt -cf - webby-wasi | zstd -q -T0 -10 -o /export/webby-wasi-sysroot.tar.zst \
     && ls -l /export && du -sh /opt/webby-wasi

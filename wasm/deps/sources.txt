@@ -24,6 +24,8 @@ dav1d          https://code.videolan.org/videolan/dav1d          1.5.4
 libavif        https://github.com/AOMediaCodec/libavif           v1.4.2
 ffmpeg         https://github.com/FFmpeg/FFmpeg                  n9.0.2
 skia           https://skia.googlesource.com/skia                e7c90ecca9444fe09598f1630ab7cee2c0ee027a
+# The PDF viewer's renderer (deps/mupdf.sh, the webby-pdf component), MuPDF 1.28 like the Nim front end's (pixi.toml)
+mupdf          https://github.com/ArtifexSoftware/mupdf          1.28.6
 # curl and its protocol libraries (deps/net-deps.sh, deps/curl.sh); zstd/nghttp3/ngtcp2 have no vcpkg override at the pin
 zstd           https://github.com/facebook/zstd                  v1.5.7
 nghttp2        https://github.com/nghttp2/nghttp2                v1.70.0

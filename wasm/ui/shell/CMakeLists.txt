@@ -33,13 +33,14 @@ foreach (header "${ui}/BrowserWindow.h" "${qt2wasm_data}/runtime/wasieventdispat
 endforeach()
 
 # The world `gui` of webby:ui: latha:gui's app plus webby:engine's views. Its deps/ are copied in.
-set(ui_wit "${ui}/wit/ui/ui.wit" "${ui}/wit/engine/engine.wit" "${qt2wasm_data}/gui/wit/gui.wit")
+set(ui_wit "${ui}/wit/ui/ui.wit" "${ui}/wit/engine/engine.wit" "${qt2wasm_data}/gui/wit/gui.wit" "${ui}/../pdf/wit/pdf.wit")
 add_custom_command(OUTPUT "${gen}/bindings/gui.c" "${gen}/bindings/gui.h" "${gen}/bindings/gui_component_type.o"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${gen}/wit"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${gen}/wit/deps/engine" "${gen}/wit/deps/gui"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${gen}/wit/deps/engine" "${gen}/wit/deps/gui" "${gen}/wit/deps/pdf"
     COMMAND ${CMAKE_COMMAND} -E copy "${ui}/wit/ui/ui.wit" "${gen}/wit/"
     COMMAND ${CMAKE_COMMAND} -E copy "${ui}/wit/engine/engine.wit" "${gen}/wit/deps/engine/"
     COMMAND ${CMAKE_COMMAND} -E copy "${qt2wasm_data}/gui/wit/gui.wit" "${gen}/wit/deps/gui/"
+    COMMAND ${CMAKE_COMMAND} -E copy "${ui}/../pdf/wit/pdf.wit" "${gen}/wit/deps/pdf/"
     COMMAND "${WIT_BINDGEN}" c "${gen}/wit" --world gui --out-dir "${gen}/bindings"
     DEPENDS ${ui_wit} VERBATIM)
 
@@ -53,6 +54,7 @@ add_executable(webby-ui-shell
     ${ui}/Omnibox.cpp
     ${ui}/PageFrame.cpp
     ${ui}/Pages.cpp
+    ${ui}/PdfView.cpp
     ${ui}/Profile.cpp
     ${ui}/Resources.c
     ${ui}/main.cpp

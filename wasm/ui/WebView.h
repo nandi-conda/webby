@@ -63,6 +63,13 @@ struct Download {
     std::string error; // why it was not saved, "" if it was
 };
 
+// A navigation whose response is a PDF (see WebView::on_pdf).
+struct PdfDocument {
+    std::string url;
+    std::string mime;
+    std::vector<uint8_t> data;
+};
+
 class WebView {
 public:
     // The engine is set up the first time a view is made: LibWeb's JS VM, resource loader and fonts.
@@ -120,6 +127,10 @@ public:
     // A navigation's response was saved to the downloads folder instead of shown ($WEBBY_DOWNLOAD_DIR, else
     // $XDG_DOWNLOAD_DIR, else ~/Downloads): Content-Disposition: attachment, or a type the engine cannot show.
     std::function<void(Download const&)> on_download;
+    // A navigation's response is a PDF (application/pdf, not an attachment; or a .pdf file): the view keeps it in
+    // its history and shows an empty page with the file's name as its title, and hands the bytes to the chrome,
+    // whose PDF viewer shows it while the view's URL stays `url` (wasm/ui/PdfView.h). `data` may be moved from.
+    std::function<void(PdfDocument&)> on_pdf;
 
     // The browser's own page scripts. Every hook runs for every document the view shows, before the document is
     // parsed (a hook returns "" to skip it); the scripts talk back with prompt(message_prefix() + text), which never
@@ -171,6 +182,7 @@ public:
     void did_request_clipboard(uint64_t request, bool selection);
     void did_request_context_menu(ContextMenu);
     void did_download(Download);
+    void did_receive_pdf(PdfDocument);
     void did_send_page_message(std::string text, std::string document_url);
     void did_request_webauthn(uint64_t request_id, std::string request);
     void run_page_scripts();
@@ -183,6 +195,7 @@ private:
     void navigate(std::string const& url, bool add_to_history);
     void set_location(std::string url, bool add_to_history);
     void show_document(LoadedDocument);
+    void show_pdf(LoadedDocument); // the document's bytes are the PDF's
 
     std::unique_ptr<Impl> m_impl;
     int m_width { 0 };

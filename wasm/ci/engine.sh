@@ -70,13 +70,18 @@ if [[ " $targets " == *" webby-ui "* || " $targets " == *" webby-core "* ]]; the
       || fail "installing qt2wasm (Qt for WASI) failed"
   fi
   export WEBBY_QT_ENV=$qtenv
+  # wac composes webby.wasm from the UI and the PDF component (webby-pdf.wasm, MuPDF) in the build itself.
+  wac=$C/wac-0.8.1
+  [ -x "$wac" ] || { curl -fsSL -o "$wac.part" https://github.com/bytecodealliance/wac/releases/download/v0.8.1/wac-cli-x86_64-unknown-linux-musl \
+    && chmod +x "$wac.part" && mv "$wac.part" "$wac"; } || fail "downloading wac failed"
+  export WAC=$wac
 fi
 
 # wasm/ui is compiled straight from the job's copy of the repo, whose files carry the commit's time, not the time
 # they changed here: a commit older than the cached objects would look up to date to ninja. A cached copy updated
 # by content (rsync -c, as the Ladybird tree above) gives changed files a new time and leaves the rest alone.
-# wasm/ui reaches ../gl, ../../native and ../../nim/src/scripts, so the copy keeps the repo's layout.
-for d in wasm/ui wasm/gl native nim/src/scripts; do
+# wasm/ui reaches ../gl, ../pdf, ../../native and ../../nim/src/scripts, so the copy keeps the repo's layout.
+for d in wasm/ui wasm/gl wasm/pdf native nim/src/scripts; do
   mkdir -p "$C/src/$d"
   rsync -rlc --delete "$w/$d/" "$C/src/$d/" || fail "updating the cached copy of $d failed"
 done
@@ -97,6 +102,8 @@ for t in $targets; do
     # The UI is a latha:gui component, bin/webby.wasm (bin/webby-ui.core.wasm is its core module).
     [ -f "$build/bin/webby.wasm" ] || fail "no $build/bin/webby.wasm after the build"
     cp "$build/bin/webby.wasm" "$out/webby.wasm"
+    # The PDF component on its own too, for the UI component a local shell build composes (ui/shell/build.sh).
+    [ -f "$build/bin/webby-pdf.wasm" ] && cp "$build/bin/webby-pdf.wasm" "$out/webby-pdf.wasm"
     continue
   fi
   if [ "$t" = webby-core ]; then
@@ -218,11 +225,9 @@ fi
 if [[ " $targets " == *" webby-core "* ]] && [ -n "${LATHA_RUN:-}" ]; then
   # The UI component (wasm/ui/shell, Qt only) composed with this engine component, the way a local UI build does it,
   # then the same headless check as webby.wasm: the page's script ran, so the screenshot differs from the blank one.
-  wac=$C/wac-0.8.1
-  [ -x "$wac" ] || { curl -fsSL -o "$wac.part" https://github.com/bytecodealliance/wac/releases/download/v0.8.1/wac-cli-x86_64-unknown-linux-musl \
-    && chmod +x "$wac.part" && mv "$wac.part" "$wac"; } || fail "downloading wac failed"
+  [ -f "$out/webby-pdf.wasm" ] || fail "no webby-pdf.wasm (build webby-ui before webby-core)"
   shell=$(mktemp -d)
-  WEBBY_QT_ENV=$qtenv WEBBY_CORE_WASM=$out/webby-core.wasm WAC=$wac bash "$w/wasm/ui/shell/build.sh" "$shell" > "$out/webby-ui-shell-build.log" 2>&1 \
+  WEBBY_QT_ENV=$qtenv WEBBY_CORE_WASM=$out/webby-core.wasm WEBBY_PDF_WASM=$out/webby-pdf.wasm WAC=$wac bash "$w/wasm/ui/shell/build.sh" "$shell" > "$out/webby-ui-shell-build.log" 2>&1 \
     || { tail -40 "$out/webby-ui-shell-build.log"; fail "building the UI component (wasm/ui/shell) failed"; }
   cp "$shell/cmake/webby-ui-shell.wasm" "$out/webby-ui-shell.wasm"
   ui=$(mktemp -d)

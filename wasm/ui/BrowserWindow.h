@@ -11,6 +11,7 @@
 
 #include "Dialog.h"
 #include "PageFrame.h"
+#include "PdfView.h"
 #include "PopupMenu.h"
 #include "Omnibox.h"
 #include "Profile.h"
@@ -62,6 +63,8 @@ private:
         QString url;
         bool loading { false };
         qint64 created { 0 }; // seconds since the epoch, for the age dot
+        // While the view's page is a PDF: the viewer, shown in place of the page (PdfView.h).
+        std::unique_ptr<WebbyUI::PdfView> pdf {};
     };
 
     enum class Hit {
@@ -127,6 +130,11 @@ private:
     void pump();
     // The page's right-click menu (PageMenu.cpp).
     void show_page_menu(WebbyUI::WebView*, WebbyUI::ContextMenu const&);
+    // PDFs (PdfView): the view handed one over; its right-click menu; Save (Ctrl+S, the bar's button).
+    void open_pdf(WebbyUI::WebView*, WebbyUI::PdfDocument&);
+    void show_pdf_menu(QPointF at);
+    void save_pdf(Tab&);
+    WebbyUI::PdfView* current_pdf();
     bool menu_event(QEvent*);
 
     // Passwords and passkeys (PasswordBar.cpp, Passwords.h): the save / fill / generate bar under the toolbar and the

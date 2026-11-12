@@ -2,7 +2,7 @@
 # Every WASI dependency of the engine, from sources.txt, into WEBBY_WASI_SYSROOT, in order. The forge's wasm-deps job
 # (ci/deps.Dockerfile) runs it one stage per layer; by hand, run it with no stage for all of them.
 # usage: all.sh SRC_DIR WORK_DIR [stage...]
-#   stages: fetch compat icu openssl libpsl cmake-deps header-deps libweb-deps net-deps curl media-deps skia binaryen
+#   stages: fetch compat icu openssl libpsl cmake-deps header-deps libweb-deps net-deps curl media-deps skia mupdf binaryen
 # env: WASI_SDK_PREFIX, WEBBY_WASI_SYSROOT. SRC_DIR and WORK_DIR may be kept between runs (checkouts are reused,
 # builds are incremental); the sysroot is only ever added to.
 set -euo pipefail
@@ -10,7 +10,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$1" "$2"; S=$(realpath "$1"); W=$(realpath "$2"); shift 2
 P=${WEBBY_WASI_SYSROOT:?}; : "${WASI_SDK_PREFIX:?}"; mkdir -p "$P"
 stages=("$@"); [ ${#stages[@]} -gt 0 ] || stages=(fetch compat icu openssl libpsl cmake-deps header-deps libweb-deps net-deps curl \
-  media-deps skia binaryen)
+  media-deps skia mupdf binaryen)
 
 ref_of() { awk -v n="$1" '$1 == n { print $3 }' "$here/sources.txt"; }
 
@@ -30,6 +30,8 @@ fetch() {
     libpsl) git -C "$dir" submodule -q update --init --depth 1 list ;;
     nghttp2 | ngtcp2) git -C "$dir" submodule -q update --init --depth 1 third-party/urlparse ;;
     nghttp3) git -C "$dir" submodule -q update --init --depth 1 lib/sfparse ;;
+    mupdf) git -C "$dir" submodule -q update --init --depth 1 thirdparty/freetype thirdparty/harfbuzz thirdparty/jbig2dec \
+      thirdparty/libjpeg thirdparty/openjpeg thirdparty/zlib thirdparty/lcms2 thirdparty/brotli thirdparty/gumbo-parser ;;
   esac
   echo "$ref" > "$dir/.git/webby-ref"
   echo "fetched $name $ref"
@@ -65,6 +67,8 @@ run_stage() {
     # meson setup refuses a configured build directory, so the media libraries start over each time (a few minutes).
     media-deps) rm -rf "$W/media"; "$here/media-deps.sh" "$S" "$W/media" ;;
     skia) "$here/skia.sh" "$S/skia" "$W/skia" "$P" ;;
+    # The PDF viewer's MuPDF, for the webby-pdf component only (its own directory in the sysroot: deps/mupdf.sh).
+    mupdf) "$here/mupdf.sh" "$S/mupdf" "$W/mupdf" "$P" ;;
     binaryen) "$here/binaryen.sh" "$W/binaryen" "$P" ;;
     *) echo "all.sh: unknown stage $1" >&2; exit 2 ;;
   esac
