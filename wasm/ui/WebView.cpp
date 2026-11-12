@@ -36,6 +36,8 @@
 #include <LibWeb/Bindings/MainThreadVM.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/DocumentObserver.h>
+#include <LibWeb/HTML/BrowsingContext.h>
+#include <LibWeb/HTML/CustomElements/CustomElementRegistry.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/MIME.h>
 #include <LibWeb/HTML/HTMLImageElement.h>
 #include <LibWeb/HTML/LocalNavigable.h>
@@ -603,12 +605,19 @@ void WebView::show_document(LoadedDocument loaded)
     auto document = Web::DOM::Document::create(*page, window, document_url);
     document->set_id(client->allocate_cross_process_id());
     document->set_origin(document_url.origin());
+    // What a navigation's "create and initialize a Document object" also gives it: customElements reads the registry
+    // (and traps without one), and the parser reads the declarative shadow root flag.
+    document->set_allow_declarative_shadow_roots(Web::HTML::HTMLParser::AllowDeclarativeShadowRoots::Yes);
+    document->set_custom_element_registry(Web::HTML::CustomElementRegistry::create_global(*document));
     document->set_document_type(Web::DOM::Document::Type::HTML);
     document->set_content_type(as_text ? Utf16FlyString::from_utf8(loaded.mime_type->essence()) : "text/html"_utf16_fly_string);
     document->set_browsing_context(navigable.active_browsing_context());
     document->set_window(window);
     window.set_associated_document(*document);
     navigable.set_active_document(*document);
+    // The browsing context keeps its own active document, which Location and the cross-origin checks read: without
+    // this it stays the initial about:blank, whose opaque origin matches no page (every location access threw).
+    navigable.active_browsing_context()->set_active_document(*document);
     document->set_ready_to_run_scripts();
 
     auto observer = Web::DOM::DocumentObserver::create(*document);
