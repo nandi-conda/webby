@@ -3,7 +3,8 @@
 
 # The AppImage, on every push to main: builds this commit's webby conda package with rattler-build, packs it with
 # scripts/build_appimage.sh, checks it starts under Xvfb on Ubuntu 22.04 (the oldest glibc it supports) and puts
-# webby-x86_64.AppImage + .zsync on the rolling `appimage` release here. See scripts/forge_appimage.py.
+# webby-x86_64.AppImage + .zsync on a release of its own, appimage-<version> (the newest 5 kept), and on the
+# rolling `appimage` release webby's updater reads. See scripts/forge_appimage.py.
 [[job]]
 name = "appimage"
 branches = ["main"]
@@ -30,7 +31,8 @@ timeout = 3600
 run = "depot --version && python3 -u wasm/ci/forge_wasm.py deps"
 
 # wasm-engine: Ladybird with patches/ and wasm/patches/ for wasm32-wasip1 against that sysroot; the programs in
-# wasm/ci/engine-targets (js, webby-render, the Qt UI webby.wasm, ...) go on the rolling `wasm-engine` release. A cold build takes longer than the
+# wasm/ci/engine-targets (js, webby-render, the Qt UI webby.wasm, ...) go on a release of their own, webby-wasm-<version>
+# (the newest 3 kept), and on the rolling `wasm-engine` release (the fixed address for updates and precompiled files). A cold build takes longer than the
 # job's hour: it stops in time, keeps its build directory in Depot's cache and starts this job again to carry on.
 [[job]]
 name = "wasm-engine"

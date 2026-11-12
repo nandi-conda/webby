@@ -8,8 +8,9 @@ GitHub releases. Runs on Depot in the job's container (Ubuntu 22.04, the oldest 
 2. Packs it with scripts/build_appimage.sh (LOCAL_CHANNEL = that build). The update information points at this
    repo's latest forge release (UPDATE_INFO = zsync|<forge>/api/forge/repos/<repo>/releases/latest/assets/...).
 3. Launch check under Xvfb: WebContent and RequestServer must come up and stay up.
-4. Uploads webby-x86_64.AppImage + .zsync to the forge's rolling `appimage` release (replacing the old files),
-   then sets the title "webby AppImage <version>" last, like the GitHub job did.
+4. Cuts a release of its own, appimage-<version>, with webby-x86_64.AppImage + .zsync (the newest 5 are kept), so
+   it is the forge's latest release; then puts the same files on the rolling `appimage` release, which webby's
+   own updater (nim/src/features/update.nim) reads, and sets each title "webby AppImage <version>" last.
 
 FORGE_API, FORGE_TOKEN, FORGE_SHA, FORGE_URL, FORGE_REPO and forge-release come from the forge.
 """
@@ -19,12 +20,14 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CHANNEL = os.environ.get("CHANNEL", "nandi-testing")
-TAG = "appimage"
+TAG = "appimage"  # rolling: the fixed address installed webbys check for updates
+BUILD_PREFIX, KEEP_BUILDS = "appimage-", 5  # one release per build (V, 2026-11-12), the newest few kept
 SHA = os.environ["FORGE_SHA"]
 API = os.environ["FORGE_API"].rstrip("/")
 REPO = os.environ.get("FORGE_REPO", "nandi.uk/webby")
@@ -131,14 +134,32 @@ def main():
     notes = (f"webby {version}, built on this forge from {SHA}.\n\n"
              "Download webby-x86_64.AppImage, `chmod +x` it and run it (glibc 2.35 or newer, e.g. Ubuntu 22.04+).\n"
              "Its update information points at this release (zsync), for AppImageUpdate / Gear Lever.")
-    # The files first and the title (the version updaters compare with) last.
-    subprocess.run(["forge-release", "upload", "--create", TAG, str(dist / "webby-x86_64.AppImage"),
-                    str(dist / "webby-x86_64.AppImage.zsync")], check=True)
-    status, out = forge("PATCH", f"/releases/{TAG}", {"name": f"webby AppImage {version}", "notes": notes,
-                                                      "draft": False, "prerelease": False, "ref": SHA})
-    if status >= 300:
-        sys.exit(f"updating the {TAG} release failed: HTTP {status} {out}")
-    say(f"Published webby AppImage {version}: {FORGE_URL}/forge/{REPO}/-/releases/{TAG}")
+    # The files first and the title (the version updaters compare with) last. The build's own release first: it
+    # becomes /releases/latest, where the AppImage's zsync update information points.
+    files = [str(dist / "webby-x86_64.AppImage"), str(dist / "webby-x86_64.AppImage.zsync")]
+    build_tag = BUILD_PREFIX + version
+    for tag in (build_tag, TAG):
+        subprocess.run(["forge-release", "upload", "--create", tag, *files], check=True)
+        status, out = forge("PATCH", f"/releases/{tag}", {"name": f"webby AppImage {version}", "notes": notes,
+                                                          "draft": False, "prerelease": False, "ref": SHA})
+        if status >= 300:
+            sys.exit(f"updating the {tag} release failed: HTTP {status} {out}")
+    say(f"Published webby AppImage {version}: {FORGE_URL}/forge/{REPO}/-/releases/{build_tag}")
+    prune()
+
+
+def prune():
+    """Delete all but the KEEP_BUILDS newest appimage-<version> releases (each AppImage is ~290 MB)."""
+    status, out = forge("GET", "/releases")
+    rels = out.get("releases") if isinstance(out, dict) else None
+    if status != 200 or not isinstance(rels, list):
+        say(f"listing releases failed (HTTP {status}): nothing pruned")
+        return
+    ours = sorted((r for r in rels if r.get("tag", "").startswith(BUILD_PREFIX)), key=lambda r: r.get("created") or "",
+                  reverse=True)
+    for r in ours[KEEP_BUILDS:]:
+        s, _ = forge("DELETE", f"/releases/{urllib.parse.quote(r['tag'])}")
+        say(f"deleted old release {r['tag']} (HTTP {s})")
 
 
 if __name__ == "__main__":

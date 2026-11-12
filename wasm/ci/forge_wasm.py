@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WASM = ROOT / "wasm"
 CI = WASM / "ci"
 DEPS_TAG, ENGINE_TAG = "wasm-deps", "wasm-engine"
+BUILD_PREFIX, KEEP_BUILDS = "webby-wasm-", 3  # one release per engine build, the newest few kept
 JOB_LIMIT = 3600
 START = time.time()
 UA = "webby-forge-ci/1"  # the forge sits behind Cloudflare, which rejects urllib's default User-Agent
@@ -287,17 +288,31 @@ def engine():
     wasms = sorted(out.glob("*.wasm"))
     # latha-gui's precompiled webby.wasm (engine.sh, latha-run --precompile): fetched by name on a first run.
     prebuilt = sorted(out.glob("*.cwasm.zst"))
-    upload(ENGINE_TAG, [*wasms, *prebuilt, *out.glob("webby.wasm.zst"), *out.glob("webby-render-test.png"), *out.glob("webby-ui-test.png"), *out.glob("webby-split-test.png"), *out.glob("webby-render-net-*.png"), out / "SHA256SUMS", out / "build.log"], f"webby wasm engine {sha[:12]}",
-           f"Ladybird ({(ROOT / 'LADYBIRD_COMMIT').read_text().strip()[:10]}) with webby's patches for wasm32-wasip1, "
-           f"from {sha}, built against {name}: {', '.join(p.name for p in wasms)}.\n\n"
-           f"Run with wasm/tools/wasi-run.py (PyPI wasmtime, wasm exceptions on, a big wasm stack): "
-           f"`python wasm/tools/wasi-run.py js.wasm -c 'print(6 * 7)'`.")
+    files = [*wasms, *prebuilt, *out.glob("webby.wasm.zst"), *out.glob("webby-render-test.png"), *out.glob("webby-ui-test.png"),
+             *out.glob("webby-split-test.png"), *out.glob("webby-render-net-*.png"), out / "SHA256SUMS", out / "build.log"]
+    notes = (f"Ladybird ({(ROOT / 'LADYBIRD_COMMIT').read_text().strip()[:10]}) with webby's patches for wasm32-wasip1, "
+             f"from {sha}, built against {name}: {', '.join(p.name for p in wasms)}.\n\n"
+             f"Run with wasm/tools/wasi-run.py (PyPI wasmtime, wasm exceptions on, a big wasm stack): "
+             f"`python wasm/tools/wasi-run.py js.wasm -c 'print(6 * 7)'`.")
+    # Every build is a release of its own (V, 2026-11-12: "everytime we upload cut a new release"):
+    # webby-wasm-<version>, the commit's time. The rolling wasm-engine release stays the fixed address that
+    # webby.wasm's update manifest, latha-gui's precompiled lookup and wasm/ui/shell/build.sh read.
+    tag = f"{BUILD_PREFIX}{version or sha[:12]}"
+    upload(tag, files, f"webby.wasm {version or sha[:12]}", notes)
+    say(f"Released {tag}: {os.environ.get('FORGE_URL', 'https://fileapi.fastapicloud.dev')}/forge/"
+        f"{os.environ.get('FORGE_REPO', 'nandi.uk/webby')}/-/releases/{tag}")
+    upload(ENGINE_TAG, files, f"webby wasm engine {sha[:12]} ({tag})", notes + f"\n\nThis build is also the {tag} release.")
     say(f"Published {', '.join(p.name for p in wasms)} on the {ENGINE_TAG} release")
     manifest = out / "webby-update.txt"
     if manifest.exists():
+        # The update points into this build's own release, so a download never mixes two builds' files.
+        zst = UPDATE_URL.replace(f"/releases/{ENGINE_TAG}/", f"/releases/{tag}/").replace("webby-update.txt", "webby.wasm.zst")
+        manifest.write_text("".join(f"url={zst}\n" if ln.startswith("url=") else ln + "\n"
+                                    for ln in manifest.read_text().splitlines()))
         # Last, once webby.wasm.zst is up: latha-gui and latha-android see the new version from now on.
-        if subprocess.run(["forge-release", "upload", ENGINE_TAG, str(manifest)]).returncode != 0:
-            sys.exit("uploading webby-update.txt failed")
+        for t in (tag, ENGINE_TAG):
+            if subprocess.run(["forge-release", "upload", t, str(manifest)]).returncode != 0:
+                sys.exit(f"uploading webby-update.txt to {t} failed")
         say(f"webby.wasm {version} is the update for latha-gui / latha-android ({UPDATE_URL})")
     if prebuilt:
         # Keep this build's precompiled files and the 4 newest others (other latha-gui versions, older webby.wasm
@@ -308,6 +323,20 @@ def engine():
         for a in old:
             s, _ = api("DELETE", f"/releases/{ENGINE_TAG}/assets/{urllib.parse.quote(a['name'])}")
             say(f"deleted old {a['name']} (HTTP {s})")
+    prune(BUILD_PREFIX, KEEP_BUILDS)
+
+
+def prune(prefix, keep):
+    """Delete all but the `keep` newest releases whose tag starts with `prefix` (each wasm build is ~1.4 GB)."""
+    status, out = api("GET", "/releases")
+    rels = out.get("releases", out) if isinstance(out, dict) else out
+    if status != 200 or not isinstance(rels, list):
+        say(f"listing releases failed (HTTP {status}): nothing pruned")
+        return
+    ours = sorted((r for r in rels if r.get("tag", "").startswith(prefix)), key=lambda r: r.get("created") or "", reverse=True)
+    for r in ours[keep:]:
+        s, _ = api("DELETE", f"/releases/{urllib.parse.quote(r['tag'])}")
+        say(f"deleted old release {r['tag']} (HTTP {s})")
 
 
 def main():
