@@ -222,6 +222,17 @@ if [[ " $targets " == *" webby-ui "* ]] && [ -n "${LATHA_RUN:-}" ]; then
   if [ $rc != 0 ] || grep -q "trapped\|VERIFICATION FAILED" "$out/webby-ui-media.log" || [ "$(stat -c %s "$ui/media.png" 2>/dev/null || echo 0)" -lt 10000 ]; then
     tail -40 "$out/webby-ui-media.log"; fail "webby-ui media page failed (exit $rc)"
   fi
+  # Scrollbars (the viewport's are drawn by the UI, an inner box's by the page): drag the inner box's thumb, then
+  # the page's, and check both scrolled (the page writes where they are; it is read off the screenshot by hand too).
+  cp "$w/wasm/tests/webby-ui-scrollbars.html" "$ui/"
+  (cd "$ui" && WEBBY_TEST_INPUT="press 316,70@9000;move 316,120@9300;move 316,170@9600;release 316,170@9900;press -5,20@11000;move -5,150@11300;move -5,300@11600;release -5,300@11900" \
+    QT_QPA_PLATFORM=offscreen timeout 1200 "$(dirname "$LATHA_RUN")/latha-gui" --dir "$lb/Base/res::/res" \
+    --size 1100x760 --screenshot "$ui/scrollbars.png" --quit-after 16000 "$out/webby.wasm" "$ui/webby-ui-scrollbars.html") > "$out/webby-ui-scrollbars.log" 2>&1
+  rc=$?
+  [ -f "$ui/scrollbars.png" ] && cp "$ui/scrollbars.png" "$out/webby-ui-scrollbars-test.png"
+  if [ $rc != 0 ] || grep -q "trapped\|VERIFICATION FAILED" "$out/webby-ui-scrollbars.log"; then
+    tail -40 "$out/webby-ui-scrollbars.log"; fail "webby-ui scrollbars page failed (exit $rc)"
+  fi
   # And as `latha-gui webby.wasm` with nothing opened to it (built-in theme and fonts), past several idle GCs.
   (cd "$ui" && QT_QPA_PLATFORM=offscreen timeout 1200 "$(dirname "$LATHA_RUN")/latha-gui" --no-root \
     --size 1100x760 --screenshot "$ui/bare.png" --quit-after 20000 "$out/webby.wasm") > "$out/webby-ui-bare.log" 2>&1

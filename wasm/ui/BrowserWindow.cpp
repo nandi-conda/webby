@@ -22,6 +22,7 @@
 #include <QPainterPath>
 #include <QPolygonF>
 #include <QStyleHints>
+#include <QTimer>
 #include <QUrl>
 #include <QWheelEvent>
 #include <QtMath>
@@ -126,6 +127,7 @@ BrowserWindow::BrowserWindow(QStringList const& urls)
     activate_tab(active);
     if (blank)
         focus_address(true);
+    play_test_input();
 
     // Sync (Sync.h): its pages follow its state, and the bookmarks bar follows bookmarks that sync brings in.
     WebbyUI::Sync::on_status([this] { refresh_sync_pages(); });
@@ -1160,6 +1162,39 @@ QRegion BrowserWindow::page_overlays() const
         overlays += QRect(0, height() - 60, width(), 44);
     overlays += scrollbar_region(m_page_scrollbars);
     return overlays;
+}
+
+// WEBBY_TEST_INPUT (tests, as latha-gui's --type): mouse steps "press X,Y@MS;move X,Y@MS;release X,Y@MS", with the
+// left button, in page coordinates (a negative X counts from the page's right edge), MS after the window starts.
+void BrowserWindow::play_test_input()
+{
+    auto steps = qEnvironmentVariable("WEBBY_TEST_INPUT").split(QLatin1Char(';'), Qt::SkipEmptyParts);
+    for (auto const& step : steps) {
+        auto words = step.trimmed().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        if (words.size() != 2)
+            continue;
+        auto at = words[1].split(QLatin1Char('@'));
+        auto xy = at[0].split(QLatin1Char(','));
+        if (at.size() != 2 || xy.size() != 2)
+            continue;
+        auto kind = words[0];
+        int x = xy[0].toInt(), y = xy[1].toInt(), ms = at[1].toInt();
+        QTimer::singleShot(ms, this, [this, kind, x, y] {
+            auto page = page_rect();
+            QPointF position(x < 0 ? page.right() + 1 + x : page.left() + x, page.top() + y);
+            auto type = kind == u"press" ? QEvent::MouseButtonPress : kind == u"release" ? QEvent::MouseButtonRelease : QEvent::MouseMove;
+            auto buttons = kind == u"release" ? Qt::NoButton : kind == u"press" ? Qt::LeftButton : Qt::MouseButtons(m_test_buttons);
+            m_test_buttons = buttons;
+            QMouseEvent event(type, position, mapToGlobal(position), type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, buttons, Qt::NoModifier);
+            if (type == QEvent::MouseButtonPress)
+                mousePressEvent(&event);
+            else if (type == QEvent::MouseButtonRelease)
+                mouseReleaseEvent(&event);
+            else
+                mouseMoveEvent(&event);
+            qWarning("webby: test input %s %d,%d", qPrintable(kind), int(position.x()), int(position.y()));
+        });
+    }
 }
 
 QRegion BrowserWindow::scrollbar_region(std::vector<WebbyUI::WebView::Scrollbar> const& bars) const

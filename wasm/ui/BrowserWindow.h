@@ -198,6 +198,8 @@ private:
     // screen, and the window area they cover.
     void paint_page_scrollbars(QPainter&);
     QRegion scrollbar_region(std::vector<WebbyUI::WebView::Scrollbar> const&) const;
+    void play_test_input();
+    Qt::MouseButtons m_test_buttons;
     void paint_bookmarks_bar(QPainter&);
     void paint_suggestions(QPainter&);
     QRect suggestions_box() const;

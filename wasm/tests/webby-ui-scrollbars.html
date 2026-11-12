@@ -1,0 +1,24 @@
+<!doctype html>
+<title>Scrollbars</title>
+<!-- wasm/ci/engine.sh drags the inner box's scrollbar and then the page's (WEBBY_TEST_INPUT) and screenshots it:
+     both should have moved, and #state shows where each scroller is. -->
+<style>
+  body { margin: 0; font: 16px sans-serif; background: linear-gradient(#fff, #9cf); height: 6000px; }
+  #box { position: fixed; left: 20px; top: 60px; width: 300px; height: 200px; overflow: auto; background: #fee;
+         border: 0; }
+  #box div { height: 2000px; background: linear-gradient(#fee, #f66); }
+  #state { position: fixed; left: 360px; top: 60px; font: bold 28px monospace; background: #fff; padding: 8px; }
+  .mark { position: absolute; left: 400px; font-size: 24px; }
+</style>
+<div id=box><div>inner box top</div></div>
+<pre id=state>…</pre>
+<script>
+  for (let y = 0; y < 6000; y += 500) {
+    const m = document.createElement("div");
+    m.className = "mark"; m.style.top = y + "px"; m.textContent = "page y=" + y;
+    document.body.appendChild(m);
+  }
+  setInterval(() => {
+    state.textContent = "page scrollY " + Math.round(scrollY) + "\ninner scrollTop " + Math.round(box.scrollTop);
+  }, 200);
+</script>
