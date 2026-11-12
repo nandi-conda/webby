@@ -393,7 +393,11 @@ Google by default) and suggests bookmarks and history as you type (Up/Down, Retu
 every visit and Ctrl+H opens a History page; the star in the address bar and Ctrl+D add or remove the page in
 `bookmarks.json`'s bookmarks bar, shown under the toolbar (Ctrl+Shift+B hides it, Ctrl+Shift+O opens a Bookmarks
 page); `open_tabs.json` brings the last tabs back at start, asleep until they come to the front
-(`WEBBY_RESTORE_TABS=0` turns that off); tabs drag to new places and carry the age dot; middle-click or Ctrl+click on
+(`WEBBY_RESTORE_TABS=0` turns that off); saved sessions are `sessions.json`'s (`ui/Sessions.cpp`): closing the
+window keeps its tabs as one, the toolbar's Close all tabs and save button saves them under the date and leaves one
+blank tab, and the Sessions page (layers button, or ⋮ > Sessions; `ui/SessionsPage.cpp`) saves under a name,
+restores (the other tabs asleep), renames, deletes with Undo and removes single tabs; they sync as the sessions blob;
+tabs drag to new places and carry the age dot; middle-click or Ctrl+click on
 a link opens it in a new tab; Ctrl+Shift+T reopens a closed tab; Ctrl+1..9, Ctrl+PgUp/PgDn, Ctrl+Shift+Tab, F6,
 Alt+D, Ctrl+K and Alt+Home work.
 Ctrl+F opens a find bar (every match highlighted, "n of m", Return/F3 for the next, Shift for the previous) over

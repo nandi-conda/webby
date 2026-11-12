@@ -8,6 +8,7 @@
 #include "KeyMap.h"
 #include "Pages.h"
 #include "Passwords.h"
+#include "Sessions.h"
 #include "Sync.h"
 
 #include <QDir>
@@ -122,6 +123,11 @@ BrowserWindow::BrowserWindow(QStringList const& urls)
     // Sync (Sync.h): its pages follow its state, and the bookmarks bar follows bookmarks that sync brings in.
     WebbyUI::Sync::on_status([this] { refresh_sync_pages(); });
     WebbyUI::Sync::on_devices([this] { refresh_sync_pages(); });
+    // An open Sessions page follows the sessions (a change here, or one sync brought in). After the action that
+    // changed them has shown the page, so a page that already says it is not loaded twice.
+    WebbyUI::Sessions::on_change([this] { QTimer::singleShot(0, this, [this] { refresh_sync_pages(); }); });
+    // Closing the window keeps its tabs as a session.
+    QObject::connect(qApp, &QCoreApplication::aboutToQuit, this, [this] { save_session_on_quit(); });
     Profile::Bookmarks::the().on_change([this] {
         resizeEvent(nullptr);
         update();
@@ -136,7 +142,7 @@ void BrowserWindow::refresh_sync_pages()
         if (!tab.view)
             continue;
         auto url = from_std(tab.view->url());
-        if (url != Pages::sync_page_url() && url != Pages::devices_page_url())
+        if (url != Pages::sync_page_url() && url != Pages::devices_page_url() && url != Pages::sessions_page_url())
             continue;
         // Written again; loaded again only when it says something new (a reload would empty a form being filled in).
         auto path = QUrl(url).toLocalFile();
@@ -250,6 +256,25 @@ void BrowserWindow::wake(Tab& tab)
     PasswordManager::the().attach(*raw);
     raw->on_navigation_request = [this, raw](std::string const& u) {
         auto url = from_std(u);
+        if (Pages::is_sessions_action(url)) {
+            auto action = Pages::run_sessions_action(url);
+            // Later: closing every tab closes this view, which is still answering its navigation.
+            QTimer::singleShot(0, this, [this, raw, action] {
+                bool alive = false;
+                for (auto const& t : m_tabs)
+                    alive |= t.view.get() == raw;
+                if (action.save != Pages::SessionsAction::Save::None)
+                    save_open_tabs_as_session(action.save == Pages::SessionsAction::Save::CloseAll, action.name);
+                if (!action.open.isEmpty())
+                    restore_session(action.open, action.front);
+                bool still = false;
+                for (auto const& t : m_tabs)
+                    still |= t.view.get() == raw;
+                if (alive && still && !action.load.isEmpty())
+                    raw->load(to_std(Pages::refresh(action.load)));
+            });
+            return true;
+        }
         if (!Pages::is_sync_action(url))
             return false;
         auto action = Pages::run_sync_action(url);
@@ -297,6 +322,66 @@ void BrowserWindow::save_tabs()
     WebbyUI::Sync::set_tabs(shared);
 }
 
+QList<Profile::SavedTab> BrowserWindow::open_tabs() const
+{
+    QList<Profile::SavedTab> tabs;
+    for (auto const& tab : m_tabs)
+        tabs.append({ tab.title, tab.url, 0 });
+    return tabs;
+}
+
+void BrowserWindow::save_open_tabs_as_session(bool close_all, QString const& name)
+{
+    auto tabs = open_tabs();
+    auto id = WebbyUI::Sessions::save(tabs, close_all ? QString() : name, m_current);
+    if (id.isEmpty()) {
+        show_toast(QStringLiteral("There are no open pages to save"));
+        return;
+    }
+    if (close_all) {
+        // Every tab goes; one blank tab stays.
+        new_tab({}, int(m_tabs.size()));
+        while (m_tabs.size() > 1)
+            close_tab(0);
+        activate_tab(0);
+        focus_address(true);
+    }
+    auto const* s = WebbyUI::Sessions::find(id);
+    show_toast(QStringLiteral("Saved session \"%1\"").arg(s ? s->name : QString()));
+}
+
+void BrowserWindow::restore_session(QList<Profile::SavedTab> const& tabs, int front)
+{
+    if (tabs.isEmpty())
+        return;
+    auto* cur = current();
+    bool blank = cur && cur->view && (cur->url.isEmpty() || cur->url == u"about:blank");
+    int at = blank ? m_current : m_current + 1;
+    int front_index = -1;
+    for (int i = 0; i < tabs.size(); ++i) {
+        if (i == 0 && blank) {
+            load_in_current(tabs[i].url);
+        } else {
+            // In the background asleep, like restored tabs at start; the front one loads.
+            new_tab(tabs[i].url, at, i != front, tabs[i].title);
+        }
+        if (i == front)
+            front_index = at;
+        ++at;
+    }
+    if (front_index >= 0)
+        activate_tab(front_index);
+    update();
+}
+
+void BrowserWindow::save_session_on_quit()
+{
+    if (m_quit_saved)
+        return;
+    m_quit_saved = true;
+    WebbyUI::Sessions::save(open_tabs(), {}, m_current);
+}
+
 void BrowserWindow::close_tab(int index)
 {
     if (index < 0 || index >= int(m_tabs.size()))
@@ -317,6 +402,11 @@ void BrowserWindow::close_tab(int index)
             m_dialog_view = nullptr;
             m_dialog.close(-1);
         }
+    }
+    if (m_tabs.size() == 1 && !m_quit_saved) {
+        // Closing the last tab closes the window: it is kept as a session, as on the desktop.
+        m_quit_saved = true;
+        WebbyUI::Sessions::save({ { m_tabs[0].title, m_tabs[0].url, 0 } });
     }
     m_tabs.erase(m_tabs.begin() + index);
     m_save_timer.start();
@@ -1709,6 +1799,8 @@ bool BrowserWindow::event(QEvent* event)
         m_swallow_release = false;
         return true;
     }
+    if (event->type() == QEvent::Close)
+        save_session_on_quit();
     if (event->type() == QEvent::Leave) {
         m_hover = {};
         if (m_page_has_mouse) {

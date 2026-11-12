@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "Profile.h"
+
 #include <QString>
 #include <QStringList>
 
@@ -39,6 +41,22 @@ struct SyncAction {
     QString copy;       // text for the clipboard
 };
 SyncAction run_sync_action(QString const& url);
+
+// The Sessions page (SessionsPage.cpp, Sessions.h), freshly written; and where it is. Its links and forms go to
+// <pages>/sessions-do?op=…, which the chrome runs instead of loading.
+QString sessions_page();
+QString sessions_page_url();
+bool is_sessions_action(QString const& url);
+struct SessionsAction {
+    QString load;                     // the page to show next in that tab ("" for none)
+    QList<Profile::SavedTab> open;    // tabs to open next to the current one (a restore), `front` the one to show
+    int front { 0 };
+    enum class Save { None, Keep, CloseAll } save { Save::None }; // save the open tabs as a session (and close them)
+    QString name;                     // for Save::Keep ("" for the date)
+};
+SessionsAction run_sessions_action(QString const& url);
+// An error for the top of the next Sessions page.
+void sessions_notice(QString const& error);
 
 // Writes pages/<name> with the own pages' look and returns its file:// URL ("" if it could not be written).
 QString write_page(QString const& name, QString const& title, QString const& body);

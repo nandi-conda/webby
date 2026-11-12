@@ -36,7 +36,8 @@ enum class Blob {
 QString const& default_server();
 
 // A kind of data that syncs: what this device has now, as a doc (SyncDoc.h), and how to take in the merged state
-// after a round. The vault registers Vault and Secrets; Sync itself registers Bookmarks and Tabs.
+// after a round. The vault registers Vault and Secrets; Sync itself registers Bookmarks, Tabs and
+// Sessions (Sessions.h).
 void register_blob(Blob, std::function<QJsonObject()> current, std::function<void(QJsonObject const& merged)> apply);
 // That kind changed here: sync in a few seconds (unless it is what was just synced).
 void local_changed(Blob);

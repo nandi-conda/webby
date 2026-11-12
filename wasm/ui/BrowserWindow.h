@@ -100,6 +100,16 @@ private:
     void wake(Tab&);
     void reopen_closed_tab();
     void save_tabs();
+    // Saved sessions (Sessions.h, SessionsPage.cpp), as the Nim front end has them.
+    QList<WebbyUI::Profile::SavedTab> open_tabs() const;
+    // Saves the open tabs as a session called `name` (the date when empty); `close_all` then closes them, leaving
+    // one blank tab.
+    void save_open_tabs_as_session(bool close_all, QString const& name = {});
+    // Opens a session's tabs next to the current one (a blank current tab takes the first), `front` shown.
+    void restore_session(QList<WebbyUI::Profile::SavedTab> const& tabs, int front);
+    // Closing the window keeps its tabs as a session, without asking (once).
+    void save_session_on_quit();
+    void refresh_sessions_page();
     void open_own_page(QString const& url);
     bool show_bookmarks_bar() const;
     void update_suggestions();
@@ -117,7 +127,7 @@ private:
     void paint_toast(QPainter&);
 
     // The buttons right of the address field, as the Nim front end's toolbar has them (right to left).
-    enum ToolbarButton { ButtonMore, ButtonDownloads, ButtonHistory, ButtonBookmarks, ButtonCount };
+    enum ToolbarButton { ButtonMore, ButtonDownloads, ButtonHistory, ButtonBookmarks, ButtonSessions, ButtonCloseAndSave, ButtonCount };
     QRectF toolbar_button_rect(int button) const;
     void paint_toolbar_buttons(QPainter&);
     void toolbar_button(int button);
@@ -211,6 +221,7 @@ private:
     bool m_swallow_release { false };
 
     QList<WebbyUI::Profile::SavedTab> m_closed; // for Ctrl+Shift+T, newest last
+    bool m_quit_saved { false };
     QList<WebbyUI::Omnibox::Suggestion> m_suggestions;
     int m_suggestion { -1 }; // the highlighted suggestion, -1 for none (Return loads the typed text)
     QString m_typed_text; // what was typed before Up/Down put a suggestion in the field

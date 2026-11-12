@@ -7,6 +7,7 @@
 #include "Sync.h"
 #include "HttpClient.h"
 #include "Profile.h"
+#include "Sessions.h"
 #include "SyncDoc.h"
 #include "SyncKeys.h"
 
@@ -804,6 +805,9 @@ void start()
         [](QJsonObject const& merged) { Profile::Bookmarks::the().apply_sync_records(SyncDoc::section(merged, u"bookmarks"_s)); });
     register_blob(Blob::Tabs, [] { return devices_doc(); }, [](QJsonObject const&) { });
     Profile::Bookmarks::the().on_change([] { local_changed(Blob::Bookmarks); });
+    register_blob(Blob::Sessions, [] { return SyncDoc::doc_with(u"sessions"_s, Sessions::to_sync_doc()); },
+        [](QJsonObject const& merged) { Sessions::apply_sync_doc(SyncDoc::section(merged, u"sessions"_s)); });
+    Sessions::on_change([] { local_changed(Blob::Sessions); });
     on_devices([] { tabs_changed(); });
 
     s_debounce = new QTimer;

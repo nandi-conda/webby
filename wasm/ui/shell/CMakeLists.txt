@@ -57,6 +57,8 @@ add_executable(webby-ui-shell
     ${ui}/PdfView.cpp
     ${ui}/Profile.cpp
     ${ui}/Resources.c
+    ${ui}/Sessions.cpp
+    ${ui}/SessionsPage.cpp
     ${ui}/SyncPages.cpp
     ${ui}/main.cpp
     SyncUnavailable.cpp

@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-// The toolbar buttons right of the address field and the ⋮ menu, as the Nim front end has them: Bookmarks, History
-// and Downloads buttons, then ⋮ with Chrome's grouping (nim/src/browser.nim moreMenuItems: windows, history,
+// The toolbar buttons right of the address field and the ⋮ menu, as the Nim front end has them: Close all tabs and
+// save as session, Sessions, Bookmarks, History and Downloads buttons, then ⋮ with Chrome's grouping (nim/src/browser.nim moreMenuItems: windows, history,
 // bookmarks, downloads, this page, settings, help).
 
 #include "BrowserWindow.h"
@@ -85,6 +85,31 @@ void BrowserWindow::paint_toolbar_buttons(QPainter& p)
             p.drawPolygon(ribbon);
             break;
         }
+        case ButtonSessions: {
+            // Stacked layers (the Nim toolbar's layers_outlined).
+            QPolygonF top;
+            top << QPointF(c.x(), c.y() - 7) << QPointF(c.x() + 7.5, c.y() - 2.5) << QPointF(c.x(), c.y() + 2) << QPointF(c.x() - 7.5, c.y() - 2.5);
+            p.drawPolygon(top);
+            QPolygonF under;
+            under << QPointF(c.x() - 7.5, c.y() + 2) << QPointF(c.x(), c.y() + 6.5) << QPointF(c.x() + 7.5, c.y() + 2);
+            p.drawPolyline(under);
+            break;
+        }
+        case ButtonCloseAndSave: {
+            // An arrow down into an inbox tray (move_to_inbox_outlined).
+            QPainterPath tray;
+            tray.moveTo(c.x() - 7, c.y() - 1);
+            tray.lineTo(c.x() - 7, c.y() + 7);
+            tray.lineTo(c.x() + 7, c.y() + 7);
+            tray.lineTo(c.x() + 7, c.y() - 1);
+            p.drawPath(tray);
+            p.drawLine(QPointF(c.x() - 7, c.y() + 2.5), QPointF(c.x() - 3, c.y() + 2.5));
+            p.drawLine(QPointF(c.x() + 3, c.y() + 2.5), QPointF(c.x() + 7, c.y() + 2.5));
+            p.drawLine(QPointF(c.x(), c.y() - 8), QPointF(c.x(), c.y() + 1));
+            p.drawLine(QPointF(c.x() - 3.5, c.y() - 2.5), QPointF(c.x(), c.y() + 1));
+            p.drawLine(QPointF(c.x() + 3.5, c.y() - 2.5), QPointF(c.x(), c.y() + 1));
+            break;
+        }
         }
     }
     p.restore();
@@ -101,6 +126,12 @@ void BrowserWindow::toolbar_button(int button)
         break;
     case ButtonDownloads:
         open_own_page(Pages::downloads_page());
+        break;
+    case ButtonSessions:
+        open_own_page(Pages::sessions_page());
+        break;
+    case ButtonCloseAndSave:
+        save_open_tabs_as_session(true);
         break;
     case ButtonMore:
         open_more_menu();
@@ -155,6 +186,10 @@ void BrowserWindow::open_more_menu()
     bookmarks.add(QStringLiteral("Bookmark manager"), QStringLiteral("Ctrl+Shift+O"), [this] { open_own_page(Pages::bookmarks_page()); });
 
     menu.add(QStringLiteral("Downloads"), QStringLiteral("Ctrl+J"), [this] { open_own_page(Pages::downloads_page()); });
+    auto& sessions = menu.add_submenu(QStringLiteral("Sessions"));
+    sessions.add(QStringLiteral("Show sessions"), [this] { open_own_page(Pages::sessions_page()); });
+    sessions.add(QStringLiteral("Save open tabs as session"), [this] { save_open_tabs_as_session(false); });
+    sessions.add(QStringLiteral("Close all tabs and save as session"), [this] { save_open_tabs_as_session(true); });
     menu.add(QStringLiteral("Passwords and passkeys"), [this] { open_passwords_page(); });
     menu.add_separator();
 

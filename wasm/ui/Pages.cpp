@@ -287,6 +287,8 @@ QString refresh(QString const& url)
         return sync_page();
     if (url.endsWith(u"/devices.html"_s))
         return devices_page();
+    if (url.endsWith(u"/sessions.html"_s))
+        return sessions_page();
     return url;
 }
 
