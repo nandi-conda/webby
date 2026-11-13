@@ -4,11 +4,11 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-// The engine component's exports (wit/engine/engine.wit, world `engine`): webby:engine's views over WebbyUI::WebView
-// (../WebView.cpp), so that the Qt UI can live in a component of its own (../shell) and be composed with this one.
-// The callbacks WebView fires become events the UI takes with take-events.
+// The engine component's exports (wit/engine/engine.wit, world `engine`): webby:engine's views over WebbyUI::EngineView
+// (../EngineView.cpp), so that the Qt UI can live in a component of its own (../shell) and be composed with this one.
+// The callbacks EngineView fires become events the UI takes with take-events.
 
-#include "WebView.h"
+#include "EngineView.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -28,7 +28,7 @@ struct EventRecord {
 };
 
 struct exports_webby_engine_views_view_t {
-    std::unique_ptr<WebbyUI::WebView> view;
+    std::unique_ptr<WebbyUI::EngineView> view;
     std::vector<EventRecord> events;
     bool painted { false };
 };
@@ -53,7 +53,7 @@ static void give_string(engine_string_t* ret, std::string const& s)
 exports_webby_engine_views_own_view_t exports_webby_engine_views_constructor_view(uint32_t width, uint32_t height)
 {
     auto* record = new View;
-    record->view = WebbyUI::WebView::create(int(width), int(height));
+    record->view = WebbyUI::EngineView::create(int(width), int(height));
     auto& events = record->events;
     auto& view = *record->view;
     view.on_needs_paint = [&events] {
@@ -234,7 +234,7 @@ void exports_webby_engine_views_method_view_select_all(Borrow self) { self->view
 void exports_webby_engine_views_method_view_cut_selection(Borrow self, engine_string_t* ret) { give_string(ret, self->view->cut_selection()); }
 void exports_webby_engine_views_method_view_insert_text(Borrow self, engine_string_t* text) { self->view->insert_text(take_string(text)); }
 
-static void give_find(exports_webby_engine_views_find_result_t* ret, WebbyUI::WebView::FindResult r)
+static void give_find(exports_webby_engine_views_find_result_t* ret, WebbyUI::EngineView::FindResult r)
 {
     ret->index = r.index;
     ret->total = r.total;
@@ -249,5 +249,5 @@ void exports_webby_engine_views_method_view_find_previous(Borrow self, exports_w
 void exports_webby_engine_views_method_view_find_end(Borrow self) { self->view->find_end(); }
 void exports_webby_engine_views_method_view_set_zoom(Borrow self, double level) { self->view->set_zoom(level); }
 
-void exports_webby_engine_views_pump(void) { WebbyUI::WebView::pump(); }
-void exports_webby_engine_views_set_color_scheme(bool dark) { WebbyUI::WebView::set_color_scheme(dark); }
+void exports_webby_engine_views_pump(void) { WebbyUI::EngineView::pump(); }
+void exports_webby_engine_views_set_color_scheme(bool dark) { WebbyUI::EngineView::set_color_scheme(dark); }

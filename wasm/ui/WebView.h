@@ -4,14 +4,17 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-// WebView: one page of Ladybird's LibWeb, hosted in this module, with no WebContent, Compositor or RequestServer
-// process. The UI (Qt) side talks to it through this header only, which names no LibWeb or AK type, so Qt and
-// Ladybird headers never meet in one file.
+// WebView: one page (a tab), as the chrome sees it. The UI (Qt) side talks to it through this header only, which
+// names no LibWeb or AK type, so Qt and Ladybird headers never meet in one file.
 //
-// A load parses the document right here (http(s) documents come from RequestServer, in this module: Network.h) and gives it a fresh Page (see WebView.cpp), as webby-render does. A paint
-// lays the page out, records its display list and rasterizes it on the CPU with the Compositor's Skia player.
+// The page itself is an EngineView (EngineView.h: Ladybird's LibWeb, with no WebContent, Compositor or RequestServer
+// process). In webby.wasm (WebView.cpp) it runs in the engine worker when the host can run one (EngineWorker.h:
+// another instance of this component on its own thread), else in this instance; in the UI component built without
+// Ladybird (shell/WebViewRemote.cpp) it is the engine component's.
 
 #pragma once
+
+#include "ViewTypes.h"
 
 #include <array>
 #include <vector>
@@ -25,53 +28,6 @@
 namespace WebbyUI {
 
 struct LoadedDocument;
-
-// Keyboard modifiers, as LibWeb's UIEvents::KeyModifier numbers them.
-enum Modifier : unsigned {
-    ModNone = 0,
-    ModAlt = 1 << 0,
-    ModCtrl = 1 << 1,
-    ModShift = 1 << 2,
-    ModSuper = 1 << 3,
-    ModKeypad = 1 << 4,
-};
-
-// Mouse buttons, as LibWeb's UIEvents::MouseButton numbers them.
-enum MouseButton : unsigned {
-    ButtonNone = 0,
-    ButtonPrimary = 1,
-    ButtonSecondary = 2,
-    ButtonMiddle = 4,
-    ButtonBackward = 8,
-    ButtonForward = 16,
-};
-
-// What a right-click (or Ctrl+click) hit, for the chrome's context menu. URLs are "" when there is none.
-struct ContextMenu {
-    int x { 0 }; // viewport coordinates of the click
-    int y { 0 };
-    std::string link;      // the link's URL
-    std::string link_text; // its text
-    std::string image;     // the image's URL
-    std::string selection; // the selected text in the clicked frame
-    bool editable { false }; // the click was in a text field or contenteditable
-};
-
-// A navigation saved as a file (see WebView::on_download).
-struct Download {
-    std::string url;
-    std::string path;  // where it was saved, "" if it was not
-    uint64_t size { 0 };
-    std::string mime;
-    std::string error; // why it was not saved, "" if it was
-};
-
-// A navigation whose response is a PDF (see WebView::on_pdf).
-struct PdfDocument {
-    std::string url;
-    std::string mime;
-    std::vector<uint8_t> data;
-};
 
 class WebView {
 public:
@@ -92,9 +48,9 @@ public:
     void go_back();
     void go_forward();
 
-    std::string const& url() const { return m_url; }
-    std::string const& title() const { return m_title; }
-    bool is_loading() const { return m_loading; }
+    std::string const& url() const;
+    std::string const& title() const;
+    bool is_loading() const;
 
     // Whether the tab is in front. A hidden page's document is "hidden" (document.hidden, visibilitychange) and gets
     // no rendering updates: no style, layout, animations, intersection observers or requestAnimationFrame callbacks,
@@ -110,29 +66,10 @@ public:
     // The page's pixels: premultiplied BGRA (Qt's ARGB32_Premultiplied on little endian), width() x height(), drawn
     // anew when the page changed since the last call. Null before the first load.
     uint8_t const* paint();
-    bool needs_paint() const { return m_needs_paint; }
-    // What the last paint() changed in the pixels it returned, when it knows (it repainted only damage): the rows
-    // moved by `moved` (negative: the content moved up, the page scrolled down), then `rects` drawn again. When not
-    // known, compare the frames.
-    struct PaintChange {
-        bool known { false };
-        int moved { 0 };
-        std::vector<std::array<int, 4>> rects; // x, y, width, height
-    };
+    bool needs_paint() const;
+    using PaintChange = WebbyUI::PaintChange;
     PaintChange const& last_paint_change() const { return m_last_change; }
-    // The viewport's scrollbars, as of the last paint(), for the chrome to draw over the page: in Ladybird the
-    // Compositor process draws them, and there is none here. Viewport pixels. A scrollbar is thin until the pointer is
-    // over it or drags it (`expanded`), when its gutter is drawn too. Inner scroll containers' scrollbars are in the
-    // page's own pixels. The view takes the presses, drags and hovers on all of them (mouse_down and so on).
-    struct Scrollbar {
-        bool vertical { true };
-        bool expanded { false };
-        std::array<int, 4> gutter {}; // x, y, width, height
-        std::array<int, 4> thumb {};
-        uint32_t thumb_color { 0 }; // ARGB, not premultiplied
-        uint32_t track_color { 0 };
-        bool operator==(Scrollbar const&) const = default;
-    };
+    using Scrollbar = WebbyUI::Scrollbar;
     std::vector<Scrollbar> const& scrollbars() const { return m_scrollbars; }
 
     // Input, in viewport coordinates. `button` is the one that changed, `buttons` those held after the event.
@@ -193,10 +130,7 @@ public:
 
     // Find in page (Ctrl+F): every match highlighted, the active one scrolled to. `index` counts from 0; `total` is -1
     // when unknown, 0 for no match.
-    struct FindResult {
-        unsigned index { 0 };
-        int total { 0 };
-    };
+    using FindResult = WebbyUI::FindResult;
     FindResult find(std::string const& query, bool case_sensitive);
     FindResult find_next();
     FindResult find_previous();
@@ -227,6 +161,8 @@ public:
     // The UI component's WebView (shell/WebViewRemote.cpp) only: the engine component's queued events, as the
     // callbacks above.
     void deliver_engine_events();
+    // WebView.cpp's engine worker connection.
+    friend struct WebViewAccess;
 
 private:
     WebView(int width, int height);

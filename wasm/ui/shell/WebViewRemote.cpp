@@ -53,6 +53,11 @@ WebView::~WebView()
     webby_engine_views_view_drop_own(m_impl->handle);
 }
 
+std::string const& WebView::url() const { return m_url; }
+std::string const& WebView::title() const { return m_title; }
+bool WebView::is_loading() const { return m_loading; }
+bool WebView::needs_paint() const { return m_needs_paint; }
+
 void WebView::pump()
 {
     webby_engine_views_pump();
