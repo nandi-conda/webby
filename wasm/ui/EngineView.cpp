@@ -668,7 +668,8 @@ static void retire_page(GC::Ptr<Web::Page> page)
         if (auto document = traversable->active_document()) {
             documents.append(*document);
             for (auto& navigable : document->descendant_navigables()) {
-                if (auto child = navigable->active_document())
+                auto* local = as_if<Web::HTML::LocalNavigable>(*navigable);
+                if (auto child = local ? local->active_document() : nullptr)
                     documents.append(*child);
             }
         }
