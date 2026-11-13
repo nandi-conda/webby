@@ -1,0 +1,16 @@
+diff --git a/Libraries/LibWeb/HTML/LocalNavigable.cpp b/Libraries/LibWeb/HTML/LocalNavigable.cpp
+--- a/Libraries/LibWeb/HTML/LocalNavigable.cpp
++++ b/Libraries/LibWeb/HTML/LocalNavigable.cpp
+@@ -5740,6 +5740,12 @@
+         smooth_scroll.elapsed += now - smooth_scroll.last_tick;
+         smooth_scroll.last_tick = now;
+         auto sample = smooth_scroll.animation.sample(smooth_scroll.elapsed);
++        // Steps on the way land on whole device pixels, as other browsers' do: a frame that moved by a whole number of
++        // pixels keeps what it showed, moved, and draws only the rows it uncovers. The destination stays exact.
++        if (!sample.complete) {
++            auto scale = static_cast<float>(page().client().device_pixels_per_css_pixel());
++            sample.offset = { roundf(sample.offset.x() * scale) / scale, roundf(sample.offset.y() * scale) / scale };
++        }
+         set_scroll_offset_for(smooth_scroll.stable_node_id, sample.offset.to_type<CSSPixels>());
+         if (sample.complete) {
+             finished_smooth_scrolls.append(finished_scroll(m_main_thread_smooth_scrolls.take(index)));

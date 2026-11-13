@@ -1133,21 +1133,70 @@ static ErrorOr<void> rasterize(Compositing::DisplayList const& display_list, Com
 {
     auto surface = Gfx::PaintingSurface::wrap_bitmap(target);
     auto& canvas = surface->canvas();
-    canvas.save();
-    if (damage) {
-        SkRegion region;
-        for (auto const& rect : *damage)
-            region.op(SkIRect::MakeXYWH(rect.x(), rect.y(), rect.width(), rect.height()), SkRegion::kUnion_Op);
-        canvas.clipRegion(region);
+    Compositor::DisplayListPlayerSkia player { RefPtr<Gfx::SkiaBackendContext> {} };
+    auto play = [&] {
+        player.execute(display_list, visual_context_tree, resource_storage, raster_cache, scroll_state, surface, WebbyUI::local_canvas_surfaces(), nullptr);
+    };
+    if (!damage) {
+        __builtin_memset(target.scanline_u8(0), 0xff, target.size_in_bytes());
+        play();
+        player.flush(*surface);
+        return {};
+    }
+    // One pass per area apart from the others, not one pass clipped to all of them: a layer (opacity, a filter, a
+    // blend) is as big as the clip's bounds, and the strip a scroll uncovers plus the rows along the other edge span the
+    // whole frame, so all of a page drawn in a layer was drawn again on every scroll step.
+    Vector<Gfx::IntRect> areas;
+    for (auto const& rect : *damage)
+        areas.append(rect);
+    for (bool merged = true; merged;) {
+        merged = false;
+        for (size_t i = 0; i < areas.size() && !merged; ++i) {
+            for (size_t j = i + 1; j < areas.size(); ++j) {
+                auto both = areas[i].united(areas[j]);
+                auto apart = static_cast<i64>(areas[i].width()) * areas[i].height() + static_cast<i64>(areas[j].width()) * areas[j].height();
+                if (static_cast<i64>(both.width()) * both.height() <= apart + apart / 4 + 64 * 64) {
+                    areas[i] = both;
+                    areas.remove(j);
+                    merged = true;
+                    break;
+                }
+            }
+        }
+    }
+    // Each pass draws a margin around its area too, and then puts the margin's pixels back: a blur (a filter, a
+    // backdrop filter, a shadow) in a layer cut to the pass's clip reads nothing past the clip, so the pixels near the
+    // clip's edge come out darker than the whole frame's.
+    constexpr int margin = 64;
+    Gfx::IntRect const frame { {}, target.size() };
+    Vector<u32> saved;
+    auto const pitch = target.pitch() / sizeof(u32);
+    auto* pixels = reinterpret_cast<u32*>(target.scanline_u8(0));
+    for (auto const& area : areas) {
+        auto pass = area.inflated(2 * margin, 2 * margin).intersected(frame);
+        saved.resize(static_cast<size_t>(pass.width()) * pass.height());
+        for (int y = 0; y < pass.height(); ++y)
+            __builtin_memcpy(&saved[size_t(y) * pass.width()], pixels + size_t(pass.y() + y) * pitch + pass.x(), size_t(pass.width()) * 4);
+        canvas.save();
+        canvas.clipRect(SkRect::MakeXYWH(pass.x(), pass.y(), pass.width(), pass.height()));
         // White below the page, as a browser's canvas is: a page with no background of its own is not see-through.
         canvas.clear(SK_ColorWHITE);
-    } else {
-        __builtin_memset(target.scanline_u8(0), 0xff, target.size_in_bytes());
+        play();
+        canvas.restore();
+        player.flush(*surface);
+        auto put_back = [&](int y, int x0, int x1) {
+            if (x1 > x0)
+                __builtin_memcpy(pixels + size_t(y) * pitch + x0, &saved[size_t(y - pass.y()) * pass.width() + (x0 - pass.x())], size_t(x1 - x0) * 4);
+        };
+        for (int y = pass.top(); y < pass.bottom(); ++y) {
+            if (y < area.top() || y >= area.bottom()) {
+                put_back(y, pass.left(), pass.right());
+            } else {
+                put_back(y, pass.left(), area.left());
+                put_back(y, area.right(), pass.right());
+            }
+        }
     }
-    Compositor::DisplayListPlayerSkia player { RefPtr<Gfx::SkiaBackendContext> {} };
-    player.execute(display_list, visual_context_tree, resource_storage, raster_cache, scroll_state, surface, WebbyUI::local_canvas_surfaces(), nullptr);
-    player.flush(*surface);
-    canvas.restore();
     return {};
 }
 
@@ -1452,8 +1501,9 @@ uint8_t const* WebView::paint()
             else
                 warnln("webby raster: scroll {} content {} in {} pieces, unscrolled {} / {}", change->scroll, change->content, change->content_pieces.size(), change->unscrolled_new, change->unscrolled_old);
         }
-        if (change.has_value() && change->scroll.x() == 0 && dy == truncf(dy) && fabsf(dy) < size.height()) {
-            moved = static_cast<int>(dy);
+        // Smooth scroll steps land on whole device pixels; at a fractional scale a CSS offset (1/64 px) is a hair off.
+        if (change.has_value() && change->scroll.x() == 0 && fabsf(dy - roundf(dy)) < 0.05f && fabsf(dy) < size.height()) {
+            moved = static_cast<int>(roundf(dy));
             Vector<Gfx::IntRect> rects;
             auto add = [&](Gfx::IntRect rect) {
                 rect.intersect(viewport);
