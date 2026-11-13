@@ -659,6 +659,25 @@ static void retire_page(GC::Ptr<Web::Page> page)
         if (!traversable || traversable->has_been_destroyed())
             return;
         traversable->destroy_top_level_traversable();
+        // WEBBY_HEAP_DUMP=PATH: a few seconds after a page is let go of, a full collection and LibGC's graph of what
+        // is left (PATH.N.json, with each root's kind), to find what keeps pages alive.
+        if (auto const* path = getenv("WEBBY_HEAP_DUMP"); path && *path) {
+            static int s_dumps = 0;
+            auto file = ByteString::formatted("{}.{}.json", path, s_dumps++);
+            auto timer = Core::Timer::create_single_shot(4000, [file] {
+                auto& heap = Web::Bindings::main_thread_vm().heap();
+                heap.collect_garbage(GC::Heap::CollectionType::CollectEverything);
+                auto json = heap.dump_graph().serialized();
+                if (auto* f = fopen(file.characters(), "w")) {
+                    fwrite(json.bytes().data(), 1, json.bytes().size(), f);
+                    fclose(f);
+                    dbgln("webby: heap graph in {}", file);
+                }
+            });
+            timer->start();
+            static Vector<NonnullRefPtr<Core::Timer>> s_timers;
+            s_timers.append(timer);
+        }
     });
 }
 
