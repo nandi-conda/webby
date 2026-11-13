@@ -139,7 +139,8 @@ if [[ " $targets " == *" js "* ]]; then
 fi
 # Programs that use sockets (webby-render links RequestServer) run as components: wasm-tools makes them, the wasmtime
 # CLI runs them with TCP (tools/wasi-run.py), latha-run runs latha:proc children. nandi-testing's packages, cached.
-if [[ " $targets " == *" webby-render "* || " $targets " == *" webby-core "* ]]; then
+# The wasm-test job (webby-ui alone) runs the UI tests too.
+if [[ " $targets " == *" webby-render "* || " $targets " == *" webby-core "* || " $targets " == *" webby-ui "* ]]; then
   # latha:proc shared memory and spawn-with-env (wasm/compat) need latha-gui 0.4, the cooperative threads (ui/coop)
   # 0.8, host set-text-input 0.9.3 (it sets LATHA_GUI_TEXT_INPUT, without which qt2wasm 0.10.6 never calls it);
   # a new version gets a new directory.
