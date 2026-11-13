@@ -16,6 +16,7 @@
 #include <QFile>
 #include <QFontMetricsF>
 #include <QGuiApplication>
+#include <QInputMethod>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
@@ -698,10 +699,13 @@ void BrowserWindow::focus_address(bool focus)
     if (focus) {
         m_address_anchor = 0;
         m_address_cursor = m_address_text.size();
+        QGuiApplication::inputMethod()->show();
     } else {
         hide_suggestions();
         if (auto* tab = current(); tab && tab->view)
             m_address_text = from_std(tab->view->url());
+        if (!m_find_focused)
+            QGuiApplication::inputMethod()->hide();
     }
     update_chrome();
 }
@@ -1670,6 +1674,10 @@ void BrowserWindow::mousePressEvent(QMouseEvent* event)
         bool in_find = hit.hit == Hit::FindField || hit.hit == Hit::FindPrevious || hit.hit == Hit::FindNext;
         if (in_find != m_find_focused) {
             m_find_focused = in_find;
+            if (m_find_focused)
+                QGuiApplication::inputMethod()->show();
+            else if (!m_address_focused)
+                QGuiApplication::inputMethod()->hide();
             update();
         }
     }
@@ -1677,6 +1685,8 @@ void BrowserWindow::mousePressEvent(QMouseEvent* event)
         if (event->button() == Qt::LeftButton && hit.tab < m_suggestions.size()) {
             auto url = m_suggestions[hit.tab].url;
             m_address_focused = false;
+            if (!m_find_focused)
+                QGuiApplication::inputMethod()->hide();
             load_in_current(url);
         }
         m_pressed = {};
@@ -1749,6 +1759,7 @@ void BrowserWindow::mousePressEvent(QMouseEvent* event)
             m_address_cursor = address_index_at(event->position().x());
             if (!(event->modifiers() & Qt::ShiftModifier))
                 m_address_anchor = m_address_cursor;
+            QGuiApplication::inputMethod()->show();
             update();
         }
         break;
@@ -2463,6 +2474,7 @@ void BrowserWindow::open_find()
         focus_address(false);
     m_find_open = true;
     m_find_focused = true;
+    QGuiApplication::inputMethod()->show();
     // The page's selection is the first query, as in other browsers.
     auto selected = (tab->pdf ? tab->pdf->selected_text() : from_std(tab->view->selected_text())).simplified();
     if (!selected.isEmpty() && selected.size() < 200)
@@ -2476,6 +2488,9 @@ void BrowserWindow::close_find()
     if (!m_find_open)
         return;
     m_find_open = false;
+    m_find_focused = false;
+    if (!m_address_focused)
+        QGuiApplication::inputMethod()->hide();
     m_find_result = {};
     if (auto* pdf = current_pdf())
         pdf->find_end();
