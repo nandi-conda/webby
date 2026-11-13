@@ -193,6 +193,11 @@ void switch_to(Thread* to)
     from->base = limits[0];
     from->limit = limits[1];
     s_current = to;
+    if (to->sp < to->limit || to->sp > to->base) {
+        fprintf(stderr, "webby-coop: bad switch from %llu (%s) to %llu (%s) state %d started %d sp %x [%x, %x] main sp %x [%x, %x]\n",
+            (unsigned long long)from->id, from->name, (unsigned long long)to->id, to->name, int(to->state), int(to->started),
+            to->sp, to->limit, to->base, s_main.sp, s_main.limit, s_main.base);
+    }
     to->started = true;
     webby_coop_set_stack(to->sp, to->base, to->limit);
     webby_cm_switch_to(to->cm);
