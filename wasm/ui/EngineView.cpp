@@ -660,14 +660,31 @@ static void retire_page(GC::Ptr<Web::Page> page)
         auto* traversable = as_if<Web::HTML::LocalTraversableNavigable>(*page->local_traversable());
         if (!traversable || traversable->has_been_destroyed())
             return;
+        // destroy_top_level_traversable() queues a task that destroys the document (and one for each child
+        // navigable's document), but marks the traversable destroyed first, so the document is no longer fully
+        // active and its task never runs: it waits in the task queue, holding the document and the page, forever.
+        // The documents are destroyed here instead, children first (destroy() also drops their waiting tasks).
+        Vector<GC::Root<Web::DOM::Document>> documents;
+        if (auto document = traversable->active_document()) {
+            documents.append(*document);
+            for (auto& navigable : document->descendant_navigables()) {
+                if (auto child = navigable->active_document())
+                    documents.append(*child);
+            }
+        }
         traversable->destroy_top_level_traversable();
+        for (auto& document : documents.in_reverse()) {
+            if (!document->has_been_destroyed())
+                document->destroy();
+        }
         // WEBBY_HEAP_DUMP=PATH: a few seconds after a page is let go of, a full collection and LibGC's graph of what
         // is left (PATH.N.json, with each root's kind), to find what keeps pages alive.
         if (auto const* path = getenv("WEBBY_HEAP_DUMP"); path && *path) {
             static int s_dumps = 0;
             auto file = ByteString::formatted("{}.{}.json", path, s_dumps++);
             // CollectEverything is the heap's teardown (it frees rooted cells too), so an ordinary collection.
-            auto address = bit_cast<FlatPtr>(page.ptr());
+            // As text: a pointer kept as a number would be a conservative root for the page itself.
+            auto address = ByteString::formatted("{}", bit_cast<FlatPtr>(page.ptr()));
             auto timer = Core::Timer::create_single_shot(AK::Duration::from_milliseconds(4000), [file, address, weak = GC::Weak<Web::Page>(*page)] {
                 auto& heap = Web::Bindings::main_thread_vm().heap();
                 heap.collect_garbage();
