@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <map>
@@ -429,7 +430,9 @@ private:
     void send_frame(ServedView& s)
     {
         auto& v = *s.view;
-        if (!v.is_visible() || s.in_flight || !s.dirty)
+        // needs_paint() too: a frame painted while the document was render-blocked leaves it set without asking
+        // again (the chrome's in-process view is polled for it the same way, BrowserWindow.cpp).
+        if (!v.is_visible() || s.in_flight || (!s.dirty && !v.needs_paint()))
             return;
         s.dirty = false;
         auto const* pixels = v.paint();
@@ -491,6 +494,15 @@ private:
             memcpy(dst, pixels, bytes);
         s.buffer_frame[b] = frame;
         s.in_flight = true;
+        if (getenv("WEBBY_ENGINE_DEBUG")) {
+            uint64_t a = 0, d = 0;
+            for (size_t i = 0; i < bytes; i += 4096) {
+                a += pixels[i];
+                d += dst[i];
+            }
+            fprintf(stderr, "webby engine: frame %llu %dx%d buffer %d partial %d sums %llu %llu\n", (unsigned long long)frame,
+                width, height, b, int(partial), (unsigned long long)a, (unsigned long long)d);
+        }
 
         send_state(s);
         Writer w { uint8_t(ToChrome::Frame) };

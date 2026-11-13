@@ -395,6 +395,8 @@ struct WebViewAccess {
                 impl.shown = -1;
                 for (size_t i = 0; i < 2 && i < m.handles.size(); ++i) {
                     impl.buffers[i].pixels = Proc::map(m.handles[i], size);
+                    if (!impl.buffers[i].pixels)
+                        fprintf(stderr, "webby: mapping the engine's %zu byte frame buffer failed\n", size_t(size));
                     Proc::close(m.handles[i]);
                 }
             }
@@ -405,6 +407,9 @@ struct WebViewAccess {
                 send(v, w);
                 break;
             }
+            if (getenv("WEBBY_ENGINE_DEBUG"))
+                fprintf(stderr, "webby: frame %dx%d in buffer %d (%zu rects, known %d, %zu handles)\n", f.width, f.height,
+                    f.buffer, f.change.rects.size(), int(f.change.known), m.handles.size());
             impl.pending = std::move(f);
             v.m_needs_paint = true;
             if (v.on_needs_paint)
@@ -679,6 +684,13 @@ uint8_t const* WebView::paint()
     auto frame = std::move(*impl.pending);
     impl.pending.reset();
     impl.shown = frame.buffer;
+    if (getenv("WEBBY_ENGINE_DEBUG")) {
+        uint64_t a = 0;
+        size_t bytes = size_t(frame.width) * size_t(frame.height) * 4;
+        for (size_t i = 0; i < bytes; i += 4096)
+            a += impl.buffers[frame.buffer].pixels[i];
+        fprintf(stderr, "webby: painting buffer %d, sum %llu\n", frame.buffer, (unsigned long long)a);
+    }
     m_width = frame.width;
     m_height = frame.height;
     m_last_change = std::move(frame.change);
