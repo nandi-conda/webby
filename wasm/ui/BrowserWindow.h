@@ -70,6 +70,7 @@ private:
         QString url;
         bool loading { false };
         qint64 created { 0 }; // seconds since the epoch, for the age dot
+        qint64 last_shown { 0 }; // ms since the epoch it was last the front tab, so memory pressure sleeps the oldest first
         // While the view's page is a PDF: the viewer, shown in place of the page (PdfView.h).
         std::unique_ptr<WebbyUI::PdfView> pdf {};
     };
@@ -270,6 +271,10 @@ private:
     int m_suggestion { -1 }; // the highlighted suggestion, -1 for none (Return loads the typed text)
     QString m_typed_text; // what was typed before Up/Down put a suggestion in the field
     QTimer m_save_timer;
+    // Memory pressure (WebView::take_memory_pressure): background tabs go back to sleep, oldest first.
+    QTimer m_memory_timer;
+    void check_memory();
+    bool sleep_tab(int index);
 
     // A short note at the bottom of the window ("Downloaded …"), gone after a few seconds.
     QString m_toast;

@@ -41,6 +41,20 @@ public:
     // it). Pages restyle at once.
     static void set_color_scheme(bool dark);
 
+    // The engine's memory, which every view shares (wasm32: one 4 GiB linear memory). `pressure`: since the last call,
+    // the GC ran short of room for new blocks, or linear memory kept growing past ~2.75 GiB; the chrome should put
+    // background tabs to sleep and collect_garbage(). `critical`: the GC's last-resort reserve went too, so the next
+    // page that allocates may stop the whole module.
+    struct MemoryPressure {
+        bool pressure { false };
+        bool critical { false };
+    };
+    static MemoryPressure take_memory_pressure();
+    // A full collection of the engine's heap (pages closed or put to sleep give their memory back).
+    static void collect_garbage();
+    // One line about the engine's memory, for logs (WEBBY_MEMORY_LOG=1).
+    static std::string memory_report();
+
     void load(std::string const& url);
     void reload();
     bool can_go_back() const;

@@ -102,6 +102,11 @@ void WebView::go_forward()
     deliver_engine_events();
 }
 
+// The engine's WIT has no memory calls yet: the split build never reports pressure.
+WebView::MemoryPressure WebView::take_memory_pressure() { return {}; }
+void WebView::collect_garbage() { }
+std::string WebView::memory_report() { return "memory: not known in the split build"; }
+
 // The engine's WIT has no visibility call yet, so a background tab of the split build keeps rendering.
 void WebView::set_visible(bool visible)
 {

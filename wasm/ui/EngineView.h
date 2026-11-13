@@ -43,6 +43,15 @@ public:
     // it). Pages restyle at once.
     static void set_color_scheme(bool dark);
 
+    // As WebView's (WebView.h), for this instance's engine: the chrome's in local mode, the worker's in worker mode.
+    struct MemoryPressure {
+        bool pressure { false };
+        bool critical { false };
+    };
+    static MemoryPressure take_memory_pressure();
+    static void collect_garbage();
+    static std::string memory_report();
+
     void load(std::string const& url);
     void reload();
     bool can_go_back() const;

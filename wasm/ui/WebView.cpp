@@ -668,6 +668,29 @@ void WebView::set_color_scheme(bool dark)
     EngineView::set_color_scheme(dark);
 }
 
+// In worker mode the engine's memory is the worker's (its own linear memory); it is not reported here yet.
+WebView::MemoryPressure WebView::take_memory_pressure()
+{
+    if (worker())
+        return {};
+    auto state = EngineView::take_memory_pressure();
+    return { state.pressure, state.critical };
+}
+
+void WebView::collect_garbage()
+{
+    if (worker())
+        return;
+    EngineView::collect_garbage();
+}
+
+std::string WebView::memory_report()
+{
+    if (worker())
+        return "memory: the engine's is in its worker";
+    return EngineView::memory_report();
+}
+
 #define LOCAL_OR_SEND(call, kind)                     \
     do {                                               \
         if (m_impl->local) {                           \

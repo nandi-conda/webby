@@ -1,0 +1,235 @@
+diff --git a/Libraries/LibGC/BlockAllocator.cpp b/Libraries/LibGC/BlockAllocator.cpp
+index 6641afdd..ef438c20 100644
+--- a/Libraries/LibGC/BlockAllocator.cpp
++++ b/Libraries/LibGC/BlockAllocator.cpp
+@@ -8,13 +8,16 @@
+ #include <AK/Assertions.h>
+ #include <AK/Atomic.h>
+ #include <AK/Checked.h>
++#include <AK/Format.h>
+ #include <AK/NeverDestroyed.h>
+ #include <AK/Platform.h>
+ #include <AK/Try.h>
+ #include <AK/Vector.h>
+ #include <LibCore/System.h>
+ #include <LibGC/BlockAllocator.h>
++#include <LibGC/CellAllocator.h>
+ #include <LibGC/HeapBlock.h>
++#include <LibGC/MemoryPressure.h>
+ #include <LibGC/HeapRegion.h>
+ #include <LibThreading/Thread.h>
+ #include <sys/mman.h>
+@@ -77,10 +80,32 @@ public:
+         publish_base(0);
+     }
+ 
++    // NB: dlmalloc serves aligned_alloc(2 MiB, 2 MiB) from about 4 MiB of new memory: the aligned chunk, and a
++    //     misaligned remainder no later chunk fits in. One chunk at a time, half of the linear memory the GC took was
++    //     never touched, and the module reached 4 GiB with under 3 GiB in use. Chunks come in batches instead, so a
++    //     batch of 16 leaves at most one remainder. Near the top of memory, where a whole batch no longer fits,
++    //     smaller batches are tried, down to one chunk; and the last 32 MiB are a reserve that is released, and
++    //     memory_pressure() raised, when nothing else is left (so the embedder can put pages away and collect).
++    static constexpr size_t CHUNKS_PER_BATCH = 16;
++    static constexpr size_t RESERVE_SIZE = 32 * MiB;
++
+     void* allocate_chunk()
+     {
+-        auto* chunk = static_cast<u8*>(aligned_alloc(CHUNK_SIZE, CHUNK_SIZE));
+-        VERIFY(chunk);
++        if (!m_reserve)
++            m_reserve = malloc(RESERVE_SIZE);
++        if (m_batch_next == m_batch_end && !take_batch()) {
++            if (m_reserve) {
++                ::free(exchange(m_reserve, nullptr));
++                s_memory_pressure = true;
++                s_memory_pressure_count++;
++                dbgln("LibGC: linear memory is running out, the GC's reserve is released");
++                take_batch();
++            }
++            if (m_batch_next == m_batch_end)
++                return nullptr;
++        }
++        auto* chunk = m_batch_next;
++        m_batch_next += CHUNK_SIZE;
+         auto chunk_end = reinterpret_cast<FlatPtr>(chunk) + CHUNK_SIZE;
+         // NB: A chunk at the very top of memory ends at 2^32, which wraps to 0.
+         VERIFY(chunk_end == 0 || chunk_end - 1 <= last_address);
+@@ -89,9 +114,31 @@ public:
+         __builtin_memset(chunk, 0, CHUNK_SIZE);
+         if (chunk_end > m_committed_end)
+             m_committed_end = chunk_end;
++        m_chunk_count++;
+         return chunk;
+     }
+ 
++    bool take_batch()
++    {
++        for (size_t chunks = CHUNKS_PER_BATCH; chunks > 0; chunks /= 2) {
++            if (auto* batch = static_cast<u8*>(aligned_alloc(CHUNK_SIZE, chunks * CHUNK_SIZE))) {
++                if (chunks < CHUNKS_PER_BATCH)
++                    s_memory_pressure = true;
++                m_batch_next = batch;
++                m_batch_end = batch + chunks * CHUNK_SIZE;
++                return true;
++            }
++        }
++        s_memory_pressure = true;
++        return false;
++    }
++
++    size_t chunk_count() const { return m_chunk_count; }
++    size_t spare_chunk_count() const { return static_cast<size_t>(m_batch_end - m_batch_next) / CHUNK_SIZE; }
++
++    static inline bool s_memory_pressure { false };
++    static inline size_t s_memory_pressure_count { 0 };
++
+     void prepare_chunk() { }
+ 
+     FlatPtr start() const { return 0; }
+@@ -197,6 +244,10 @@ private:
+ 
+ #if defined(AK_OS_WASI)
+     FlatPtr m_committed_end { 0 };
++    u8* m_batch_next { nullptr };
++    u8* m_batch_end { nullptr };
++    void* m_reserve { nullptr };
++    size_t m_chunk_count { 0 };
+ #else
+     // The guards at either end of the region are never committed.
+     static constexpr size_t FIRST_CHUNK_OFFSET = HEAP_REGION_LOW_GUARD_SIZE;
+@@ -476,6 +527,28 @@ HeapRegionBaseCopyRegistration::HeapRegionBaseCopyRegistration(FlatPtr& copy)
+     HeapRegion::register_base_copy(*this);
+ }
+ 
++bool take_memory_pressure()
++{
++#if defined(AK_OS_WASI)
++    return exchange(HeapRegion::s_memory_pressure, false);
++#else
++    return false;
++#endif
++}
++
++MemoryStats memory_stats()
++{
++    MemoryStats stats;
++#if defined(AK_OS_WASI)
++    stats.linear_memory_bytes = static_cast<u64>(__builtin_wasm_memory_size(0)) * 64 * KiB;
++    stats.chunk_bytes = static_cast<u64>(heap_region().chunk_count()) * CHUNK_SIZE;
++    stats.spare_chunk_bytes = static_cast<u64>(heap_region().spare_chunk_count()) * CHUNK_SIZE;
++    stats.reserve_releases = HeapRegion::s_memory_pressure_count;
++#endif
++    stats.free_block_bytes = static_cast<u64>(CellAllocator::shared_block_allocator().block_count()) * HeapBlock::BLOCK_SIZE;
++    return stats;
++}
++
+ FlatPtr BlockAllocator::heap_region_start()
+ {
+     return heap_region().start();
+@@ -514,6 +587,10 @@ void* BlockAllocator::allocate_block([[maybe_unused]] char const* name)
+     if (block == nullptr) {
+         // Both pools empty: commit a fresh 2 MiB chunk and slice it.
+         auto* chunk_base = heap_region().allocate_chunk();
++        if (!chunk_base) {
++            dbgln("LibGC: out of memory: no room for another {} KiB chunk of GC blocks", CHUNK_SIZE / KiB);
++            VERIFY_NOT_REACHED();
++        }
+ 
+ #if defined(MADV_FREE_REUSE) && defined(MADV_FREE_REUSABLE)
+         // Mark the whole chunk reusable upfront so MADV_FREE_REUSE pairs
+diff --git a/Libraries/LibGC/MemoryPressure.h b/Libraries/LibGC/MemoryPressure.h
+new file mode 100644
+index 00000000..9b81756f
+--- /dev/null
++++ b/Libraries/LibGC/MemoryPressure.h
+@@ -0,0 +1,27 @@
++/*
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/Types.h>
++#include <LibGC/Forward.h>
++
++namespace GC {
++
++// wasm32 (WASI): the GC's view of linear memory, for an embedder that has to keep it from running out. (A header of
++// its own, not BlockAllocator.h, which nearly every file includes.)
++struct MemoryStats {
++    u64 linear_memory_bytes { 0 }; // WASI: memory.size
++    u64 chunk_bytes { 0 };         // WASI: GC chunks handed out
++    u64 spare_chunk_bytes { 0 };   // WASI: taken from malloc in a batch, not handed out yet
++    u64 free_block_bytes { 0 };    // blocks freed by sweeps and ready for reuse
++    size_t reserve_releases { 0 }; // WASI: times the last-resort reserve was released
++};
++
++// True once since the last call when GC chunks ran short (linear memory is nearly full): the embedder should put
++// pages away and collect garbage. Always false outside WASI.
++GC_API bool take_memory_pressure();
++GC_API MemoryStats memory_stats();
++
++}
+diff --git a/Libraries/LibGC/PrimitiveStorage.cpp b/Libraries/LibGC/PrimitiveStorage.cpp
+index 3824edb7..c9add994 100644
+--- a/Libraries/LibGC/PrimitiveStorage.cpp
++++ b/Libraries/LibGC/PrimitiveStorage.cpp
+@@ -100,6 +100,38 @@ static ErrorOr<size_t> wasi_allocate_direct_range(size_t size)
+     return address.value();
+ }
+ 
++// NB: A range of one page (64 KiB), such as every small-storage slab, would cost dlmalloc's aligned_alloc about two
++//     pages of new memory, the second never touched (the same waste LibGC's chunks had). One-page ranges come from
++//     2 MiB batches instead and go back to a free list when released.
++static constexpr size_t wasi_page_batch_size = 2 * MiB;
++
++static Vector<size_t>& wasi_free_pages()
++{
++    static NeverDestroyed<Vector<size_t>> pages;
++    return *pages;
++}
++
++static ErrorOr<size_t> wasi_allocate_page()
++{
++    auto& pages = wasi_free_pages();
++    if (pages.is_empty()) {
++        auto* batch = static_cast<u8*>(aligned_alloc(wasi_page_size, wasi_page_batch_size));
++        size_t batch_size = wasi_page_batch_size;
++        if (!batch) {
++            batch = static_cast<u8*>(aligned_alloc(wasi_page_size, wasi_page_size));
++            batch_size = wasi_page_size;
++        }
++        if (!batch)
++            return Error::from_errno(ENOMEM);
++        // Highest first, so pages are handed out from the bottom of the batch up.
++        for (size_t offset = batch_size; offset > 0; offset -= wasi_page_size)
++            TRY(pages.try_append(bit_cast<FlatPtr>(batch) + offset - wasi_page_size));
++    }
++    auto address = pages.take_last();
++    __builtin_memset(bit_cast<void*>(address), 0, wasi_page_size);
++    return address;
++}
++
+ static void wasi_release_direct_range(size_t address, size_t size)
+ {
+     auto& free_ranges = wasi_free_direct_ranges();
+@@ -341,6 +373,8 @@ ErrorOr<size_t> PrimitiveStorage::Allocator::allocate_cage_range(size_t reservat
+             return Error::from_errno(ENOMEM);
+         return wasi_allocate_direct_range(align_up_to(reservation_size, wasi_page_size));
+     }
++    if (reservation_size == wasi_page_size)
++        return wasi_allocate_page();
+     // NB: The memory is accessible as soon as it is allocated, and committed memory is expected to read as zero.
+     auto* range = aligned_alloc(page_size(), reservation_size);
+     if (!range)
+@@ -468,6 +502,10 @@ void PrimitiveStorage::Allocator::release_cage_range(size_t offset, size_t size)
+         wasi_release_direct_range(offset, align_up_to(size, wasi_page_size));
+         return;
+     }
++    if (round_up_to_page(size) == wasi_page_size) {
++        wasi_free_pages().append(offset);
++        return;
++    }
+     ::free(bit_cast<void*>(static_cast<FlatPtr>(offset)));
+     return;
+ #endif

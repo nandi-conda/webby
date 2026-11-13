@@ -46,6 +46,6 @@ run = "depot --version && python3 -u wasm/ci/forge_wasm.py engine"
 # wasm-test-<something> can list themselves here for a release of their own.
 [[job]]
 name = "wasm-test"
-branches = ["wasm-test"]
+branches = ["wasm-test", "wasm-test-mem"]
 timeout = 3600
 run = "depot --version && WASM_TEST=1 WASM_TARGETS=webby-ui python3 -u wasm/ci/forge_wasm.py engine"

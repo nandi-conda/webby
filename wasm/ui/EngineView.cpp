@@ -39,6 +39,7 @@
 #include <LibCore/System.h>
 #include <LibCore/Timer.h>
 #include <LibFileSystem/FileSystem.h>
+#include <LibGC/MemoryPressure.h>
 #include <LibGC/Root.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/Font/FontDatabase.h>
@@ -582,6 +583,44 @@ EngineView::EngineView(int width, int height)
         m_message_prefix += chars[get_random_uniform(sizeof(chars) - 1)];
     m_message_prefix += ':';
     s_views.push_back(this);
+}
+
+EngineView::MemoryPressure EngineView::take_memory_pressure()
+{
+    static size_t s_reserve_releases = 0;
+    MemoryPressure result;
+    result.pressure = GC::take_memory_pressure();
+    auto releases = GC::memory_stats().reserve_releases;
+    result.critical = releases != s_reserve_releases;
+    s_reserve_releases = releases;
+    // Most of the memory is malloc's, not the GC's (13 tabs: 300 MiB of GC chunks in 3 GiB), and linear memory never
+    // shrinks: what is freed is used again before memory grows. So memory that still grows once it is past
+    // s_pressure_bytes means the pages awake need more than is left, and some of them should be put away.
+    static constexpr u64 s_pressure_bytes = 2816ull * MiB;
+    static u64 s_last_linear = 0;
+    auto linear = static_cast<u64>(__builtin_wasm_memory_size(0)) * 64 * KiB;
+    if (linear > s_last_linear && linear >= s_pressure_bytes)
+        result.pressure = true;
+    s_last_linear = linear;
+    result.pressure = result.pressure || result.critical;
+    return result;
+}
+
+void EngineView::collect_garbage()
+{
+    if (!s_event_loop)
+        return;
+    Web::Bindings::main_thread_vm().heap().collect_garbage();
+}
+
+std::string EngineView::memory_report()
+{
+    auto stats = GC::memory_stats();
+    auto mib = [](u64 bytes) { return bytes / MiB; };
+    auto line = ByteString::formatted("memory: linear {} MiB, GC chunks {} MiB (spare {} MiB, free blocks {} MiB), reserve released {}x, {} views",
+        mib(stats.linear_memory_bytes), mib(stats.chunk_bytes), mib(stats.spare_chunk_bytes), mib(stats.free_block_bytes),
+        stats.reserve_releases, s_views.size());
+    return std::string(line.characters(), line.length());
 }
 
 void EngineView::set_color_scheme(bool dark)

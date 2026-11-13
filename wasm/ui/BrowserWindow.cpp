@@ -99,6 +99,9 @@ BrowserWindow::BrowserWindow(QStringList const& urls)
     m_save_timer.setSingleShot(true);
     m_save_timer.setInterval(500);
     QObject::connect(&m_save_timer, &QTimer::timeout, this, [this] { save_tabs(); });
+    m_memory_timer.setInterval(500);
+    QObject::connect(&m_memory_timer, &QTimer::timeout, this, [this] { check_memory(); });
+    m_memory_timer.start();
     m_toast_timer.setSingleShot(true);
     m_toast_timer.setInterval(6000);
     QObject::connect(&m_toast_timer, &QTimer::timeout, this, [this] {
@@ -394,6 +397,70 @@ void BrowserWindow::save_session_on_quit()
     WebbyUI::Sessions::save(open_tabs(), {}, m_current);
 }
 
+// The engine's memory is one wasm32 linear memory (4 GiB at most) for every tab. When its GC runs short of room, the
+// background tab shown longest ago goes back to sleep (as restored tabs start: its URL and title stay, and it loads
+// again when it comes to the front) and the heap is collected; one every half second while the pressure lasts. When only the
+// front tab is left and even the GC's reserve went, that tab is stopped and loaded afresh, so one page that eats all
+// memory costs its own state, not the whole browser.
+void BrowserWindow::check_memory()
+{
+    static bool const log = qEnvironmentVariable("WEBBY_MEMORY_LOG") == u"1";
+    static int ticks = 0;
+    if (log && ++ticks % 60 == 1)
+        qInfo("webby: %s", WebbyUI::WebView::memory_report().c_str());
+    auto state = WebbyUI::WebView::take_memory_pressure();
+    if (!state.pressure)
+        return;
+    int oldest = -1;
+    for (int i = 0; i < int(m_tabs.size()); ++i) {
+        if (i == m_current || !m_tabs[i].view)
+            continue;
+        if (oldest < 0 || m_tabs[i].last_shown < m_tabs[oldest].last_shown)
+            oldest = i;
+    }
+    if (oldest >= 0) {
+        qInfo("webby: memory is running low, the background tab \"%s\" goes to sleep (%s)", qPrintable(m_tabs[oldest].url), WebbyUI::WebView::memory_report().c_str());
+        sleep_tab(oldest);
+        WebbyUI::WebView::collect_garbage();
+        return;
+    }
+    WebbyUI::WebView::collect_garbage();
+    if (state.critical && current() && current()->view) {
+        qWarning("webby: memory ran out with only the front tab awake: it is loaded again (%s)", WebbyUI::WebView::memory_report().c_str());
+        sleep_tab(m_current);
+        WebbyUI::WebView::collect_garbage();
+        activate_tab(m_current);
+        show_toast(QStringLiteral("This page used up webby's memory and was loaded again"));
+    }
+}
+
+bool BrowserWindow::sleep_tab(int index)
+{
+    if (index < 0 || index >= int(m_tabs.size()) || !m_tabs[index].view)
+        return false;
+    auto& tab = m_tabs[index];
+    auto* view = tab.view.get();
+    if (!view->url().empty())
+        tab.url = from_std(view->url());
+    forget_summary(view);
+    PasswordManager::the().detach(view);
+    std::erase_if(m_passkey_requests, [view](auto const& r) { return r.first == view; });
+    if (m_dialog_view == view) {
+        m_dialog_view = nullptr;
+        m_dialog.close(-1);
+    }
+    if (index == m_current) {
+        m_page_image = {};
+        m_page_frame.invalidate();
+    }
+    tab.pdf.reset();
+    tab.loading = false;
+    tab.view.reset();
+    m_save_timer.start();
+    update();
+    return true;
+}
+
 void BrowserWindow::close_tab(int index)
 {
     if (index < 0 || index >= int(m_tabs.size()))
@@ -448,6 +515,7 @@ void BrowserWindow::activate_tab(int index)
     bool panel_was = panel_showing();
     auto* panel_job_was = panel_job();
     m_current = index;
+    m_tabs[index].last_shown = Profile::now_ms();
     auto page = page_rect();
     if (!m_tabs[index].view)
         wake(m_tabs[index]);
