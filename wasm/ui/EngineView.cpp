@@ -1542,7 +1542,9 @@ uint8_t const* EngineView::paint()
         auto change = Compositing::compute_viewport_scroll_damage(*last->display_list, last->visual_context_tree, last->scroll_state,
             *display_list, visual_context_tree, scroll_state, viewport, { .canvases = canvases, .video_sinks = video_sinks });
         auto const dy = change.has_value() ? change->scroll.y() : 0.f;
-        if (change.has_value())
+        // Only a frame that scrolled tells what stays put: one that did not (a busy page's script, a caret) says
+        // nothing moved, and taking its answer would have the chrome move a fixed header with its next wheel.
+        if (change.has_value() && (change->scroll.x() != 0 || change->scroll.y() != 0))
             unscrolled = change->unscrolled_new;
         if (debug) {
             if (!change.has_value())
