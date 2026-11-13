@@ -68,12 +68,12 @@ if [[ " $targets " == *" webby-core "* ]]; then export ENABLE_GUI_TARGETS=ON; fi
 # a micromamba env, cached; ui/CMakeLists.txt finds it through WEBBY_QT_ENV.
 if [[ " $targets " == *" webby-ui "* || " $targets " == *" webby-core "* ]]; then
   export ENABLE_GUI_TARGETS=ON
-  qtenv=$C/qt2wasm-env-0.10.5
+  qtenv=$C/qt2wasm-env-0.10.6
   if [ ! -d "$qtenv/opt/qt6-wasi/wasi/lib" ]; then
     rm -rf "$qtenv"
     (cd /tmp && curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj bin/micromamba) \
       && /tmp/bin/micromamba create -y -q -r /tmp/mamba -p "$qtenv" -c conda-forge -c https://prefix.dev/nandi-testing \
-         'qt2wasm=0.10.5' qt6-wasi wit-bindgen wasm-tools wasi-preview1-adapter > /dev/null \
+         'qt2wasm=0.10.6' qt6-wasi wit-bindgen wasm-tools wasi-preview1-adapter > /dev/null \
       || fail "installing qt2wasm (Qt for WASI) failed"
   fi
   export WEBBY_QT_ENV=$qtenv
@@ -141,13 +141,13 @@ fi
 # CLI runs them with TCP (tools/wasi-run.py), latha-run runs latha:proc children. nandi-testing's packages, cached.
 if [[ " $targets " == *" webby-render "* || " $targets " == *" webby-core "* ]]; then
   # latha:proc shared memory and spawn-with-env (wasm/compat) need latha-gui 0.4, the cooperative threads (ui/coop)
-  # 0.8, host set-text-input (qt2wasm 0.10.5's input context: older hosts trap on QInputMethod::show) 0.9.2;
+  # 0.8, host set-text-input 0.9.3 (it sets LATHA_GUI_TEXT_INPUT, without which qt2wasm 0.10.6 never calls it);
   # a new version gets a new directory.
-  tools=$C/tools-env-latha-0.9.2
+  tools=$C/tools-env-latha-0.9.3
   if [ ! -x "$tools/bin/latha-run" ]; then
     (cd /tmp && curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj bin/micromamba) \
       && /tmp/bin/micromamba create -y -q -r /tmp/mamba -p "$tools" -c https://prefix.dev/nandi-testing -c conda-forge \
-         wasmtime wasm-tools 'latha-gui>=0.9.2' > /dev/null || fail "installing wasmtime, wasm-tools and latha-run failed"
+         wasmtime wasm-tools 'latha-gui>=0.9.3' > /dev/null || fail "installing wasmtime, wasm-tools and latha-run failed"
   fi
   adapter=$C/wasi_snapshot_preview1.command.wasm
   [ -s "$adapter" ] || curl -fsSL -o "$adapter" \
@@ -256,11 +256,11 @@ if [[ " $targets " == *" webby-ui "* ]] && [ -n "${LATHA_RUN:-}" ]; then
   # webby.wasm compiled ahead of time (x86-64-v3) for latha-gui's first run: it fetches <key>.cwasm.zst from this
   # release instead of compiling 200 MB of wasm (35-50 s). Needs latha-gui >= 0.6 (--precompile); the key has
   # latha-gui's host version in it, so each latha-gui release needs its own file (forge_wasm.py keeps a few).
-  pre=$C/tools-env-latha-0.9.2
+  pre=$C/tools-env-latha-0.9.3
   if [ ! -x "$pre/bin/latha-run" ]; then
     [ -x /tmp/bin/micromamba ] || (cd /tmp && curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj bin/micromamba)
     /tmp/bin/micromamba create -y -q -r /tmp/mamba -p "$pre" -c https://prefix.dev/nandi-testing -c conda-forge \
-      'latha-gui>=0.9.2' > /dev/null 2>&1 || echo "latha-gui 0.9.2 not installable yet: no precompiled webby.wasm"
+      'latha-gui>=0.9.3' > /dev/null 2>&1 || echo "latha-gui 0.9.3 not installable yet: no precompiled webby.wasm"
   fi
   if [ -x "$pre/bin/latha-run" ]; then
     "$pre/bin/latha-run" --precompile "$out" "$out/webby.wasm" > "$out/webby-precompile.log" 2>&1 \
