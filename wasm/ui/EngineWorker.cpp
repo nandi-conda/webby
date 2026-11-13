@@ -563,6 +563,9 @@ private:
         w.u8(vs.known).s32(vs.y).s32(vs.max_y);
         for (int i = 0; i < 4; ++i)
             w.s32(vs.fixed[i]);
+        w.u32(uint32_t(vs.inner.size()));
+        for (auto const& r : vs.inner)
+            w.s32(r[0]).s32(r[1]).s32(r[2]).s32(r[3]);
         w.u32(s.wheel_seq);
         w.u8(new_buffers);
         if (new_buffers)

@@ -475,6 +475,8 @@ struct EngineView::Impl {
     struct Scrollbars {
         Vector<Compositing::AsyncScrollbar> bars;
         Vector<Compositing::AsyncScrollNode> nodes;
+        // Where a wheel finds its scroller (EngineView::wheel scrolls inner scroll containers, as the Compositor would).
+        Vector<Compositing::WheelHitTestTarget> wheel_targets;
         Optional<Compositing::AccumulatedVisualContextTree> visual_context_tree;
         Compositing::ScrollStateSnapshot scroll_state;
         float device_pixels_per_css_pixel { 1 };
@@ -1471,11 +1473,13 @@ static void update_scrollbars(EngineView::Impl& impl, Compositing::DisplayList c
     if (!display_list) {
         state.bars.clear();
         state.nodes.clear();
+        state.wheel_targets.clear();
         state.visual_context_tree.clear();
     } else {
         auto async_state = Compositing::async_scrolling_state_from_display_list(*display_list);
         state.bars = move(async_state.scrollbars);
         state.nodes = move(async_state.scroll_nodes);
+        state.wheel_targets = move(async_state.wheel_hit_test_targets);
         state.device_pixels_per_css_pixel = static_cast<float>(async_state.device_pixels_per_css_pixel);
         state.visual_context_tree = *visual_context_tree;
         state.scroll_state = *scroll_state;
@@ -1748,6 +1752,22 @@ uint8_t const* EngineView::paint()
         vs.y = static_cast<int>(round(document.viewport_rect().y().to_double() * m_zoom));
         auto const* layout_node = document.layout_node(read);
         vs.max_y = layout_node ? max(0, static_cast<int>(Web::Painting::maximum_scroll_offset(*layout_node).y().to_double() * m_zoom)) : vs.y;
+        // Inner scroll containers a vertical wheel scrolls: the chrome leaves a wheel over one to the engine.
+        vs.inner.clear();
+        for (auto const& node : m_impl->scrollbars.nodes) {
+            if (node.is_viewport || !node.can_be_wheel_scrolled_vertically || node.stable_node_id.kind != Web::AsyncScrollNodeKind::Element)
+                continue;
+            auto* element = as_if<Web::DOM::Element>(Web::DOM::Node::from_unique_id(node.stable_node_id.node_id));
+            if (!element || &element->document() != &document)
+                continue;
+            auto css = element->bounding_client_rect_assuming_layout_clean();
+            auto x0 = max(0, static_cast<int>(floor(css.x().to_double() * m_zoom)));
+            auto y0 = max(0, static_cast<int>(floor(css.y().to_double() * m_zoom)));
+            auto x1 = min(viewport.width(), static_cast<int>(ceil((css.x() + css.width()).to_double() * m_zoom)));
+            auto y1 = min(viewport.height(), static_cast<int>(ceil((css.y() + css.height()).to_double() * m_zoom)));
+            if (x1 > x0 && y1 > y0)
+                vs.inner.push_back({ x0, y0, x1 - x0, y1 - y0 });
+        }
     }
     last = Impl::RasterizedFrame { display_list.release_nonnull(), move(visual_context_tree), scroll_state, &document };
     return m_impl->bitmap->scanline_u8(0);
@@ -1864,6 +1884,79 @@ void EngineView::mouse_leave()
         m_impl->page->handle_mouseleave();
 }
 
+// Scrolls the scroll containers under `pointer` (view pixels) by a wheel's CSS pixels, as Ladybird's Compositor routes a
+// wheel: the scroller of the last painted wheel target under the pointer, and when it cannot move that way (it is at
+// its end, or does not scroll on that axis), the ones around it unless it keeps its scrolls. What is left of the
+// delta is for the viewport.
+static Gfx::FloatPoint wheel_scroll_inner(EngineView::Impl& impl, Gfx::FloatPoint pointer, double dx, double dy)
+{
+    Gfx::FloatPoint left { static_cast<float>(dx), static_cast<float>(dy) };
+    auto const& state = impl.scrollbars;
+    if (!state.visual_context_tree.has_value())
+        return left;
+    auto const& tree = *state.visual_context_tree;
+    Optional<Compositing::SpatialNodeIndex> target;
+    Optional<u32> best;
+    for (auto const& candidate : state.wheel_targets) {
+        if (best.has_value() && candidate.paint_order_index < *best)
+            continue;
+        if (!tree.context_is_valid(candidate.context))
+            continue;
+        auto position = tree.transform_point_for_hit_test(candidate.context, pointer, state.scroll_state);
+        if (!position.has_value() || !candidate.rect.contains(*position))
+            continue;
+        best = candidate.paint_order_index;
+        target = candidate.target_scroll_node_index;
+    }
+    auto node_at = [&](Compositing::SpatialNodeIndex index) -> Compositing::AsyncScrollNode const* {
+        for (auto const& node : state.nodes) {
+            if (node.scroll_node_index == index)
+                return &node;
+        }
+        return nullptr;
+    };
+    bool want_x = dx != 0, want_y = dy != 0;
+    auto const* node = target.has_value() ? node_at(*target) : nullptr;
+    for (int depth = 0; node && !node->is_viewport && (want_x || want_y) && depth < 64; ++depth) {
+        Web::DOM::Element* element = nullptr;
+        if (node->stable_node_id.kind == Web::AsyncScrollNodeKind::Element)
+            element = as_if<Web::DOM::Element>(Web::DOM::Node::from_unique_id(node->stable_node_id.node_id));
+        if (element && element->document().window()) {
+            // An element's scroll makes a promise, which needs a realm to run in (none is current outside a task).
+            Web::HTML::TemporaryExecutionContext context(Web::HTML::relevant_realm(*element));
+            if (want_y && node->can_be_wheel_scrolled_vertically) {
+                auto top = element->scroll_top();
+                auto end = static_cast<double>(element->scroll_height()) - static_cast<double>(element->client_height());
+                if ((dy > 0 && top < end - 0.5) || (dy < 0 && top > 0.5)) {
+                    element->set_scroll_top(top + dy);
+                    want_y = false;
+                    left.set_y(0);
+                }
+            }
+            if (want_x && node->can_be_wheel_scrolled_horizontally) {
+                // Tried rather than worked out: a right-to-left box scrolls to negative offsets.
+                auto start = element->scroll_left();
+                element->set_scroll_left(start + dx);
+                if (element->scroll_left() != start) {
+                    want_x = false;
+                    left.set_x(0);
+                }
+            }
+        }
+        // overscroll-behavior: a scroller that keeps its scrolls takes the rest too.
+        if (want_y && !node->chains_scroll_to_ancestors_vertically) {
+            want_y = false;
+            left.set_y(0);
+        }
+        if (want_x && !node->chains_scroll_to_ancestors_horizontally) {
+            want_x = false;
+            left.set_x(0);
+        }
+        node = node->parent_scroll_node_index.has_value() ? node_at(*node->parent_scroll_node_index) : nullptr;
+    }
+    return left;
+}
+
 void EngineView::wheel(int x, int y, double dx, double dy, unsigned modifiers)
 {
     if (!m_impl->page)
@@ -1872,9 +1965,13 @@ void EngineView::wheel(int x, int y, double dx, double dy, unsigned modifiers)
         Web::wheel_tick_120ths_from_pixel_delta(dx, Web::WheelDeltaPrecision::Discrete),
         Web::wheel_tick_120ths_from_pixel_delta(dy, Web::WheelDeltaPrecision::Discrete));
     // Ladybird scrolls by a wheel event in its Compositor process, and there is none here: unless the page cancelled
-    // the event, scroll the viewport on this thread. (Inner scroll containers do not scroll by the wheel yet.)
-    if (result != Web::EventResult::Cancelled && m_impl->document && m_impl->document->window())
-        m_impl->document->window()->scroll_by(dx / m_zoom, dy / m_zoom, nullptr);
+    // the event, scroll on this thread the innermost scroll container under the pointer that can move that way, then
+    // the ones around it, then the viewport.
+    if (result != Web::EventResult::Cancelled && m_impl->document && m_impl->document->window()) {
+        auto left = wheel_scroll_inner(*m_impl, { static_cast<float>(x), static_cast<float>(y) }, dx / m_zoom, dy / m_zoom);
+        if (left.x() != 0 || left.y() != 0)
+            m_impl->document->window()->scroll_by(left.x(), left.y(), nullptr);
+    }
     did_request_frame();
 }
 

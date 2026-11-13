@@ -81,6 +81,8 @@ struct ViewportScroll {
     int y { 0 };
     int max_y { 0 };
     std::array<int, 4> fixed {};
+    // Inner scroll containers a vertical wheel scrolls (x, y, width, height): a wheel over one is the engine's to route.
+    std::vector<std::array<int, 4>> inner;
 };
 
 // The viewport's scrollbars, as of the last paint(), for the chrome to draw over the page: in Ladybird the

@@ -521,6 +521,9 @@ struct WebViewAccess {
             f.scroll.max_y = in.s32();
             for (int i = 0; i < 4; ++i)
                 f.scroll.fixed[i] = in.s32();
+            f.scroll.inner.resize(in.u32());
+            for (auto& r : f.scroll.inner)
+                r = { in.s32(), in.s32(), in.s32(), in.s32() };
             f.wheel_seq = in.u32();
             if (in.u8()) {
                 auto size = in.u64();
@@ -932,7 +935,11 @@ void WebView::wheel(int x, int y, double dx, double dy, unsigned modifiers)
     WebViewAccess::send(*this, w);
     // A plain vertical wheel scrolls the viewport (zoom, horizontal and modified wheels wait for the engine).
     int pixels = int(std::lround(dy));
-    if (modifiers == 0 && dx == 0 && pixels != 0 && impl.scroll.known && impl.shown >= 0
+    // Over an inner scroll container the engine scrolls that instead (or the viewport once it is at its end).
+    bool over_inner = std::any_of(impl.scroll.inner.begin(), impl.scroll.inner.end(), [&](auto const& r) {
+        return x >= r[0] && y >= r[1] && x < r[0] + r[2] && y < r[1] + r[3];
+    });
+    if (modifiers == 0 && dx == 0 && pixels != 0 && impl.scroll.known && impl.shown >= 0 && !over_inner
         && ui_scrolling()) {
         impl.unscrolled_wheels.push_back({ seq, pixels });
         m_needs_paint = true;
