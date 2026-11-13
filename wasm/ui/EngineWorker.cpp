@@ -35,6 +35,9 @@ struct ServedView {
     bool dirty { true };
     // A frame the chrome has not taken yet: no other one until it has (FrameDone).
     bool in_flight { false };
+    // A paint whose frame was not sent (still render-blocked): the next frame's change is not relative to the last
+    // sent one, so it goes as a whole frame.
+    bool unsent_paint { false };
     // The two buffers frames go through, mapped here; the chrome maps them too.
     uint8_t* buffers[2] { nullptr, nullptr };
     size_t buffer_size { 0 };
@@ -439,8 +442,10 @@ private:
         if (!pixels)
             return;
         // Still render-blocked (its style sheets loading): the last frame stays; the engine asks again.
-        if (v.needs_paint() && !v.last_paint_change().known && s.frame > 0)
+        if (v.needs_paint() && !v.last_paint_change().known && s.frame > 0) {
+            s.unsent_paint = true;
             return;
+        }
         int width = v.width(), height = v.height();
         size_t bytes = size_t(width) * size_t(height) * 4;
         std::vector<uint32_t> handles;
@@ -470,7 +475,11 @@ private:
             s.next_buffer = 0;
             new_buffers = true;
         }
-        auto const& change = v.last_paint_change();
+        auto change = v.last_paint_change();
+        if (s.unsent_paint) {
+            s.unsent_paint = false;
+            change = {};
+        }
         auto frame = ++s.frame;
         s.changes[frame] = change;
         while (!s.changes.empty() && s.changes.begin()->first + 2 < frame)
