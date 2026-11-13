@@ -155,6 +155,24 @@ index 46d29894..22a4b0ef 100644
  #endif
  
      pthread_attr_t attr;
+diff --git a/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp b/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp
+index f0bf76ed..2b41e51c 100644
+--- a/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp
++++ b/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp
+@@ -172,6 +172,13 @@ void EventLoop::process()
+     if (execution_paused())
+         return;
+ 
++    // NB: webby's wasm build waits for a server in the same module (a synchronous IPC call from script, such as
++    //     MediaSource.isTypeSupported) by running the event loop for a round. Tasks must wait until that script is done.
++    if (!vm().execution_context_stack().is_empty()) {
++        schedule();
++        return;
++    }
++
+     if (Core::StatsLog::the())
+         begin_rendering_pending_task();
+     ScopeGuard pending_task = [] {
 diff --git a/Services/AudioServer/PlatformAudio.cpp b/Services/AudioServer/PlatformAudio.cpp
 index 87c0cdac..82834fb8 100644
 --- a/Services/AudioServer/PlatformAudio.cpp
