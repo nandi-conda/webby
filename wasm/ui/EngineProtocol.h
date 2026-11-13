@@ -52,6 +52,7 @@ enum class ToEngine : uint8_t {
     Find,           // seq, view, query, u8 case sensitive -> u32 index, s32 total
     FindNext,       // seq, view -> u32 index, s32 total
     FindPrevious,   // seq, view -> u32 index, s32 total
+    HasGl,          // seq -> u8: whether latha-gui's GL works in the worker (GlProbe.h)
 };
 
 // The engine to the chrome.

@@ -12,6 +12,7 @@
 #include "EngineProtocol.h"
 #include "EngineView.h"
 #include "ProcChannel.h"
+#include "GlProbe.h"
 #include "WebAuthn.h"
 
 #include <algorithm>
@@ -62,6 +63,34 @@ Worker* s_worker;
 bool s_tried_worker;
 void deliver_now();
 
+Worker* worker();
+
+bool worker_has_gl()
+{
+    auto* wk = s_worker;
+    auto seq = wk->next_seq++;
+    Writer w { uint8_t(ToEngine::HasGl) };
+    w.u64(seq);
+    Proc::send(wk->channel, w.data());
+    // The worker answers before any page runs; its first GL context takes a moment on some drivers.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    for (;;) {
+        auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+        if (left <= 0)
+            return false;
+        Proc::Message m;
+        auto r = Proc::receive(wk->channel, int(left), m);
+        if (r == Proc::Received::Closed)
+            return false;
+        if (r == Proc::Received::Timeout)
+            continue;
+        Reader in(m.data.data(), m.data.size());
+        if (ToChrome(in.u8()) == ToChrome::Reply && in.u64() == seq)
+            return in.u8();
+        wk->deferred.push_back(std::move(m));
+    }
+}
+
 Worker* worker()
 {
     if (!s_tried_worker) {
@@ -78,6 +107,16 @@ Worker* worker()
                 Writer w { uint8_t(ToEngine::Hello) };
                 w.u8(s_prefers_dark);
                 Proc::send(channel, w.data());
+                // WebGL needs latha-gui's GL in the worker. A latha-gui that only gives it to the app's first store (or
+                // a driver that has no display for a second thread) leaves the worker without: then the engine runs
+                // here, where it has GL, rather than without WebGL. gl_works() here also sets GL up on the main thread.
+                if (gl_works() && !worker_has_gl()) {
+                    fprintf(stderr, "webby: the engine worker %u has no GL: the engine runs here\n", pid);
+                    Proc::close(channel);
+                    delete s_worker;
+                    s_worker = nullptr;
+                    return nullptr;
+                }
                 // The chrome's own requests (sync, Summarize) still go through a RequestServer of its own.
                 EngineView::initialize_for_chrome();
                 // What the worker sends wakes the host's loop (latha:proc rings the app), which calls into the app:

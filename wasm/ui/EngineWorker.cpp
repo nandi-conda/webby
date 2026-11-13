@@ -9,6 +9,7 @@
 #include "EngineWorker.h"
 #include "EngineProtocol.h"
 #include "EngineView.h"
+#include "GlProbe.h"
 #include "ProcChannel.h"
 
 #include <algorithm>
@@ -276,6 +277,12 @@ private:
         case ToEngine::CollectGarbage:
             EngineView::collect_garbage();
             return;
+        case ToEngine::HasGl: {
+            Writer w { uint8_t(ToChrome::Reply) };
+            w.u64(in.u64()).u8(gl_works());
+            send(w);
+            return;
+        }
         case ToEngine::Create: {
             auto id = in.u32();
             int width = in.s32(), height = in.s32();
