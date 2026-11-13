@@ -115,7 +115,7 @@ bool BrowserWindow::show_password_bar() const
 
 QRectF BrowserWindow::password_bar_rect() const
 {
-    qreal top = tab_strip_height + toolbar_height + (show_bookmarks_bar() ? bookmarks_bar_height : 0);
+    qreal top = toolbar_top() + toolbar_height + (show_bookmarks_bar() ? bookmarks_bar_height : 0);
     return { 0, top, qreal(width()), qreal(password_bar_height) };
 }
 

@@ -39,6 +39,12 @@ public:
     static constexpr int toolbar_height = 44;
     static constexpr int bookmarks_bar_height = 30;
     static constexpr int password_bar_height = 40;
+    // Vertical tabs (tabs.json "vertical", as the Nim strip's): the tabs in a sidebar this wide, left of the page and
+    // under the toolbar, which then sits at the window's top.
+    static constexpr int sidebar_width = 220;
+    bool vertical_tabs() const;
+    // Where the toolbar starts: under the tab strip, or at the top with vertical tabs.
+    int toolbar_top() const;
     // The tabs, the toolbar and (when it is on and has bookmarks) the bookmarks bar.
     int chrome_height() const;
 
@@ -73,6 +79,8 @@ private:
         qint64 last_shown { 0 }; // ms since the epoch it was last the front tab, so memory pressure sleeps the oldest first
         // While the view's page is a PDF: the viewer, shown in place of the page (PdfView.h).
         std::unique_ptr<WebbyUI::PdfView> pdf {};
+        // Pinned tabs are the first ones (pinned_count()), shown as small tiles, saved as open_tabs.json "pinned".
+        bool pinned { false };
     };
 
     enum class Hit {
@@ -141,6 +149,15 @@ private:
     void open_more_menu();
     void show_toast(QString const& text);
     void close_tab(int index);
+    // The strip's right-click menu, for tab `index` or (-1) for the strip's empty space, as the Nim strip's.
+    void open_tab_menu(QPointF at, int index);
+    void set_pinned(int index, bool pinned);
+    void duplicate_tab(int index);
+    // Closes the unpinned tabs other than `index` (only those after it with `after_only`).
+    void close_other_tabs(int index, bool after_only);
+    void set_vertical_tabs(bool);
+    int pinned_count() const;
+    QString site_letter(int index) const;
     void activate_tab(int index);
     Tab* current();
     void sync_from_view();
@@ -206,6 +223,14 @@ private:
     QRectF tab_rect(int index) const;
     QRectF tab_close_rect(int index) const;
     QRectF new_tab_rect() const;
+    // The vertical tabs' sidebar (empty without them), and whether `p` is on the strip or sidebar.
+    QRect sidebar_rect() const;
+    bool in_tab_area(QPointF p) const;
+    qreal sidebar_content_height() const;
+    void clamp_sidebar_scroll();
+    void scroll_tab_into_view(int index);
+    void paint_tab(QPainter&, int index, QRectF r, bool vertical);
+    void paint_pinned_tile(QPainter&, int index, QRectF r);
     QRectF button_rect(int index) const;
     QRectF address_rect() const;
     QRectF star_rect() const;
@@ -286,10 +311,11 @@ private:
     QString m_find_text;
     WebbyUI::WebView::FindResult m_find_result;
 
-    // Dragging a tab along the strip.
+    // Dragging a tab along the strip (or the sidebar, or the pinned tiles' grid).
     bool m_dragging_tab { false };
-    qreal m_press_x { 0 };
-    qreal m_drag_offset { 0 };
+    QPointF m_press_pos;
+    QPointF m_drag_offset;
+    qreal m_sidebar_scroll { 0 }; // how far the vertical tabs are scrolled
 
     WebbyUI::PageFrame m_page_frame;
     QImage m_page_image; // the frame on screen (the view's own pixels, valid until its next paint)

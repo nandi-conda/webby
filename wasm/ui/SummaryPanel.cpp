@@ -155,7 +155,8 @@ QRect BrowserWindow::panel_rect() const
     if (width() >= 720)
         return { width() - panel_width, top, panel_width, h };
     int page = h / 2;
-    return { 0, top + page, qMax(1, width()), qMax(1, h - page) };
+    int left = vertical_tabs() ? sidebar_width : 0;
+    return { left, top + page, qMax(1, width() - left), qMax(1, h - page) };
 }
 
 void BrowserWindow::relayout_panel()

@@ -53,6 +53,24 @@ constexpr qint64 age_steps[] = { 5 * 60, 20 * 60, 3600, 3 * 3600, 12 * 3600 };
 constexpr int max_tab_width = 220;
 constexpr int min_tab_width = 72;
 constexpr int button_size = 32;
+// Pinned tabs: tiles this wide in the strip; in the sidebar, rows of this many tiles this tall (the Nim strip's).
+constexpr int pinned_tile_width = 40;
+constexpr int sidebar_tiles_per_row = 5;
+constexpr int sidebar_tile_height = 36;
+constexpr int sidebar_row_height = 34;
+
+// A pinned tile without an icon shows its site's letter on one of eight colors, the same for a site every time (the
+// Nim strip's badgeColor and its .webby-badge-N colors).
+QColor badge_color(QString const& host)
+{
+    static QColor const colors[] = { QColor(0xc5, 0x22, 0x1f), QColor(0xb0, 0x60, 0x00), QColor(0x13, 0x73, 0x33),
+        QColor(0x19, 0x67, 0xd2), QColor(0x84, 0x30, 0xce), QColor(0x00, 0x7b, 0x83), QColor(0xc2, 0x18, 0x5b),
+        QColor(0x5f, 0x63, 0x68) };
+    quint32 h = 0;
+    for (auto c : host.toLower().toUtf8())
+        h = h * 31 + quint32(quint8(c));
+    return colors[h % 8];
+}
 
 unsigned web_button(Qt::MouseButton button)
 {
@@ -118,9 +136,12 @@ BrowserWindow::BrowserWindow(QStringList const& urls)
     // With no URLs given, last time's tabs come back, asleep until they come to the front (as in the Nim front end).
     int active = 0;
     if (urls.isEmpty() && qEnvironmentVariable("WEBBY_RESTORE_TABS") != u"0" && Profile::ui_setting(QStringLiteral("restoreTabs")).toBool(true)) {
-        auto saved = Profile::read_open_tabs(active);
-        for (auto const& tab : saved)
+        int pinned = 0;
+        auto saved = Profile::read_open_tabs(active, pinned);
+        for (auto const& tab : saved) {
             new_tab(tab.url, -1, true, tab.title, tab.created);
+            m_tabs.back().pinned = int(m_tabs.size()) <= pinned;
+        }
     }
     bool blank = urls.isEmpty() && m_tabs.empty();
     if (blank)
@@ -170,9 +191,19 @@ void BrowserWindow::refresh_sync_pages()
     }
 }
 
+bool BrowserWindow::vertical_tabs() const
+{
+    return Profile::vertical_tabs();
+}
+
+int BrowserWindow::toolbar_top() const
+{
+    return vertical_tabs() ? 0 : tab_strip_height;
+}
+
 int BrowserWindow::chrome_height() const
 {
-    return tab_strip_height + toolbar_height + (show_bookmarks_bar() ? bookmarks_bar_height : 0) + (show_password_bar() ? password_bar_height : 0);
+    return toolbar_top() + toolbar_height + (show_bookmarks_bar() ? bookmarks_bar_height : 0) + (show_password_bar() ? password_bar_height : 0);
 }
 
 bool BrowserWindow::show_bookmarks_bar() const
@@ -192,6 +223,8 @@ void BrowserWindow::new_tab(QString const& url, int at, bool sleeping, QString c
 {
     if (at < 0 || at > int(m_tabs.size()))
         at = int(m_tabs.size());
+    // A new tab is never among the pinned ones.
+    at = qMax(at, pinned_count());
     if (at <= m_current)
         ++m_current;
     m_tabs.insert(m_tabs.begin() + at, Tab { nullptr, title.isEmpty() ? (url.isEmpty() ? QStringLiteral("New Tab") : url) : title, url, false, created > 0 ? created : Profile::now_seconds() });
@@ -329,7 +362,7 @@ void BrowserWindow::save_tabs()
     QList<Profile::SavedTab> tabs;
     for (auto const& tab : m_tabs)
         tabs.append({ tab.title, tab.url, tab.created });
-    Profile::write_open_tabs(tabs, m_current);
+    Profile::write_open_tabs(tabs, m_current, pinned_count());
     // Other devices see them under Tabs from other devices.
     QList<WebbyUI::Sync::DeviceTab> shared;
     for (auto const& tab : m_tabs)
@@ -412,10 +445,11 @@ void BrowserWindow::check_memory()
     if (!state.pressure)
         return;
     int oldest = -1;
+    // Pinned tabs sleep last (the Nim strip never discards them).
     for (int i = 0; i < int(m_tabs.size()); ++i) {
         if (i == m_current || !m_tabs[i].view)
             continue;
-        if (oldest < 0 || m_tabs[i].last_shown < m_tabs[oldest].last_shown)
+        if (oldest < 0 || std::pair(m_tabs[i].pinned, m_tabs[i].last_shown) < std::pair(m_tabs[oldest].pinned, m_tabs[oldest].last_shown))
             oldest = i;
     }
     if (oldest >= 0) {
@@ -516,6 +550,7 @@ void BrowserWindow::activate_tab(int index)
     auto* panel_job_was = panel_job();
     m_current = index;
     m_tabs[index].last_shown = Profile::now_ms();
+    scroll_tab_into_view(index);
     auto page = page_rect();
     if (!m_tabs[index].view)
         wake(m_tabs[index]);
@@ -673,35 +708,116 @@ void BrowserWindow::focus_address(bool focus)
 
 // Geometry, in logical pixels.
 
+int BrowserWindow::pinned_count() const
+{
+    int n = 0;
+    while (n < int(m_tabs.size()) && m_tabs[n].pinned)
+        ++n;
+    return n;
+}
+
+QRect BrowserWindow::sidebar_rect() const
+{
+    if (!vertical_tabs())
+        return {};
+    int top = chrome_height();
+    return { 0, top, sidebar_width, qMax(1, height() - top) };
+}
+
+bool BrowserWindow::in_tab_area(QPointF p) const
+{
+    if (vertical_tabs())
+        return sidebar_rect().contains(p.toPoint());
+    return p.y() >= 0 && p.y() < tab_strip_height;
+}
+
+// Pinned tiles first (in the strip, a row of them; in the sidebar, rows of five), then the other tabs.
 QRectF BrowserWindow::tab_rect(int index) const
 {
-    qreal available = width() - 8 - 40;
-    qreal w = m_tabs.empty() ? max_tab_width : qBound<qreal>(min_tab_width, available / m_tabs.size(), max_tab_width);
-    return { 8 + index * w, 6, w - 2, qreal(tab_strip_height - 6) };
+    int pinned = pinned_count();
+    if (vertical_tabs()) {
+        qreal top = chrome_height() + 6 - m_sidebar_scroll;
+        qreal tile_width = (sidebar_width - 12) / qreal(sidebar_tiles_per_row);
+        if (index < pinned)
+            return { 6 + (index % sidebar_tiles_per_row) * tile_width, top + (index / sidebar_tiles_per_row) * sidebar_tile_height, tile_width, qreal(sidebar_tile_height - 2) };
+        int tile_rows = (pinned + sidebar_tiles_per_row - 1) / sidebar_tiles_per_row;
+        qreal rows_top = top + tile_rows * sidebar_tile_height + (tile_rows ? 4 : 0);
+        return { 6, rows_top + (index - pinned) * sidebar_row_height, sidebar_width - 12.0, qreal(sidebar_row_height - 2) };
+    }
+    if (index < pinned)
+        return { 8.0 + index * (pinned_tile_width + 2), 6, qreal(pinned_tile_width), qreal(tab_strip_height - 6) };
+    qreal left = 8 + pinned * (pinned_tile_width + 2) + (pinned ? 4 : 0);
+    int others = int(m_tabs.size()) - pinned;
+    qreal available = width() - left - 40;
+    qreal w = others <= 0 ? max_tab_width : qBound<qreal>(min_tab_width, available / others, max_tab_width);
+    return { left + (index - pinned) * w, 6, w - 2, qreal(tab_strip_height - 6) };
 }
 
 QRectF BrowserWindow::tab_close_rect(int index) const
 {
+    if (index >= 0 && index < int(m_tabs.size()) && m_tabs[index].pinned)
+        return {}; // closed from the menu or with a middle click, as in the Nim strip
     auto r = tab_rect(index);
+    if (vertical_tabs())
+        return { r.right() - 26, r.top() + (r.height() - 20) / 2, 20, 20 };
     return { r.right() - 26, r.top() + (r.height() - 18) / 2, 18, 18 };
 }
 
 QRectF BrowserWindow::new_tab_rect() const
 {
     auto r = tab_rect(int(m_tabs.size()));
+    if (vertical_tabs())
+        return r;
     return { r.left() + 4, r.top() + (r.height() - 26) / 2, 26, 26 };
+}
+
+qreal BrowserWindow::sidebar_content_height() const
+{
+    // From the sidebar's top to under the New tab row, unscrolled.
+    return new_tab_rect().bottom() + m_sidebar_scroll - chrome_height() + 8;
+}
+
+void BrowserWindow::clamp_sidebar_scroll()
+{
+    qreal most = vertical_tabs() ? qMax<qreal>(0, sidebar_content_height() - sidebar_rect().height()) : 0;
+    m_sidebar_scroll = qBound<qreal>(0, m_sidebar_scroll, most);
+}
+
+void BrowserWindow::scroll_tab_into_view(int index)
+{
+    if (!vertical_tabs() || index < 0)
+        return;
+    auto bar = sidebar_rect();
+    auto r = tab_rect(index);
+    if (r.top() < bar.top())
+        m_sidebar_scroll -= bar.top() - r.top() + 6;
+    else if (r.bottom() > bar.bottom())
+        m_sidebar_scroll += r.bottom() - bar.bottom() + 6;
+    clamp_sidebar_scroll();
+}
+
+QString BrowserWindow::site_letter(int index) const
+{
+    auto host = QUrl(m_tabs[index].url).host().toLower();
+    if (host.startsWith(u"www."))
+        host = host.mid(4);
+    for (auto c : host) {
+        if (c.isLetterOrNumber())
+            return QString(c).toUpper();
+    }
+    return {};
 }
 
 QRectF BrowserWindow::button_rect(int index) const
 {
-    return { 8.0 + index * (button_size + 4), tab_strip_height + (toolbar_height - button_size) / 2.0, qreal(button_size), qreal(button_size) };
+    return { 8.0 + index * (button_size + 4), toolbar_top() + (toolbar_height - button_size) / 2.0, qreal(button_size), qreal(button_size) };
 }
 
 QRectF BrowserWindow::address_rect() const
 {
     auto left = button_rect(3).left() + 4;
     qreal right = toolbar_button_rect(ButtonCount - 1).left() - 6;
-    return { left, tab_strip_height + 6.0, qMax<qreal>(80, right - left), toolbar_height - 12.0 };
+    return { left, toolbar_top() + 6.0, qMax<qreal>(80, right - left), toolbar_height - 12.0 };
 }
 
 QRectF BrowserWindow::star_rect() const
@@ -721,7 +837,7 @@ QRectF BrowserWindow::bookmark_rect(int index) const
     for (int i = 0; i < int(items.size()); ++i) {
         qreal w = qMin<qreal>(180, metrics.horizontalAdvance(items[i].label()) + 20 + (items[i].folder ? 14 : 0));
         if (i == index)
-            return { x, qreal(tab_strip_height + toolbar_height + 3), w, bookmarks_bar_height - 6.0 };
+            return { x, qreal(toolbar_top() + toolbar_height + 3), w, bookmarks_bar_height - 6.0 };
         x += w + 4;
     }
     return {};
@@ -735,11 +851,12 @@ QRectF BrowserWindow::suggestion_rect(int index) const
 
 QRect BrowserWindow::page_rect() const
 {
-    QRect page { 0, chrome_height(), qMax(1, width()), qMax(1, height() - chrome_height()) };
+    int left = vertical_tabs() ? sidebar_width : 0;
+    QRect page { left, chrome_height(), qMax(1, width() - left), qMax(1, height() - chrome_height()) };
     // The Summarize panel takes the right (or, in a narrow window, the lower) part.
     if (auto panel = panel_rect(); !panel.isEmpty()) {
-        if (panel.left() > 0)
-            page.setWidth(qMax(1, panel.left()));
+        if (panel.top() == page.top())
+            page.setWidth(qMax(1, panel.left() - left));
         else
             page.setHeight(qMax(1, panel.top() - page.top()));
     }
@@ -752,14 +869,17 @@ BrowserWindow::HitResult BrowserWindow::hit_test(QPointF p) const
         if (suggestion_rect(i).contains(p))
             return { Hit::Suggestion, i };
     }
-    for (int i = 0; i < int(m_tabs.size()); ++i) {
-        if (tab_close_rect(i).contains(p))
-            return { Hit::TabClose, i };
-        if (tab_rect(i).contains(p))
-            return { Hit::Tab, i };
+    // Tabs scrolled out of the sidebar are under the toolbar, not there.
+    if (!vertical_tabs() || sidebar_rect().contains(p.toPoint())) {
+        for (int i = 0; i < int(m_tabs.size()); ++i) {
+            if (tab_close_rect(i).contains(p))
+                return { Hit::TabClose, i };
+            if (tab_rect(i).contains(p))
+                return { Hit::Tab, i };
+        }
+        if (new_tab_rect().contains(p))
+            return { Hit::NewTab };
     }
-    if (new_tab_rect().contains(p))
-        return { Hit::NewTab };
     if (button_rect(0).contains(p))
         return { Hit::Back };
     if (button_rect(1).contains(p))
@@ -831,76 +951,172 @@ void BrowserWindow::paintEvent(QPaintEvent* event)
 
 void BrowserWindow::paint_tabs(QPainter& p)
 {
-    p.fillRect(QRectF(0, 0, width(), tab_strip_height), strip_color);
+    bool vertical = vertical_tabs();
+    QRectF area = vertical ? QRectF(sidebar_rect()) : QRectF(0, 0, width(), tab_strip_height);
+    if (!needs_paint(area))
+        return;
+    p.fillRect(area, strip_color);
+    p.save();
+    p.setClipRect(area);
+    if (vertical) {
+        p.setPen(QPen(WebbyUI::theme().border, 1));
+        p.drawLine(QPointF(area.right() + 0.5, area.top()), QPointF(area.right() + 0.5, area.bottom() + 1));
+    }
     QFont font = p.font();
     font.setPixelSize(13);
     p.setFont(font);
-    QFontMetricsF metrics(font);
-    auto now = Profile::now_seconds();
-    for (int i = 0; i < int(m_tabs.size()); ++i) {
-        auto r = tab_rect(i);
-        if (m_dragging_tab && i == m_current)
-            r.translate(m_drag_offset, 0);
-        if (!needs_paint(r))
-            continue;
-        bool active = i == m_current;
-        bool hovered = m_hover.tab == i && (m_hover.hit == Hit::Tab || m_hover.hit == Hit::TabClose);
-        if (active || hovered) {
-            QPainterPath path;
+    // The dragged tab last, over its neighbours.
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int i = 0; i < int(m_tabs.size()); ++i) {
+            bool dragged = m_dragging_tab && i == m_current;
+            if (dragged != (pass == 1))
+                continue;
+            auto r = tab_rect(i);
+            if (dragged)
+                r.translate(m_drag_offset);
+            if (!needs_paint(r) || !r.intersects(area))
+                continue;
+            if (m_tabs[i].pinned)
+                paint_pinned_tile(p, i, r);
+            else
+                paint_tab(p, i, r, vertical);
+        }
+    }
+    auto n = new_tab_rect();
+    if (needs_paint(n)) {
+        if (vertical) {
+            // A "+ New tab" row under the tabs.
+            if (m_hover.hit == Hit::NewTab) {
+                QPainterPath path;
+                path.addRoundedRect(n, 6, 6);
+                p.fillPath(path, tab_hover_color);
+            }
+            p.setPen(QPen(dim_text_color, 1.6));
+            QPointF c(n.left() + 18, n.center().y());
+            p.drawLine(QPointF(c.x() - 6, c.y()), QPointF(c.x() + 6, c.y()));
+            p.drawLine(QPointF(c.x(), c.y() - 6), QPointF(c.x(), c.y() + 6));
+            p.setPen(dim_text_color);
+            p.drawText(n.adjusted(36, 0, -8, 0), Qt::AlignVCenter | Qt::AlignLeft, QStringLiteral("New tab"));
+        } else {
+            if (m_hover.hit == Hit::NewTab) {
+                p.setPen(Qt::NoPen);
+                p.setBrush(button_hover_color);
+                p.drawEllipse(n);
+            }
+            p.setPen(QPen(dim_text_color, 1.6));
+            auto c = n.center();
+            p.drawLine(QPointF(c.x() - 6, c.y()), QPointF(c.x() + 6, c.y()));
+            p.drawLine(QPointF(c.x(), c.y() - 6), QPointF(c.x(), c.y() + 6));
+        }
+    }
+    p.restore();
+}
+
+void BrowserWindow::paint_tab(QPainter& p, int i, QRectF r, bool vertical)
+{
+    QFontMetricsF metrics(p.font());
+    bool active = i == m_current;
+    bool hovered = m_hover.tab == i && (m_hover.hit == Hit::Tab || m_hover.hit == Hit::TabClose);
+    if (active || hovered) {
+        QPainterPath path;
+        if (vertical) {
+            // A row of the sidebar: flat, rounded all round.
+            path.addRoundedRect(r, 6, 6);
+            p.fillPath(path, active ? tab_color : tab_hover_color);
+        } else {
+            // A tab joined to the toolbar under it.
             path.addRoundedRect(r.adjusted(0, 0, 0, 8), 8, 8);
             p.save();
             p.setClipRect(QRectF(0, 0, width(), tab_strip_height));
             p.fillPath(path, active ? tab_color : tab_hover_color);
             p.restore();
         }
-        auto text_rect = r.adjusted(12, 0, -30, 0);
-        auto title = m_tabs[i].loading ? QStringLiteral("Loading…") : m_tabs[i].title;
-        // A young tab gets a small orange dot before its close button, fainter at each step (the Nim strip's).
-        int step = -1;
-        for (int k = 0; k < int(std::size(age_steps)) && Profile::age_colors(); ++k) {
-            if (m_tabs[i].created > 0 && now - m_tabs[i].created < age_steps[k]) {
-                step = k;
-                break;
-            }
-        }
-        if (step >= 0) {
-            text_rect.adjust(0, 0, -10, 0);
-            QColor dot = age_color;
-            dot.setAlphaF(1.0 - step * 0.18);
-            p.setPen(Qt::NoPen);
-            p.setBrush(dot);
-            p.drawEllipse(QPointF(r.right() - 34, r.center().y()), 3, 3);
-        }
-        p.setPen(active ? text_color : dim_text_color);
-        p.drawText(text_rect, Qt::AlignVCenter | Qt::AlignLeft, metrics.elidedText(title, Qt::ElideRight, text_rect.width()));
-        auto c = tab_close_rect(i).translated(r.left() - tab_rect(i).left(), 0);
-        if (m_hover.hit == Hit::TabClose && m_hover.tab == i) {
-            p.setPen(Qt::NoPen);
-            p.setBrush(WebbyUI::theme().deeper(button_hover_color));
-            p.drawEllipse(c);
-        }
-        p.setPen(QPen(dim_text_color, 1.4));
-        auto x = c.adjusted(5, 5, -5, -5);
-        p.drawLine(x.topLeft(), x.bottomRight());
-        p.drawLine(x.topRight(), x.bottomLeft());
     }
-    auto n = new_tab_rect();
-    if (!needs_paint(n))
-        return;
-    if (m_hover.hit == Hit::NewTab) {
+    // In the sidebar, as in the Nim one, the close button shows on the front tab and the one under the pointer.
+    bool show_close = !vertical || active || hovered;
+    auto text_rect = r.adjusted(12, 0, show_close || !vertical ? -30 : -10, 0);
+    auto title = m_tabs[i].loading ? QStringLiteral("Loading…") : m_tabs[i].title;
+    // A young tab gets a small orange dot before its close button, fainter at each step (the Nim strip's).
+    int step = -1;
+    auto now = Profile::now_seconds();
+    for (int k = 0; k < int(std::size(age_steps)) && Profile::age_colors(); ++k) {
+        if (m_tabs[i].created > 0 && now - m_tabs[i].created < age_steps[k]) {
+            step = k;
+            break;
+        }
+    }
+    if (step >= 0) {
+        if (vertical && !show_close)
+            text_rect.setRight(r.right() - 30);
+        text_rect.adjust(0, 0, -10, 0);
+        QColor dot = age_color;
+        dot.setAlphaF(1.0 - step * 0.18);
         p.setPen(Qt::NoPen);
-        p.setBrush(button_hover_color);
-        p.drawEllipse(n);
+        p.setBrush(dot);
+        p.drawEllipse(QPointF(r.right() - 34, r.center().y()), 3, 3);
     }
-    p.setPen(QPen(dim_text_color, 1.6));
-    auto c = n.center();
-    p.drawLine(QPointF(c.x() - 6, c.y()), QPointF(c.x() + 6, c.y()));
-    p.drawLine(QPointF(c.x(), c.y() - 6), QPointF(c.x(), c.y() + 6));
+    p.setPen(active ? text_color : dim_text_color);
+    p.drawText(text_rect, Qt::AlignVCenter | Qt::AlignLeft, metrics.elidedText(title, Qt::ElideRight, text_rect.width()));
+    if (!show_close)
+        return;
+    auto c = tab_close_rect(i).translated(r.topLeft() - tab_rect(i).topLeft());
+    if (m_hover.hit == Hit::TabClose && m_hover.tab == i) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(WebbyUI::theme().deeper(button_hover_color));
+        p.drawEllipse(c);
+    }
+    p.setPen(QPen(dim_text_color, 1.4));
+    auto x = c.adjusted(5, 5, -5, -5);
+    p.drawLine(x.topLeft(), x.bottomRight());
+    p.drawLine(x.topRight(), x.bottomLeft());
+}
+
+// A pinned tab: a tile with its site's letter on the site's color (a page without a site, a globe); tinted under the
+// pointer, tinted and underlined in the accent when it is the front tab (the Nim strip's tiles).
+void BrowserWindow::paint_pinned_tile(QPainter& p, int i, QRectF r)
+{
+    bool active = i == m_current;
+    bool hovered = m_hover.tab == i && m_hover.hit == Hit::Tab;
+    if (active || hovered) {
+        QPainterPath path;
+        path.addRoundedRect(r, 6, 6);
+        p.fillPath(path, active ? tab_color : tab_hover_color);
+    }
+    if (active) {
+        p.setPen(QPen(focus_color, 2, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(r.left() + 8, r.bottom() - 1.5), QPointF(r.right() - 8, r.bottom() - 1.5));
+    }
+    QRectF badge(0, 0, 18, 18);
+    badge.moveCenter(r.center() - QPointF(0, 1));
+    auto letter = site_letter(i);
+    if (letter.isEmpty()) {
+        p.setPen(QPen(dim_text_color, 1.3));
+        p.setBrush(Qt::NoBrush);
+        auto g = badge.adjusted(2, 2, -2, -2);
+        p.drawEllipse(g);
+        p.drawEllipse(g.adjusted(g.width() / 2 - 3, 0, -(g.width() / 2 - 3), 0));
+        p.drawLine(QPointF(g.left(), g.center().y()), QPointF(g.right(), g.center().y()));
+        return;
+    }
+    QPainterPath path;
+    path.addRoundedRect(badge, 4, 4);
+    QColor fill = badge_color(QUrl(m_tabs[i].url).host());
+    if (m_tabs[i].loading)
+        fill.setAlphaF(0.6);
+    p.fillPath(path, fill);
+    QFont font = p.font();
+    font.setPixelSize(11);
+    font.setBold(true);
+    p.save();
+    p.setFont(font);
+    p.setPen(Qt::white);
+    p.drawText(badge, Qt::AlignCenter, letter);
+    p.restore();
 }
 
 void BrowserWindow::paint_toolbar(QPainter& p)
 {
-    QRectF bar(0, tab_strip_height, width(), toolbar_height);
+    QRectF bar(0, toolbar_top(), width(), toolbar_height);
     p.fillRect(bar, tab_color);
     p.setPen(QPen(WebbyUI::theme().border, 1));
     p.drawLine(QPointF(0, chrome_height() - 0.5), QPointF(width(), chrome_height() - 0.5));
@@ -1022,7 +1238,7 @@ void BrowserWindow::paint_bookmarks_bar(QPainter& p)
 {
     if (!show_bookmarks_bar())
         return;
-    QRectF bar(0, tab_strip_height + toolbar_height, width(), bookmarks_bar_height);
+    QRectF bar(0, toolbar_top() + toolbar_height, width(), bookmarks_bar_height);
     p.fillRect(bar, tab_color);
     p.setPen(QPen(WebbyUI::theme().border, 1));
     p.drawLine(QPointF(0, bar.bottom() - 0.5), QPointF(width(), bar.bottom() - 0.5));
@@ -1065,6 +1281,7 @@ QRegion BrowserWindow::chrome_region() const
     if (m_menu.is_open() || m_dialog.is_open())
         return QRegion(0, 0, width(), height());
     QRegion region(0, 0, width(), chrome_height());
+    region += sidebar_rect();
     region += m_suggestions_painted;
     region += suggestions_box();
     if (m_find_open)
@@ -1266,7 +1483,9 @@ QRegion BrowserWindow::page_overlays() const
 }
 
 // WEBBY_TEST_INPUT (tests, as latha-gui's --type): mouse steps "press X,Y@MS;move X,Y@MS;release X,Y@MS", with the
-// left button, in page coordinates (a negative X counts from the page's right edge), MS after the window starts.
+// left button, in page coordinates (a negative X counts from the page's right edge), MS after the window starts. A "w"
+// before the kind ("wpress") takes window coordinates and goes through event() (as a real one would, so an open menu
+// gets it); "rpress" and "rrelease" are the right button's.
 void BrowserWindow::play_test_input()
 {
     auto steps = qEnvironmentVariable("WEBBY_TEST_INPUT").split(QLatin1Char(';'), Qt::SkipEmptyParts);
@@ -1280,14 +1499,22 @@ void BrowserWindow::play_test_input()
             continue;
         auto kind = words[0];
         int x = xy[0].toInt(), y = xy[1].toInt(), ms = at[1].toInt();
-        QTimer::singleShot(ms, this, [this, kind, x, y] {
+        bool window = kind.startsWith(u'w');
+        if (window)
+            kind = kind.mid(1);
+        Qt::MouseButton button = kind.startsWith(u'r') && kind != u"release" ? Qt::RightButton : Qt::LeftButton;
+        if (button == Qt::RightButton)
+            kind = kind.mid(1);
+        QTimer::singleShot(ms, this, [this, kind, x, y, window, button] {
             auto page = page_rect();
-            QPointF position(x < 0 ? page.right() + 1 + x : page.left() + x, page.top() + y);
+            QPointF position = window ? QPointF(x, y) : QPointF(x < 0 ? page.right() + 1 + x : page.left() + x, page.top() + y);
             auto type = kind == u"press" ? QEvent::MouseButtonPress : kind == u"release" ? QEvent::MouseButtonRelease : QEvent::MouseMove;
-            auto buttons = kind == u"release" ? Qt::NoButton : kind == u"press" ? Qt::LeftButton : Qt::MouseButtons(m_test_buttons);
+            auto buttons = kind == u"release" ? Qt::NoButton : kind == u"press" ? Qt::MouseButtons(button) : Qt::MouseButtons(m_test_buttons);
             m_test_buttons = buttons;
-            QMouseEvent event(type, position, mapToGlobal(position), type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, buttons, Qt::NoModifier);
-            if (type == QEvent::MouseButtonPress)
+            QMouseEvent event(type, position, mapToGlobal(position), type == QEvent::MouseMove ? Qt::NoButton : button, buttons, Qt::NoModifier);
+            if (window)
+                QCoreApplication::sendEvent(this, &event);
+            else if (type == QEvent::MouseButtonPress)
                 mousePressEvent(&event);
             else if (type == QEvent::MouseButtonRelease)
                 mouseReleaseEvent(&event);
@@ -1402,6 +1629,7 @@ void BrowserWindow::paint_status(QPainter& p)
 void BrowserWindow::resizeEvent(QResizeEvent*)
 {
     m_menu.close();
+    clamp_sidebar_scroll();
     if (auto* tab = current(); tab && tab->view) {
         auto page = page_rect();
         tab->view->resize(page.width(), page.height());
@@ -1469,12 +1697,24 @@ void BrowserWindow::mousePressEvent(QMouseEvent* event)
         }
         break;
     case Hit::Tab:
+    case Hit::TabClose:
         if (event->button() == Qt::MiddleButton) {
+            m_pressed = {};
             close_tab(hit.tab);
-        } else {
+        } else if (event->button() == Qt::RightButton) {
+            m_pressed = {};
+            open_tab_menu(event->position(), hit.tab);
+        } else if (hit.hit == Hit::Tab) {
             activate_tab(hit.tab);
-            m_press_x = event->position().x();
-            m_drag_offset = 0;
+            m_press_pos = event->position();
+            m_drag_offset = {};
+        }
+        break;
+    case Hit::NewTab:
+    case Hit::None:
+        if (event->button() == Qt::RightButton && in_tab_area(event->position())) {
+            m_pressed = {};
+            open_tab_menu(event->position(), -1);
         }
         break;
     case Hit::Toolbar:
@@ -1551,7 +1791,7 @@ void BrowserWindow::mouseDoubleClickEvent(QMouseEvent* event)
         update();
         return;
     }
-    if (hit.hit == Hit::None && event->position().y() < tab_strip_height) {
+    if (hit.hit == Hit::None && event->button() == Qt::LeftButton && in_tab_area(event->position())) {
         new_tab({});
         activate_tab(int(m_tabs.size()) - 1);
         focus_address(true);
@@ -1586,7 +1826,7 @@ void BrowserWindow::mouseReleaseEvent(QMouseEvent* event)
         update_primary_selection();
     if (m_dragging_tab) {
         m_dragging_tab = false;
-        m_drag_offset = 0;
+        m_drag_offset = {};
         m_save_timer.start();
         update();
         return;
@@ -1695,25 +1935,44 @@ void BrowserWindow::mouseMoveEvent(QMouseEvent* event)
         return;
     }
     if (m_pressed.hit == Hit::Tab && (event->buttons() & Qt::LeftButton) && m_current >= 0) {
-        // Dragging a tab: it follows the pointer and changes places with a neighbour it passes half of.
-        m_drag_offset = event->position().x() - m_press_x;
-        if (!m_dragging_tab && qAbs(m_drag_offset) > 5)
+        // Dragging a tab: it follows the pointer (along the strip, down the sidebar, or anywhere in the pinned tiles'
+        // grid) and takes the place of a neighbour of its kind it comes nearer to; pinned tabs stay among the pinned.
+        bool vertical = vertical_tabs();
+        bool pinned = m_tabs[m_current].pinned;
+        QPointF offset = event->position() - m_press_pos;
+        if (!vertical)
+            offset.setY(0);
+        else if (!pinned)
+            offset.setX(0);
+        m_drag_offset = offset;
+        if (!m_dragging_tab && (qAbs(offset.x()) > 5 || qAbs(offset.y()) > 5))
             m_dragging_tab = true;
         if (m_dragging_tab) {
-            qreal w = tab_rect(0).width() + 2;
-            while (m_drag_offset > w / 2 && m_current + 1 < int(m_tabs.size())) {
-                std::swap(m_tabs[m_current], m_tabs[m_current + 1]);
-                ++m_current;
-                m_press_x += w;
-                m_drag_offset -= w;
+            int pinned_tabs = pinned_count();
+            int first = pinned ? 0 : pinned_tabs;
+            int last = pinned ? pinned_tabs - 1 : int(m_tabs.size()) - 1;
+            auto from = tab_rect(m_current);
+            auto centre = from.center() + offset;
+            auto distance = [&](QRectF const& r) { return QLineF(centre, r.center()).length(); };
+            int best = m_current;
+            qreal nearest = distance(from);
+            for (int j = first; j <= last; ++j) {
+                if (auto d = distance(tab_rect(j)); d < nearest) {
+                    nearest = d;
+                    best = j;
+                }
             }
-            while (m_drag_offset < -w / 2 && m_current > 0) {
-                std::swap(m_tabs[m_current], m_tabs[m_current - 1]);
-                --m_current;
-                m_press_x -= w;
-                m_drag_offset += w;
+            if (best != m_current) {
+                QPointF shift = tab_rect(best).topLeft() - from.topLeft();
+                if (best > m_current)
+                    std::rotate(m_tabs.begin() + m_current, m_tabs.begin() + m_current + 1, m_tabs.begin() + best + 1);
+                else
+                    std::rotate(m_tabs.begin() + best, m_tabs.begin() + m_current, m_tabs.begin() + m_current + 1);
+                m_current = best;
+                m_press_pos += shift;
+                m_drag_offset -= shift;
             }
-            update();
+            update_chrome();
         }
         return;
     }
@@ -1757,6 +2016,17 @@ void BrowserWindow::mouseMoveEvent(QMouseEvent* event)
 
 void BrowserWindow::wheelEvent(QWheelEvent* event)
 {
+    if (vertical_tabs() && sidebar_rect().contains(event->position().toPoint())) {
+        qreal dy = !event->pixelDelta().isNull() ? -event->pixelDelta().y() : -event->angleDelta().y() / 120.0 * 3 * sidebar_row_height / 2;
+        auto was = m_sidebar_scroll;
+        m_sidebar_scroll += dy;
+        clamp_sidebar_scroll();
+        if (m_sidebar_scroll != was) {
+            m_hover = hit_test(event->position());
+            update(sidebar_rect());
+        }
+        return;
+    }
     if (m_panel && panel_showing() && hit_test(event->position()).hit == Hit::Panel) {
         auto r = panel_rect();
         QPointF delta = !event->pixelDelta().isNull() ? QPointF(-event->pixelDelta()) : QPointF(-event->angleDelta());

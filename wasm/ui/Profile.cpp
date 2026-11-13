@@ -436,37 +436,46 @@ void History::rewrite()
 
 // Open tabs.
 
-QList<SavedTab> read_open_tabs(int& active)
+QList<SavedTab> read_open_tabs(int& active, int& pinned)
 {
     QList<SavedTab> tabs;
     auto j = read_json(file(QStringLiteral("open_tabs.json")));
+    int saved_pinned = j.value(u"pinned").toInt();
+    int index = 0;
+    pinned = 0;
     for (auto const& t : j.value(u"tabs").toArray()) {
         auto o = t.toObject();
         auto url = o.value(u"url").toString();
+        bool is_pinned = index++ < saved_pinned;
         if (!is_session_url(url))
             continue;
+        if (is_pinned)
+            ++pinned;
         tabs.append({ o.value(u"title").toString(), url, o.value(u"created").toInteger() });
     }
     active = tabs.isEmpty() ? 0 : std::clamp(j.value(u"active").toInt(), 0, int(tabs.size()) - 1);
     return tabs;
 }
 
-void write_open_tabs(QList<SavedTab> const& tabs, int active)
+void write_open_tabs(QList<SavedTab> const& tabs, int active, int pinned_tabs)
 {
     static QByteArray written;
     QJsonArray list;
     int front = 0;
+    int pinned = 0;
     for (int i = 0; i < tabs.size(); ++i) {
         if (!is_session_url(tabs[i].url))
             continue;
         if (i <= active)
             front = int(list.size());
+        if (i < pinned_tabs)
+            ++pinned;
         QJsonObject o { { u"title"_s, tabs[i].title }, { u"url"_s, tabs[i].url } };
         if (tabs[i].created > 0)
             o.insert(u"created"_s, tabs[i].created);
         list.append(o);
     }
-    QJsonObject j { { u"version"_s, 1 }, { u"active"_s, front }, { u"pinned"_s, 0 }, { u"tabs"_s, list } };
+    QJsonObject j { { u"version"_s, 1 }, { u"active"_s, front }, { u"pinned"_s, pinned }, { u"tabs"_s, list } };
     auto data = QJsonDocument(j).toJson(QJsonDocument::Compact);
     if (data == written)
         return;
@@ -530,14 +539,38 @@ bool age_colors()
     return s_age_colors;
 }
 
-void set_age_colors(bool on)
+// tabs.json is the Nim strip's too: read, change one key, write back, so its other settings stay.
+static void write_tabs_setting(QString const& key, bool on)
 {
-    s_age_colors = on;
     auto path = file(QStringLiteral("tabs.json"));
     auto j = read_json(path);
     j.insert(u"version"_s, 1);
-    j.insert(u"ageColors"_s, on);
+    j.insert(key, on);
+    QDir().mkpath(dir());
     write_atomic(path, QJsonDocument(j).toJson(QJsonDocument::Indented));
+}
+
+void set_age_colors(bool on)
+{
+    s_age_colors = on;
+    write_tabs_setting(u"ageColors"_s, on);
+}
+
+static int s_vertical_tabs = -1;
+
+bool vertical_tabs()
+{
+    if (s_vertical_tabs < 0) {
+        auto v = qEnvironmentVariable("WEBBY_VERTICAL_TABS");
+        s_vertical_tabs = !v.isEmpty() ? v == u"1" : read_json(file(QStringLiteral("tabs.json"))).value(u"vertical").toBool(false);
+    }
+    return s_vertical_tabs;
+}
+
+void set_vertical_tabs(bool on)
+{
+    s_vertical_tabs = on;
+    write_tabs_setting(u"vertical"_s, on);
 }
 
 }

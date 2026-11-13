@@ -37,7 +37,7 @@ QRectF BrowserWindow::toolbar_button_rect(int button) const
 {
     qreal right = width() - 8;
     qreal x = right - (button + 1) * (toolbar_button_size + 4) + 4;
-    return { x, tab_strip_height + (toolbar_height - toolbar_button_size) / 2.0, qreal(toolbar_button_size), qreal(toolbar_button_size) };
+    return { x, toolbar_top() + (toolbar_height - toolbar_button_size) / 2.0, qreal(toolbar_button_size), qreal(toolbar_button_size) };
 }
 
 void BrowserWindow::paint_toolbar_buttons(QPainter& p)
@@ -241,6 +241,7 @@ void BrowserWindow::open_more_menu()
     settings.add_check(QStringLiteral("Restore tabs at start"), Profile::ui_setting(QStringLiteral("restoreTabs")).toBool(true), {}, [] {
         Profile::set_ui_setting(QStringLiteral("restoreTabs"), !Profile::ui_setting(QStringLiteral("restoreTabs")).toBool(true));
     });
+    settings.add_check(QStringLiteral("Vertical tabs"), vertical_tabs(), {}, [this] { set_vertical_tabs(!vertical_tabs()); });
     settings.add_check(QStringLiteral("Color tabs by age"), Profile::age_colors(), {}, [this] {
         Profile::set_age_colors(!Profile::age_colors());
         update();
@@ -266,5 +267,122 @@ void BrowserWindow::open_more_menu()
 
     auto r = toolbar_button_rect(ButtonMore);
     menu.open(QPointF(r.right(), r.bottom() + 2), size());
+    update();
+}
+
+// The tab strip's (or sidebar's) right-click menu, as the Nim strip's fillTabMenu.
+void BrowserWindow::open_tab_menu(QPointF at, int index)
+{
+    m_menu.close();
+    auto& menu = m_menu;
+    bool vertical = vertical_tabs();
+    menu.add(QStringLiteral("New tab"), QStringLiteral("Ctrl+T"), [this] {
+        new_tab({});
+        activate_tab(int(m_tabs.size()) - 1);
+        focus_address(true);
+    });
+    if (index >= 0 && index < int(m_tabs.size())) {
+        bool pinned = m_tabs[index].pinned;
+        menu.add_separator();
+        menu.add(QStringLiteral("Reload"), [this, index] {
+            if (index >= int(m_tabs.size()))
+                return;
+            if (!m_tabs[index].view)
+                activate_tab(index);
+            else
+                m_tabs[index].view->reload();
+        });
+        menu.add(QStringLiteral("Duplicate"), [this, index] { duplicate_tab(index); });
+        menu.add(pinned ? QStringLiteral("Unpin tab") : QStringLiteral("Pin tab"), [this, index, pinned] { set_pinned(index, !pinned); });
+        menu.add_separator();
+        menu.add(QStringLiteral("Close"), index == m_current ? QStringLiteral("Ctrl+W") : QString(), [this, index] { close_tab(index); });
+        bool others = false, after = false;
+        for (int j = 0; j < int(m_tabs.size()); ++j) {
+            if (j != index && !m_tabs[j].pinned) {
+                others = true;
+                after = after || j > index;
+            }
+        }
+        menu.add(QStringLiteral("Close other tabs"), [this, index] { close_other_tabs(index, false); }, others);
+        menu.add(vertical ? QStringLiteral("Close tabs below") : QStringLiteral("Close tabs to the right"),
+            [this, index] { close_other_tabs(index, true); }, after);
+    }
+    menu.add_separator();
+    menu.add(QStringLiteral("Reopen closed tab"), QStringLiteral("Ctrl+Shift+T"), [this] { reopen_closed_tab(); }, !m_closed.isEmpty());
+    menu.add_separator();
+    menu.add_check(QStringLiteral("Vertical tabs"), vertical, {}, [this] { set_vertical_tabs(!vertical_tabs()); });
+    menu.add_check(QStringLiteral("Color tabs by age"), Profile::age_colors(), {}, [this] {
+        Profile::set_age_colors(!Profile::age_colors());
+        update();
+    });
+    menu.open(at, size());
+    update();
+}
+
+// Pinning moves the tab to the end of the pinned ones, unpinning to just after them (the Nim strip's togglePinned).
+void BrowserWindow::set_pinned(int index, bool pinned)
+{
+    if (index < 0 || index >= int(m_tabs.size()) || m_tabs[index].pinned == pinned)
+        return;
+    int pinned_tabs = pinned_count();
+    int to = pinned ? pinned_tabs : pinned_tabs - 1;
+    bool front = index == m_current;
+    int current_index = m_current;
+    m_tabs[index].pinned = pinned;
+    if (to > index)
+        std::rotate(m_tabs.begin() + index, m_tabs.begin() + index + 1, m_tabs.begin() + to + 1);
+    else if (to < index)
+        std::rotate(m_tabs.begin() + to, m_tabs.begin() + index, m_tabs.begin() + index + 1);
+    // The front tab stays the front tab wherever it went.
+    if (front) {
+        m_current = to;
+    } else if (current_index >= 0) {
+        if (index < current_index && to >= current_index)
+            --m_current;
+        else if (index > current_index && to <= current_index)
+            ++m_current;
+    }
+    m_save_timer.start();
+    scroll_tab_into_view(m_current);
+    update_chrome();
+}
+
+void BrowserWindow::duplicate_tab(int index)
+{
+    if (index < 0 || index >= int(m_tabs.size()))
+        return;
+    auto url = m_tabs[index].view ? from_std(m_tabs[index].view->url()) : m_tabs[index].url;
+    int at = qMax(index + 1, pinned_count());
+    new_tab(url, at, false, m_tabs[index].title);
+    activate_tab(at);
+}
+
+void BrowserWindow::close_other_tabs(int index, bool after_only)
+{
+    if (index < 0 || index >= int(m_tabs.size()))
+        return;
+    // From the end, so the indices before stay put.
+    for (int j = int(m_tabs.size()) - 1; j >= 0; --j) {
+        if (j == index || m_tabs[j].pinned || (after_only && j < index))
+            continue;
+        if (j < index)
+            --index;
+        close_tab(j);
+    }
+    activate_tab(index);
+}
+
+void BrowserWindow::set_vertical_tabs(bool on)
+{
+    if (on == vertical_tabs())
+        return;
+    Profile::set_vertical_tabs(on);
+    m_sidebar_scroll = 0;
+    m_hover = {};
+    // The page moves and changes size (the strip's height goes to the toolbar; the sidebar takes the left).
+    m_page_image = {};
+    m_page_frame.invalidate();
+    resizeEvent(nullptr);
+    scroll_tab_into_view(m_current);
     update();
 }

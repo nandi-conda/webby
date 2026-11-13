@@ -99,14 +99,15 @@ private:
     QList<Visit> m_visits;
 };
 
-// The open tabs, for the next start: <profile>/open_tabs.json, {"version":1,"active":i,"pinned":0,"tabs":[{title,url,created}]}.
+// The open tabs, for the next start: <profile>/open_tabs.json, {"version":1,"active":i,"pinned":n,"tabs":[{title,url,created}]}
+// (the first `pinned` tabs are pinned, as the Nim strip keeps them).
 struct SavedTab {
     QString title;
     QString url;
     qint64 created { 0 };
 };
-QList<SavedTab> read_open_tabs(int& active);
-void write_open_tabs(QList<SavedTab> const& tabs, int active);
+QList<SavedTab> read_open_tabs(int& active, int& pinned);
+void write_open_tabs(QList<SavedTab> const& tabs, int active, int pinned);
 
 // Downloads: <profile>/download_history.jsonl, one {"url","path","size","mime","error","t"} per line, oldest first.
 struct DownloadRecord {
@@ -125,6 +126,9 @@ QJsonValue ui_setting(QString const& key);
 void set_ui_setting(QString const& key, QJsonValue const& value);
 bool age_colors();
 void set_age_colors(bool);
+// tabs.json "vertical", the Nim strip's: the tabs in a sidebar left of the page instead of a strip above the toolbar.
+bool vertical_tabs();
+void set_vertical_tabs(bool);
 
 // Whether `url` is worth keeping in history or the open tabs (not blank, not webby's own pages).
 bool is_session_url(QString const& url);
