@@ -97,6 +97,16 @@ void WebView::go_forward()
     deliver_engine_events();
 }
 
+// The engine's WIT has no visibility call yet, so a background tab of the split build keeps rendering.
+void WebView::set_visible(bool visible)
+{
+    if (m_visible == visible)
+        return;
+    m_visible = visible;
+    if (visible)
+        m_needs_paint = true;
+}
+
 void WebView::resize(int width, int height)
 {
     m_width = width;

@@ -1,0 +1,48 @@
+diff --git a/src/opts/SkBlitRow_opts.h b/src/opts/SkBlitRow_opts.h
+index 54de404..5be76dc 100644
+--- a/src/opts/SkBlitRow_opts.h
++++ b/src/opts/SkBlitRow_opts.h
+@@ -88,6 +88,27 @@
+     }
+ #endif
+ 
++#if defined(__wasm_simd128__)
++    #include <wasm_simd128.h>
++
++    // The SSE2 version below, in wasm SIMD128.
++    static inline v128_t SkPMSrcOver_wasm(v128_t src, v128_t dst) {
++        v128_t scale = wasm_i32x4_sub(wasm_i32x4_splat(256), wasm_u32x4_shr(src, 24));
++        v128_t scale_x2 = wasm_v128_or(wasm_i32x4_shl(scale, 16), scale);
++
++        v128_t mask = wasm_i32x4_splat(0x00ff00ff);
++        v128_t rb = wasm_v128_and(mask, dst);
++        rb = wasm_i16x8_mul(rb, scale_x2);
++        rb = wasm_u16x8_shr(rb, 8);
++
++        v128_t ga = wasm_u16x8_shr(dst, 8);
++        ga = wasm_i16x8_mul(ga, scale_x2);
++        ga = wasm_v128_andnot(ga, mask);
++
++        return wasm_u8x16_add_sat(src, wasm_v128_or(rb, ga));
++    }
++#endif
++
+ #if defined(SK_ARM_HAS_NEON)
+     #include <arm_neon.h>
+ 
+@@ -186,6 +207,15 @@ inline void blit_row_s32a_opaque(SkPMColor* dst, const SkPMColor* src, int len,
+     }
+ #endif
+ 
++#if defined(__wasm_simd128__)
++    while (len >= 4) {
++        wasm_v128_store(dst, SkPMSrcOver_wasm(wasm_v128_load(src), wasm_v128_load(dst)));
++        src += 4;
++        dst += 4;
++        len -= 4;
++    }
++#endif
++
+ #if defined(SK_ARM_HAS_NEON)
+     while (len >= 8) {
+         vst4_u8((uint8_t*)dst, SkPMSrcOver_neon8(vld4_u8((const uint8_t*)dst),
