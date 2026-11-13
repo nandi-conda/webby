@@ -41,6 +41,8 @@
 #include <LibFileSystem/FileSystem.h>
 #include <LibGC/MemoryPressure.h>
 #include <LibGC/Root.h>
+#include <LibGC/Weak.h>
+#include <LibGC/WeakInlines.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/Font/FontDatabase.h>
 #include <LibGfx/Font/PathFontProvider.h>
@@ -664,9 +666,15 @@ static void retire_page(GC::Ptr<Web::Page> page)
         if (auto const* path = getenv("WEBBY_HEAP_DUMP"); path && *path) {
             static int s_dumps = 0;
             auto file = ByteString::formatted("{}.{}.json", path, s_dumps++);
-            auto timer = Core::Timer::create_single_shot(AK::Duration::from_milliseconds(4000), [file] {
+            // CollectEverything is the heap's teardown (it frees rooted cells too), so an ordinary collection.
+            auto address = bit_cast<FlatPtr>(page.ptr());
+            auto timer = Core::Timer::create_single_shot(AK::Duration::from_milliseconds(4000), [file, address, weak = GC::Weak<Web::Page>(*page)] {
                 auto& heap = Web::Bindings::main_thread_vm().heap();
-                heap.collect_garbage(GC::Heap::CollectionType::CollectEverything);
+                heap.collect_garbage();
+                heap.collect_garbage();
+                dbgln("webby: the page let go of ({}) is {}", address, weak ? "still alive" : "gone");
+                if (!weak)
+                    return;
                 auto json = heap.dump_graph().serialized();
                 if (auto* f = fopen(file.characters(), "w")) {
                     fwrite(json.bytes().data(), 1, json.bytes().size(), f);
