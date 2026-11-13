@@ -249,7 +249,7 @@ if [[ " $targets " == *" webby-ui "* ]] && [ -n "${LATHA_RUN:-}" ]; then
   # The wheel: over the page (it scrolls), then over an inner box the page's scroll moved (the box scrolls, not the
   # page), then over the box at its end (the page again). The page logs where both are.
   cp "$w/wasm/tests/webby-ui-wheel.html" "$ui/"
-  (cd "$ui" && WEBBY_CONSOLE=1 WEBBY_TEST_INPUT="wheel 700,400@9000;wheel 700,400@9500;wheel 150,150@10000;wheel 150,150@10400;wheel 150,150@10800;wheel 150,150@11200;wheel 150,150@11600;wheel 150,150@12200" \
+  (cd "$ui" && WEBBY_CONSOLE=1 WEBBY_TEST_INPUT="scroll 700,400@9000;scroll 700,400@9500;scroll 150,150@10000;scroll 150,150@10400;scroll 150,150@10800;scroll 150,150@11200;scroll 150,150@11600;scroll 150,150@12200" \
     QT_QPA_PLATFORM=offscreen timeout 1200 "$(dirname "$LATHA_RUN")/latha-gui" --dir "$lb/Base/res::/res" \
     --size 1100x760 --screenshot "$ui/wheel.png" --quit-after 14000 "$out/webby.wasm" "$ui/webby-ui-wheel.html") > "$out/webby-ui-wheel.log" 2>&1
   rc=$?
