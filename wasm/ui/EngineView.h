@@ -73,6 +73,8 @@ public:
     PaintChange const& last_paint_change() const { return m_last_change; }
     using Scrollbar = WebbyUI::Scrollbar;
     std::vector<Scrollbar> const& scrollbars() const { return m_scrollbars; }
+    using ViewportScroll = WebbyUI::ViewportScroll;
+    ViewportScroll const& viewport_scroll() const { return m_viewport_scroll; }
 
     // Input, in viewport coordinates. `button` is the one that changed, `buttons` those held after the event.
     void mouse_down(int x, int y, unsigned button, unsigned buttons, unsigned modifiers, int clicks);
@@ -187,6 +189,7 @@ private:
     bool m_needs_paint { true };
     PaintChange m_last_change;
     std::vector<Scrollbar> m_scrollbars;
+    ViewportScroll m_viewport_scroll;
     double m_zoom { 1.0 };
     std::vector<std::string> m_history;
     size_t m_history_index { 0 };

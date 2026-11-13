@@ -82,6 +82,7 @@
 #include <LibWeb/Loader/ResourceLoader.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/Painting/DocumentPaintState.h>
+#include <LibWeb/Painting/Scrolling.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/Platform/FontPlugin.h>
 #include <LibWebCommon/Clipboard/SystemClipboard.h>
@@ -1486,6 +1487,7 @@ uint8_t const* EngineView::paint()
     static bool const always_full = env_flag("WEBBY_RASTER_FULL");
     Gfx::IntRect const viewport { 0, 0, size.width(), size.height() };
     Optional<Vector<Gfx::IntRect>> damage;
+    Optional<Gfx::IntRect> unscrolled; // what does not move with the viewport, when the change says
     int moved = 0;
     auto& last = m_impl->last_frame;
     if (!always_full && last.has_value() && last->document == &document && !visual_context_tree.has_visual_animations()
@@ -1500,6 +1502,8 @@ uint8_t const* EngineView::paint()
         auto change = Compositing::compute_viewport_scroll_damage(*last->display_list, last->visual_context_tree, last->scroll_state,
             *display_list, visual_context_tree, scroll_state, viewport, { .canvases = canvases, .video_sinks = video_sinks });
         auto const dy = change.has_value() ? change->scroll.y() : 0.f;
+        if (change.has_value())
+            unscrolled = change->unscrolled_new;
         if (debug) {
             if (!change.has_value())
                 warnln("webby raster: no scroll damage (an unbounded change)");
@@ -1606,6 +1610,21 @@ uint8_t const* EngineView::paint()
         m_last_change.moved = moved;
         for (auto const& rect : *damage)
             m_last_change.rects.push_back({ rect.x(), rect.y(), rect.width(), rect.height() });
+    }
+    // Where this frame is scrolled to. What stays put is known from a comparison with the last frame; without one (a
+    // whole raster) the last answer holds for the same document.
+    {
+        auto& vs = m_viewport_scroll;
+        if (unscrolled.has_value()) {
+            auto r = unscrolled->intersected(viewport);
+            vs.fixed = { r.x(), r.y(), r.width(), r.height() };
+            vs.known = true;
+        } else if (!last.has_value() || last->document != &document) {
+            vs.known = false;
+        }
+        vs.y = static_cast<int>(round(document.viewport_rect().y().to_double() * m_zoom));
+        auto const* layout_node = document.layout_node(read);
+        vs.max_y = layout_node ? max(0, static_cast<int>(Web::Painting::maximum_scroll_offset(*layout_node).y().to_double() * m_zoom)) : vs.y;
     }
     last = Impl::RasterizedFrame { display_list.release_nonnull(), move(visual_context_tree), scroll_state, &document };
     return m_impl->bitmap->scanline_u8(0);

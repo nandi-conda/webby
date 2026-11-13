@@ -31,7 +31,7 @@ enum class ToEngine : uint8_t {
     MouseUp,        // view, x, y, button, buttons, modifiers
     MouseMove,      // view, x, y, buttons, modifiers
     MouseLeave,     // view
-    Wheel,          // view, x, y, f64 dx, f64 dy, modifiers
+    Wheel,          // view, x, y, f64 dx, f64 dy, modifiers, u32 seq (the frame that shows it says so)
     KeyDown,        // view, key, modifiers, code point, u8 repeat
     KeyUp,          // view, key, modifiers, code point
     AnswerClipboard, // view, u64 request, text

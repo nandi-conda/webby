@@ -72,6 +72,17 @@ struct PaintChange {
     std::vector<std::array<int, 4>> rects; // x, y, width, height
 };
 
+// Where the frame paint() returned has the viewport scrolled to, in device pixels, for a UI that moves the frame itself
+// on a wheel before the engine paints the next one (WebView.cpp, worker mode). `fixed` (x, y, width, height) holds
+// what does not move with the viewport (fixed and sticky parts), empty if nothing; `known` is false when the engine
+// cannot tell (no frame to compare yet): the UI then waits for the engine.
+struct ViewportScroll {
+    bool known { false };
+    int y { 0 };
+    int max_y { 0 };
+    std::array<int, 4> fixed {};
+};
+
 // The viewport's scrollbars, as of the last paint(), for the chrome to draw over the page: in Ladybird the
 // Compositor process draws them, and there is none here. Viewport pixels. A scrollbar is thin until the pointer is
 // over it or drags it (`expanded`), when its gutter is drawn too. Inner scroll containers' scrollbars are in the

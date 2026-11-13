@@ -38,6 +38,8 @@ struct ServedView {
     // A paint whose frame was not sent (still render-blocked): the next frame's change is not relative to the last
     // sent one, so it goes as a whole frame.
     bool unsent_paint { false };
+    // The last wheel event the engine took (its seq): frames say so, for the chrome's own scrolling.
+    uint32_t wheel_seq { 0 };
     // The two buffers frames go through, mapped here; the chrome maps them too.
     uint8_t* buffers[2] { nullptr, nullptr };
     size_t buffer_size { 0 };
@@ -347,6 +349,7 @@ private:
             int x = in.s32(), y = in.s32();
             double dx = in.f64(), dy = in.f64();
             unsigned mods = in.u32();
+            s->wheel_seq = in.u32();
             v.wheel(x, y, dx, dy, mods);
             break;
         }
@@ -529,6 +532,11 @@ private:
                 w.s32(bar.thumb[i]);
             w.u32(bar.thumb_color).u32(bar.track_color);
         }
+        auto const& vs = v.viewport_scroll();
+        w.u8(vs.known).s32(vs.y).s32(vs.max_y);
+        for (int i = 0; i < 4; ++i)
+            w.s32(vs.fixed[i]);
+        w.u32(s.wheel_seq);
         w.u8(new_buffers);
         if (new_buffers)
             w.u64(s.buffer_size);

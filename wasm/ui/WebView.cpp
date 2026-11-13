@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -102,6 +103,16 @@ std::string random_prefix()
 
 }
 
+// WEBBY_UI_SCROLL=0: the chrome does not move frames itself; wheels wait for the engine's frame.
+static bool ui_scrolling()
+{
+    static bool const on = [] {
+        auto const* v = getenv("WEBBY_UI_SCROLL");
+        return !v || strcmp(v, "0") != 0;
+    }();
+    return on;
+}
+
 struct WebView::Impl {
     // In this instance:
     std::unique_ptr<EngineView> local;
@@ -123,8 +134,21 @@ struct WebView::Impl {
         int height { 0 };
         PaintChange change;
         std::vector<Scrollbar> scrollbars;
+        ViewportScroll scroll;
+        uint32_t wheel_seq { 0 };
     };
     std::optional<Frame> pending;
+    // Scrolling here, before the engine paints: a wheel over the page moves the shown frame at once by what it will
+    // scroll the viewport (EngineView::wheel scrolls it by the wheel's pixels), so a page whose scripts keep the
+    // engine busy still scrolls under the pointer. The engine's frames say which wheel event they show; the ones
+    // after it are the move still to make. What the frame leaves uncovered is white until the engine's frame comes,
+    // and its fixed parts stay where they are.
+    ViewportScroll scroll; // of the shown frame
+    std::vector<Scrollbar> frame_scrollbars; // of the shown frame
+    uint32_t wheel_seq { 0 };
+    std::deque<std::pair<uint32_t, int>> unscrolled_wheels; // seq, device pixels
+    int presented_offset { 0 }; // how far paint() last moved the shown frame
+    std::vector<uint8_t> moved_frame;
     WebAuthnFlow webauthn;
 };
 
@@ -134,6 +158,55 @@ struct WebViewAccess {
         if (auto* wk = worker())
             Proc::send(wk->channel, w.data());
         (void)v;
+    }
+
+    // The shown frame moved by the wheels the engine has not shown yet (Impl's scrolling), into moved_frame.
+    static uint8_t const* present_moved(WebView& v)
+    {
+        auto& impl = *v.m_impl;
+        auto const* src = impl.buffers[impl.shown].pixels;
+        int const w = v.m_width, h = v.m_height;
+        int pending = 0;
+        for (auto const& [seq, pixels] : impl.unscrolled_wheels)
+            pending += pixels;
+        int offset = 0;
+        if (impl.scroll.known && w > 0 && h > 0) {
+            int target = std::clamp(impl.scroll.y + pending, 0, std::max(impl.scroll.max_y, impl.scroll.y));
+            offset = std::clamp(target - impl.scroll.y, -h, h);
+        }
+        // Whatever paint() returned before, this frame is not that one moved by a known amount: the chrome compares.
+        v.m_last_change = {};
+        impl.presented_offset = offset;
+        if (offset == 0) {
+            v.m_scrollbars = impl.frame_scrollbars;
+            return src;
+        }
+        size_t const stride = size_t(w) * 4;
+        impl.moved_frame.resize(stride * size_t(h));
+        auto* dst = impl.moved_frame.data();
+        for (int y = 0; y < h; ++y) {
+            int const from = y + offset;
+            if (from >= 0 && from < h)
+                memcpy(dst + size_t(y) * stride, src + size_t(from) * stride, stride);
+            else
+                memset(dst + size_t(y) * stride, 0xff, stride);
+        }
+        // Fixed and sticky parts stay put.
+        auto const& f = impl.scroll.fixed;
+        int const fx = std::max(0, f[0]), fy = std::max(0, f[1]);
+        int const fr = std::min(w, f[0] + f[2]), fb = std::min(h, f[1] + f[3]);
+        for (int y = fy; y < fb && fx < fr; ++y)
+            memcpy(dst + size_t(y) * stride + size_t(fx) * 4, src + size_t(y) * stride + size_t(fx) * 4, size_t(fr - fx) * 4);
+        // The viewport's scrollbar thumb moves along.
+        v.m_scrollbars = impl.frame_scrollbars;
+        int const range = impl.scroll.max_y + h;
+        for (auto& bar : v.m_scrollbars) {
+            if (!bar.vertical || bar.gutter[3] < h * 3 / 4 || range <= 0)
+                continue;
+            int const move = int(std::lround(double(offset) * bar.gutter[3] / range));
+            bar.thumb[1] = std::clamp(bar.thumb[1] + move, bar.gutter[1], bar.gutter[1] + bar.gutter[3] - bar.thumb[3]);
+        }
+        return dst;
     }
 
     static Writer to(WebView& v, ToEngine kind)
@@ -385,6 +458,12 @@ struct WebViewAccess {
                 bar.thumb_color = in.u32();
                 bar.track_color = in.u32();
             }
+            f.scroll.known = in.u8();
+            f.scroll.y = in.s32();
+            f.scroll.max_y = in.s32();
+            for (int i = 0; i < 4; ++i)
+                f.scroll.fixed[i] = in.s32();
+            f.wheel_seq = in.u32();
             if (in.u8()) {
                 auto size = in.u64();
                 for (auto& b : impl.buffers) {
@@ -678,8 +757,13 @@ uint8_t const* WebView::paint()
     }
     m_needs_paint = false;
     if (!impl.pending) {
-        m_last_change = { .known = true, .moved = 0, .rects = {} };
-        return impl.shown >= 0 ? impl.buffers[impl.shown].pixels : nullptr;
+        if (impl.shown < 0)
+            return nullptr;
+        if (impl.unscrolled_wheels.empty() && impl.presented_offset == 0) {
+            m_last_change = { .known = true, .moved = 0, .rects = {} };
+            return impl.buffers[impl.shown].pixels;
+        }
+        return WebViewAccess::present_moved(*this);
     }
     auto frame = std::move(*impl.pending);
     impl.pending.reset();
@@ -694,11 +778,17 @@ uint8_t const* WebView::paint()
     m_width = frame.width;
     m_height = frame.height;
     m_last_change = std::move(frame.change);
-    m_scrollbars = std::move(frame.scrollbars);
+    m_scrollbars = frame.scrollbars;
+    impl.frame_scrollbars = std::move(frame.scrollbars);
+    impl.scroll = frame.scroll;
+    while (!impl.unscrolled_wheels.empty() && int32_t(impl.unscrolled_wheels.front().first - frame.wheel_seq) <= 0)
+        impl.unscrolled_wheels.pop_front();
     // The other buffer is free for the engine's next frame.
     auto w = WebViewAccess::to(*this, ToEngine::FrameDone);
     w.u32(uint32_t(frame.buffer));
     WebViewAccess::send(*this, w);
+    if (!impl.unscrolled_wheels.empty() || impl.presented_offset != 0)
+        return WebViewAccess::present_moved(*this);
     return impl.buffers[impl.shown].pixels;
 }
 
@@ -733,9 +823,20 @@ void WebView::wheel(int x, int y, double dx, double dy, unsigned modifiers)
 {
     if (m_impl->local)
         return m_impl->local->wheel(x, y, dx, dy, modifiers);
+    auto& impl = *m_impl;
+    auto seq = ++impl.wheel_seq;
     auto w = WebViewAccess::to(*this, ToEngine::Wheel);
-    w.s32(x).s32(y).f64(dx).f64(dy).u32(modifiers);
+    w.s32(x).s32(y).f64(dx).f64(dy).u32(modifiers).u32(seq);
     WebViewAccess::send(*this, w);
+    // A plain vertical wheel scrolls the viewport (zoom, horizontal and modified wheels wait for the engine).
+    int pixels = int(std::lround(dy));
+    if (modifiers == 0 && dx == 0 && pixels != 0 && impl.scroll.known && impl.shown >= 0
+        && ui_scrolling()) {
+        impl.unscrolled_wheels.push_back({ seq, pixels });
+        m_needs_paint = true;
+        if (on_needs_paint)
+            on_needs_paint();
+    }
 }
 
 void WebView::key_down(unsigned key, unsigned modifiers, uint32_t code_point, bool repeat)
