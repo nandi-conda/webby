@@ -19,8 +19,9 @@ wasmtime run --dir . build/synctest.wasm > cpp.json
 python3 - <<'PY'
 import json, sys
 n = json.load(open('nim.json')); c = json.load(open('cpp.json')); n2 = json.load(open('nim2.json'))
-bad = [k for k in n if k not in ('sealed',) and k in c and n[k] != c[k]]
+bad = [k for k in n if k not in ('sealed', 'sealedLone') and k in c and n[k] != c[k]]
 if c['openedNim'] != n['mergeAB']: bad.append('C++ opens the Nim blob')
+if c['openedNimLone'] != n['canonLone']: bad.append('C++ opens the Nim blob with a lone surrogate')
 if n2['openedCpp'] != n['mergeAB']: bad.append('Nim opens the C++ blob')
 print('sync interop:', 'FAIL ' + ', '.join(bad) if bad else 'all match')
 sys.exit(1 if bad else 0)

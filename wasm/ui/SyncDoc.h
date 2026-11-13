@@ -36,6 +36,11 @@ QString dart_double(double);
 // double; other numbers as Dart prints doubles. (Qt's JSON cannot tell 1.0 from 1.)
 QByteArray canonical_value(QJsonValue const&);
 
+// `bytes` with each byte that starts no well-formed UTF-8 sequence as U+FFFD, as the Nim client's wellFormedUtf8.
+// Engine strings can hold lone surrogates as WTF-8 (ED A0 80), and older Nim clients synced them as they were, which
+// Qt's JSON parser refuses ("invalid UTF8 string").
+QByteArray well_formed_utf8(QByteArray const& bytes);
+
 QJsonObject new_doc();
 // The doc's section (an empty object when missing).
 QJsonObject section(QJsonObject const& doc, QString const& name);

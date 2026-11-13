@@ -64,6 +64,66 @@ QString dart_double(double x)
     return negative ? u'-' + result : result;
 }
 
+static qsizetype utf8_length(QByteArray const& s, qsizetype i)
+{
+    auto b0 = uint8_t(s[i]);
+    if (b0 < 0x80)
+        return 1;
+    qsizetype n = 0;
+    uint8_t lo = 0x80, hi = 0xBF;
+    if (b0 >= 0xC2 && b0 <= 0xDF)
+        n = 2;
+    else if (b0 == 0xE0)
+        n = 3, lo = 0xA0;
+    else if (b0 == 0xED)
+        n = 3, hi = 0x9F;
+    else if (b0 >= 0xE1 && b0 <= 0xEF)
+        n = 3;
+    else if (b0 == 0xF0)
+        n = 4, lo = 0x90;
+    else if (b0 == 0xF4)
+        n = 4, hi = 0x8F;
+    else if (b0 >= 0xF1 && b0 <= 0xF3)
+        n = 4;
+    else
+        return 0;
+    if (i + n > s.size())
+        return 0;
+    auto b1 = uint8_t(s[i + 1]);
+    if (b1 < lo || b1 > hi)
+        return 0;
+    for (qsizetype k = 2; k < n; ++k) {
+        if ((uint8_t(s[i + k]) & 0xC0) != 0x80)
+            return 0;
+    }
+    return n;
+}
+
+QByteArray well_formed_utf8(QByteArray const& bytes)
+{
+    qsizetype i = 0;
+    while (i < bytes.size()) {
+        auto n = utf8_length(bytes, i);
+        if (n == 0)
+            break;
+        i += n;
+    }
+    if (i == bytes.size())
+        return bytes;
+    QByteArray out = bytes.left(i);
+    while (i < bytes.size()) {
+        auto n = utf8_length(bytes, i);
+        if (n == 0) {
+            out += "\xEF\xBF\xBD";
+            ++i;
+        } else {
+            out += bytes.mid(i, n);
+            i += n;
+        }
+    }
+    return out;
+}
+
 static void encode_string(QString const& s, QString& out)
 {
     out += u'"';

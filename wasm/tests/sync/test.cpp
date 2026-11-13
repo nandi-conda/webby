@@ -31,6 +31,15 @@ int main()
     QString err;
     auto opened = SyncKeys::open(k, nim.value(u"sealed").toString().toUtf8(), &err);
     o["openedNim"] = opened ? QString::fromUtf8(SyncDoc::canonical(*opened)) : (u"ERROR "_s + err);
+    // What older Nim clients sealed for a title with a lone surrogate: the engine's WTF-8 bytes as they were.
+    QByteArray raw = "{\"bookmarks\":{\"w\":{\"addedAt\":1,\"parent\":\"bar\",\"pos\":1.0,\"title\":\"a\xED\xA0\x80" "b\xE2\x82\","
+                     "\"updatedAt\":2,\"url\":\"https://w.com/\xC0\xAF\"}}}";
+    auto box = SyncKeys::aes_gcm_seal(k.encryption_key, raw, "webby-sync-v1");
+    auto raw_sealed = "{\"format\":\"webby-sync\",\"version\":1,\"nonce\":\"" + box->nonce.toBase64() + "\",\"data\":\"" + box->cipher_text.toBase64() + "\",\"mac\":\"" + box->mac.toBase64() + "\"}";
+    auto lone = SyncKeys::open(k, raw_sealed, &err);
+    o["canonLone"] = lone ? QString::fromUtf8(SyncDoc::canonical(*lone)) : (u"ERROR "_s + err);
+    auto lone_nim = SyncKeys::open(k, nim.value(u"sealedLone").toString().toUtf8(), &err);
+    o["openedNimLone"] = lone_nim ? QString::fromUtf8(SyncDoc::canonical(*lone_nim)) : (u"ERROR "_s + err);
     QFile out(QStringLiteral("cpp-sealed.txt")); out.open(QIODevice::WriteOnly); out.write(SyncKeys::seal(k, SyncDoc::merge(a, b, now)));
     QString bad;
     o["badCode"] = SyncKeys::key_from_code(code.left(code.size() - 1) + (code.endsWith(u'A') ? u'B' : u'A'), &bad) ? u"accepted"_s : bad;

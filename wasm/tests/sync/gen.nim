@@ -24,6 +24,11 @@ o["normalized"] = %normalizeCode(code.toLowerAscii.replace("-", " ").replace("o"
 var doubles = newJArray()
 for x in [1.0, 0.1, 1e21, 1e20, 1.5e-7, 1e-6, 123456789.123, -2.5, 5e-324, 1.7976931348623157e308, 100.0, 0.000001234]: doubles.add %dartDouble(x)
 o["doubles"] = doubles
+# A title as the engine hands it over with a lone surrogate (WTF-8 ED A0 80), and a cut-short and an overlong one.
+let lone = docWith("bookmarks", %*{"w": {"parent": "bar", "pos": 1.0, "title": "a\xED\xA0\x80b\xE2\x82",
+  "url": "https://w.com/\xC0\xAF", "addedAt": 1, "updatedAt": 2}})
+o["canonLone"] = %canonical(lone)
+o["sealedLone"] = %k.seal(lone)
 if paramCount() > 0:
   let sealed = readFile(paramStr(1))
   o["openedCpp"] = %canonical(k.open(sealed))

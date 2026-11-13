@@ -78,9 +78,51 @@ proc dartDouble*(x: float): string =
     result = digits[0 .. 0] & (if k > 1: "." & digits[1 .. ^1] else: "") & "e" & (if ex >= 0: "+" else: "-") & $abs(ex)
   if neg: result = "-" & result
 
+proc utf8Len(s: string, i: int): int =
+  ## The length of the well-formed UTF-8 sequence at s[i], or 0 (overlong, surrogate, past U+10FFFF, cut short).
+  let b0 = s[i].uint8
+  if b0 < 0x80: return 1
+  var n: int
+  var lo = 0x80'u8
+  var hi = 0xBF'u8
+  if b0 in 0xC2'u8 .. 0xDF'u8: n = 2
+  elif b0 == 0xE0: (n = 3; lo = 0xA0)
+  elif b0 == 0xED: (n = 3; hi = 0x9F)
+  elif b0 in 0xE1'u8 .. 0xEF'u8: n = 3
+  elif b0 == 0xF0: (n = 4; lo = 0x90)
+  elif b0 == 0xF4: (n = 4; hi = 0x8F)
+  elif b0 in 0xF1'u8 .. 0xF3'u8: n = 4
+  else: return 0
+  if i + n > s.len: return 0
+  let b1 = s[i + 1].uint8
+  if b1 < lo or b1 > hi: return 0
+  for k in 2 ..< n:
+    if (s[i + k].uint8 and 0xC0) != 0x80: return 0
+  n
+
+proc wellFormedUtf8*(s: string): string =
+  ## `s` with each byte that starts no well-formed UTF-8 sequence as U+FFFD. Engine strings can hold lone
+  ## surrogates as WTF-8 (ED A0 80), which strict decoders (Qt, Dart) reject; wasm/ui/SyncDoc.cpp does the same.
+  var i = 0
+  var bad = false
+  while i < s.len:
+    let n = utf8Len(s, i)
+    if n == 0: (bad = true; break)
+    i += n
+  if not bad: return s
+  result = s[0 ..< i]
+  while i < s.len:
+    let n = utf8Len(s, i)
+    if n == 0:
+      result.add "\xEF\xBF\xBD"
+      inc i
+    else:
+      result.add s[i ..< i + n]
+      i += n
+
 proc dartString(s: string, o: var string) =
   o.add '"'
-  for c in s:
+  for c in wellFormedUtf8(s):
     case c
     of '"': o.add "\\\""
     of '\\': o.add "\\\\"

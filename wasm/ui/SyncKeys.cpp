@@ -277,7 +277,7 @@ std::optional<QJsonObject> open(Keys const& keys, QByteArray const& sealed, QStr
     auto clear = aes_gcm_open(keys.encryption_key, box, version);
     if (!clear)
         return fail(u"The synced data doesn't match this sync code."_s);
-    auto doc = QJsonDocument::fromJson(*clear, &parse_error);
+    auto doc = QJsonDocument::fromJson(SyncDoc::well_formed_utf8(*clear), &parse_error);
     if (parse_error.error != QJsonParseError::NoError)
         return fail(u"The synced data on the server is damaged ("_s + parse_error.errorString() + u")."_s);
     return SyncDoc::from_json(doc.object());
