@@ -197,12 +197,19 @@ def deps():
 def again(reason):
     """Start this job again on the same branch, to carry on a build the time limit cut short."""
     branch = os.environ.get("FORGE_BRANCH") or "main"
-    status, out = api("POST", "/runs", {"ref": branch, "job": "wasm-engine"})
+    job = "wasm-test" if TEST else "wasm-engine"
+    status, out = api("POST", "/runs", {"ref": branch, "job": job})
     if status >= 300:
         say(f"{reason}; starting the job again failed (HTTP {status} {out}): run wasm-engine again by hand")
     else:
-        say(f"{reason}; started wasm-engine again on {branch} to carry on")
+        say(f"{reason}; started {job} again on {branch} to carry on")
 
+
+# WASM_TEST=1 (the wasm-test job, branch wasm-test): a build to try out before it goes to main. Only the targets in
+# WASM_TARGETS, no update info in webby.wasm, no manifest, no per-build release: the files go on the rolling
+# `wasm-test` release and nothing that latha-gui or latha-android reads changes.
+TEST = os.environ.get("WASM_TEST") == "1"
+TEST_TAG = "wasm-test"
 
 # webby.wasm's update manifest (engine.sh writes it, latha-gui and latha-android read it; qt2wasm update.rs).
 # webby-update-2.txt since webby.wasm uses the component model's threads (wasm/ui/coop), which latha-gui 0.8 and
@@ -269,7 +276,7 @@ def engine():
     if budget < 600:
         sys.exit("not enough of the job's hour left to build")
     out = ROOT / "build" / "wasm-engine"
-    version = wasm_version()
+    version = "" if TEST else wasm_version()
     code = depot_build(CI / "engine.Dockerfile", out,
                        {"TARGETS": targets, "BUDGET": budget, "RUN_ID": f"{os.environ.get('FORGE_SHA', '')}-{time.time():.0f}",
                         "WASM_VERSION": version, "WASM_UPDATE_URL": UPDATE_URL if version else "",
@@ -303,6 +310,11 @@ def engine():
     # Every build is a release of its own (V, 2026-11-12: "everytime we upload cut a new release"):
     # webby-wasm-<version>, the commit's time. The rolling wasm-engine release stays the fixed address that
     # webby.wasm's update manifest, latha-gui's precompiled lookup and wasm/ui/shell/build.sh read.
+    if TEST:
+        upload(TEST_TAG, files, f"wasm test build {sha[:12]} ({os.environ.get('FORGE_BRANCH', '')})",
+               "A build of a test branch, not an update: " + notes)
+        say(f"Uploaded {', '.join(p.name for p in files if p.exists())} to the {TEST_TAG} release")
+        return
     tag = f"{BUILD_PREFIX}{version or sha[:12]}"
     upload(tag, files, f"webby.wasm {version or sha[:12]}", notes)
     say(f"Released {tag}: {os.environ.get('FORGE_URL', 'https://fileapi.fastapicloud.dev')}/forge/"
