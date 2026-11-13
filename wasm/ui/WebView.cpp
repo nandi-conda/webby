@@ -52,6 +52,10 @@ struct Worker {
     std::map<uint32_t, WebView*> views;
     // Messages that came while a request waited for its reply: delivered at the next pump.
     std::deque<Proc::Message> deferred;
+    // The engine's memory (ToChrome::Memory): pressure since the chrome last took it, and the last report.
+    bool memory_pressure { false };
+    bool memory_critical { false };
+    std::string memory_report { "memory: no report from the engine's worker yet" };
 };
 
 Worker* s_worker;
@@ -317,6 +321,12 @@ struct WebViewAccess {
         }
         if (kind == ToChrome::Reply)
             return; // a request that gave up waiting
+        if (kind == ToChrome::Memory) {
+            wk.memory_pressure |= in.u8() != 0;
+            wk.memory_critical |= in.u8() != 0;
+            wk.memory_report = "worker " + in.str();
+            return;
+        }
         auto it = wk.views.find(in.u32());
         if (it == wk.views.end()) {
             for (auto h : m.handles)
@@ -668,26 +678,32 @@ void WebView::set_color_scheme(bool dark)
     EngineView::set_color_scheme(dark);
 }
 
-// In worker mode the engine's memory is the worker's (its own linear memory); it is not reported here yet.
+// In worker mode the engine's memory is the worker's (its own linear memory), which reports it every second.
 WebView::MemoryPressure WebView::take_memory_pressure()
 {
-    if (worker())
-        return {};
+    if (auto* wk = worker()) {
+        MemoryPressure state { wk->memory_pressure, wk->memory_critical };
+        wk->memory_pressure = wk->memory_critical = false;
+        return state;
+    }
     auto state = EngineView::take_memory_pressure();
     return { state.pressure, state.critical };
 }
 
 void WebView::collect_garbage()
 {
-    if (worker())
+    if (auto* wk = worker()) {
+        Writer w { uint8_t(ToEngine::CollectGarbage) };
+        Proc::send(wk->channel, w.data());
         return;
+    }
     EngineView::collect_garbage();
 }
 
 std::string WebView::memory_report()
 {
-    if (worker())
-        return "memory: the engine's is in its worker";
+    if (auto* wk = worker())
+        return wk->memory_report;
     return EngineView::memory_report();
 }
 

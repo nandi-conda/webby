@@ -45,6 +45,7 @@ enum class ToEngine : uint8_t {
     SetColorScheme, // u8 dark
     FrameDone,      // view, buffer index: the chrome took the frame in that buffer (the other one is free again)
     PageScripts,    // seq, count, sources: the answer to a PageScriptsRequest
+    CollectGarbage, // a full collection of the engine's heap (EngineView::collect_garbage)
     // Requests answered with Reply(seq, ...):
     SelectedText,   // seq, view -> text
     CutSelection,   // seq, view -> text
@@ -73,6 +74,7 @@ enum class ToChrome : uint8_t {
                         // memory objects come along when new (two handles, then the buffer size as u64)
     PageScriptsRequest, // seq, view, url: the engine waits for PageScripts(seq)
     Reply,              // seq, then what the request returns
+    Memory,             // u8 pressure, u8 critical (since the last one), report: the engine's memory, every second
 };
 
 class Writer {

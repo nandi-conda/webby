@@ -85,6 +85,7 @@ public:
             EngineView::pump();
             for (auto& [id, served] : m_views)
                 send_frame(*served);
+            send_memory();
             Proc::wait(m_channel, EngineWorker::idle_wait_ms);
         }
     }
@@ -95,6 +96,22 @@ private:
         // Each view's destructor writes localStorage out.
         m_views.clear();
         return 0;
+    }
+
+    // The engine's memory is this instance's: the chrome's BrowserWindow::check_memory hears of its pressure here.
+    void send_memory()
+    {
+        auto now = std::chrono::steady_clock::now();
+        auto state = EngineView::take_memory_pressure();
+        m_pressure |= state.pressure;
+        m_critical |= state.critical;
+        if (!m_pressure && !m_critical && now - m_last_memory < std::chrono::seconds(1))
+            return;
+        m_last_memory = now;
+        Writer w { uint8_t(ToChrome::Memory) };
+        w.u8(m_pressure).u8(m_critical).str(EngineView::memory_report());
+        m_pressure = m_critical = false;
+        send(w);
     }
 
     void send(Writer& w, std::vector<uint32_t> const& handles = {})
@@ -255,6 +272,9 @@ private:
             return;
         case ToEngine::SetColorScheme:
             EngineView::set_color_scheme(in.u8());
+            return;
+        case ToEngine::CollectGarbage:
+            EngineView::collect_garbage();
             return;
         case ToEngine::Create: {
             auto id = in.u32();
@@ -545,6 +565,9 @@ private:
 
     uint32_t m_channel { 0 };
     std::map<uint32_t, std::unique_ptr<ServedView>> m_views;
+    bool m_pressure { false };
+    bool m_critical { false };
+    std::chrono::steady_clock::time_point m_last_memory {};
     std::deque<Proc::Message> m_deferred;
     uint64_t m_next_seq { 1 };
     bool m_quit { false };
