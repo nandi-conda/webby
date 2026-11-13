@@ -1,0 +1,17 @@
+diff --git a/Libraries/LibWeb/Page/EventHandler.cpp b/Libraries/LibWeb/Page/EventHandler.cpp
+index 7f4c036..e9d17a9 100644
+--- a/Libraries/LibWeb/Page/EventHandler.cpp
++++ b/Libraries/LibWeb/Page/EventHandler.cpp
+@@ -3800,9 +3800,9 @@ void EventHandler::maybe_show_context_menu(GC::Ref<DOM::Node> node, MouseEventCo
+     };
+ 
+     if (auto const* link = node_under_pointer->enclosing_link_element()) {
+-        // Right-clicking link text without an existing selection first selects the word under the pointer, as the
+-        // ordinary page context menu does. A selected range is still only offered when the click lands within it.
+-        (void)select_context_menu_text(read, document, coordinates);
++        // webby: Right-clicking a link leaves the selection alone, as Chrome and Firefox do on Linux and Windows.
++        //        (Upstream first selects the word under the pointer, which left a small selection in the link text.)
++        //        A selected range is still only offered when the click lands within it.
+         auto href = link->href();
+         auto url = document->encoding_parse_url(href);
+         if (url.has_value()) {
