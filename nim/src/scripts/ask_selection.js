@@ -36,7 +36,22 @@
     const root = holder.attachShadow ? holder.attachShadow({ mode: 'closed' }) : holder;
     button = document.createElement('button');
     button.type = 'button';
-    button.textContent = '✦ Ask AI about this';
+    // The sparkle is drawn, not the ✦ character: few fonts have it (wasm webby has only Liberation), so it showed
+    // as a box.
+    const SVG = 'http://www.w3.org/2000/svg';
+    const icon = document.createElementNS(SVG, 'svg');
+    icon.setAttribute('viewBox', '0 0 16 16');
+    icon.setAttribute('width', '12');
+    icon.setAttribute('height', '12');
+    icon.setAttribute('aria-hidden', 'true');
+    Object.assign(icon.style, { display: 'inline-block', width: '12px', height: '12px',
+      verticalAlign: '-1px', marginRight: '6px', pointerEvents: 'none' });
+    const star = document.createElementNS(SVG, 'path');
+    star.setAttribute('d', 'M8 0C8.6 4.6 11.4 7.4 16 8C11.4 8.6 8.6 11.4 8 16C7.4 11.4 4.6 8.6 0 8C4.6 7.4 7.4 4.6 8 0Z');
+    star.setAttribute('fill', 'currentColor');
+    icon.appendChild(star);
+    button.appendChild(icon);
+    button.appendChild(document.createTextNode('Ask AI about this'));
     const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
     Object.assign(button.style, { all: 'initial', display: 'block', cursor: 'pointer', whiteSpace: 'nowrap',
       font: '500 13px/1 system-ui, -apple-system, "Segoe UI", sans-serif', padding: '8px 12px', borderRadius: '16px',

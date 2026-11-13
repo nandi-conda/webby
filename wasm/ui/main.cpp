@@ -11,6 +11,7 @@
 #include "Resources.h"
 
 #include <QByteArray>
+#include <QFont>
 #include <QFontDatabase>
 #include <QGuiApplication>
 #include <QHash>
@@ -22,16 +23,28 @@
 
 static void add_chrome_fonts()
 {
-    // The chrome uses the Liberation Sans built into the module (Resources.c), the same on every host.
+    // The chrome uses the Liberation Sans built into the module (Resources.c), the same on every host, with Webby
+    // Symbols behind each Liberation family for the characters it lacks (✕, ▾, ...).
     QString family;
+    QString symbols;
+    QStringList liberation;
     for (size_t i = 0; i < webby_builtin_font_count; ++i) {
         auto const& font = webby_builtin_fonts[i];
         int id = QFontDatabase::addApplicationFontFromData(QByteArray::fromRawData(reinterpret_cast<char const*>(font.data), qsizetype(font.size)));
-        if (id >= 0 && family.isEmpty() && QByteArray(font.name).startsWith("LiberationSans")) {
-            auto families = QFontDatabase::applicationFontFamilies(id);
-            if (!families.isEmpty())
-                family = families.first();
-        }
+        auto families = id >= 0 ? QFontDatabase::applicationFontFamilies(id) : QStringList();
+        if (families.isEmpty())
+            continue;
+        QByteArray name(font.name);
+        if (name.startsWith("WebbySymbols"))
+            symbols = families.first();
+        else if (name.startsWith("Liberation") && !liberation.contains(families.first()))
+            liberation.append(families.first());
+        if (family.isEmpty() && name.startsWith("LiberationSans"))
+            family = families.first();
+    }
+    if (!symbols.isEmpty()) {
+        for (auto const& f : liberation)
+            QFont::insertSubstitution(f, symbols);
     }
     if (!family.isEmpty())
         QGuiApplication::setFont(QFont(family));

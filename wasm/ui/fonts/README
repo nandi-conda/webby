@@ -1,3 +1,9 @@
 Liberation Sans, Serif and Mono (Debian fonts-liberation, https://github.com/liberationfonts), SIL OFL 1.1 (LICENSE).
 Built into webby.wasm (Resources.c) so pages and the chrome have fonts on any host, NixOS included, and with no
 directories opened to the module.
+
+WebbySymbols.ttf: the symbol blocks (U+2010-2BFF: punctuation, arrows, math, technical, shapes, symbols, dingbats)
+of DejaVu Sans (Debian fonts-dejavu-core), renamed so it never stands in for a real "DejaVu Sans"; Bitstream Vera /
+DejaVu license (LICENSE.DejaVu). Pages and the chrome fall back to it for symbols Liberation lacks (✦ ✕ ▾ ★ ✓ ⋮).
+Remake: pyftsubset DejaVuSans.ttf --unicodes=U+2010-2BFF --layout-features='*' --no-hinting --desubroutinize,
+then set name IDs 1/4/16 to "Webby Symbols" and 6 to "WebbySymbols".

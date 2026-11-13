@@ -27,6 +27,10 @@ static unsigned char const serif[] = {
 static unsigned char const mono[] = {
 #embed <LiberationMono-Regular.ttf>
 };
+// Symbols Liberation lacks (fonts/README): the engine and Qt fall back to it by code point.
+static unsigned char const symbols[] = {
+#embed <WebbySymbols.ttf>
+};
 
 struct WebbyBuiltinResource const webby_builtin_theme = { "Default.ini", theme, sizeof(theme) };
 struct WebbyBuiltinResource const webby_builtin_fonts[] = {
@@ -34,5 +38,6 @@ struct WebbyBuiltinResource const webby_builtin_fonts[] = {
     { "LiberationSans-Bold.ttf", sans_bold, sizeof(sans_bold) },
     { "LiberationSerif-Regular.ttf", serif, sizeof(serif) },
     { "LiberationMono-Regular.ttf", mono, sizeof(mono) },
+    { "WebbySymbols.ttf", symbols, sizeof(symbols) },
 };
 size_t const webby_builtin_font_count = sizeof(webby_builtin_fonts) / sizeof(webby_builtin_fonts[0]);

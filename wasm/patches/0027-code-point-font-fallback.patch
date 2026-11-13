@@ -1,0 +1,46 @@
+diff --git a/Libraries/LibGfx/Font/PathFontProvider.cpp b/Libraries/LibGfx/Font/PathFontProvider.cpp
+index b5dad5fd17..51dccb5ace 100644
+--- a/Libraries/LibGfx/Font/PathFontProvider.cpp
++++ b/Libraries/LibGfx/Font/PathFontProvider.cpp
+@@ -187,4 +187,27 @@ void PathFontProvider::for_each_typeface_with_family_name(FlyString const& famil
+     }
+ }
+ 
++RefPtr<Gfx::Font> PathFontProvider::get_font_for_code_point(u32 code_point, float point_size, u16 weight, u16 width, u8 slope, bool)
++{
++    // Ties go to the family that sorts first, so the same code point always picks the same face.
++    RefPtr<Typeface> best;
++    u32 best_score = NumericLimits<u32>::max();
++    for (auto const& [family, typefaces] : m_typeface_by_family) {
++        for (auto const& typeface : typefaces) {
++            if (typeface->glyph_id_for_code_point(code_point) == 0)
++                continue;
++            u32 score = (typeface->slope() == slope ? 0 : 100000)
++                + (typeface->width() == width ? 0 : 10000)
++                + (typeface->weight() > weight ? typeface->weight() - weight : weight - typeface->weight());
++            if (score < best_score || (score == best_score && best && typeface->family().bytes_as_string_view() < best->family().bytes_as_string_view())) {
++                best = typeface;
++                best_score = score;
++            }
++        }
++    }
++    if (!best)
++        return SystemFontProvider::get_font_for_code_point(code_point, point_size, weight, width, slope, false);
++    return best->font(point_size, {});
++}
++
+ }
+diff --git a/Libraries/LibGfx/Font/PathFontProvider.h b/Libraries/LibGfx/Font/PathFontProvider.h
+index 0a2cf90017..03a827eb41 100644
+--- a/Libraries/LibGfx/Font/PathFontProvider.h
++++ b/Libraries/LibGfx/Font/PathFontProvider.h
+@@ -33,6 +33,9 @@ public:
+ 
+     virtual RefPtr<Gfx::Font> get_font(FlyString const& family, float point_size, unsigned weight, unsigned width, unsigned slope, Optional<FontVariationSettings> const& font_variation_settings = {}, Optional<Gfx::ShapeFeatures> const& shape_features = {}) override;
+     virtual void for_each_typeface_with_family_name(FlyString const& family_name, Function<void(Typeface const&)>) override;
++    // A face of the loaded fonts that has the code point, nearest to the style asked for. With no font matcher (WASI),
++    // this is the only fallback a page's text gets for characters its own fonts do not have.
++    virtual RefPtr<Gfx::Font> get_font_for_code_point(u32 code_point, float point_size, u16 weight, u16 width, u8 slope, bool prefer_color_emoji) override;
+ 
+ private:
+     HashMap<FlyString, Vector<NonnullRefPtr<Typeface>>, AK::ASCIICaseInsensitiveFlyStringTraits> m_typeface_by_family;

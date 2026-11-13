@@ -74,7 +74,7 @@ add_executable(webby-ui-shell
 set_target_properties(webby-ui-shell PROPERTIES SUFFIX ".core.wasm")
 # The chrome's fonts only (no engine theme here).
 set_source_files_properties(${ui}/Resources.c PROPERTIES COMPILE_OPTIONS "-std=gnu23;--embed-dir=${ui}/fonts"
-    COMPILE_DEFINITIONS WEBBY_RESOURCES_NO_THEME OBJECT_DEPENDS "${ui}/fonts/LiberationSans-Regular.ttf")
+    COMPILE_DEFINITIONS WEBBY_RESOURCES_NO_THEME OBJECT_DEPENDS "${ui}/fonts/LiberationSans-Regular.ttf;${ui}/fonts/WebbySymbols.ttf")
 target_include_directories(webby-ui-shell PRIVATE
     "${ui}" "${gen}/bindings"
     "${qt2wasm_data}/include" "${qt2wasm_data}/runtime" "${qt2wasm_data}/gui"

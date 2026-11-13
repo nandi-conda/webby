@@ -490,14 +490,22 @@ namespace {
 Core::EventLoop* s_event_loop;
 RefPtr<Gfx::PaletteImpl> s_palette;
 
-// The theme: Base/res's file when the host opens one to the module, else the one built in.
+// The theme: Base/res's file when the host opens one to the module, else the one built in. Selected text on pages
+// with no color-scheme of their own takes the theme's Selection, which Ladybird's Default.ini has as a dark red-brown
+// (#84351a); it gets the chrome's light-theme selection blue instead (Theme.h), as Chrome's is.
 static ErrorOr<Core::AnonymousBuffer> load_theme(StringView resources)
 {
     auto path = ByteString::formatted("{}/themes/Default.ini", resources);
-    if (FileSystem::exists(path))
-        return Gfx::load_system_theme(path);
-    auto config = TRY(Core::ConfigFile::open_from_text("Default.ini", { reinterpret_cast<char const*>(webby_builtin_theme.data), webby_builtin_theme.size }));
-    return Gfx::load_system_theme(*config);
+    auto buffer = TRY([&]() -> ErrorOr<Core::AnonymousBuffer> {
+        if (FileSystem::exists(path))
+            return Gfx::load_system_theme(path);
+        auto config = TRY(Core::ConfigFile::open_from_text("Default.ini", { reinterpret_cast<char const*>(webby_builtin_theme.data), webby_builtin_theme.size }));
+        return Gfx::load_system_theme(*config);
+    }());
+    auto& theme = *buffer.data<Gfx::SystemTheme>();
+    theme.color[to_underlying(Gfx::ColorRole::Selection)] = Gfx::Color(0xc2, 0xdb, 0xff).value();
+    theme.color[to_underlying(Gfx::ColorRole::InactiveSelection)] = Gfx::Color(0xd4, 0xd7, 0xdc).value();
+    return buffer;
 }
 
 ErrorOr<void> initialize_engine()
