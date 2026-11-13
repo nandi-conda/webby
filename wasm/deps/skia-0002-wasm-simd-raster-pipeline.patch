@@ -1,0 +1,166 @@
+diff --git a/src/opts/SkRasterPipeline_opts.h b/src/opts/SkRasterPipeline_opts.h
+index 610c75e..ee97911 100644
+--- a/src/opts/SkRasterPipeline_opts.h
++++ b/src/opts/SkRasterPipeline_opts.h
+@@ -79,6 +79,9 @@ using NoCtx = const void*;
+     // Honor the existing setting
+ #elif !defined(__clang__) && !defined(__GNUC__)
+     #define SKRP_CPU_SCALAR
++#elif defined(__wasm_simd128__)
++    // WebAssembly SIMD128: 4 lanes, as SSE2, through clang's wasm intrinsics.
++    #define SKRP_CPU_WASM
+ #elif defined(SK_ARM_HAS_NEON)
+     #define SKRP_CPU_NEON
+ #elif SK_CPU_X64_LEVEL >= SK_CPU_X64_LEVEL_ML4
+@@ -108,6 +111,8 @@ using NoCtx = const void*;
+     #include <lsxintrin.h>
+ #elif defined(SKRP_CPU_LSX)
+     #include <lsxintrin.h>
++#elif defined(SKRP_CPU_WASM)
++    #include <wasm_simd128.h>
+ #else
+     #include <immintrin.h>
+ #endif
+@@ -924,6 +929,133 @@ namespace SK_OPTS_NS {
+         _mm_storeu_ps(ptr +12, a);
+     }
+ 
++#elif defined(SKRP_CPU_WASM)
++    template <typename T> using V = Vec<4, T>;
++    using F   = V<float   >;
++    using I32 = V< int32_t>;
++    using U64 = V<uint64_t>;
++    using U32 = V<uint32_t>;
++    using U16 = V<uint16_t>;
++    using U8  = V<uint8_t >;
++
++    SI F if_then_else(I32 c, F t, F e) {
++        return (F)wasm_v128_bitselect((v128_t)t, (v128_t)e, (v128_t)c);
++    }
++    SI I32 if_then_else(I32 c, I32 t, I32 e) {
++        return (I32)wasm_v128_bitselect((v128_t)t, (v128_t)e, (v128_t)c);
++    }
++
++    // pmin(b,a) is a < b ? a : b, as SSE's minps(a,b) (and pmax(b,a) as maxps(a,b)), NaNs included.
++    SI F   min(F a, F b)     { return (F)wasm_f32x4_pmin((v128_t)b, (v128_t)a); }
++    SI F   max(F a, F b)     { return (F)wasm_f32x4_pmax((v128_t)b, (v128_t)a); }
++    SI I32 min(I32 a, I32 b) { return (I32)wasm_i32x4_min((v128_t)a, (v128_t)b); }
++    SI U32 min(U32 a, U32 b) { return (U32)wasm_u32x4_min((v128_t)a, (v128_t)b); }
++    SI I32 max(I32 a, I32 b) { return (I32)wasm_i32x4_max((v128_t)a, (v128_t)b); }
++    SI U32 max(U32 a, U32 b) { return (U32)wasm_u32x4_max((v128_t)a, (v128_t)b); }
++
++    SI F   mad(F f, F m, F a)  { return a+f*m; }
++    SI F  nmad(F f, F m, F a)  { return a-f*m; }
++    SI F   abs_(F v)           { return (F)wasm_f32x4_abs((v128_t)v); }
++    SI I32 abs_(I32 v)         { return (I32)wasm_i32x4_abs((v128_t)v); }
++    // No reciprocal estimates in wasm: the precise forms (rcp_fast and rsqrt use them, as for SSE2).
++    SI F   rcp_approx(F v)     { return 1.0f / v; }
++    SI F   rcp_precise (F v)   { return 1.0f / v; }
++    SI F    sqrt_(F v)         { return (F)wasm_f32x4_sqrt((v128_t)v); }
++    SI F   rsqrt_approx(F v)   { return 1.0f / sqrt_(v); }
++
++    SI I32 iround(F v) { return (I32)wasm_i32x4_trunc_sat_f32x4(wasm_f32x4_nearest((v128_t)v)); }
++    SI U32 round(F v)  { return (U32)wasm_i32x4_trunc_sat_f32x4(wasm_f32x4_nearest((v128_t)v)); }
++
++    SI U16 pack(U32 v) {
++        v128_t p = wasm_u16x8_narrow_i32x4((v128_t)v, (v128_t)v);
++        return sk_unaligned_load<U16>(&p);
++    }
++    SI U8 pack(U16 v) {
++        auto r = widen_cast<v128_t>(v);
++        r = wasm_u8x16_narrow_i16x8(r, r);
++        return sk_unaligned_load<U8>(&r);
++    }
++
++    // As SSE's movemask: only the top bit of each lane.
++    SI bool any(I32 c) { return wasm_i32x4_bitmask((v128_t)c) != 0b0000; }
++    SI bool all(I32 c) { return wasm_i32x4_bitmask((v128_t)c) == 0b1111; }
++
++    SI F floor_(F v) { return (F)wasm_f32x4_floor((v128_t)v); }
++    SI F ceil_(F v)  { return (F)wasm_f32x4_ceil((v128_t)v); }
++
++    template <typename T>
++    SI V<T> gather(const T* p, U32 ix) {
++        return V<T>{p[ix[0]], p[ix[1]], p[ix[2]], p[ix[3]]};
++    }
++    template <typename T>
++    SI V<T> gather_unaligned(const T* p, U32 ix) {
++        return gather(p, ix);
++    }
++    SI void scatter_masked(I32 src, int* dst, U32 ix, I32 mask) {
++        I32 before = gather(dst, ix);
++        I32 after = if_then_else(mask, src, before);
++        dst[ix[0]] = after[0];
++        dst[ix[1]] = after[1];
++        dst[ix[2]] = after[2];
++        dst[ix[3]] = after[3];
++    }
++    SI void load2(const uint16_t* ptr, U16* r, U16* g) {
++        v128_t v = wasm_v128_load(ptr);                           // r0 g0 r1 g1 r2 g2 r3 g3
++        v128_t rg = wasm_i16x8_shuffle(v, v, 0, 2, 4, 6, 1, 3, 5, 7); // r0 r1 r2 r3 g0 g1 g2 g3
++        *r = sk_unaligned_load<U16>((uint16_t*)&rg + 0);
++        *g = sk_unaligned_load<U16>((uint16_t*)&rg + 4);
++    }
++    SI void store2(uint16_t* ptr, U16 r, U16 g) {
++        v128_t R = widen_cast<v128_t>(r), G = widen_cast<v128_t>(g);
++        wasm_v128_store(ptr, wasm_i16x8_shuffle(R, G, 0, 8, 1, 9, 2, 10, 3, 11));
++    }
++
++    SI void load4(const uint16_t* ptr, U16* r, U16* g, U16* b, U16* a) {
++        v128_t _01 = wasm_v128_load(ptr + 0),  // r0 g0 b0 a0 r1 g1 b1 a1
++               _23 = wasm_v128_load(ptr + 8);  // r2 g2 b2 a2 r3 g3 b3 a3
++        v128_t rg = wasm_i16x8_shuffle(_01, _23, 0, 4, 8, 12, 1, 5, 9, 13),  // r0 r1 r2 r3 g0 g1 g2 g3
++               ba = wasm_i16x8_shuffle(_01, _23, 2, 6, 10, 14, 3, 7, 11, 15); // b0 b1 b2 b3 a0 a1 a2 a3
++        *r = sk_unaligned_load<U16>((uint16_t*)&rg + 0);
++        *g = sk_unaligned_load<U16>((uint16_t*)&rg + 4);
++        *b = sk_unaligned_load<U16>((uint16_t*)&ba + 0);
++        *a = sk_unaligned_load<U16>((uint16_t*)&ba + 4);
++    }
++
++    SI void store4(uint16_t* ptr, U16 r, U16 g, U16 b, U16 a) {
++        v128_t R = widen_cast<v128_t>(r), G = widen_cast<v128_t>(g),
++               B = widen_cast<v128_t>(b), A = widen_cast<v128_t>(a);
++        v128_t rg = wasm_i16x8_shuffle(R, G, 0, 8, 1, 9, 2, 10, 3, 11),  // r0 g0 r1 g1 r2 g2 r3 g3
++               ba = wasm_i16x8_shuffle(B, A, 0, 8, 1, 9, 2, 10, 3, 11);  // b0 a0 b1 a1 b2 a2 b3 a3
++        wasm_v128_store(ptr + 0, wasm_i32x4_shuffle(rg, ba, 0, 4, 1, 5));
++        wasm_v128_store(ptr + 8, wasm_i32x4_shuffle(rg, ba, 2, 6, 3, 7));
++    }
++
++    SI void load4(const float* ptr, F* r, F* g, F* b, F* a) {
++        v128_t _0 = wasm_v128_load(ptr + 0),  // r0 g0 b0 a0
++               _1 = wasm_v128_load(ptr + 4),
++               _2 = wasm_v128_load(ptr + 8),
++               _3 = wasm_v128_load(ptr + 12);
++        v128_t t0 = wasm_i32x4_shuffle(_0, _1, 0, 4, 1, 5),  // r0 r1 g0 g1
++               t1 = wasm_i32x4_shuffle(_2, _3, 0, 4, 1, 5),  // r2 r3 g2 g3
++               t2 = wasm_i32x4_shuffle(_0, _1, 2, 6, 3, 7),  // b0 b1 a0 a1
++               t3 = wasm_i32x4_shuffle(_2, _3, 2, 6, 3, 7);  // b2 b3 a2 a3
++        *r = (F)wasm_i32x4_shuffle(t0, t1, 0, 1, 4, 5);
++        *g = (F)wasm_i32x4_shuffle(t0, t1, 2, 3, 6, 7);
++        *b = (F)wasm_i32x4_shuffle(t2, t3, 0, 1, 4, 5);
++        *a = (F)wasm_i32x4_shuffle(t2, t3, 2, 3, 6, 7);
++    }
++
++    SI void store4(float* ptr, F r, F g, F b, F a) {
++        v128_t t0 = wasm_i32x4_shuffle((v128_t)r, (v128_t)g, 0, 4, 1, 5),  // r0 g0 r1 g1
++               t1 = wasm_i32x4_shuffle((v128_t)b, (v128_t)a, 0, 4, 1, 5),  // b0 a0 b1 a1
++               t2 = wasm_i32x4_shuffle((v128_t)r, (v128_t)g, 2, 6, 3, 7),  // r2 g2 r3 g3
++               t3 = wasm_i32x4_shuffle((v128_t)b, (v128_t)a, 2, 6, 3, 7);  // b2 a2 b3 a3
++        wasm_v128_store(ptr + 0,  wasm_i32x4_shuffle(t0, t1, 0, 1, 4, 5));
++        wasm_v128_store(ptr + 4,  wasm_i32x4_shuffle(t0, t1, 2, 3, 6, 7));
++        wasm_v128_store(ptr + 8,  wasm_i32x4_shuffle(t2, t3, 0, 1, 4, 5));
++        wasm_v128_store(ptr + 12, wasm_i32x4_shuffle(t2, t3, 2, 3, 6, 7));
++    }
++
+ #elif defined(SKRP_CPU_LASX)
+     // These are __m256 and __m256i, but friendlier and strongly-typed.
+     template <typename T> using V = Vec<8, T>;
+@@ -1503,7 +1635,7 @@ static void restore_memory_contexts(
+     }
+ }
+ 
+-#if defined(SKRP_CPU_SCALAR) || defined(SKRP_CPU_SSE2)
++#if defined(SKRP_CPU_SCALAR) || defined(SKRP_CPU_SSE2) || defined(SKRP_CPU_WASM)
+     // In scalar and SSE2 mode, we always use precise math so we can have more predictable results.
+     // Chrome will use the SSE2 implementation when --disable-skia-runtime-opts is set. (b/40042946)
+     SI F rcp_fast(F v) { return rcp_precise(v); }

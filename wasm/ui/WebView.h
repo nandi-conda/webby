@@ -96,6 +96,12 @@ public:
     std::string const& title() const { return m_title; }
     bool is_loading() const { return m_loading; }
 
+    // Whether the tab is in front. A hidden page's document is "hidden" (document.hidden, visibilitychange) and gets
+    // no rendering updates: no style, layout, animations, intersection observers or requestAnimationFrame callbacks,
+    // which in the background ate the one thread the UI and every tab share.
+    void set_visible(bool visible);
+    bool is_visible() const { return m_visible; }
+
     // The size of the page's viewport, in CSS pixels (device pixel ratio 1).
     void resize(int width, int height);
     int width() const { return m_width; }
@@ -238,6 +244,7 @@ private:
     int m_height { 0 };
     std::string m_url;
     std::string m_title;
+    bool m_visible { true };
     bool m_loading { false };
     bool m_needs_paint { true };
     PaintChange m_last_change;

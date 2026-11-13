@@ -1007,9 +1007,8 @@ void WebView::show_document(LoadedDocument loaded)
     client->set_zoom(m_zoom);
     auto page = Web::Page::create(*client);
     client->set_page(*page);
-    // A page starts hidden until its UI says otherwise; a hidden document gets no rendering updates (no
-    // requestAnimationFrame callbacks), and document.hidden is true.
-    page->set_system_visibility_state(Web::HTML::VisibilityState::Visible);
+    // A hidden document gets no rendering updates (no requestAnimationFrame callbacks), and document.hidden is true.
+    page->set_system_visibility_state(m_visible ? Web::HTML::VisibilityState::Visible : Web::HTML::VisibilityState::Hidden);
     page->set_top_level_traversable(Web::HTML::LocalTraversableNavigable::create_a_new_top_level_traversable(page, nullptr, {}));
     auto& navigable = *page->local_traversable();
     auto& window = *navigable.active_window();
@@ -1079,6 +1078,30 @@ void WebView::show_document(LoadedDocument loaded)
         parser->run(document_url);
     }
     did_request_frame();
+}
+
+void WebView::set_visible(bool visible)
+{
+    if (m_visible == visible)
+        return;
+    m_visible = visible;
+    auto state = visible ? Web::HTML::VisibilityState::Visible : Web::HTML::VisibilityState::Hidden;
+    if (!m_impl->page)
+        return;
+    m_impl->page->set_system_visibility_state(state);
+    if (!m_impl->page->has_local_traversable())
+        return;
+    auto document = m_impl->page->local_traversable()->active_document();
+    if (!document)
+        return;
+    // As WebContent's update_visibility_state: a task updates the document's visibility state, which fires
+    // visibilitychange and starts or stops its rendering updates.
+    Web::HTML::queue_global_task(Web::HTML::Task::Source::UserInteraction, Web::HTML::relevant_global_object(*document),
+        GC::create_function(GC::Heap::the(), [state, document = GC::Root<Web::DOM::Document>(*document)] {
+            document->update_the_visibility_state(state);
+        }));
+    if (visible)
+        m_needs_paint = true;
 }
 
 void WebView::resize(int width, int height)

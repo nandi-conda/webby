@@ -208,6 +208,8 @@ void BrowserWindow::wake(Tab& tab)
         return;
     auto* raw = view.get();
     auto url = tab.url;
+    // Only the tab in front renders (see WebView::set_visible); activate_tab shows it when it comes forward.
+    raw->set_visible(current() == &tab);
     tab.view = std::move(view);
     raw->on_needs_paint = [this, raw] {
         if (current() && current()->view.get() == raw)
@@ -452,6 +454,10 @@ void BrowserWindow::activate_tab(int index)
     if (!m_tabs[index].view)
         return;
     m_tabs[index].view->resize(page.width(), page.height());
+    for (int i = 0; i < int(m_tabs.size()); ++i) {
+        if (m_tabs[i].view)
+            m_tabs[i].view->set_visible(i == index);
+    }
     if (m_tabs[index].pdf)
         m_tabs[index].pdf->resize(page.size());
     m_address_text = from_std(m_tabs[index].view->url());
