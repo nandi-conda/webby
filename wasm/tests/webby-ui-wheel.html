@@ -1,0 +1,19 @@
+<!doctype html>
+<title>Wheel</title>
+<!-- wasm/ci/engine.sh turns the wheel over the page, then over the inner box (which the page's scroll moved), then
+     over the box again past its end (WEBBY_TEST_INPUT): the page logs where each scroller is ("wheel-state"). -->
+<style>
+  body { margin: 0; font: 16px sans-serif; background: linear-gradient(#fff, #9cf); height: 6000px; }
+  #box { position: absolute; left: 20px; top: 300px; width: 300px; height: 200px; overflow: auto; background: #fee; }
+  #box div { height: 700px; background: linear-gradient(#fee, #f66); }
+  #state { position: fixed; left: 360px; top: 20px; font: bold 28px monospace; background: #fff; padding: 8px; }
+</style>
+<div id=box><div>inner box top</div></div>
+<pre id=state>…</pre>
+<script>
+  setInterval(() => {
+    const s = "page " + Math.round(scrollY) + " inner " + Math.round(box.scrollTop);
+    state.textContent = s;
+    console.log("wheel-state " + s);
+  }, 250);
+</script>

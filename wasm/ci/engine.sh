@@ -245,6 +245,19 @@ if [[ " $targets " == *" webby-ui "* ]] && [ -n "${LATHA_RUN:-}" ]; then
   if [ $rc != 0 ] || grep -q "trapped\|VERIFICATION FAILED" "$out/webby-ui-scrollbars.log"; then
     tail -40 "$out/webby-ui-scrollbars.log"; fail "webby-ui scrollbars page failed (exit $rc)"
   fi
+  # The wheel: over the page (it scrolls), then over an inner box the page's scroll moved (the box scrolls, not the
+  # page), then over the box at its end (the page again). The page logs where both are.
+  cp "$w/wasm/tests/webby-ui-wheel.html" "$ui/"
+  (cd "$ui" && WEBBY_CONSOLE=1 WEBBY_TEST_INPUT="wheel 700,400@9000;wheel 700,400@9500;wheel 150,150@10000;wheel 150,150@10400;wheel 150,150@10800;wheel 150,150@11200;wheel 150,150@11600;wheel 150,150@12200" \
+    QT_QPA_PLATFORM=offscreen timeout 1200 "$(dirname "$LATHA_RUN")/latha-gui" --dir "$lb/Base/res::/res" \
+    --size 1100x760 --screenshot "$ui/wheel.png" --quit-after 14000 "$out/webby.wasm" "$ui/webby-ui-wheel.html") > "$out/webby-ui-wheel.log" 2>&1
+  rc=$?
+  [ -f "$ui/wheel.png" ] && cp "$ui/wheel.png" "$out/webby-ui-wheel-test.png"
+  wheel_state=$(grep -o 'wheel-state page [0-9]* inner [0-9]*' "$out/webby-ui-wheel.log" | tail -1)
+  if [ $rc != 0 ] || grep -q "trapped" "$out/webby-ui-wheel.log" || [ "$wheel_state" != "wheel-state page 360 inner 500" ]; then
+    tail -40 "$out/webby-ui-wheel.log"; fail "webby-ui wheel page failed (exit $rc, ${wheel_state:-no state}; want page 360 inner 500)"
+  fi
+  echo "webby.wasm wheel: $wheel_state"
   # And as `latha-gui webby.wasm` with nothing opened to it (built-in theme and fonts), past several idle GCs.
   (cd "$ui" && QT_QPA_PLATFORM=offscreen timeout 1200 "$(dirname "$LATHA_RUN")/latha-gui" --no-root \
     --size 1100x760 --screenshot "$ui/bare.png" --quit-after 20000 "$out/webby.wasm") > "$out/webby-ui-bare.log" 2>&1

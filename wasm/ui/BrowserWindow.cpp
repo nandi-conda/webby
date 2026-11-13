@@ -1511,7 +1511,8 @@ QRegion BrowserWindow::page_overlays() const
 // WEBBY_TEST_INPUT (tests, as latha-gui's --type): mouse steps "press X,Y@MS;move X,Y@MS;release X,Y@MS", with the
 // left button, in page coordinates (a negative X counts from the page's right edge), MS after the window starts. A "w"
 // before the kind ("wpress") takes window coordinates and goes through event() (as a real one would, so an open menu
-// gets it); "rpress" and "rrelease" are the right button's.
+// gets it); "rpress" and "rrelease" are the right button's. "wheel X,Y@MS" turns the wheel a notch down there (a
+// mouse's 120 eighths of a degree), "wheelup" a notch up.
 void BrowserWindow::play_test_input()
 {
     auto steps = qEnvironmentVariable("WEBBY_TEST_INPUT").split(QLatin1Char(';'), Qt::SkipEmptyParts);
@@ -1534,6 +1535,13 @@ void BrowserWindow::play_test_input()
         QTimer::singleShot(ms, this, [this, kind, x, y, window, button] {
             auto page = page_rect();
             QPointF position = window ? QPointF(x, y) : QPointF(x < 0 ? page.right() + 1 + x : page.left() + x, page.top() + y);
+            if (kind == u"wheel" || kind == u"wheelup") {
+                QPoint notch(0, kind == u"wheel" ? -120 : 120);
+                QWheelEvent wheel(position, mapToGlobal(position), QPoint(), notch, Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+                wheelEvent(&wheel);
+                qWarning("webby: test input %s %d,%d", qPrintable(kind), int(position.x()), int(position.y()));
+                return;
+            }
             auto type = kind == u"press" ? QEvent::MouseButtonPress : kind == u"release" ? QEvent::MouseButtonRelease : QEvent::MouseMove;
             auto buttons = kind == u"release" ? Qt::NoButton : kind == u"press" ? Qt::MouseButtons(button) : Qt::MouseButtons(m_test_buttons);
             m_test_buttons = buttons;
