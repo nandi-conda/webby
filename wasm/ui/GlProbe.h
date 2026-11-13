@@ -9,6 +9,9 @@
 
 #pragma once
 
+#ifndef EGL_NO_PLATFORM_SPECIFIC_TYPES
+#    define EGL_NO_PLATFORM_SPECIFIC_TYPES 1
+#endif
 #include <EGL/egl.h>
 
 namespace WebbyUI {
