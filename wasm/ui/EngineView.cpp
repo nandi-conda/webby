@@ -664,7 +664,7 @@ static void retire_page(GC::Ptr<Web::Page> page)
         if (auto const* path = getenv("WEBBY_HEAP_DUMP"); path && *path) {
             static int s_dumps = 0;
             auto file = ByteString::formatted("{}.{}.json", path, s_dumps++);
-            auto timer = Core::Timer::create_single_shot(4000, [file] {
+            auto timer = Core::Timer::create_single_shot(AK::Duration::from_milliseconds(4000), [file] {
                 auto& heap = Web::Bindings::main_thread_vm().heap();
                 heap.collect_garbage(GC::Heap::CollectionType::CollectEverything);
                 auto json = heap.dump_graph().serialized();
