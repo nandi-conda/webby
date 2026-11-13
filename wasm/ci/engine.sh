@@ -68,12 +68,12 @@ if [[ " $targets " == *" webby-core "* ]]; then export ENABLE_GUI_TARGETS=ON; fi
 # a micromamba env, cached; ui/CMakeLists.txt finds it through WEBBY_QT_ENV.
 if [[ " $targets " == *" webby-ui "* || " $targets " == *" webby-core "* ]]; then
   export ENABLE_GUI_TARGETS=ON
-  qtenv=$C/qt2wasm-env-0.10.4
+  qtenv=$C/qt2wasm-env-0.10.5
   if [ ! -d "$qtenv/opt/qt6-wasi/wasi/lib" ]; then
     rm -rf "$qtenv"
     (cd /tmp && curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj bin/micromamba) \
       && /tmp/bin/micromamba create -y -q -r /tmp/mamba -p "$qtenv" -c conda-forge -c https://prefix.dev/nandi-testing \
-         'qt2wasm=0.10.4' qt6-wasi wit-bindgen wasm-tools wasi-preview1-adapter > /dev/null \
+         'qt2wasm=0.10.5' qt6-wasi wit-bindgen wasm-tools wasi-preview1-adapter > /dev/null \
       || fail "installing qt2wasm (Qt for WASI) failed"
   fi
   export WEBBY_QT_ENV=$qtenv
