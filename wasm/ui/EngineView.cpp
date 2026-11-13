@@ -82,6 +82,7 @@
 #include <LibWeb/Loader/ResourceLoader.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/Painting/DocumentPaintState.h>
+#include <LibWeb/Layout/Viewport.h>
 #include <LibWeb/Painting/Scrolling.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/Platform/FontPlugin.h>
