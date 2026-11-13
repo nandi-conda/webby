@@ -209,7 +209,8 @@ def again(reason):
 # WASM_TARGETS, no update info in webby.wasm, no manifest, no per-build release: the files go on the rolling
 # `wasm-test` release and nothing that latha-gui or latha-android reads changes.
 TEST = os.environ.get("WASM_TEST") == "1"
-TEST_TAG = "wasm-test"
+# Each test branch (wasm-test, wasm-test-*) has a release of its own, named as the branch.
+TEST_TAG = os.environ.get("FORGE_BRANCH") or "wasm-test"
 
 # webby.wasm's update manifest (engine.sh writes it, latha-gui and latha-android read it; qt2wasm update.rs).
 # webby-update-2.txt since webby.wasm uses the component model's threads (wasm/ui/coop), which latha-gui 0.8 and

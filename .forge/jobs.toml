@@ -42,7 +42,8 @@ timeout = 3600
 run = "depot --version && python3 -u wasm/ci/forge_wasm.py engine"
 
 # wasm-test: a webby.wasm from a test branch, on the same warm cache, before the change goes to main. Only webby-ui;
-# no version, update manifest or per-build release: the files go on the rolling `wasm-test` release.
+# no version, update manifest or per-build release: the files go on a release named as the branch. Branches named
+# wasm-test-<something> can list themselves here for a release of their own.
 [[job]]
 name = "wasm-test"
 branches = ["wasm-test"]
