@@ -28,6 +28,7 @@
 
 #include <QAbstractEventDispatcher>
 #include <QCoreApplication>
+#include <QTimer>
 
 namespace WebbyUI {
 
@@ -121,8 +122,11 @@ Worker* worker()
                 EngineView::initialize_for_chrome();
                 // What the worker sends wakes the host's loop (latha:proc rings the app), which calls into the app:
                 // take it then, not at the chrome's next pump.
-                if (auto* dispatcher = QAbstractEventDispatcher::instance())
+                static bool connected;
+                if (auto* dispatcher = QAbstractEventDispatcher::instance(); dispatcher && !connected) {
+                    connected = true;
                     QObject::connect(dispatcher, &QAbstractEventDispatcher::awake, dispatcher, [] { deliver_now(); });
+                }
                 fprintf(stderr, "webby: the engine runs in worker %u\n", pid);
             } else {
                 fprintf(stderr, "webby: the engine worker did not start (%s): the engine runs here\n", error.c_str());
@@ -325,6 +329,11 @@ struct WebViewAccess {
             return;
         wk.alive = false;
         fprintf(stderr, "webby: the engine worker %u ended\n", wk.pid);
+        // Not from inside this call chain (a view's request may be on the stack): the chrome drops its views next.
+        QTimer::singleShot(0, [] {
+            if (WebView::on_engine_lost)
+                WebView::on_engine_lost();
+        });
     }
 
     static FindResult find_reply(std::optional<Proc::Message> const& m)
@@ -585,6 +594,21 @@ void deliver_now()
     delivering = false;
 }
 
+}
+
+std::function<void()> WebView::on_engine_lost;
+
+void WebView::restart_engine()
+{
+    if (!s_worker || s_worker->alive)
+        return;
+    if (!s_worker->views.empty())
+        fprintf(stderr, "webby: %zu views of the ended engine worker are left\n", s_worker->views.size());
+    Proc::close(s_worker->channel);
+    delete s_worker;
+    s_worker = nullptr;
+    // The next view starts a new worker.
+    s_tried_worker = false;
 }
 
 std::unique_ptr<WebView> WebView::create(int width, int height)

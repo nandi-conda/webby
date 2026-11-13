@@ -642,6 +642,26 @@ void EngineView::set_color_scheme(bool dark)
     }
 }
 
+// A page this view is done with (the view closed, or showed another document): its top-level traversable is
+// destroyed as closing a tab destroys it, so its document and every iframe's are destroyed (timers, tasks, fetches,
+// media stop) and the traversable leaves LibWeb's set of all navigables, which otherwise keeps every page this
+// process ever showed alive. Without it each closed tab or navigation away kept its whole page (V's worker reached
+// 3.9 GiB with two tabs open: a close and reopen of smithsonianmag.com cost ~400 MiB).
+// It runs from the event loop, not from whatever (maybe the old page's own script) let go of the page.
+static void retire_page(GC::Ptr<Web::Page> page)
+{
+    if (!page)
+        return;
+    Core::deferred_invoke([page = GC::Root<Web::Page>(*page)] {
+        if (!page->has_local_traversable())
+            return;
+        auto* traversable = as_if<Web::HTML::LocalTraversableNavigable>(*page->local_traversable());
+        if (!traversable || traversable->has_been_destroyed())
+            return;
+        traversable->destroy_top_level_traversable();
+    });
+}
+
 EngineView::~EngineView()
 {
     std::erase(s_views, this);
@@ -650,6 +670,10 @@ EngineView::~EngineView()
     m_impl->webauthn.cancel();
     if (m_impl->client)
         m_impl->client->detach();
+    retire_page(m_impl->page.ptr());
+    m_impl->page = nullptr;
+    m_impl->document = nullptr;
+    m_impl->observer = nullptr;
     // A tab closing may be the app quitting: localStorage is otherwise written half a second after a change.
     Storage::flush();
 }
@@ -1055,6 +1079,8 @@ void EngineView::show_document(LoadedDocument loaded)
     }
     if (m_impl->client)
         m_impl->client->detach();
+    auto previous_page = m_impl->page.ptr();
+    m_impl->last_frame.clear();
 
     Gfx::IntSize viewport { m_width, m_height };
     auto client = BrowserPageClient::create(*this, viewport, *s_palette);
@@ -1118,6 +1144,8 @@ void EngineView::show_document(LoadedDocument loaded)
     m_impl->document = document;
     m_impl->observer = observer;
     attach_debug_console(*document);
+    if (previous_page && previous_page != page.ptr())
+        retire_page(previous_page);
 
     m_title.clear();
     if (on_link_hover)

@@ -121,6 +121,28 @@ BrowserWindow::BrowserWindow(QStringList const& urls)
     m_memory_timer.setInterval(500);
     QObject::connect(&m_memory_timer, &QTimer::timeout, this, [this] { check_memory(); });
     m_memory_timer.start();
+    // The engine worker ended (out of memory, or a trap): its pages are gone. Every tab goes to sleep, a new worker
+    // starts, and the front tab loads again; the others load when they come to the front, as restored tabs do.
+    WebbyUI::WebView::on_engine_lost = [this] {
+        qWarning("webby: the page engine stopped; it starts again and the tabs load again");
+        for (int i = 0; i < int(m_tabs.size()); ++i)
+            sleep_tab(i);
+        WebbyUI::WebView::restart_engine();
+        // A page that stops the engine as soon as it loads would do it again and again: after two stops within a
+        // minute the front tab stays asleep until it is clicked.
+        static qint64 last_lost = 0;
+        auto now = Profile::now_ms();
+        bool again = last_lost && now - last_lost < 60000;
+        last_lost = now;
+        if (again) {
+            m_page_image = {};
+            update();
+            show_toast(QStringLiteral("The page engine stopped again; click a tab to load it"));
+            return;
+        }
+        activate_tab(qBound(0, m_current, int(m_tabs.size()) - 1));
+        show_toast(QStringLiteral("The page engine stopped (out of memory?) and started again"));
+    };
     m_toast_timer.setSingleShot(true);
     m_toast_timer.setInterval(6000);
     QObject::connect(&m_toast_timer, &QTimer::timeout, this, [this] {

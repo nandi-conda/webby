@@ -102,6 +102,10 @@ void WebView::go_forward()
     deliver_engine_events();
 }
 
+// The engine component is in this instance: it never ends on its own.
+std::function<void()> WebView::on_engine_lost;
+void WebView::restart_engine() { }
+
 // The engine's WIT has no memory calls yet: the split build never reports pressure.
 WebView::MemoryPressure WebView::take_memory_pressure() { return {}; }
 void WebView::collect_garbage() { }

@@ -127,6 +127,11 @@ public:
     // which can differ from url() while a navigation's document downloads) after the script's task.
     using PageScriptHook = std::function<std::string(WebView&)>;
     static void add_page_script(PageScriptHook);
+
+    // The engine worker ended (it ran out of memory, or trapped): every view is dead. Called once, from the event loop.
+    // The chrome drops all its views, calls restart_engine(), and makes views again (a new worker starts with the first).
+    static std::function<void()> on_engine_lost;
+    static void restart_engine();
     std::string const& message_prefix() const { return m_message_prefix; }
     std::function<void(std::string const& text, std::string const& document_url)> on_page_message;
     // Runs `source` as a classic script in the current document, now.
