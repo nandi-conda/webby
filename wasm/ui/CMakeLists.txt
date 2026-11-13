@@ -151,6 +151,11 @@ endif()
 add_custom_command(OUTPUT "${gen}/pty/pty_guest.c" "${gen}/pty/pty_guest.h" "${gen}/pty/pty_guest_component_type.o"
     COMMAND "${WIT_BINDGEN}" c "${CMAKE_CURRENT_SOURCE_DIR}/wit/pty" --world pty-guest --out-dir "${gen}/pty"
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/wit/pty/pty.wit" VERBATIM)
+# The engine worker (EngineWorker.h): latha:proc's channels, processes and memory, and its worker export (wit/proc,
+# latha-gui 0.9). A host without workers (no LATHA_GUI_WORKER in the environment) runs the engine in the app's instance.
+add_custom_command(OUTPUT "${gen}/proc/proc_guest.c" "${gen}/proc/proc_guest.h" "${gen}/proc/proc_guest_component_type.o"
+    COMMAND "${WIT_BINDGEN}" c "${CMAKE_CURRENT_SOURCE_DIR}/wit/proc" --world proc-guest --out-dir "${gen}/proc"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/wit/proc/proc.wit" VERBATIM)
 # Sound: latha:gui's audio interface (wit/audio, latha-gui 0.8), which the AudioServer in the module plays into
 # (LocalAudio.cpp).
 add_custom_command(OUTPUT "${gen}/audio/audio_guest.c" "${gen}/audio/audio_guest.h" "${gen}/audio/audio_guest_component_type.o"
@@ -170,7 +175,7 @@ set_source_files_properties(PageScripts.c SummaryScripts.c PROPERTIES COMPILE_DE
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/summary-panel.html" "${WEBBY_SCRIPTS_DIR}/page_text.js" "${WEBBY_SCRIPTS_DIR}/jump_to_text.js" "${WEBBY_SCRIPTS_DIR}/ask_selection.js" "${WEBBY_SCRIPTS_DIR}/passwords.js")
 set_source_files_properties(SummaryScripts.c PROPERTIES COMPILE_OPTIONS "-std=c23;--embed-dir=${WEBBY_SCRIPTS_DIR};--embed-dir=${CMAKE_CURRENT_SOURCE_DIR}"
     OBJECT_DEPENDS "${WEBBY_SCRIPTS_DIR}/page_text.js;${WEBBY_SCRIPTS_DIR}/jump_to_text.js;${WEBBY_SCRIPTS_DIR}/ask_selection.js;${CMAKE_CURRENT_SOURCE_DIR}/summary-panel.html")
-set_source_files_properties("${gen}/pty/pty_guest.c" "${gen}/audio/audio_guest.c" "${WEBBY_NATIVE_DIR}/Authenticator.cpp" PROPERTIES COMPILE_OPTIONS "-w;-Wno-error")
+set_source_files_properties("${gen}/pty/pty_guest.c" "${gen}/audio/audio_guest.c" "${gen}/proc/proc_guest.c" "${WEBBY_NATIVE_DIR}/Authenticator.cpp" PROPERTIES COMPILE_OPTIONS "-w;-Wno-error")
 
 add_executable(webby-ui
     BrowserWindow.cpp
@@ -184,6 +189,11 @@ add_executable(webby-ui
     "${WEBBY_NATIVE_DIR}/Authenticator.cpp"
     "${gen}/pty/pty_guest.c"
     "${gen}/audio/audio_guest.c"
+    "${gen}/proc/proc_guest.c"
+    EngineView.cpp
+    EngineWorker.cpp
+    ProcChannel.cpp
+    WebAuthn.cpp
     LocalAudio.cpp
     PageMenu.cpp
     PopupMenu.cpp
@@ -236,7 +246,7 @@ set_source_files_properties(Resources.c PROPERTIES COMPILE_OPTIONS
 set_target_properties(webby-ui PROPERTIES SUFFIX ".core.wasm" RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 target_include_directories(webby-ui PRIVATE
     ${LADYBIRD_SOURCE_DIR}/Services ${CMAKE_BINARY_DIR}/Services
-    "${CMAKE_CURRENT_SOURCE_DIR}" "${gen}/bindings" "${gen}/pty" "${gen}/audio" "${WEBBY_NATIVE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}" "${gen}/bindings" "${gen}/pty" "${gen}/audio" "${gen}/proc" "${WEBBY_NATIVE_DIR}"
     "${qt2wasm_data}/include" "${qt2wasm_data}/runtime" "${qt2wasm_data}/gui"
     "${qt}/include" "${qt}/include/QtCore" "${qt}/include/QtGui" "${qt}/mkspecs/wasi-clang"
     "${qt}/include/QtCore/${qt_version}" "${qt}/include/QtCore/${qt_version}/QtCore"
@@ -262,7 +272,7 @@ target_compile_options(webby-ui PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wno-error=dep
 # Qt's bundled FreeType, HarfBuzz and libpng are left out: the engine's own (newer, same ABI) serve both. Its zlib
 # stays, as its symbols carry a z_ prefix.
 target_link_libraries(webby-ui PRIVATE
-    "${gen}/bindings/gui_component_type.o" "${gen}/pty/pty_guest_component_type.o" "${gen}/audio/audio_guest_component_type.o"
+    "${gen}/bindings/gui_component_type.o" "${gen}/pty/pty_guest_component_type.o" "${gen}/audio/audio_guest_component_type.o" "${gen}/proc/proc_guest_component_type.o"
     "${qt}/lib/objects-Release/Gui_resources_1/.qt/rcc/qrc_qpdf_init.cpp.obj"
     "${qt}/lib/objects-Release/Gui_resources_2/.qt/rcc/qrc_gui_shaders_init.cpp.obj"
     "${qt}/lib/libQt6Gui.a" "${qt}/lib/libQt6Core.a" "${qt}/lib/libQt6BundledPcre2.a" "${qt}/lib/libQt6BundledZLIB.a"
@@ -279,7 +289,7 @@ add_custom_command(TARGET webby-ui POST_BUILD
     COMMAND "${WAC}" plug "${CMAKE_BINARY_DIR}/bin/webby-ui-app.wasm" --plug "${pdf_component}" -o "${CMAKE_BINARY_DIR}/bin/webby.wasm"
     COMMENT "Making the latha:gui component bin/webby.wasm (the UI and engine, with webby-pdf.wasm plugged in)" VERBATIM)
 
-# The engine as its own component: WebView.cpp and the Compositor's Skia player behind webby:engine's views
+# The engine as its own component: EngineView.cpp and the Compositor's Skia player behind webby:engine's views
 # (wit/engine/engine.wit, engine/EngineExports.cpp). No Qt. shell/ builds the UI that imports it.
 set(engine_wit "${CMAKE_CURRENT_SOURCE_DIR}/wit/engine/engine.wit")
 add_custom_command(OUTPUT "${gen}/engine/engine.c" "${gen}/engine/engine.h" "${gen}/engine/engine_component_type.o"
@@ -290,7 +300,8 @@ add_executable(webby-core
     LocalMedia.cpp
     Network.cpp
     Storage.cpp
-    WebView.cpp
+    EngineView.cpp
+    WebAuthn.cpp
     Resources.c
     engine/EngineExports.cpp
     coop/Coop.cpp
